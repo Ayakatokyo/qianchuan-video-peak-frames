@@ -492,16 +492,29 @@ def build_summary(
 
 
 def _render_summary_markdown(summary):
+    selection_rule = summary["selectionRule"]
     lines = [
         f"# 千川点击峰值画面：{summary['materialId']}",
         "",
-        "| 类型 | 秒数 | 点击次数 | 画面 |",
-        "| --- | ---: | ---: | --- |",
+        f"- RPA JSON: {summary['inputJsonPath']}",
+        f"- 视频: {summary['videoPath']}",
+        "",
+        "## 选择规则",
+        "",
+        f"- first: {selection_rule['first']}",
+        f"- later: {selection_rule['later']}",
+        f"- plateau: {selection_rule['plateau']}",
+        "- boundariesExcluded: "
+        f"{str(selection_rule['boundariesExcluded']).lower()}",
+        "",
+        "| 类型 | 秒数 | 点击次数 | 请求截帧秒数 | 画面 |",
+        "| --- | ---: | ---: | ---: | --- |",
     ]
     for frame in summary["frames"]:
         lines.append(
             f"| {frame['rankType']} | {frame['durationSec']:g} | "
-            f"{frame['metricValue']:g} | {frame['framePath']} |"
+            f"{frame['metricValue']:g} | "
+            f"{frame['requestedTimestampSec']:g} | {frame['framePath']} |"
         )
     if summary["warnings"]:
         lines.extend(["", "## 警告", ""])
@@ -597,6 +610,33 @@ def _remove_owned_paths(paths, purpose):
             ) from exc
 
 
+def _read_owned_frame_paths(summary_path, result_dir):
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return set()
+    if not isinstance(summary, dict) or not isinstance(
+        summary.get("frames", []), list
+    ):
+        return set()
+
+    owned_paths = set()
+    for frame in summary.get("frames", []):
+        if not isinstance(frame, dict):
+            continue
+        try:
+            expected_name = format_frame_filename(
+                frame.get("rankType"),
+                frame.get("durationSec"),
+                frame.get("metricValue"),
+            )
+        except InputDataError:
+            continue
+        if frame.get("framePath") == expected_name:
+            owned_paths.add(result_dir / expected_name)
+    return owned_paths
+
+
 def process_local(
     input_json_path,
     video_path,
@@ -636,6 +676,9 @@ def process_local(
         result_dir / "summary.json",
         result_dir / "summary.md",
     )
+    previously_owned_frames = _read_owned_frame_paths(
+        summary_markers[0], result_dir
+    )
     _remove_owned_paths(summary_markers, "summary")
 
     frame_paths = []
@@ -648,12 +691,8 @@ def process_local(
         extract_frame(ffmpeg, video, peak.duration_sec, frame_path)
         frame_paths.append(frame_path)
 
-    current_frames = {path.name for path in frame_paths}
-    stale_frames = [
-        path
-        for path in result_dir.glob("*.jpg")
-        if path.name not in current_frames
-    ]
+    current_frames = set(frame_paths)
+    stale_frames = previously_owned_frames - current_frames
     _remove_owned_paths(stale_frames, "frame")
 
     summary = build_summary(

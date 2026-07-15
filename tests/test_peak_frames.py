@@ -579,6 +579,92 @@ class FfmpegResolutionTests(unittest.TestCase):
 
 
 class FrameExtractionTests(unittest.TestCase):
+    def test_extracts_center_pixel_color_from_each_target_second(self):
+        ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+        with tempfile.TemporaryDirectory(prefix="peak color proof ") as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "four color segments.mp4"
+            generated = subprocess.run(
+                [
+                    ffmpeg_bin,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=red:s=64x64:r=25:d=2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=lime:s=64x64:r=25:d=2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=blue:s=64x64:r=25:d=2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=yellow:s=64x64:r=25:d=2",
+                    "-filter_complex",
+                    "[0:v][1:v][2:v][3:v]concat=n=4:v=1:a=0[v]",
+                    "-map",
+                    "[v]",
+                    "-c:v",
+                    "mpeg4",
+                    "-y",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+
+            expected_colors = {
+                1.0: (255, 0, 0),
+                3.0: (0, 255, 0),
+                5.0: (0, 0, 255),
+                7.0: (255, 255, 0),
+            }
+            for timestamp, expected_rgb in expected_colors.items():
+                with self.subTest(timestamp=timestamp):
+                    output_path = temp_path / f"frame-{timestamp:g}.jpg"
+                    extract_frame(
+                        ffmpeg_bin, video_path, timestamp, output_path
+                    )
+                    decoded = subprocess.run(
+                        [
+                            ffmpeg_bin,
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-i",
+                            str(output_path),
+                            "-f",
+                            "rawvideo",
+                            "-pix_fmt",
+                            "rgb24",
+                            "-",
+                        ],
+                        capture_output=True,
+                        check=False,
+                        timeout=30,
+                    )
+                    self.assertEqual(
+                        decoded.returncode,
+                        0,
+                        decoded.stderr.decode("utf-8", errors="replace"),
+                    )
+                    center_offset = ((32 * 64) + 32) * 3
+                    center_rgb = tuple(
+                        decoded.stdout[center_offset : center_offset + 3]
+                    )
+                    self.assertEqual(len(center_rgb), 3)
+                    for actual, expected in zip(center_rgb, expected_rgb):
+                        self.assertLessEqual(abs(actual - expected), 40)
+
     def test_extracts_exact_frames_matching_direct_ffmpeg_reference(self):
         ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
         with tempfile.TemporaryDirectory(prefix="peak frames with spaces ") as temp_dir:
@@ -1367,6 +1453,16 @@ class SummaryTests(unittest.TestCase):
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             markdown = markdown_path.read_text(encoding="utf-8")
             self.assertEqual(payload, summary)
+            self.assertIn("input.json", markdown)
+            self.assertIn("video.mp4", markdown)
+            self.assertIn("earliest_local_peak", markdown)
+            self.assertIn(
+                "top_3_by_metric_desc_then_time_asc_after_first", markdown
+            )
+            self.assertIn("collapse_to_earliest_second", markdown)
+            self.assertIn("boundariesExcluded: true", markdown)
+            self.assertIn("请求截帧秒数", markdown)
+            self.assertIn("| first_peak | 1 | 5 | 1 | first.jpg |", markdown)
             self.assertLess(
                 markdown.index("first_peak"), markdown.index("later_top_1")
             )
@@ -1485,6 +1581,63 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(summary["warnings"], [])
             self.assertIn(f"result_dir={result_dir}", completed.stdout)
+
+    def test_local_cli_rerun_removes_only_owned_stale_frames(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            input_json = root / "input.json"
+            output = root / "output"
+            result_dir = output / "m-123"
+            self._make_video(ffmpeg, video)
+            self._write_series(
+                input_json,
+                list(enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])),
+            )
+            first_run = self._run_local(input_json, video, output, ffmpeg)
+            self.assertEqual(first_run.returncode, 0, first_run.stderr)
+            stale_owned_frames = set(result_dir.glob("*.jpg"))
+            self.assertEqual(len(stale_owned_frames), 4)
+            user_frame = result_dir / "user-reference.jpg"
+            user_frame.write_bytes(DECODABLE_JPEG)
+
+            self._write_series(
+                input_json, list(enumerate([0, 5, 0, 4, 0]))
+            )
+            second_run = self._run_local(input_json, video, output, ffmpeg)
+
+            self.assertEqual(second_run.returncode, 0, second_run.stderr)
+            self.assertTrue(user_frame.is_file())
+            self.assertTrue(stale_owned_frames.isdisjoint(result_dir.glob("*.jpg")))
+            summary = json.loads(
+                (result_dir / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(summary["frames"]), 2)
+
+    def test_local_cli_rerun_ignores_non_object_previous_summary(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            input_json = root / "input.json"
+            output = root / "output"
+            result_dir = output / "m-123"
+            self._make_video(ffmpeg, video, duration=5)
+            self._write_series(
+                input_json, list(enumerate([0, 5, 0, 4, 0]))
+            )
+            first_run = self._run_local(input_json, video, output, ffmpeg)
+            self.assertEqual(first_run.returncode, 0, first_run.stderr)
+            (result_dir / "summary.json").write_text("[]\n", encoding="utf-8")
+
+            second_run = self._run_local(input_json, video, output, ffmpeg)
+
+            self.assertEqual(second_run.returncode, 0, second_run.stderr)
+            summary = json.loads(
+                (result_dir / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(summary["frames"]), 2)
 
     def test_local_cli_outputs_available_peaks_with_warning(self):
         ffmpeg = resolve_ffmpeg()
