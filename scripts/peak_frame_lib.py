@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import uuid
 
 
 class PeakFrameError(Exception):
@@ -174,11 +175,36 @@ def _stderr_excerpt(stderr, limit=500):
     return excerpt
 
 
-def _remove_partial_output(output_path):
+def _canonical_seconds(value, field_name, error_type):
+    if isinstance(value, bool):
+        raise error_type(f"{field_name} {value!r} must be a finite number")
     try:
-        output_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise error_type(
+            f"{field_name} {value!r} must be a finite number"
+        ) from exc
+    if not math.isfinite(number):
+        raise error_type(f"{field_name} {value!r} must be a finite number")
+    return number, repr(number)
+
+
+def _raise_frame_error(message, staging_path, cause=None):
+    cleanup_error = None
+    try:
+        staging_path.unlink(missing_ok=True)
+    except OSError as exc:
+        cleanup_error = exc
+        message += (
+            f"; unable to clean staging file {staging_path}: {cleanup_error}"
+        )
+
+    error = FfmpegError(message)
+    if cause is not None:
+        raise error from cause
+    if cleanup_error is not None:
+        raise error from cleanup_error
+    raise error
 
 
 def extract_frame(
@@ -190,7 +216,25 @@ def extract_frame(
 ):
     video = Path(video_path)
     output = Path(output_path)
-    timestamp_text = f"{timestamp_sec:.6f}"
+    _, timestamp_text = _canonical_seconds(
+        timestamp_sec, "frame timestamp", FfmpegError
+    )
+    timeout, _ = _canonical_seconds(timeout_sec, "timeout", FfmpegError)
+    if timeout <= 0:
+        raise FfmpegError(
+            f"timeout {timeout_sec!r} must be greater than 0 seconds"
+        )
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise FfmpegError(
+            f"Unable to create frame output directory {output.parent}: {exc}"
+        ) from exc
+
+    staging = output.with_name(
+        f".{output.stem}.{uuid.uuid4().hex}{output.suffix or '.jpg'}"
+    )
     command = [
         str(ffmpeg_bin),
         "-hide_banner",
@@ -205,71 +249,101 @@ def extract_frame(
         "-q:v",
         "2",
         "-y",
-        str(output),
+        str(staging),
     ]
 
     try:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.unlink(missing_ok=True)
         process = subprocess.run(
             command,
             capture_output=True,
             text=True,
             check=False,
-            timeout=timeout_sec,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        _remove_partial_output(output)
-        raise FfmpegError(
+        _raise_frame_error(
             f"FFmpeg timed out after {timeout_sec} seconds while extracting "
-            f"frame at {timestamp_text}s from {video} to {output}"
-        ) from exc
+            f"frame at {timestamp_text}s from {video} to {output}",
+            staging,
+            exc,
+        )
     except OSError as exc:
-        _remove_partial_output(output)
-        raise FfmpegError(
+        _raise_frame_error(
             f"Unable to extract frame at {timestamp_text}s from {video} "
-            f"to {output} with FFmpeg: {exc}"
-        ) from exc
+            f"to {output} with FFmpeg: {exc}",
+            staging,
+            exc,
+        )
 
     if process.returncode != 0:
-        _remove_partial_output(output)
-        raise FfmpegError(
+        _raise_frame_error(
             f"FFmpeg failed to extract frame at {timestamp_text}s from "
             f"{video} to {output}; return code {process.returncode}; stderr "
-            f"excerpt: {_stderr_excerpt(process.stderr)}"
+            f"excerpt: {_stderr_excerpt(process.stderr)}",
+            staging,
         )
 
     try:
-        output_size = output.stat().st_size
-    except FileNotFoundError:
-        raise FfmpegError(
+        output_size = staging.stat().st_size
+    except FileNotFoundError as exc:
+        _raise_frame_error(
             f"FFmpeg reported success extracting frame at {timestamp_text}s "
-            f"from {video}, but output is missing: {output}"
+            f"from {video}, but staging output is missing: {staging}",
+            staging,
+            exc,
         )
     except OSError as exc:
-        _remove_partial_output(output)
-        raise FfmpegError(
+        _raise_frame_error(
             f"Unable to verify extracted frame at {timestamp_text}s from "
-            f"{video} at {output}: {exc}"
-        ) from exc
+            f"{video} at {staging}: {exc}",
+            staging,
+            exc,
+        )
 
     if output_size == 0:
-        _remove_partial_output(output)
-        raise FfmpegError(
+        _raise_frame_error(
             f"FFmpeg reported success extracting frame at {timestamp_text}s "
-            f"from {video}, but output is empty: {output}"
+            f"from {video}, but staging output is empty: {staging}",
+            staging,
+        )
+
+    try:
+        with staging.open("rb") as frame_file:
+            start_marker = frame_file.read(2)
+            frame_file.seek(-2, os.SEEK_END)
+            end_marker = frame_file.read(2)
+    except OSError as exc:
+        _raise_frame_error(
+            f"Unable to validate JPEG frame at {timestamp_text}s from "
+            f"{video} at {staging}: {exc}",
+            staging,
+            exc,
+        )
+
+    if start_marker != b"\xff\xd8" or end_marker != b"\xff\xd9":
+        _raise_frame_error(
+            f"FFmpeg output for frame at {timestamp_text}s from {video} "
+            f"is not a valid JPEG: {staging}",
+            staging,
+        )
+
+    try:
+        os.replace(staging, output)
+    except OSError as exc:
+        _raise_frame_error(
+            f"Unable to publish extracted frame at {timestamp_text}s from "
+            f"{video} to {output}: {exc}",
+            staging,
+            exc,
         )
 
     return output
 
 
 def validate_timestamps(selected_peaks, video_duration):
-    try:
-        duration = _finite_number(
-            video_duration, f"video duration {video_duration!r}"
-        )
-    except InputDataError:
-        raise
+    duration, duration_text = _canonical_seconds(
+        video_duration, "video duration", InputDataError
+    )
     if duration <= 0:
         raise InputDataError(
             f"video duration {video_duration!r} must be greater than 0"
@@ -278,31 +352,23 @@ def validate_timestamps(selected_peaks, video_duration):
     for selected_peak in selected_peaks:
         timestamp = selected_peak.duration_sec
         try:
-            normalized_timestamp = _finite_number(
-                timestamp, f"peak timestamp {timestamp!r}"
+            normalized_timestamp, timestamp_text = _canonical_seconds(
+                timestamp, "peak timestamp", InputDataError
             )
         except InputDataError as exc:
             raise InputDataError(
                 f"peak timestamp {timestamp!r} is invalid for video "
-                f"duration {duration}"
+                f"duration {duration_text}"
             ) from exc
         if normalized_timestamp < 0 or normalized_timestamp >= duration:
             raise InputDataError(
-                f"peak timestamp {timestamp!r} must satisfy 0 <= timestamp "
-                f"< video duration {duration}"
+                f"peak timestamp {timestamp_text} must satisfy 0 <= timestamp "
+                f"< video duration {duration_text}"
             )
 
 
 def _finite_number(value, field_name):
-    if isinstance(value, bool):
-        raise InputDataError(f"{field_name} must be a finite number")
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise InputDataError(f"{field_name} must be a finite number") from exc
-    if not math.isfinite(number):
-        raise InputDataError(f"{field_name} must be a finite number")
-    return number
+    return _canonical_seconds(value, field_name, InputDataError)[0]
 
 
 def parse_click_series(records):
