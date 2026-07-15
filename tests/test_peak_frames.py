@@ -58,6 +58,43 @@ class PeakSelectionTests(unittest.TestCase):
             [(2.0, 8.0)],
         )
 
+    def test_excludes_leading_plateau(self):
+        points = [
+            SeriesPoint(i, value)
+            for i, value in enumerate([5, 5, 1, 0])
+        ]
+
+        self.assertEqual(find_local_peaks(points), [])
+
+    def test_excludes_trailing_plateau(self):
+        points = [
+            SeriesPoint(i, value)
+            for i, value in enumerate([0, 1, 5, 5])
+        ]
+
+        self.assertEqual(find_local_peaks(points), [])
+
+    def test_constant_plateau_has_no_peaks(self):
+        points = [
+            SeriesPoint(i, value)
+            for i, value in enumerate([5, 5, 5, 5])
+        ]
+
+        self.assertEqual(find_local_peaks(points), [])
+
+    def test_finds_two_separated_interior_plateau_peaks(self):
+        points = [
+            SeriesPoint(i, value)
+            for i, value in enumerate([0, 5, 5, 1, 7, 7, 0])
+        ]
+
+        peaks = find_local_peaks(points)
+
+        self.assertEqual(
+            [(peak.duration_sec, peak.metric_value) for peak in peaks],
+            [(1.0, 5.0), (4.0, 7.0)],
+        )
+
     def test_excludes_first_and_last_points(self):
         points = [
             SeriesPoint(i, value)
@@ -150,6 +187,14 @@ class ClickSeriesParsingTests(unittest.TestCase):
                 with self.assertRaisesRegex(InputDataError, "finite"):
                     parse_click_series([record])
 
+    def test_rejects_boolean_duration(self):
+        with self.assertRaises(InputDataError):
+            parse_click_series([click_record(True, 5)])
+
+    def test_rejects_boolean_metric_value(self):
+        with self.assertRaises(InputDataError):
+            parse_click_series([click_record(1, False)])
+
     def test_rejects_negative_duration(self):
         with self.assertRaisesRegex(InputDataError, "durationSec.*negative"):
             parse_click_series([click_record(-1, 5)])
@@ -162,6 +207,28 @@ class ClickSeriesParsingTests(unittest.TestCase):
                     click_record(2, 7, material_id="m-456"),
                 ]
             )
+
+    def test_normalizes_material_id_whitespace_before_comparing(self):
+        material_id, points = parse_click_series(
+            [
+                click_record(1, 5, material_id="m-123"),
+                click_record(2, 7, material_id=" m-123 "),
+            ]
+        )
+
+        self.assertEqual(material_id, "m-123")
+        self.assertEqual(
+            points,
+            [SeriesPoint(1.0, 5.0), SeriesPoint(2.0, 7.0)],
+        )
+
+    def test_whitespace_only_material_id_returns_empty_string(self):
+        material_id, points = parse_click_series(
+            [click_record(1, 5, material_id="   ")]
+        )
+
+        self.assertEqual(material_id, "")
+        self.assertEqual(points, [SeriesPoint(1.0, 5.0)])
 
     def test_missing_material_id_returns_empty_string(self):
         record = click_record(1, 5)

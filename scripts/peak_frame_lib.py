@@ -30,6 +30,8 @@ class SelectedPeak:
 
 
 def _finite_number(value, field_name):
+    if isinstance(value, bool):
+        raise InputDataError(f"{field_name} must be a finite number")
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -66,9 +68,9 @@ def parse_click_series(records):
             )
         values_by_second[duration_sec] = metric_value
 
-        material_id = record.get("materialId")
+        material_id = str(record.get("materialId") or "").strip()
         if material_id:
-            material_ids.add(str(material_id))
+            material_ids.add(material_id)
 
     if not values_by_second:
         raise InputDataError("No CLICK_COUNT interaction series records found")
