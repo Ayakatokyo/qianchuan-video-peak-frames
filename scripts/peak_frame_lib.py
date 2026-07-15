@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
+import json
 import math
 import os
 from pathlib import Path
@@ -411,6 +412,168 @@ def validate_timestamps(selected_peaks, video_duration):
                 f"peak timestamp {timestamp_text} must satisfy 0 <= timestamp "
                 f"< video duration {duration_text}"
             )
+
+
+def format_seconds_token(duration_sec):
+    """Return a stable, filesystem-safe timestamp token."""
+    duration, duration_text = _canonical_seconds(
+        duration_sec, "frame timestamp", InputDataError
+    )
+    if duration < 0:
+        raise InputDataError("frame timestamp cannot be negative")
+    if "." in duration_text:
+        duration_text = duration_text.rstrip("0").rstrip(".")
+    whole, separator, fraction = duration_text.partition(".")
+    token = whole.zfill(4)
+    if separator:
+        token += f"p{fraction}"
+    return f"{token}s"
+
+
+def format_frame_filename(rank_type, duration_sec, metric_value):
+    """Return the deterministic JPEG filename for one selected peak."""
+    if not isinstance(rank_type, str) or re.fullmatch(
+        r"[A-Za-z0-9_-]+", rank_type
+    ) is None:
+        raise InputDataError(f"invalid frame rank type: {rank_type!r}")
+    _, metric_text = _canonical_seconds(
+        metric_value, "metric value", InputDataError
+    )
+    if "." in metric_text:
+        metric_text = metric_text.rstrip("0").rstrip(".")
+    metric_token = metric_text.replace("-", "m").replace(".", "p")
+    return (
+        f"{rank_type}_{format_seconds_token(duration_sec)}_"
+        f"{metric_token}.jpg"
+    )
+
+
+def build_summary(
+    material_id,
+    input_json_path,
+    video_path,
+    selected_peaks,
+    frame_paths,
+):
+    """Build the JSON-compatible result shared by both summary formats."""
+    if len(selected_peaks) != len(frame_paths):
+        raise ValueError("selected_peaks and frame_paths must have equal length")
+    later_count = sum(
+        peak.rank_type.startswith("later_top_") for peak in selected_peaks
+    )
+    missing_later = max(0, 3 - later_count)
+    warnings = []
+    if missing_later:
+        warnings.append(
+            f"{missing_later} later peak frame(s) unavailable"
+        )
+    return {
+        "materialId": str(material_id),
+        "inputJsonPath": str(Path(input_json_path)),
+        "videoPath": str(Path(video_path)),
+        "selectionRule": {
+            "first": "earliest_local_peak",
+            "later": "top_3_by_metric_desc_then_time_asc_after_first",
+            "plateau": "collapse_to_earliest_second",
+            "boundariesExcluded": True,
+        },
+        "frames": [
+            {
+                "rankType": peak.rank_type,
+                "durationSec": peak.duration_sec,
+                "metricValue": peak.metric_value,
+                "requestedTimestampSec": peak.duration_sec,
+                "framePath": Path(frame_path).name,
+            }
+            for peak, frame_path in zip(selected_peaks, frame_paths)
+        ],
+        "warnings": warnings,
+    }
+
+
+def _render_summary_markdown(summary):
+    lines = [
+        f"# 千川点击峰值画面：{summary['materialId']}",
+        "",
+        "| 类型 | 秒数 | 点击次数 | 画面 |",
+        "| --- | ---: | ---: | --- |",
+    ]
+    for frame in summary["frames"]:
+        lines.append(
+            f"| {frame['rankType']} | {frame['durationSec']:g} | "
+            f"{frame['metricValue']:g} | {frame['framePath']} |"
+        )
+    if summary["warnings"]:
+        lines.extend(["", "## 警告", ""])
+        lines.extend(
+            f"- {warning}" for warning in summary["warnings"]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _remove_summary_staging(paths):
+    errors = []
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+    return errors
+
+
+def write_summaries(summary, result_dir):
+    """Atomically publish JSON and Markdown after every frame exists."""
+    result = Path(result_dir)
+    try:
+        result.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise InputDataError(
+            f"unable to create summary directory {result}: {exc}"
+        ) from exc
+
+    for frame in summary.get("frames", []):
+        frame_path = Path(frame["framePath"])
+        if not frame_path.is_absolute():
+            frame_path = result / frame_path
+        try:
+            frame_size = frame_path.stat().st_size
+        except FileNotFoundError as exc:
+            raise InputDataError(f"frame is missing: {frame_path}") from exc
+        except OSError as exc:
+            raise InputDataError(
+                f"unable to inspect frame {frame_path}: {exc}"
+            ) from exc
+        if frame_size == 0:
+            raise InputDataError(f"frame is empty: {frame_path}")
+
+    json_path = result / "summary.json"
+    markdown_path = result / "summary.md"
+    unique = uuid.uuid4().hex
+    json_staging = result / f".summary.{unique}.json.tmp"
+    markdown_staging = result / f".summary.{unique}.md.tmp"
+    staging_paths = (json_staging, markdown_staging)
+    try:
+        json_staging.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        markdown_staging.write_text(
+            _render_summary_markdown(summary), encoding="utf-8"
+        )
+        os.replace(markdown_staging, markdown_path)
+        os.replace(json_staging, json_path)
+    except (OSError, TypeError, ValueError) as exc:
+        cleanup_errors = _remove_summary_staging(staging_paths)
+        cleanup_detail = (
+            f"; staging cleanup failed: {'; '.join(cleanup_errors)}"
+            if cleanup_errors
+            else ""
+        )
+        raise InputDataError(
+            f"unable to write summaries in {result}: {exc}{cleanup_detail}"
+        ) from exc
+
+    return json_path, markdown_path
 
 
 def _finite_number(value, field_name):

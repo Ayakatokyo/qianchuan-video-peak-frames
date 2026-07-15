@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -14,13 +15,17 @@ from peak_frame_lib import (  # noqa: E402
     InputDataError,
     SelectedPeak,
     SeriesPoint,
+    build_summary,
     extract_frame,
     find_local_peaks,
+    format_frame_filename,
+    format_seconds_token,
     parse_click_series,
     probe_video_duration,
     resolve_ffmpeg,
     select_peak_frames,
     validate_timestamps,
+    write_summaries,
 )
 
 
@@ -1278,6 +1283,118 @@ class TimestampValidationTests(unittest.TestCase):
                     validate_timestamps(selected, duration)
 
                 self.assertIn(str(duration), str(context.exception))
+
+
+class SummaryTests(unittest.TestCase):
+    def test_formats_integer_fractional_and_submicrosecond_seconds_safely(self):
+        self.assertEqual(format_seconds_token(7.0), "0007s")
+        self.assertEqual(format_seconds_token(7.5), "0007p5s")
+        self.assertEqual(format_seconds_token(0.0000001), "0000p0000001s")
+        self.assertEqual(
+            format_frame_filename("first_peak", 7.0, 18.0),
+            "first_peak_0007s_18.jpg",
+        )
+        self.assertEqual(
+            format_frame_filename("later_top_1", 7.5, 12.25),
+            "later_top_1_0007p5s_12p25.jpg",
+        )
+
+    def test_summary_warns_when_later_peaks_are_missing(self):
+        selected = [
+            SelectedPeak("first_peak", 1.0, 5.0),
+            SelectedPeak("later_top_1", 3.0, 4.0),
+        ]
+
+        summary = build_summary(
+            "m-123",
+            "input.json",
+            "video.mp4",
+            selected,
+            ["a.jpg", "b.jpg"],
+        )
+
+        self.assertEqual(len(summary["frames"]), 2)
+        self.assertEqual(
+            summary["warnings"],
+            ["2 later peak frame(s) unavailable"],
+        )
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["first_peak", "later_top_1"],
+        )
+
+    def test_summary_rejects_mismatched_peaks_and_paths(self):
+        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+
+        with self.assertRaisesRegex(ValueError, "equal length"):
+            build_summary(
+                "m-123", "input.json", "video.mp4", selected, []
+            )
+
+    def test_summary_stores_portable_frame_filenames(self):
+        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        summary = build_summary(
+            "m-123",
+            "input.json",
+            "video.mp4",
+            selected,
+            [Path("output") / "m-123" / "first.jpg"],
+        )
+
+        self.assertEqual(summary["frames"][0]["framePath"], "first.jpg")
+
+    def test_writes_json_and_markdown_after_frames_exist(self):
+        selected = [
+            SelectedPeak("first_peak", 1.0, 5.0),
+            SelectedPeak("later_top_1", 3.0, 4.0),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result_dir = Path(temp_dir) / "m-123"
+            result_dir.mkdir()
+            frame_paths = [result_dir / "first.jpg", result_dir / "later.jpg"]
+            for frame_path in frame_paths:
+                frame_path.write_bytes(DECODABLE_JPEG)
+            summary = build_summary(
+                "m-123",
+                "input.json",
+                "video.mp4",
+                selected,
+                frame_paths,
+            )
+
+            json_path, markdown_path = write_summaries(summary, result_dir)
+
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+            self.assertEqual(payload, summary)
+            self.assertLess(
+                markdown.index("first_peak"), markdown.index("later_top_1")
+            )
+            self.assertIn("2 later peak frame(s) unavailable", markdown)
+            self.assertEqual(list(result_dir.glob("*.tmp*")), [])
+
+    def test_refuses_to_write_summaries_for_missing_or_empty_frame(self):
+        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result_dir = Path(temp_dir)
+            missing = result_dir / "missing.jpg"
+            summary = build_summary(
+                "m-123", "input.json", "video.mp4", selected, [missing]
+            )
+
+            with self.assertRaisesRegex(InputDataError, "frame.*missing"):
+                write_summaries(summary, result_dir)
+
+            empty = result_dir / "empty.jpg"
+            empty.touch()
+            summary = build_summary(
+                "m-123", "input.json", "video.mp4", selected, [empty]
+            )
+            with self.assertRaisesRegex(InputDataError, "frame.*empty"):
+                write_summaries(summary, result_dir)
+
+            self.assertFalse((result_dir / "summary.json").exists())
+            self.assertFalse((result_dir / "summary.md").exists())
 
 if __name__ == "__main__":
     unittest.main()
