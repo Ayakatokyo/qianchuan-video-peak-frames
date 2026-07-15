@@ -12,12 +12,15 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from peak_frame_lib import (  # noqa: E402
     FfmpegError,
     InputDataError,
+    SelectedPeak,
     SeriesPoint,
+    extract_frame,
     find_local_peaks,
     parse_click_series,
     probe_video_duration,
     resolve_ffmpeg,
     select_peak_frames,
+    validate_timestamps,
 )
 
 
@@ -515,6 +518,306 @@ class FfmpegResolutionTests(unittest.TestCase):
             self.assertIn("return code 17", message)
             self.assertIn("Duration: 00:00:02.00garbage", message)
             self.assertNotIn("UNBOUNDED_TAIL_MARKER", message)
+
+
+class FrameExtractionTests(unittest.TestCase):
+    def test_extracts_exact_frames_matching_direct_ffmpeg_reference(self):
+        ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+        with tempfile.TemporaryDirectory(prefix="peak frames with spaces ") as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "changing test video.mp4"
+            process = subprocess.run(
+                [
+                    ffmpeg_bin,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=s=64x64:r=25:d=9",
+                    "-c:v",
+                    "mpeg4",
+                    "-y",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+
+            production_blobs = []
+            for timestamp in (1.0, 3.0, 5.0, 7.0):
+                with self.subTest(timestamp=timestamp):
+                    output_path = (
+                        temp_path
+                        / "production frames"
+                        / f"frame {timestamp:.1f}.jpg"
+                    )
+                    reference_path = (
+                        temp_path
+                        / "reference frames"
+                        / f"frame {timestamp:.1f}.jpg"
+                    )
+                    reference_path.parent.mkdir(parents=True, exist_ok=True)
+
+                    result = extract_frame(
+                        ffmpeg_bin,
+                        video_path,
+                        timestamp,
+                        output_path,
+                    )
+                    reference = subprocess.run(
+                        [
+                            ffmpeg_bin,
+                            "-hide_banner",
+                            "-loglevel",
+                            "error",
+                            "-i",
+                            str(video_path),
+                            "-ss",
+                            f"{timestamp:.6f}",
+                            "-frames:v",
+                            "1",
+                            "-q:v",
+                            "2",
+                            "-y",
+                            str(reference_path),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+
+                    self.assertEqual(result, output_path)
+                    self.assertEqual(reference.returncode, 0, reference.stderr)
+                    self.assertGreater(output_path.stat().st_size, 0)
+                    self.assertGreater(reference_path.stat().st_size, 0)
+                    production_bytes = output_path.read_bytes()
+                    self.assertEqual(production_bytes, reference_path.read_bytes())
+                    production_blobs.append(production_bytes)
+
+            self.assertEqual(len(set(production_blobs)), 4)
+
+    def test_uses_exact_output_seeking_command_and_creates_parent(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video with spaces.mp4"
+            output_path = temp_path / "new output dir" / "frame image.jpg"
+            video_path.touch()
+
+            def create_output(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"jpeg bytes")
+                return subprocess.CompletedProcess(
+                    command, returncode=0, stdout="", stderr=""
+                )
+
+            with patch(
+                "peak_frame_lib.subprocess.run", side_effect=create_output
+            ) as run_mock:
+                result = extract_frame(
+                    "ffmpeg with spaces", video_path, 1.25, output_path
+                )
+
+            self.assertEqual(result, output_path)
+            self.assertEqual(
+                run_mock.call_args.args[0],
+                [
+                    "ffmpeg with spaces",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(video_path),
+                    "-ss",
+                    "1.250000",
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "2",
+                    "-y",
+                    str(output_path),
+                ],
+            )
+            self.assertEqual(run_mock.call_args.kwargs["timeout"], 30.0)
+
+    def test_nonzero_return_cleans_partial_output_and_bounds_stderr(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+            output_path.write_bytes(b"preexisting output")
+            stderr = "decoder failure\n" + "x" * 1000 + "UNBOUNDED_TAIL_MARKER"
+
+            def fail_after_partial_output(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"partial output")
+                return subprocess.CompletedProcess(
+                    command, returncode=17, stdout="", stderr=stderr
+                )
+
+            with patch(
+                "peak_frame_lib.subprocess.run",
+                side_effect=fail_after_partial_output,
+            ):
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame("ffmpeg", video_path, 3.5, output_path)
+
+            message = str(context.exception)
+            self.assertIn("3.500000", message)
+            self.assertIn("return code 17", message)
+            self.assertIn("decoder failure", message)
+            self.assertNotIn("UNBOUNDED_TAIL_MARKER", message)
+            self.assertFalse(output_path.exists())
+
+    def test_timeout_maps_to_ffmpeg_error_and_cleans_partial_output(self):
+        timeout_sec = 1.25
+        timeout_error = subprocess.TimeoutExpired(["ffmpeg"], timeout_sec)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+
+            def time_out_after_partial_output(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"partial output")
+                raise timeout_error
+
+            with patch(
+                "peak_frame_lib.subprocess.run",
+                side_effect=time_out_after_partial_output,
+            ):
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame(
+                        "ffmpeg",
+                        video_path,
+                        5.0,
+                        output_path,
+                        timeout_sec=timeout_sec,
+                    )
+
+            message = str(context.exception)
+            self.assertIn("5.000000", message)
+            self.assertIn(str(timeout_sec), message)
+            self.assertIs(context.exception.__cause__, timeout_error)
+            self.assertFalse(output_path.exists())
+
+    def test_os_error_maps_to_ffmpeg_error_with_cause_and_cleans_output(self):
+        os_error = OSError("cannot launch ffmpeg")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+
+            def fail_to_launch_after_partial_output(command, **_kwargs):
+                Path(command[-1]).write_bytes(b"partial output")
+                raise os_error
+
+            with patch(
+                "peak_frame_lib.subprocess.run",
+                side_effect=fail_to_launch_after_partial_output,
+            ):
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame("ffmpeg", video_path, 7.0, output_path)
+
+            message = str(context.exception)
+            self.assertIn("7.000000", message)
+            self.assertIn("cannot launch ffmpeg", message)
+            self.assertIs(context.exception.__cause__, os_error)
+            self.assertFalse(output_path.exists())
+
+    def test_success_code_without_output_fails(self):
+        process = subprocess.CompletedProcess(
+            ["ffmpeg"], returncode=0, stdout="", stderr=""
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "missing frame.jpg"
+            video_path.touch()
+
+            with patch("peak_frame_lib.subprocess.run", return_value=process):
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame("ffmpeg", video_path, 1.0, output_path)
+
+            self.assertIn("1.000000", str(context.exception))
+            self.assertIn("missing", str(context.exception).lower())
+            self.assertFalse(output_path.exists())
+
+    def test_success_code_with_zero_byte_output_fails_and_cleans_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "empty frame.jpg"
+            video_path.touch()
+
+            def create_empty_output(command, **_kwargs):
+                Path(command[-1]).touch()
+                return subprocess.CompletedProcess(
+                    command, returncode=0, stdout="", stderr=""
+                )
+
+            with patch(
+                "peak_frame_lib.subprocess.run", side_effect=create_empty_output
+            ):
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame("ffmpeg", video_path, 2.0, output_path)
+
+            self.assertIn("2.000000", str(context.exception))
+            self.assertIn("empty", str(context.exception).lower())
+            self.assertFalse(output_path.exists())
+
+
+class TimestampValidationTests(unittest.TestCase):
+    def test_accepts_zero_and_timestamp_just_under_video_duration(self):
+        selected = [
+            SelectedPeak("first_peak", 0.0, 10.0),
+            SelectedPeak("later_top_1", 9.999999, 8.0),
+        ]
+
+        self.assertIsNone(validate_timestamps(selected, 10.0))
+
+    def test_rejects_timestamp_outside_video_bounds(self):
+        for timestamp in (-0.1, 10.0, 10.1):
+            with self.subTest(timestamp=timestamp):
+                selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+
+                with self.assertRaises(InputDataError) as context:
+                    validate_timestamps(selected, 10.0)
+
+                message = str(context.exception)
+                self.assertIn(str(timestamp), message)
+                self.assertIn("10.0", message)
+
+    def test_rejects_nonfinite_peak_timestamp(self):
+        for timestamp in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timestamp=timestamp):
+                selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+
+                with self.assertRaises(InputDataError) as context:
+                    validate_timestamps(selected, 10.0)
+
+                message = str(context.exception)
+                self.assertIn(str(timestamp), message)
+                self.assertIn("10.0", message)
+
+    def test_rejects_nonfinite_or_nonpositive_video_duration(self):
+        for duration in (
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            0.0,
+            -1.0,
+        ):
+            with self.subTest(duration=duration):
+                selected = [SelectedPeak("first_peak", 1.0, 10.0)]
+
+                with self.assertRaises(InputDataError) as context:
+                    validate_timestamps(selected, duration)
+
+                self.assertIn(str(duration), str(context.exception))
 
 if __name__ == "__main__":
     unittest.main()

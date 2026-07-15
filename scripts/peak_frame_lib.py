@@ -166,6 +166,133 @@ def probe_video_duration(ffmpeg_bin, video_path, timeout_sec=30.0):
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
+def _stderr_excerpt(stderr, limit=500):
+    stderr = stderr or ""
+    excerpt = stderr[:limit]
+    if len(stderr) > limit:
+        excerpt += "..."
+    return excerpt
+
+
+def _remove_partial_output(output_path):
+    try:
+        output_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def extract_frame(
+    ffmpeg_bin,
+    video_path,
+    timestamp_sec,
+    output_path,
+    timeout_sec=30.0,
+):
+    video = Path(video_path)
+    output = Path(output_path)
+    timestamp_text = f"{timestamp_sec:.6f}"
+    command = [
+        str(ffmpeg_bin),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(video),
+        "-ss",
+        timestamp_text,
+        "-frames:v",
+        "1",
+        "-q:v",
+        "2",
+        "-y",
+        str(output),
+    ]
+
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.unlink(missing_ok=True)
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _remove_partial_output(output)
+        raise FfmpegError(
+            f"FFmpeg timed out after {timeout_sec} seconds while extracting "
+            f"frame at {timestamp_text}s from {video} to {output}"
+        ) from exc
+    except OSError as exc:
+        _remove_partial_output(output)
+        raise FfmpegError(
+            f"Unable to extract frame at {timestamp_text}s from {video} "
+            f"to {output} with FFmpeg: {exc}"
+        ) from exc
+
+    if process.returncode != 0:
+        _remove_partial_output(output)
+        raise FfmpegError(
+            f"FFmpeg failed to extract frame at {timestamp_text}s from "
+            f"{video} to {output}; return code {process.returncode}; stderr "
+            f"excerpt: {_stderr_excerpt(process.stderr)}"
+        )
+
+    try:
+        output_size = output.stat().st_size
+    except FileNotFoundError:
+        raise FfmpegError(
+            f"FFmpeg reported success extracting frame at {timestamp_text}s "
+            f"from {video}, but output is missing: {output}"
+        )
+    except OSError as exc:
+        _remove_partial_output(output)
+        raise FfmpegError(
+            f"Unable to verify extracted frame at {timestamp_text}s from "
+            f"{video} at {output}: {exc}"
+        ) from exc
+
+    if output_size == 0:
+        _remove_partial_output(output)
+        raise FfmpegError(
+            f"FFmpeg reported success extracting frame at {timestamp_text}s "
+            f"from {video}, but output is empty: {output}"
+        )
+
+    return output
+
+
+def validate_timestamps(selected_peaks, video_duration):
+    try:
+        duration = _finite_number(
+            video_duration, f"video duration {video_duration!r}"
+        )
+    except InputDataError:
+        raise
+    if duration <= 0:
+        raise InputDataError(
+            f"video duration {video_duration!r} must be greater than 0"
+        )
+
+    for selected_peak in selected_peaks:
+        timestamp = selected_peak.duration_sec
+        try:
+            normalized_timestamp = _finite_number(
+                timestamp, f"peak timestamp {timestamp!r}"
+            )
+        except InputDataError as exc:
+            raise InputDataError(
+                f"peak timestamp {timestamp!r} is invalid for video "
+                f"duration {duration}"
+            ) from exc
+        if normalized_timestamp < 0 or normalized_timestamp >= duration:
+            raise InputDataError(
+                f"peak timestamp {timestamp!r} must satisfy 0 <= timestamp "
+                f"< video duration {duration}"
+            )
+
+
 def _finite_number(value, field_name):
     if isinstance(value, bool):
         raise InputDataError(f"{field_name} must be a finite number")
