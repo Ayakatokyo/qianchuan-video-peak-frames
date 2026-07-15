@@ -117,8 +117,9 @@ def probe_video_duration(ffmpeg_bin, video_path):
         ) from exc
 
     match = re.search(
-        r"Duration:\s*(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)",
+        r"^[ \t]*Duration:\s*(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)",
         process.stderr,
+        re.MULTILINE,
     )
     if match is None:
         raise FfmpegError(f"Unable to decode video duration for {video}")

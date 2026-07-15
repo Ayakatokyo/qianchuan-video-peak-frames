@@ -406,5 +406,16 @@ class FfmpegResolutionTests(unittest.TestCase):
             )
             self.assertIn(str(invalid_video), str(context.exception))
 
+    def test_probe_does_not_parse_duration_from_invalid_filename(self):
+        ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            invalid_video = (
+                Path(temp_dir) / "Duration: 00:00:02.00 invalid.txt"
+            )
+            invalid_video.write_text("not video data", encoding="utf-8")
+
+            with self.assertRaises(FfmpegError):
+                probe_video_duration(ffmpeg_bin, invalid_video)
+
 if __name__ == "__main__":
     unittest.main()
