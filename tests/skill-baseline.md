@@ -7,139 +7,51 @@ Design the exact local command and deterministic processing rules you would use 
 
 ## Baseline output
 
-## Proposed CLI
+<!-- BEGIN VERBATIM BASELINE OUTPUT -->
+Read-only analysis complete. Evidence: doc lines 164/171/173/174 define `recordType=interaction_series`, `interactionMetric=CLICK_COUNT`, `durationSec`, `metricValue`; lines 308 and 319-334 show multiple time points concept/sample. The doc does NOT define peak semantics.
 
-The Markdown defines the connector result as a top-level `List[Dict]`; its embedded sample has only one `CLICK_COUNT` point, so the command must consume the real connector export JSON, not the documentation file.
-
+Recommended approach (vs jq+shell or separate Bash/PowerShell, which drift cross-platform): one Python 3.10+ stdlib script that selects peaks and invokes FFmpeg with argv (never shell=True). Exact user-facing commands:
 macOS:
-
-```bash
-python3 "/path/to/extract_click_peak_frames.py" \
-  --input-json "/absolute/path/diagnosis.json" \
-  --video "/absolute/path/material.mp4" \
-  --output-dir "/absolute/path/peak-frames"
-```
-
+`python3 "/absolute/path/extract_click_peak_frames.py" --input-json "/absolute/path/connector-output.json" --material-id "7647499280192372763" --video "/absolute/path/video.mp4" --output-dir "/absolute/path/peak_frames"`
 Windows PowerShell:
+`py -3 "C:\absolute\path\extract_click_peak_frames.py" --input-json "C:\absolute\path\connector-output.json" --material-id "7647499280192372763" --video "C:\absolute\path\video.mp4" --output-dir "C:\absolute\path\peak_frames"`
+Optional exact override on either: `--ffmpeg <absolute executable>`.
 
-```powershell
-py -3 "C:\path\to\extract_click_peak_frames.py" `
-  --input-json "C:\absolute\path\diagnosis.json" `
-  --video "C:\absolute\path\material.mp4" `
-  --output-dir "C:\absolute\path\peak-frames"
-```
+Dependencies: readable UTF-8 JSON whose root is the connector's documented List/JSON array; readable local MP4; Python >=3.10 (stdlib only); FFmpeg (ffmpeg executable; ffprobe not necessary if post-extraction no-frame checking is used). Suggested installs: macOS `brew install ffmpeg`; Windows `winget install --id Gyan.FFmpeg -e`.
 
-Optional explicit binary override on either platform:
+Deterministic data rules:
+1. Parse JSON with `json.load(..., parse_int=Decimal, parse_float=Decimal)`; root MUST be list. Filter exact: `recordType == "interaction_series"`, `interactionMetric == "CLICK_COUNT"`, `materialId == CLI --material-id`. Do not fall back to nested Dimensions/Metrics, because top-level normalized fields are documented.
+2. Require `durationSec` and `metricValue` to be JSON numbers (not bool/string), finite, >=0. Sort ascending by durationSec. Duplicate durationSec is an ambiguity => fail, even if values match. Require at least 2 samples.
+3. Plateau: collapse each maximal adjacent run (in duration-sorted observations) having exactly equal Decimal metricValue. Keep `plateauStart`, `plateauEnd`, value. Representative/seek time is plateauStart (earliest time), so "first chronological" remains literal.
+4. A run is a local peak iff it has >=1 neighboring run and its value is strictly greater than every existing neighbor. Thus internal runs must exceed both sides; start/end runs may be one-sided peaks; a single point or wholly constant series has no peak.
+5. `first` = peak with smallest plateauStart. `later` = all remaining peaks (necessarily after first plateau); select exactly 3 ordered by `(-metricValue, plateauStart)`—click-count descending; equal counts break toward earlier time. A plateau is one peak and cannot occupy multiple slots.
+6. Require first + 3 later peaks. If fewer, strict failure (do not silently emit fewer or duplicate frames).
 
-```text
---ffmpeg "/absolute/path/to/ffmpeg[.exe]"
-```
+Per-frame FFmpeg argv (same on both OS; Python substitutes resolved executable/paths/time):
+`[FFMPEG, "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-i", VIDEO, "-ss", DECIMAL_SECONDS, "-map", "0:v:0", "-frames:v", "1", "-an", "-sn", "-dn", "-q:v", "2", "-f", "image2", OUTPUT_JPG]`
+Putting `-ss` after `-i` makes FFmpeg decode/discard up to the time and choose the first decoded video frame at/after that timestamp (frame-accurate rather than keyframe-only fast seeking). Pass argv directly. Do not clamp out-of-range timestamps or reuse nearest frame. Semantic frame selection is deterministic; byte-identical JPEGs across machines require pinning the same FFmpeg version/build/codec.
 
-## Dependencies and binary lookup
+FFmpeg lookup order: (1) `--ffmpeg`, which must resolve to an executable file; (2) `shutil.which("ffmpeg")`; (3) macOS `/opt/homebrew/bin/ffmpeg`, then `/usr/local/bin/ffmpeg`; (4) Windows `%LOCALAPPDATA%\Microsoft\WinGet\Links\ffmpeg.exe`, `%ChocolateyInstall%\bin\ffmpeg.exe` (default `%ProgramData%\chocolatey\bin\ffmpeg.exe`), then `C:\ffmpeg\bin\ffmpeg.exe`. No recursive filesystem search. Run `<resolved> -version` and require exit 0.
 
-- Python 3.10+ using only the standard library.
-- FFmpeg, including `ffprobe`.
-- Lookup order:
-  1. `--ffmpeg`
-  2. `FFMPEG` environment variable
-  3. `shutil.which("ffmpeg")`
-  4. macOS: `/opt/homebrew/bin/ffmpeg`, then `/usr/local/bin/ffmpeg`
-  5. Windows: `%LOCALAPPDATA%\Microsoft\WinGet\Links\ffmpeg.exe`, then `C:\ffmpeg\bin\ffmpeg.exe`
-- `ffprobe` must exist beside the selected `ffmpeg`, or be discoverable through `PATH`. Missing either binary is a fatal error before output creation.
+Outputs (fixed stable names, selection metadata held in manifest):
+`01_first_chronological.jpg`
+`02_later_top01.jpg`
+`03_later_top02.jpg`
+`04_later_top03.jpg`
+`peaks.json` (for each: role, clickRank where applicable, durationSec/seekTimeSec as canonical decimal string, metricValue, plateauStartSec, plateauEndSec; plus materialId, input/video canonical paths, and resolved ffmpeg/version).
+Use output sibling staging dir `<output-dir>.tmp`; require both final and staging dirs absent. Extract all 4 there, require each subprocess exit 0 and each JPEG exists/nonempty (optionally check JPEG SOI/EOI), write UTF-8 `peaks.json` with sorted keys/newline, then rename staging dir atomically to final. On any exception/interrupt delete staging and exit nonzero; never leave partial final output or overwrite an existing output dir.
 
-Typical installation:
+Suggested exact exit behavior: 2 = CLI/input/data validation; 3 = fewer than four qualifying peaks; 4 = FFmpeg lookup/preflight/extraction/no frame; 5 = output collision/I/O. All errors to stderr and no final output directory.
 
-```bash
-brew install python ffmpeg
-```
-
-```powershell
-winget install --id Python.Python.3.12 --exact
-winget install --id Gyan.FFmpeg --exact
-```
-
-## Deterministic selection rules
-
-1. Require the JSON root to be an array.
-2. Retain only records where:
-   - `recordType == "interaction_series"`
-   - `interactionMetric == "CLICK_COUNT"`
-3. Parse `durationSec` and `metricValue` as finite decimal numbers. Reject booleans, negative durations, negative click counts, nulls, NaN, and infinities.
-4. For duplicate durations:
-   - Identical `(durationSec, metricValue)` rows are deduplicated.
-   - Different values at the same duration are a fatal ambiguity.
-5. Sort points by ascending `durationSec`. Do not smooth, interpolate, or round values before peak detection.
-6. Collapse every adjacent run of equal `metricValue` into one plateau. A plateau is a peak when its value is strictly greater than each existing neighboring value.
-   - A boundary plateau may be a peak if it is strictly greater than its sole neighbor.
-   - A series containing only one plateau has no peak.
-   - The plateau’s representative frame time is its earliest `durationSec`.
-7. The “first chronological peak” is the peak with the smallest plateau start time.
-8. “Later” means a peak whose plateau starts strictly after the first peak plateau ends.
-9. Rank later peaks by:
-   1. descending click count;
-   2. ascending plateau start time for equal click counts;
-   3. ascending plateau end time as the final deterministic tie-break.
-10. Select exactly the first chronological peak plus the first three ranked later peaks. If fewer than three later peaks exist, fail rather than silently returning fewer than four frames.
-
-## Frame extraction
-
-First validate the MP4 with `ffprobe` and obtain its duration. Every selected representative time must satisfy `0 <= time < video_duration`; an out-of-range time is fatal.
-
-For each selected time `T`, invoke FFmpeg as an argument array, not through shell interpolation:
-
-```text
-ffmpeg -nostdin -hide_banner -loglevel error -i VIDEO -ss T -map 0:v:0 -an -sn -dn -frames:v 1 -q:v 2 -y TEMP.jpg
-```
-
-Placing `-ss` after `-i` uses accurate decoding. The selected image is the first decoded video frame at or after `T`. Pass `T` as the canonical decimal string from the JSON parser, avoiding float-derived formatting drift.
-
-## Outputs
-
-Write into a temporary sibling directory, then rename into the requested directory only after all four extractions succeed:
-
-```text
-01_first_chronological.jpg
-02_later_top_1.jpg
-03_later_top_2.jpg
-04_later_top_3.jpg
-peaks.json
-```
-
-`peaks.json` records, for each JPEG:
-
-```json
-{
-  "file": "02_later_top_1.jpg",
-  "selection": "later_top_1",
-  "durationSec": "12.5",
-  "plateauEndSec": "13.0",
-  "metricValue": "87"
-}
-```
-
-The later JPEG numbering reflects click-count rank, not chronological order.
-
-## Failure behavior
-
-Exit nonzero and leave no new final output directory when:
-
-- JSON is malformed or has the wrong root type.
-- No valid `CLICK_COUNT` series exists.
-- Duplicate durations conflict.
-- Fewer than one first peak plus three later peaks exist.
-- The MP4 is absent, unreadable, has no video stream, or cannot be probed.
-- A target timestamp is outside the video.
-- FFmpeg/ffprobe cannot be found.
-- Any FFmpeg invocation fails or produces an empty/non-JPEG output.
-- The requested output directory already exists, unless an explicit `--overwrite` flag is supplied.
-
-On failure, delete the temporary directory and print the precise validation or FFmpeg error to stderr.
+I ran in-memory synthetic checks: plateau merge, click-count tie sorted earlier first, one-sided endpoint, all-constant, and singleton; 5/5 passed. No workspace files modified.
+<!-- END VERBATIM BASELINE OUTPUT -->
 
 ## Observable gaps against the approved design
 
-- Boundary points: the approved design excludes boundary points, while the baseline allows a boundary plateau to qualify as a peak.
-- Sparse later peaks: the approved design emits all available frames with a warning when fewer than three later peaks exist, while the baseline fails the run.
-- Runtime and dependencies: the approved design targets Python 3.9+ with `imageio-ffmpeg`, while the baseline requires Python 3.10+ plus separately installed `ffmpeg` and `ffprobe` binaries.
-- FFmpeg lookup: the approved lookup order is `--ffmpeg-bin`, `IMAGEIO_FFMPEG_EXE`, `imageio_ffmpeg.get_ffmpeg_exe()`, then system `PATH`; the baseline uses a different flag, environment variable, lookup sequence, and platform-specific fallback paths.
-- Output contract: the approved design produces deterministic named JPEGs plus `summary.json` and `summary.md`; the baseline emits JPEGs plus `peaks.json` and omits the Markdown summary.
+- Boundary points: the approved design excludes boundary points, while the baseline treats start and end runs as eligible one-sided peaks.
+- Sparse later peaks: the approved design emits all available frames with a warning when fewer than three later peaks exist, while the baseline requires exactly three later peaks and fails otherwise.
+- Runtime and dependencies: the approved design targets Python 3.9+ with `imageio-ffmpeg`, while the baseline requires Python 3.10+ and a separately installed FFmpeg executable.
+- Duplicate durations: the approved design deduplicates identical duplicate `(durationSec, metricValue)` observations and rejects only conflicting duplicates, while the baseline rejects every duplicate duration even when values match.
+- FFmpeg lookup: the approved lookup order is `--ffmpeg-bin`, `IMAGEIO_FFMPEG_EXE`, `imageio_ffmpeg.get_ffmpeg_exe()`, then system `PATH`; the baseline uses `--ffmpeg`, then system `PATH`, followed by platform-specific paths, and omits the imageio lookup sources.
+- Output contract: the approved design produces deterministic named JPEGs plus `summary.json` and `summary.md`; the baseline uses different JPEG names, emits `peaks.json`, and omits the Markdown summary.
 - Execution boundary: the approved design makes local mode primary and reserves an explicit unconfigured online RPA adapter; the baseline does not describe that adapter boundary.
