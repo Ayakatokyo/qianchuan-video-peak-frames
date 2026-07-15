@@ -1396,5 +1396,236 @@ class SummaryTests(unittest.TestCase):
             self.assertFalse((result_dir / "summary.json").exists())
             self.assertFalse((result_dir / "summary.md").exists())
 
+
+class CliTests(unittest.TestCase):
+    def _make_video(self, ffmpeg, video, duration=9):
+        completed = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"testsrc2=s=64x64:r=25:d={duration}",
+                "-c:v",
+                "mpeg4",
+                "-y",
+                str(video),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def _run_local(self, input_json, video, output, ffmpeg):
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "extract_peak_frames.py"),
+                "--input-json",
+                str(input_json),
+                "--video",
+                str(video),
+                "--output-dir",
+                str(output),
+                "--ffmpeg-bin",
+                str(ffmpeg),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=90,
+        )
+
+    def _write_series(self, path, seconds_and_values):
+        path.write_text(
+            json.dumps(
+                [
+                    click_record(second, value)
+                    for second, value in seconds_and_values
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    def test_local_cli_outputs_four_frames_and_two_summaries(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material with spaces.mp4"
+            input_json = root / "rpa result.json"
+            output = root / "output with spaces"
+            self._make_video(ffmpeg, video)
+            self._write_series(
+                input_json,
+                list(enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])),
+            )
+
+            completed = self._run_local(input_json, video, output, ffmpeg)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            result_dir = output / "m-123"
+            self.assertEqual(len(list(result_dir.glob("*.jpg"))), 4)
+            summary_path = result_dir / "summary.json"
+            self.assertTrue(summary_path.is_file())
+            self.assertTrue((result_dir / "summary.md").is_file())
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [frame["rankType"] for frame in summary["frames"]],
+                [
+                    "first_peak",
+                    "later_top_1",
+                    "later_top_2",
+                    "later_top_3",
+                ],
+            )
+            self.assertEqual(summary["warnings"], [])
+            self.assertIn(f"result_dir={result_dir}", completed.stdout)
+
+    def test_local_cli_outputs_available_peaks_with_warning(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            input_json = root / "input.json"
+            output = root / "output"
+            self._make_video(ffmpeg, video, duration=5)
+            self._write_series(
+                input_json, list(enumerate([0, 5, 0, 4, 0]))
+            )
+
+            completed = self._run_local(input_json, video, output, ffmpeg)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(
+                (output / "m-123" / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(len(summary["frames"]), 2)
+            self.assertEqual(
+                summary["warnings"],
+                ["2 later peak frame(s) unavailable"],
+            )
+
+    def test_rpa_source_is_explicitly_unconfigured(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "extract_peak_frames.py"),
+                    "--source",
+                    "rpa",
+                    "--material-id",
+                    "m-123",
+                    "--date-range-type",
+                    "LAST_7_DAYS",
+                    "--output-dir",
+                    temp_dir,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        self.assertEqual(completed.returncode, 4)
+        self.assertIn("RPA entry is not configured", completed.stderr)
+
+    def test_rpa_custom_range_requires_both_dates(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "extract_peak_frames.py"),
+                    "--source",
+                    "rpa",
+                    "--material-id",
+                    "m-123",
+                    "--date-range-type",
+                    "CUSTOM",
+                    "--custom-start-date",
+                    "2026-07-01",
+                    "--output-dir",
+                    temp_dir,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("CUSTOM requires", completed.stderr)
+
+    def test_local_cli_rejects_malformed_json(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            video.touch()
+            input_json = root / "bad.json"
+            input_json.write_text("{not-json", encoding="utf-8")
+
+            completed = self._run_local(
+                input_json, video, root / "out", ffmpeg
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("valid JSON", completed.stderr)
+
+    def test_local_cli_rejects_missing_video(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            input_json = root / "input.json"
+            self._write_series(
+                input_json, list(enumerate([0, 5, 0]))
+            )
+
+            completed = self._run_local(
+                input_json, root / "missing.mp4", root / "out", ffmpeg
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("video does not exist", completed.stderr)
+
+    def test_local_cli_rejects_no_peaks(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            video.touch()
+            input_json = root / "input.json"
+            self._write_series(
+                input_json, list(enumerate([1, 2, 3]))
+            )
+
+            completed = self._run_local(
+                input_json, video, root / "out", ffmpeg
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("No local peaks", completed.stderr)
+
+    def test_local_cli_rejects_peak_at_video_duration(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            self._make_video(ffmpeg, video, duration=2)
+            input_json = root / "input.json"
+            self._write_series(input_json, [(0, 0), (2, 5), (3, 0)])
+
+            completed = self._run_local(
+                input_json, video, root / "out", ffmpeg
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("video duration", completed.stderr)
+
 if __name__ == "__main__":
     unittest.main()

@@ -576,6 +576,97 @@ def write_summaries(summary, result_dir):
     return json_path, markdown_path
 
 
+def _safe_component(value):
+    text = str(value)
+    cleaned = "".join(
+        character
+        if character.isalnum() or character in "-_"
+        else "_"
+        for character in text
+    )
+    return cleaned.strip("_") or "unknown-material"
+
+
+def _remove_owned_paths(paths, purpose):
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise InputDataError(
+                f"unable to remove stale {purpose} {path}: {exc}"
+            ) from exc
+
+
+def process_local(
+    input_json_path,
+    video_path,
+    output_dir,
+    ffmpeg_bin=None,
+):
+    """Run the complete local JSON/video peak-frame pipeline."""
+    input_path = Path(input_json_path)
+    video = Path(video_path)
+    if not input_path.is_file():
+        raise InputDataError(f"input JSON does not exist: {input_path}")
+    if not video.is_file():
+        raise InputDataError(f"video does not exist or is not a file: {video}")
+    try:
+        records = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InputDataError(
+            f"input must contain valid JSON: {input_path}"
+        ) from exc
+
+    material_id, points = parse_click_series(records)
+    selected_peaks = select_peak_frames(find_local_peaks(points))
+    ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
+    video_duration = probe_video_duration(ffmpeg, video)
+    validate_timestamps(selected_peaks, video_duration)
+
+    summary_material_id = material_id or video.stem
+    result_dir = Path(output_dir) / _safe_component(summary_material_id)
+    try:
+        result_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise InputDataError(
+            f"unable to create result directory {result_dir}: {exc}"
+        ) from exc
+
+    summary_markers = (
+        result_dir / "summary.json",
+        result_dir / "summary.md",
+    )
+    _remove_owned_paths(summary_markers, "summary")
+
+    frame_paths = []
+    for peak in selected_peaks:
+        frame_path = result_dir / format_frame_filename(
+            peak.rank_type,
+            peak.duration_sec,
+            peak.metric_value,
+        )
+        extract_frame(ffmpeg, video, peak.duration_sec, frame_path)
+        frame_paths.append(frame_path)
+
+    current_frames = {path.name for path in frame_paths}
+    stale_frames = [
+        path
+        for path in result_dir.glob("*.jpg")
+        if path.name not in current_frames
+    ]
+    _remove_owned_paths(stale_frames, "frame")
+
+    summary = build_summary(
+        summary_material_id,
+        input_path,
+        video,
+        selected_peaks,
+        frame_paths,
+    )
+    json_path, markdown_path = write_summaries(summary, result_dir)
+    return result_dir, json_path, markdown_path
+
+
 def _finite_number(value, field_name):
     return _canonical_seconds(value, field_name, InputDataError)[0]
 
