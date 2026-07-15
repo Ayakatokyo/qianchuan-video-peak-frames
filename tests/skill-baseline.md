@@ -4,6 +4,7 @@
 
 Analyze /Users/shuzida/Desktop/FDE客户/小仙炖/千川短视频/千川-素材分析-视频推直播单条诊断.md.
 Design the exact local command and deterministic processing rules you would use to take the first chronological CLICK_COUNT peak and the later top three peaks by click count, then extract JPEG frames from a local MP4 on both macOS and Windows. State dependencies, tie/plateau behavior, FFmpeg lookup, output files, and failure behavior.
+Do not modify the workspace.
 
 ## Baseline output
 
