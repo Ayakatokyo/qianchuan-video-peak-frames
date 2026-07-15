@@ -1,0 +1,4 @@
+interface:
+  display_name: "Qianchuan Video Peak Frames"
+  short_description: "Extract frames at Qianchuan click peaks"
+  default_prompt: "Use $qianchuan-video-peak-frames to extract the first click peak and the later top three peak frames from local Qianchuan RPA JSON and video."
