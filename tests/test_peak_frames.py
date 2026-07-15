@@ -34,8 +34,57 @@ def click_record(second, value, material_id="m-123"):
     }
 
 
-VALID_JPEG = b"\xff\xd8jpeg payload\xff\xd9"
-OLD_JPEG = b"\xff\xd8old jpeg\xff\xd9"
+DECODABLE_JPEG = None
+OLD_JPEG = None
+_JPEG_FIXTURE_DIR = None
+
+
+def setUpModule():
+    global DECODABLE_JPEG, OLD_JPEG, _JPEG_FIXTURE_DIR
+    ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+    _JPEG_FIXTURE_DIR = tempfile.TemporaryDirectory()
+    fixture_path = Path(_JPEG_FIXTURE_DIR.name)
+    fixture_bytes = []
+    for name, color in (("new.jpg", "blue"), ("old.jpg", "red")):
+        output_path = fixture_path / name
+        process = subprocess.run(
+            [
+                ffmpeg_bin,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={color}:s=16x16:d=0.1",
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                "-y",
+                str(output_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        if process.returncode != 0:
+            raise RuntimeError(process.stderr)
+        fixture_bytes.append(output_path.read_bytes())
+    DECODABLE_JPEG, OLD_JPEG = fixture_bytes
+
+
+def tearDownModule():
+    _JPEG_FIXTURE_DIR.cleanup()
+
+
+def successful_frame_subprocess(command, **_kwargs):
+    if command[-1] != "-":
+        Path(command[-1]).write_bytes(DECODABLE_JPEG)
+    return subprocess.CompletedProcess(
+        command, returncode=0, stdout="", stderr=""
+    )
 
 
 class PeakSelectionTests(unittest.TestCase):
@@ -606,6 +655,56 @@ class FrameExtractionTests(unittest.TestCase):
 
             self.assertEqual(len(set(production_blobs)), 4)
 
+    def test_real_ffmpeg_accepts_plain_decimal_submicrosecond_timestamp(self):
+        ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+        with tempfile.TemporaryDirectory(prefix="tiny timestamp ") as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "one second video.mp4"
+            output_path = temp_path / "tiny timestamp frame.jpg"
+            generated = subprocess.run(
+                [
+                    ffmpeg_bin,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=s=64x64:r=25:d=1",
+                    "-c:v",
+                    "mpeg4",
+                    "-y",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            self.assertIsNone(
+                validate_timestamps(
+                    [SelectedPeak("first_peak", 1e-7, 1.0)],
+                    1.0,
+                )
+            )
+
+            real_run = subprocess.run
+            with patch(
+                "peak_frame_lib.subprocess.run", wraps=real_run
+            ) as run_mock:
+                result = extract_frame(
+                    ffmpeg_bin,
+                    video_path,
+                    1e-7,
+                    output_path,
+                    timeout_sec=30,
+                )
+
+            self.assertEqual(result, output_path)
+            self.assertEqual(run_mock.call_args_list[0].args[0][7], "0.0000001")
+            self.assertGreater(output_path.stat().st_size, 0)
+
     def test_uses_exact_output_seeking_command_and_creates_parent(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -613,22 +712,19 @@ class FrameExtractionTests(unittest.TestCase):
             output_path = temp_path / "new output dir" / "frame image.jpg"
             video_path.touch()
 
-            def create_output(command, **_kwargs):
-                Path(command[-1]).write_bytes(VALID_JPEG)
-                return subprocess.CompletedProcess(
-                    command, returncode=0, stdout="", stderr=""
-                )
-
             with patch(
-                "peak_frame_lib.subprocess.run", side_effect=create_output
+                "peak_frame_lib.subprocess.run",
+                side_effect=successful_frame_subprocess,
             ) as run_mock:
                 result = extract_frame(
                     "ffmpeg with spaces", video_path, 1.25, output_path
                 )
 
             self.assertEqual(result, output_path)
+            self.assertEqual(run_mock.call_count, 2)
+            extraction_call = run_mock.call_args_list[0]
             self.assertEqual(
-                run_mock.call_args.args[0][:-1],
+                extraction_call.args[0][:-1],
                 [
                     "ffmpeg with spaces",
                     "-hide_banner",
@@ -645,13 +741,30 @@ class FrameExtractionTests(unittest.TestCase):
                     "-y",
                 ],
             )
-            staging_path = Path(run_mock.call_args.args[0][-1])
+            staging_path = Path(extraction_call.args[0][-1])
             self.assertNotEqual(staging_path, output_path)
             self.assertEqual(staging_path.parent, output_path.parent)
             self.assertEqual(staging_path.suffix, output_path.suffix)
             self.assertFalse(staging_path.exists())
-            self.assertEqual(output_path.read_bytes(), VALID_JPEG)
-            self.assertEqual(run_mock.call_args.kwargs["timeout"], 30.0)
+            self.assertEqual(output_path.read_bytes(), DECODABLE_JPEG)
+            self.assertEqual(extraction_call.kwargs["timeout"], 30.0)
+            self.assertEqual(
+                run_mock.call_args_list[1].args[0],
+                [
+                    "ffmpeg with spaces",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(staging_path),
+                    "-frames:v",
+                    "1",
+                    "-f",
+                    "null",
+                    "-",
+                ],
+            )
+            self.assertEqual(run_mock.call_args_list[1].kwargs["timeout"], 30.0)
 
     def test_successive_extractions_use_unique_same_directory_staging_paths(self):
         staging_paths = []
@@ -662,9 +775,13 @@ class FrameExtractionTests(unittest.TestCase):
             video_path.touch()
 
             def create_output(command, **_kwargs):
+                if command[-1] == "-":
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stdout="", stderr=""
+                    )
                 staging_path = Path(command[-1])
                 staging_paths.append(staging_path)
-                staging_path.write_bytes(VALID_JPEG)
+                staging_path.write_bytes(DECODABLE_JPEG)
                 return subprocess.CompletedProcess(
                     command, returncode=0, stdout="", stderr=""
                 )
@@ -681,7 +798,7 @@ class FrameExtractionTests(unittest.TestCase):
             )
             self.assertTrue(all(path.suffix == ".jpg" for path in staging_paths))
             self.assertTrue(all(not path.exists() for path in staging_paths))
-            self.assertEqual(output_path.read_bytes(), VALID_JPEG)
+            self.assertEqual(output_path.read_bytes(), DECODABLE_JPEG)
 
     def test_nonzero_return_preserves_final_and_cleans_only_partial_staging(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -732,9 +849,13 @@ class FrameExtractionTests(unittest.TestCase):
             output_path.write_bytes(original_bytes)
 
             def create_output(command, **_kwargs):
+                if command[-1] == "-":
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stdout="", stderr=""
+                    )
                 staging_path = Path(command[-1])
                 staging_paths.append(staging_path)
-                staging_path.write_bytes(VALID_JPEG)
+                staging_path.write_bytes(DECODABLE_JPEG)
                 return subprocess.CompletedProcess(
                     command, returncode=0, stdout="", stderr=""
                 )
@@ -932,6 +1053,124 @@ class FrameExtractionTests(unittest.TestCase):
             self.assertEqual(len(staging_paths), 1)
             self.assertFalse(staging_paths[0].exists())
 
+    def test_framed_garbage_fails_ffmpeg_decode_and_preserves_final(self):
+        stderr = "invalid JPEG data\n" + "x" * 1000 + "UNBOUNDED_TAIL_MARKER"
+        staging_paths = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+            output_path.write_bytes(OLD_JPEG)
+
+            def extract_then_reject_decode(command, **_kwargs):
+                if command[-1] != "-":
+                    staging_path = Path(command[-1])
+                    staging_paths.append(staging_path)
+                    staging_path.write_bytes(b"\xff\xd8garbage\xff\xd9")
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stdout="", stderr=""
+                    )
+                return subprocess.CompletedProcess(
+                    command, returncode=23, stdout="", stderr=stderr
+                )
+
+            with patch(
+                "peak_frame_lib.subprocess.run",
+                side_effect=extract_then_reject_decode,
+            ) as run_mock:
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame("ffmpeg", video_path, 2.75, output_path)
+
+            message = str(context.exception)
+            self.assertEqual(run_mock.call_count, 2)
+            self.assertIn("decode", message.lower())
+            self.assertIn("return code 23", message)
+            self.assertIn("invalid JPEG data", message)
+            self.assertNotIn("UNBOUNDED_TAIL_MARKER", message)
+            self.assertEqual(output_path.read_bytes(), OLD_JPEG)
+            self.assertEqual(len(staging_paths), 1)
+            self.assertFalse(staging_paths[0].exists())
+
+    def test_ffmpeg_decode_timeout_preserves_final_and_cleans_staging(self):
+        timeout_sec = 1.5
+        timeout_error = subprocess.TimeoutExpired(["ffmpeg"], timeout_sec)
+        staging_paths = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+            output_path.write_bytes(OLD_JPEG)
+
+            def extract_then_timeout_decode(command, **_kwargs):
+                if command[-1] != "-":
+                    staging_path = Path(command[-1])
+                    staging_paths.append(staging_path)
+                    staging_path.write_bytes(DECODABLE_JPEG)
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stdout="", stderr=""
+                    )
+                raise timeout_error
+
+            with patch(
+                "peak_frame_lib.subprocess.run",
+                side_effect=extract_then_timeout_decode,
+            ) as run_mock:
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame(
+                        "ffmpeg",
+                        video_path,
+                        3.0,
+                        output_path,
+                        timeout_sec=timeout_sec,
+                    )
+
+            message = str(context.exception)
+            self.assertEqual(run_mock.call_count, 2)
+            self.assertIn("decode", message.lower())
+            self.assertIn(str(timeout_sec), message)
+            self.assertIs(context.exception.__cause__, timeout_error)
+            self.assertEqual(output_path.read_bytes(), OLD_JPEG)
+            self.assertEqual(len(staging_paths), 1)
+            self.assertFalse(staging_paths[0].exists())
+
+    def test_ffmpeg_decode_os_error_preserves_final_and_cleans_staging(self):
+        os_error = OSError("decoder process unavailable")
+        staging_paths = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+            output_path.write_bytes(OLD_JPEG)
+
+            def extract_then_fail_decode(command, **_kwargs):
+                if command[-1] != "-":
+                    staging_path = Path(command[-1])
+                    staging_paths.append(staging_path)
+                    staging_path.write_bytes(DECODABLE_JPEG)
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stdout="", stderr=""
+                    )
+                raise os_error
+
+            with patch(
+                "peak_frame_lib.subprocess.run",
+                side_effect=extract_then_fail_decode,
+            ) as run_mock:
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame("ffmpeg", video_path, 3.25, output_path)
+
+            message = str(context.exception)
+            self.assertEqual(run_mock.call_count, 2)
+            self.assertIn("decode", message.lower())
+            self.assertIn("decoder process unavailable", message)
+            self.assertIs(context.exception.__cause__, os_error)
+            self.assertEqual(output_path.read_bytes(), OLD_JPEG)
+            self.assertEqual(len(staging_paths), 1)
+            self.assertFalse(staging_paths[0].exists())
+
     def test_invalid_timeout_fails_before_filesystem_or_subprocess_changes(self):
         invalid_timeouts = (False, 0, -1, float("nan"), float("inf"), float("-inf"))
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -990,19 +1229,13 @@ class TimestampValidationTests(unittest.TestCase):
                     self.assertIsNone(validate_timestamps(selected, 1.0))
                     output_path = temp_path / f"frame-{index}.jpg"
 
-                    def create_output(command, **_kwargs):
-                        Path(command[-1]).write_bytes(VALID_JPEG)
-                        return subprocess.CompletedProcess(
-                            command, returncode=0, stdout="", stderr=""
-                        )
-
                     with patch(
                         "peak_frame_lib.subprocess.run",
-                        side_effect=create_output,
+                        side_effect=successful_frame_subprocess,
                     ) as run_mock:
                         extract_frame("ffmpeg", video_path, timestamp, output_path)
 
-                    serialized_timestamp = run_mock.call_args.args[0][7]
+                    serialized_timestamp = run_mock.call_args_list[0].args[0][7]
                     self.assertEqual(serialized_timestamp, repr(timestamp))
                     self.assertNotEqual(serialized_timestamp, "1.000000")
 

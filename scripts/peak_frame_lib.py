@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 import math
 import os
 from pathlib import Path
@@ -186,7 +187,7 @@ def _canonical_seconds(value, field_name, error_type):
         ) from exc
     if not math.isfinite(number):
         raise error_type(f"{field_name} {value!r} must be a finite number")
-    return number, repr(number)
+    return number, format(Decimal(repr(number)), "f")
 
 
 def _raise_frame_error(message, staging_path, cause=None):
@@ -324,6 +325,51 @@ def extract_frame(
         _raise_frame_error(
             f"FFmpeg output for frame at {timestamp_text}s from {video} "
             f"is not a valid JPEG: {staging}",
+            staging,
+        )
+
+    decode_command = [
+        str(ffmpeg_bin),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(staging),
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        decode_process = subprocess.run(
+            decode_command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        _raise_frame_error(
+            f"FFmpeg timed out after {timeout_sec} seconds while attempting "
+            f"to decode staged frame at {timestamp_text}s from {video}: "
+            f"{staging}",
+            staging,
+            exc,
+        )
+    except OSError as exc:
+        _raise_frame_error(
+            f"Unable to decode staged frame at {timestamp_text}s from "
+            f"{video} with FFmpeg at {staging}: {exc}",
+            staging,
+            exc,
+        )
+
+    if decode_process.returncode != 0:
+        _raise_frame_error(
+            f"FFmpeg failed to decode staged frame at {timestamp_text}s "
+            f"from {video}; return code {decode_process.returncode}; stderr "
+            f"excerpt: {_stderr_excerpt(decode_process.stderr)}",
             staging,
         )
 
