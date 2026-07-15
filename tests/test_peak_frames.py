@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -301,6 +302,61 @@ class FfmpegResolutionTests(unittest.TestCase):
 
             self.assertEqual(resolved, str(imageio_path))
 
+    def test_imageio_error_falls_back_to_system_path(self):
+        resolver_error = RuntimeError("imageio resolver unavailable")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            system_path = Path(temp_dir) / "ffmpeg.exe"
+            system_path.touch()
+
+            def failing_imageio():
+                raise resolver_error
+
+            resolved = resolve_ffmpeg(
+                environ={},
+                imageio_resolver=failing_imageio,
+                which=lambda _name: str(system_path),
+            )
+
+            self.assertEqual(resolved, str(system_path))
+
+    def test_imageio_error_is_preserved_when_system_path_is_missing(self):
+        resolver_error = RuntimeError("imageio resolver unavailable")
+
+        def failing_imageio():
+            raise resolver_error
+
+        with self.assertRaises(FfmpegError) as context:
+            resolve_ffmpeg(
+                environ={},
+                imageio_resolver=failing_imageio,
+                which=lambda _name: None,
+            )
+
+        message = str(context.exception)
+        self.assertIn("imageio resolver unavailable", message)
+        self.assertIn("imageio-ffmpeg", message)
+        self.assertIn("--ffmpeg-bin", message)
+        self.assertIs(context.exception.__cause__, resolver_error)
+
+    def test_path_lookup_error_is_wrapped_with_preserved_cause(self):
+        path_error = OSError("PATH lookup unavailable")
+
+        def failing_which(_name):
+            raise path_error
+
+        with self.assertRaises(FfmpegError) as context:
+            resolve_ffmpeg(
+                environ={},
+                imageio_resolver=lambda: None,
+                which=failing_which,
+            )
+
+        message = str(context.exception)
+        self.assertIn("PATH lookup unavailable", message)
+        self.assertIn("imageio-ffmpeg", message)
+        self.assertIn("--ffmpeg-bin", message)
+        self.assertIs(context.exception.__cause__, path_error)
+
     def test_system_path_is_used_when_imageio_returns_none(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             system_path = Path(temp_dir) / "ffmpeg.exe"
@@ -392,6 +448,27 @@ class FfmpegResolutionTests(unittest.TestCase):
         self.assertIn("video does not exist", str(context.exception))
         self.assertIn(str(video_path), str(context.exception))
 
+    def test_probe_wraps_timeout_with_path_timeout_and_cause(self):
+        timeout_sec = 1.25
+        timeout_error = subprocess.TimeoutExpired(["ffmpeg"], timeout_sec)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            video_path = Path(temp_dir) / "video.mp4"
+            video_path.touch()
+
+            with patch(
+                "peak_frame_lib.subprocess.run", side_effect=timeout_error
+            ) as run_mock:
+                with self.assertRaises(FfmpegError) as context:
+                    probe_video_duration(
+                        "ffmpeg", video_path, timeout_sec=timeout_sec
+                    )
+
+            message = str(context.exception)
+            self.assertIn(str(video_path), message)
+            self.assertIn(str(timeout_sec), message)
+            self.assertIs(context.exception.__cause__, timeout_error)
+            self.assertEqual(run_mock.call_args.kwargs["timeout"], timeout_sec)
+
     def test_probe_rejects_file_without_video_duration(self):
         ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -416,6 +493,28 @@ class FfmpegResolutionTests(unittest.TestCase):
 
             with self.assertRaises(FfmpegError):
                 probe_video_duration(ffmpeg_bin, invalid_video)
+
+    def test_probe_rejects_duration_with_trailing_garbage_and_bounds_stderr(self):
+        stderr = (
+            "  Duration: 00:00:02.00garbage\n"
+            + "x" * 2000
+            + "UNBOUNDED_TAIL_MARKER"
+        )
+        process = subprocess.CompletedProcess(
+            ["ffmpeg"], returncode=17, stdout="", stderr=stderr
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            video_path = Path(temp_dir) / "invalid.mp4"
+            video_path.touch()
+
+            with patch("peak_frame_lib.subprocess.run", return_value=process):
+                with self.assertRaises(FfmpegError) as context:
+                    probe_video_duration("ffmpeg", video_path)
+
+            message = str(context.exception)
+            self.assertIn("return code 17", message)
+            self.assertIn("Duration: 00:00:02.00garbage", message)
+            self.assertNotIn("UNBOUNDED_TAIL_MARKER", message)
 
 if __name__ == "__main__":
     unittest.main()

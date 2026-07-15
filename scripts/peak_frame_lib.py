@@ -47,8 +47,14 @@ def resolve_ffmpeg(
     environment = os.environ if environ is None else environ
 
     if explicit is not None:
-        explicit_path = Path(explicit)
-        if not explicit_path.is_file():
+        try:
+            explicit_path = Path(explicit)
+            explicit_is_file = explicit_path.is_file()
+        except (OSError, TypeError, ValueError) as exc:
+            raise FfmpegError(
+                f"Unable to check --ffmpeg-bin path {explicit!r}: {exc}"
+            ) from exc
+        if not explicit_is_file:
             raise FfmpegError(
                 f"--ffmpeg-bin does not point to an existing regular file: "
                 f"{explicit_path}"
@@ -57,19 +63,28 @@ def resolve_ffmpeg(
 
     environment_value = environment.get("IMAGEIO_FFMPEG_EXE")
     if environment_value is not None:
-        environment_path = Path(environment_value)
-        if not environment_path.is_file():
+        try:
+            environment_path = Path(environment_value)
+            environment_is_file = environment_path.is_file()
+        except (OSError, TypeError, ValueError) as exc:
+            raise FfmpegError(
+                "Unable to check IMAGEIO_FFMPEG_EXE path "
+                f"{environment_value!r}: {exc}"
+            ) from exc
+        if not environment_is_file:
             raise FfmpegError(
                 "IMAGEIO_FFMPEG_EXE does not point to an existing regular "
                 f"file: {environment_path}"
             )
         return str(environment_path)
 
+    imageio_error = None
     if imageio_resolver is None:
         try:
             from imageio_ffmpeg import get_ffmpeg_exe
-        except ImportError:
+        except ImportError as exc:
             imageio_resolver = None
+            imageio_error = exc
         else:
             imageio_resolver = get_ffmpeg_exe
 
@@ -77,29 +92,40 @@ def resolve_ffmpeg(
     if imageio_resolver is not None:
         try:
             resolved = imageio_resolver()
-        except Exception:
-            resolved = None
-        if resolved:
-            candidate = Path(resolved)
-            if candidate.is_file():
-                imageio_path = candidate
+            if resolved:
+                candidate = Path(resolved)
+                if candidate.is_file():
+                    imageio_path = candidate
+        except Exception as exc:
+            imageio_error = exc
     if imageio_path is not None:
         return str(imageio_path)
 
     path_resolver = shutil.which if which is None else which
-    system_result = path_resolver("ffmpeg")
-    if system_result:
-        system_path = Path(system_result)
-        if system_path.is_file():
-            return str(system_path)
+    try:
+        system_result = path_resolver("ffmpeg")
+        if system_result:
+            system_path = Path(system_result)
+            if system_path.is_file():
+                return str(system_path)
+    except Exception as exc:
+        raise FfmpegError(
+            "Unable to find FFmpeg because PATH lookup failed: "
+            f"{exc}. Install imageio-ffmpeg or provide --ffmpeg-bin."
+        ) from exc
 
-    raise FfmpegError(
+    message = (
         "Unable to find FFmpeg. Install imageio-ffmpeg or provide "
         "--ffmpeg-bin with the path to an FFmpeg executable."
     )
+    if imageio_error is not None:
+        raise FfmpegError(
+            f"{message} imageio resolver failed: {imageio_error}"
+        ) from imageio_error
+    raise FfmpegError(message)
 
 
-def probe_video_duration(ffmpeg_bin, video_path):
+def probe_video_duration(ffmpeg_bin, video_path, timeout_sec=30.0):
     video = Path(video_path)
     if not video.is_file():
         raise InputDataError(f"video does not exist or is not a file: {video}")
@@ -110,19 +136,31 @@ def probe_video_duration(ffmpeg_bin, video_path):
             capture_output=True,
             text=True,
             check=False,
+            timeout=timeout_sec,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise FfmpegError(
+            f"FFmpeg timed out after {timeout_sec} seconds while probing "
+            f"video duration for {video}"
+        ) from exc
     except OSError as exc:
         raise FfmpegError(
             f"Unable to decode video duration for {video}: {exc}"
         ) from exc
 
     match = re.search(
-        r"^[ \t]*Duration:\s*(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)",
+        r"^[ \t]*Duration:\s*(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)(?=,|$)",
         process.stderr,
         re.MULTILINE,
     )
     if match is None:
-        raise FfmpegError(f"Unable to decode video duration for {video}")
+        stderr_excerpt = process.stderr[:500]
+        if len(process.stderr) > 500:
+            stderr_excerpt += "..."
+        raise FfmpegError(
+            f"Unable to decode video duration for {video}; FFmpeg return "
+            f"code {process.returncode}; stderr excerpt: {stderr_excerpt}"
+        )
 
     hours, minutes, seconds = match.groups()
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
