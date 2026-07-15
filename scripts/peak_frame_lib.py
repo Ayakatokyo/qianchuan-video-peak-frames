@@ -1,5 +1,10 @@
 from dataclasses import dataclass
 import math
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
 
 
 class PeakFrameError(Exception):
@@ -8,6 +13,10 @@ class PeakFrameError(Exception):
 
 class InputDataError(PeakFrameError):
     """Raised when RPA input violates the expected data contract."""
+
+
+class FfmpegError(PeakFrameError):
+    """Raised when FFmpeg cannot be resolved or inspect a video."""
 
 
 @dataclass(frozen=True)
@@ -27,6 +36,95 @@ class SelectedPeak:
     rank_type: str
     duration_sec: float
     metric_value: float
+
+
+def resolve_ffmpeg(
+    explicit=None,
+    environ=None,
+    imageio_resolver=None,
+    which=None,
+):
+    environment = os.environ if environ is None else environ
+
+    if explicit is not None:
+        explicit_path = Path(explicit)
+        if not explicit_path.is_file():
+            raise FfmpegError(
+                f"--ffmpeg-bin does not point to an existing regular file: "
+                f"{explicit_path}"
+            )
+        return str(explicit_path)
+
+    environment_value = environment.get("IMAGEIO_FFMPEG_EXE")
+    if environment_value is not None:
+        environment_path = Path(environment_value)
+        if not environment_path.is_file():
+            raise FfmpegError(
+                "IMAGEIO_FFMPEG_EXE does not point to an existing regular "
+                f"file: {environment_path}"
+            )
+        return str(environment_path)
+
+    if imageio_resolver is None:
+        try:
+            from imageio_ffmpeg import get_ffmpeg_exe
+        except ImportError:
+            imageio_resolver = None
+        else:
+            imageio_resolver = get_ffmpeg_exe
+
+    imageio_path = None
+    if imageio_resolver is not None:
+        try:
+            resolved = imageio_resolver()
+        except Exception:
+            resolved = None
+        if resolved:
+            candidate = Path(resolved)
+            if candidate.is_file():
+                imageio_path = candidate
+    if imageio_path is not None:
+        return str(imageio_path)
+
+    path_resolver = shutil.which if which is None else which
+    system_result = path_resolver("ffmpeg")
+    if system_result:
+        system_path = Path(system_result)
+        if system_path.is_file():
+            return str(system_path)
+
+    raise FfmpegError(
+        "Unable to find FFmpeg. Install imageio-ffmpeg or provide "
+        "--ffmpeg-bin with the path to an FFmpeg executable."
+    )
+
+
+def probe_video_duration(ffmpeg_bin, video_path):
+    video = Path(video_path)
+    if not video.is_file():
+        raise InputDataError(f"video does not exist or is not a file: {video}")
+
+    try:
+        process = subprocess.run(
+            [str(ffmpeg_bin), "-hide_banner", "-i", str(video)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise FfmpegError(
+            f"Unable to decode video duration for {video}: {exc}"
+        ) from exc
+
+    match = re.search(
+        r"Duration:\s*(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)",
+        process.stderr,
+    )
+    if match is None:
+        raise FfmpegError(f"Unable to decode video duration for {video}")
+
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 def _finite_number(value, field_name):
