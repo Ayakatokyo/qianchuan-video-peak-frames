@@ -1,6 +1,7 @@
 """Read-only client for retrieving origin_data from an asset work table."""
 
 import re
+from datetime import datetime
 from urllib.parse import quote
 
 try:
@@ -99,6 +100,10 @@ class AssetTableClient:
             partition_date
         ):
             raise AssetTableError("partition_date must use YYYY-MM-DD")
+        try:
+            datetime.strptime(partition_date, "%Y-%m-%d")
+        except ValueError as error:
+            raise AssetTableError("partition_date must be a valid calendar date") from error
 
         offset = 0
         while True:
@@ -138,9 +143,12 @@ class AssetTableClient:
                 raise AssetTableError("query response is missing rows")
 
             for row in rows:
-                if not isinstance(row, list) or not row:
+                if not isinstance(row, dict):
                     raise AssetTableError("query row is missing origin_data")
-                origin_data = row[0]
+                origs = row.get("origs")
+                if not isinstance(origs, list) or not origs:
+                    raise AssetTableError("query row is missing origin_data")
+                origin_data = origs[0]
                 if not isinstance(origin_data, str):
                     raise AssetTableError("query row has invalid origin_data")
                 yield origin_data

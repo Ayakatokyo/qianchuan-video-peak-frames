@@ -131,13 +131,15 @@ class AssetTableDiscoveryTests(unittest.TestCase):
                     ).discover_table("Top")
 
 
-class AssetTableOriginDataTests(unittest.TestCase):
+class AssetTableClientTests(unittest.TestCase):
     def test_iterates_two_pages_with_exact_restricted_sql(self):
-        first_page = [["origin-%04d" % index] for index in range(2000)]
+        first_page = [{"origs": ["origin-%04d" % index]} for index in range(2000)]
         session = FakeSession(
             post_responses=[
                 platform_response({"fields": ["origin_data"], "rows": first_page}),
-                platform_response({"fields": ["origin_data"], "rows": [["origin-2000"]]}),
+                platform_response(
+                    {"fields": ["origin_data"], "rows": [{"origs": ["origin-2000"]}]}
+                ),
             ]
         )
         client = AssetTableClient("https://asset.example", "token", session=session)
@@ -181,6 +183,8 @@ class AssetTableOriginDataTests(unittest.TestCase):
         for table, date in (
             ("material; DROP TABLE x", "2026-07-20"),
             ("material_table", "2026/07/20"),
+            ("material_table", "2026-02-29"),
+            ("material_table", "2026-13-01"),
         ):
             with self.subTest(table=table, date=date):
                 with self.assertRaises(AssetTableError):
@@ -198,21 +202,31 @@ class AssetTableOriginDataTests(unittest.TestCase):
         self.assertEqual(len(session.calls), 2)
 
     def test_rejects_malformed_origin_data_row(self):
-        session = FakeSession(
-            post_responses=[platform_response({"fields": ["origin_data"], "rows": [[]]})]
-        )
-
-        with self.assertRaisesRegex(AssetTableError, "origin_data"):
-            list(
-                AssetTableClient(
-                    "https://asset.example", "token", session=session
-                ).iter_origin_data("material_table", "2026-07-20")
-            )
+        for rows in (
+            None,
+            [["legacy-list-row"]],
+            [{}],
+            [{"origs": "not-a-list"}],
+            [{"origs": []}],
+            [{"origs": [123]}],
+        ):
+            with self.subTest(rows=rows):
+                session = FakeSession(
+                    post_responses=[
+                        platform_response({"fields": ["origin_data"], "rows": rows})
+                    ]
+                )
+                with self.assertRaisesRegex(AssetTableError, "origin_data|rows"):
+                    list(
+                        AssetTableClient(
+                            "https://asset.example", "token", session=session
+                        ).iter_origin_data("material_table", "2026-07-20")
+                    )
 
     def test_rejects_query_without_origin_data_field_or_string_value(self):
         for data in (
-            {"fields": ["other_field"], "rows": [["value"]]},
-            {"fields": ["origin_data"], "rows": [[123]]},
+            {"fields": ["other_field"], "rows": [{"origs": ["value"]}]},
+            {"fields": ["origin_data"], "rows": [{"origs": [123]}]},
         ):
             with self.subTest(data=data):
                 session = FakeSession(post_responses=[platform_response(data)])
