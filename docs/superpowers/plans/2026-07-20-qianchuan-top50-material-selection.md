@@ -43,11 +43,11 @@ It validates HTTP and platform success, yields only `origs[0]`, stops after a sh
 - Create: `scripts/top_materials_lib.py`
 - Modify: `tests/test_top_materials.py`
 
-- [ ] **Step 1: Write failing selection tests.** Add rows in `origin_data` form where material `1` has costs `5` and `4.50` and material `2` has `9.50`; assert ordering is `1`, then `2` by ID tie-break. Add `-2`, matching and nonmatching name/type rows; assert only the match remains and `-2` has one excluded row and `Decimal("7")`. Assert conflicting names for one ID and `NaN` cost raise `MaterialDataError`.
+- [ ] **Step 1: Write failing selection tests.** Add rows in `origin_data` form where material `1` has costs `5` and `4.50` and material `2` has `9.50`; assert ordering is `1`, then `2` by ID tie-break. Add `-2`, matching and nonmatching name/type rows; assert only the match remains and `-2` has one excluded row and `Decimal("7")`. Assert conflicting names for one ID are still aggregated by material ID and choose the dominant metadata variant; assert `NaN` cost raises `MaterialDataError`.
 
 - [ ] **Step 2: Run `python -m unittest tests.test_top_materials.MaterialSelectionTests -v`.** Expected: import failure because `top_materials_lib` does not exist.
 
-- [ ] **Step 3: Implement the pure selection module.** Define `Material`, `ExcludedMaterial`, `MaterialDataError`, `select_materials`, and `build_output`. Read exactly the approved five nested paths, trim string metadata, require finite non-negative `Decimal` cost, apply optional compiled name regex and exact material types before grouping, aggregate all rows by ID, aggregate `-2` separately with its fixed reason, and sort by `(-total_cost, material_id)`. `build_output` returns the approved root fields and all repeated item fields, with JSON-number costs.
+- [ ] **Step 3: Implement the pure selection module.** Define `Material`, `ExcludedMaterial`, `MaterialDataError`, `select_materials`, and `build_output`. Read exactly the approved five nested paths, trim string metadata, require finite non-negative `Decimal` cost, apply optional compiled name regex and exact material types before grouping, aggregate all rows by ID, aggregate `-2` separately with its fixed reason, choose conflicting metadata from the highest-cost variant with lexical tie-breaks, and sort by `(-total_cost, material_id)`. `build_output` returns the approved root fields and all repeated item fields, with JSON-number costs.
 
 - [ ] **Step 4: Run `python -m unittest tests.test_top_materials.MaterialSelectionTests -v` and `python -m unittest tests/test_peak_frames.py -v`.** Expected: both pass.
 

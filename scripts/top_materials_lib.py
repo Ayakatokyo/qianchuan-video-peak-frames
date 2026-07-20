@@ -34,6 +34,30 @@ class ExcludedMaterial:
     total_cost: Decimal
 
 
+@dataclass
+class _MaterialAggregate:
+    material_id: str
+    total_cost: Decimal
+    metadata_costs: dict
+
+    def add(self, name, material_type, video_type, cost):
+        self.total_cost += cost
+        key = (name, material_type, video_type)
+        self.metadata_costs[key] = self.metadata_costs.get(key, Decimal("0")) + cost
+
+    def to_material(self):
+        name, material_type, video_type = sorted(
+            self.metadata_costs.items(), key=lambda item: (-item[1], item[0])
+        )[0][0]
+        return Material(
+            material_id=self.material_id,
+            material_name=name,
+            material_type=material_type,
+            video_type=video_type,
+            total_cost=self.total_cost,
+        )
+
+
 def select_materials(raw_origin_data, name_pattern, material_types, top_n):
     """Parse, filter, aggregate, and rank material-origin JSON rows."""
     pattern = _normalise_name_pattern(name_pattern)
@@ -58,33 +82,17 @@ def select_materials(raw_origin_data, name_pattern, material_types, top_n):
 
         previous = grouped.get(material_id)
         if previous is None:
-            grouped[material_id] = Material(
+            previous = _MaterialAggregate(
                 material_id=material_id,
-                material_name=name,
-                material_type=material_type,
-                video_type=video_type,
-                total_cost=cost,
+                total_cost=Decimal("0"),
+                metadata_costs={},
             )
-            continue
-
-        if (
-            previous.material_name != name
-            or previous.material_type != material_type
-            or previous.video_type != video_type
-        ):
-            raise MaterialDataError(
-                "conflicting metadata for materialId %s" % material_id
-            )
-        grouped[material_id] = Material(
-            material_id=previous.material_id,
-            material_name=previous.material_name,
-            material_type=previous.material_type,
-            video_type=previous.video_type,
-            total_cost=previous.total_cost + cost,
-        )
+            grouped[material_id] = previous
+        previous.add(name, material_type, video_type, cost)
 
     materials = sorted(
-        grouped.values(), key=lambda material: (-material.total_cost, material.material_id)
+        (aggregate.to_material() for aggregate in grouped.values()),
+        key=lambda material: (-material.total_cost, material.material_id),
     )[:top_n]
     if not materials:
         raise MaterialDataError("no eligible materials found")

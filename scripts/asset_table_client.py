@@ -288,7 +288,7 @@ class AssetTableClient:
             raise AssetTableError("platform response is not valid JSON") from error
         if not isinstance(payload, dict):
             raise AssetTableError("platform response must be an object")
-        if payload.get("code") != 200:
+        if str(payload.get("code")) != "200":
             raise AssetTableError("platform response code is not 200")
         if "data" not in payload:
             raise AssetTableError("platform response is missing data")

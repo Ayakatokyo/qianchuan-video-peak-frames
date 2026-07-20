@@ -123,6 +123,32 @@ class AssetTableDiscoveryTests(unittest.TestCase):
             ],
         )
 
+    def test_accepts_string_platform_success_code(self):
+        session = FakeSession(
+            get_responses=[
+                platform_response(
+                    [{"tableName": "Top Materials", "objId": "table-42"}], code="200"
+                )
+            ],
+            post_responses=[
+                platform_response({"tableName": "material_origin_records"}, code="200"),
+                platform_response(
+                    [
+                        {"fieldName": "dt", "partitionKey": True},
+                        {"fieldName": "origin_data", "partitionKey": False},
+                    ],
+                    code="200",
+                ),
+            ],
+        )
+        client = AssetTableClient(
+            "https://asset.example/", "session-value", session=session
+        )
+
+        table = client.discover_table("Top Materials")
+
+        self.assertEqual(table, "material_origin_records")
+
     def test_discovery_rejects_missing_required_partition_field(self):
         session = FakeSession(
             get_responses=[platform_response([{"tableName": "Top", "objId": "id"}])],
@@ -445,17 +471,23 @@ class MaterialSelectionTests(unittest.TestCase):
                 with self.assertRaises(MaterialDataError):
                     select_materials([origin_data(cost=cost)], None, [], 50)
 
-    def test_rejects_conflicting_metadata_for_one_material_id(self):
-        with self.assertRaisesRegex(MaterialDataError, "conflicting"):
-            select_materials(
-                [
-                    origin_data(material_id="1", name="First name"),
-                    origin_data(material_id="1", name="Second name"),
-                ],
-                None,
-                [],
-                50,
-            )
+    def test_aggregates_conflicting_metadata_and_selects_dominant_variant(self):
+        materials, excluded = select_materials(
+            [
+                origin_data(material_id="1", name="First name", cost="7"),
+                origin_data(material_id="1", name="Second name", cost="4"),
+                origin_data(material_id="1", name="Second name", cost="5"),
+            ],
+            None,
+            [],
+            50,
+        )
+
+        self.assertEqual(len(materials), 1)
+        self.assertEqual(materials[0].material_id, "1")
+        self.assertEqual(materials[0].material_name, "Second name")
+        self.assertEqual(materials[0].total_cost, Decimal("16"))
+        self.assertEqual(excluded, [])
 
     def test_rejects_when_no_eligible_materials_remain(self):
         with self.assertRaisesRegex(MaterialDataError, "eligible"):
