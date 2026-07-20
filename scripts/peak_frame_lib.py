@@ -469,7 +469,7 @@ def build_summary(
         )
     return {
         "materialId": str(material_id),
-        "inputJsonPath": str(Path(input_json_path)),
+        "inputJsonPath": str(input_json_path),
         "videoPath": str(Path(video_path)),
         "selectionRule": {
             "first": "earliest_local_peak",
@@ -645,18 +645,34 @@ def process_local(
 ):
     """Run the complete local JSON/video peak-frame pipeline."""
     input_path = Path(input_json_path)
-    video = Path(video_path)
     if not input_path.is_file():
         raise InputDataError(f"input JSON does not exist: {input_path}")
-    if not video.is_file():
-        raise InputDataError(f"video does not exist or is not a file: {video}")
     try:
         records = json.loads(input_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise InputDataError(
             f"input must contain valid JSON: {input_path}"
         ) from exc
+    return process_records(
+        records,
+        input_path,
+        video_path,
+        output_dir,
+        ffmpeg_bin=ffmpeg_bin,
+    )
 
+
+def process_records(
+    records,
+    input_label,
+    video_path,
+    output_dir,
+    ffmpeg_bin=None,
+):
+    """Run the peak-frame pipeline with already-loaded RPA records."""
+    video = Path(video_path)
+    if not video.is_file():
+        raise InputDataError(f"video does not exist or is not a file: {video}")
     material_id, points = parse_click_series(records)
     selected_peaks = select_peak_frames(find_local_peaks(points))
     ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
@@ -697,7 +713,7 @@ def process_local(
 
     summary = build_summary(
         summary_material_id,
-        input_path,
+        input_label,
         video,
         selected_peaks,
         frame_paths,
