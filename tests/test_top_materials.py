@@ -1,5 +1,8 @@
+import json
+import re
 import sys
 import unittest
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from asset_table_client import AssetTableClient, AssetTableError  # noqa: E402
+from top_materials_lib import (  # noqa: E402
+    MaterialDataError,
+    build_output,
+    select_materials,
+)
 
 
 class FakeResponse:
@@ -350,6 +358,176 @@ class AssetTableClientTests(unittest.TestCase):
                             "https://asset.example", "token", session=session
                         ).iter_origin_data("material_table", "2026-07-20")
                     )
+
+
+def origin_data(
+    material_id="1",
+    name="Winter campaign",
+    material_type="live_video",
+    video_type="portrait",
+    cost="1",
+):
+    return json.dumps(
+        {
+            "dimensions": {
+                "material_id": {"Value": material_id},
+                "roi2_material_video_name": {"ValueStr": name},
+                "roi2_material_type_v3": {"ValueStr": material_type},
+                "roi2_material_video_type": {"ValueStr": video_type},
+            },
+            "metrics": {"stat_cost_for_overall_roi2": {"Value": cost}},
+        }
+    )
+
+
+class MaterialSelectionTests(unittest.TestCase):
+    def test_aggregates_costs_and_orders_ties_by_material_id(self):
+        materials, excluded = select_materials(
+            [
+                origin_data(material_id="2", cost="9.50"),
+                origin_data(material_id="1", cost="5"),
+                origin_data(material_id="1", cost="4.50"),
+            ],
+            name_pattern=None,
+            material_types=[],
+            top_n=50,
+        )
+
+        self.assertEqual([material.material_id for material in materials], ["1", "2"])
+        self.assertEqual(
+            [material.total_cost for material in materials],
+            [Decimal("9.50"), Decimal("9.50")],
+        )
+        self.assertEqual(excluded, [])
+
+    def test_filters_by_name_and_exact_material_type_before_excluding_aigc(self):
+        materials, excluded = select_materials(
+            [
+                origin_data(material_id="-2", name="Brand launch", cost="7"),
+                origin_data(material_id="1", name="Brand launch", cost="3"),
+                origin_data(material_id="2", name="Different campaign", cost="8"),
+                origin_data(
+                    material_id="3",
+                    name="Brand launch",
+                    material_type="image",
+                    cost="9",
+                ),
+            ],
+            name_pattern=re.compile(r"Brand"),
+            material_types=["live_video"],
+            top_n=50,
+        )
+
+        self.assertEqual([material.material_id for material in materials], ["1"])
+        self.assertEqual(excluded[0].material_id, "-2")
+        self.assertEqual(excluded[0].source_row_count, 1)
+        self.assertEqual(excluded[0].total_cost, Decimal("7"))
+        self.assertEqual(
+            excluded[0].reason,
+            "AIGC dynamic creative collection cannot map to a single-material diagnosis RPA",
+        )
+
+    def test_rejects_malformed_paths_and_nonfinite_or_negative_costs(self):
+        malformed = json.dumps({"dimensions": {}, "metrics": {}})
+        invalid_costs = ["NaN", "Infinity", "-1"]
+
+        with self.assertRaises(MaterialDataError):
+            select_materials(["not valid json"], None, [], 50)
+
+        with self.assertRaises(MaterialDataError):
+            select_materials([malformed], None, [], 50)
+
+        for cost in invalid_costs:
+            with self.subTest(cost=cost):
+                with self.assertRaises(MaterialDataError):
+                    select_materials([origin_data(cost=cost)], None, [], 50)
+
+    def test_rejects_conflicting_metadata_for_one_material_id(self):
+        with self.assertRaisesRegex(MaterialDataError, "conflicting"):
+            select_materials(
+                [
+                    origin_data(material_id="1", name="First name"),
+                    origin_data(material_id="1", name="Second name"),
+                ],
+                None,
+                [],
+                50,
+            )
+
+    def test_rejects_when_no_eligible_materials_remain(self):
+        with self.assertRaisesRegex(MaterialDataError, "eligible"):
+            select_materials(
+                [origin_data(material_id="1", name="Not selected")],
+                re.compile(r"Selected"),
+                [],
+                50,
+            )
+
+    def test_build_output_repeats_contract_fields_and_assigns_ranks(self):
+        materials, excluded = select_materials(
+            [
+                origin_data(material_id="1", name=" First ", cost="5"),
+                origin_data(material_id="2", name=" Second ", cost="9"),
+                origin_data(material_id="-2", cost="7"),
+            ],
+            name_pattern=re.compile(r"First|Second|Winter"),
+            material_types=["live_video"],
+            top_n=50,
+        )
+
+        output = build_output(
+            actual_start_date="2026-05-01",
+            actual_end_date="2026-05-05",
+            name_pattern=re.compile(r"First|Second|Winter"),
+            material_types=["live_video"],
+            materials=materials,
+            excluded=excluded,
+        )
+
+        self.assertEqual(
+            output,
+            {
+                "actualStartDate": "2026-05-01",
+                "actualEndDate": "2026-05-05",
+                "rankingMetric": "stat_cost_for_overall_roi2",
+                "filters": {
+                    "materialNameRegex": "First|Second|Winter",
+                    "materialTypes": ["live_video"],
+                },
+                "excluded": [
+                    {
+                        "materialId": "-2",
+                        "reason": "AIGC dynamic creative collection cannot map to a single-material diagnosis RPA",
+                        "sourceRowCount": 1,
+                        "totalCost": 7.0,
+                    }
+                ],
+                "materials": [
+                    {
+                        "actualStartDate": "2026-05-01",
+                        "actualEndDate": "2026-05-05",
+                        "rankingMetric": "stat_cost_for_overall_roi2",
+                        "rank": 1,
+                        "materialId": "2",
+                        "materialName": "Second",
+                        "materialType": "live_video",
+                        "videoType": "portrait",
+                        "totalCost": 9.0,
+                    },
+                    {
+                        "actualStartDate": "2026-05-01",
+                        "actualEndDate": "2026-05-05",
+                        "rankingMetric": "stat_cost_for_overall_roi2",
+                        "rank": 2,
+                        "materialId": "1",
+                        "materialName": "First",
+                        "materialType": "live_video",
+                        "videoType": "portrait",
+                        "totalCost": 5.0,
+                    },
+                ],
+            },
+        )
 
 
 if __name__ == "__main__":
