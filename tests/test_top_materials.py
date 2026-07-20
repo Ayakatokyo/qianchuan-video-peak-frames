@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -257,22 +258,45 @@ class AssetTableClientTests(unittest.TestCase):
         self.assertEqual(len(session.calls), 2)
         self.assertEqual(sleeps, [4.0])
 
-    def test_caps_retry_after_delay(self):
+    def test_retries_after_http_date_delay(self):
         sleeps = []
         session = FakeSession(
             post_responses=[
-                FakeResponse({}, 503, headers={"Retry-After": "61"}),
+                FakeResponse(
+                    {}, 429, headers={"Retry-After": "Tue, 21 Oct 2025 07:28:00 GMT"}
+                ),
                 platform_response({"fields": ["origin_data"], "rows": []}),
             ]
         )
         client = AssetTableClient(
-            "https://asset.example", "token", session=session, retries=1, sleep=sleeps.append
+            "https://asset.example",
+            "token",
+            session=session,
+            retries=1,
+            sleep=sleeps.append,
+            clock=lambda: datetime(2025, 10, 21, 7, 27, 55, tzinfo=timezone.utc),
         )
 
         self.assertEqual(
             list(client.iter_origin_data("material_table", "2026-07-20")), []
         )
-        self.assertEqual(sleeps, [60.0])
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(sleeps, [5.0])
+
+    def test_rejects_retry_after_delay_above_maximum(self):
+        sleeps = []
+        session = FakeSession(
+            post_responses=[FakeResponse({}, 503, headers={"Retry-After": "61"})]
+        )
+        client = AssetTableClient(
+            "https://asset.example", "token", session=session, retries=1, sleep=sleeps.append
+        )
+
+        with self.assertRaisesRegex(AssetTableError, "Retry-After.*maximum"):
+            list(client.iter_origin_data("material_table", "2026-07-20"))
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertEqual(sleeps, [])
 
     def test_ignores_non_finite_retry_after_delay(self):
         sleeps = []

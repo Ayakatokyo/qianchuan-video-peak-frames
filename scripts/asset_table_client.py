@@ -2,8 +2,9 @@
 
 import re
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from math import isfinite
-from datetime import datetime
 from urllib.parse import quote, urlsplit
 
 try:
@@ -22,9 +23,17 @@ class AssetTableClient:
     _TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
     _PARTITION_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
     _PAGE_SIZE = 2000
+    _MAX_RETRY_AFTER_SECONDS = 60.0
 
     def __init__(
-        self, base_url, session_token, session=None, timeout=15, retries=2, sleep=None
+        self,
+        base_url,
+        session_token,
+        session=None,
+        timeout=15,
+        retries=2,
+        sleep=None,
+        clock=None,
     ):
         if not isinstance(base_url, str) or not base_url.strip():
             raise AssetTableError("base_url must be a non-empty string")
@@ -49,6 +58,8 @@ class AssetTableClient:
             raise AssetTableError("retries must be a non-negative integer")
         if sleep is not None and not callable(sleep):
             raise AssetTableError("sleep must be callable")
+        if clock is not None and not callable(clock):
+            raise AssetTableError("clock must be callable")
 
         self.base_url = base_url.strip().rstrip("/")
         if session is None:
@@ -59,6 +70,9 @@ class AssetTableClient:
         self.timeout = timeout
         self.retries = retries
         self.sleep = sleep if sleep is not None else time.sleep
+        self.clock = (
+            clock if clock is not None else lambda: datetime.now(timezone.utc)
+        )
         self.headers = {
             "Accept": "application/json",
             "User-Agent": "qianchuan-video-peak-frames/1.0",
@@ -221,6 +235,10 @@ class AssetTableClient:
                     break
                 retry_after = self._retry_after_seconds(response)
                 if retry_after is not None:
+                    if retry_after > self._MAX_RETRY_AFTER_SECONDS:
+                        raise AssetTableError(
+                            "Retry-After delay exceeds the 60 second maximum wait policy"
+                        )
                     self.sleep(retry_after)
                 continue
             return response
@@ -240,8 +258,7 @@ class AssetTableClient:
             and (status_code in (408, 429) or 500 <= status_code <= 599)
         )
 
-    @staticmethod
-    def _retry_after_seconds(response):
+    def _retry_after_seconds(self, response):
         headers = getattr(response, "headers", None)
         if not hasattr(headers, "get"):
             return None
@@ -249,10 +266,19 @@ class AssetTableClient:
         try:
             seconds = float(value)
         except (TypeError, ValueError):
-            return None
+            try:
+                retry_at = parsedate_to_datetime(value)
+                now = self.clock()
+            except (TypeError, ValueError):
+                return None
+            if retry_at.tzinfo is None:
+                return None
+            if now.tzinfo is None:
+                return None
+            seconds = (retry_at - now).total_seconds()
         if not isfinite(seconds) or seconds < 0:
             return None
-        return min(seconds, 60.0)
+        return seconds
 
     @staticmethod
     def _platform_data(response):
