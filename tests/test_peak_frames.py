@@ -27,6 +27,7 @@ from peak_frame_lib import (  # noqa: E402
     validate_timestamps,
     write_summaries,
 )
+import rpa_adapter  # noqa: E402
 
 
 def click_record(second, value, material_id="m-123"):
@@ -90,6 +91,150 @@ def successful_frame_subprocess(command, **_kwargs):
     return subprocess.CompletedProcess(
         command, returncode=0, stdout="", stderr=""
     )
+
+
+class FakeResponse:
+    def __init__(self, payload, status_error=None, content=b""):
+        self._payload = payload
+        self._status_error = status_error
+        self.content = content
+
+    def raise_for_status(self):
+        if self._status_error is not None:
+            raise self._status_error
+
+    def json(self):
+        return self._payload
+
+    def iter_content(self, chunk_size=8192):
+        for index in range(0, len(self.content), chunk_size):
+            yield self.content[index : index + chunk_size]
+
+
+class RecordingSession:
+    def __init__(self, response):
+        self.response = response
+        self.posts = []
+        self.gets = []
+
+    def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        return self.response
+
+    def get(self, url, **kwargs):
+        self.gets.append((url, kwargs))
+        return self.response
+
+
+class RpaAdapterTests(unittest.TestCase):
+    def _env(self):
+        return {
+            "ENV_BACKEND_HOST": "https://gateway.example/",
+            "YUCE_AUTHORIZATION": "auth-token",
+            "YUCE_SESSION_ID": "session-123",
+        }
+
+    def test_fetch_material_diagnosis_uses_fixed_connector_payload(self):
+        records = [
+            click_record(0, 0, material_id="764"),
+            click_record(1, 5, material_id="764"),
+            click_record(2, 0, material_id="764"),
+        ]
+        session = RecordingSession(FakeResponse(records))
+
+        try:
+            result = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="764",
+                date_range_type="LAST_7_DAYS",
+                custom_start_date=None,
+                custom_end_date=None,
+                environ=self._env(),
+                session=session,
+            )
+        except Exception as exc:
+            self.fail(f"fetch_material_diagnosis raised {exc!r}")
+
+        self.assertEqual(result, records)
+        self.assertEqual(
+            session.posts[0][0], "https://gateway.example/adg/v1/agent/invoke"
+        )
+        payload = session.posts[0][1]["json"]
+        self.assertEqual(payload["authorization"], "auth-token")
+        self.assertEqual(payload["agent_session_id"], "session-123")
+        self.assertEqual(payload["data_source_type"], "rpa")
+        self.assertEqual(payload["platform"], rpa_adapter.PLATFORM)
+        self.assertEqual(payload["function_code"], rpa_adapter.FUNCTION_CODE)
+        self.assertEqual(payload["shop_id"], "shop-1")
+        self.assertEqual(
+            payload["business_params"],
+            {"material_id": "764", "date_range_type": "LAST_7_DAYS"},
+        )
+        self.assertEqual(session.posts[0][1]["timeout"], 3600)
+
+    def test_list_accounts_uses_qianchuan_platform(self):
+        payload = {"data": [{"shop_id": "shop-1"}]}
+        session = RecordingSession(FakeResponse(payload))
+
+        self.assertTrue(hasattr(rpa_adapter, "list_accounts"))
+        result = rpa_adapter.list_accounts(environ=self._env(), session=session)
+
+        self.assertEqual(result, payload)
+        self.assertEqual(
+            session.posts[0][0],
+            "https://gateway.example/adg/v1/agent/rpa/authorizations/query",
+        )
+        self.assertEqual(
+            session.posts[0][1]["json"],
+            {"authorization": "auth-token", "platform": rpa_adapter.PLATFORM},
+        )
+        self.assertEqual(session.posts[0][1]["timeout"], 30)
+
+    def test_fetch_rejects_custom_range_without_both_dates(self):
+        error_type = getattr(rpa_adapter, "RpaAdapterError", Exception)
+        with self.assertRaisesRegex(error_type, "CUSTOM requires"):
+            rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="764",
+                date_range_type="CUSTOM",
+                custom_start_date="2026-07-01",
+                custom_end_date=None,
+                environ=self._env(),
+                session=RecordingSession(FakeResponse([])),
+            )
+
+    def test_fetch_wraps_gateway_http_errors(self):
+        session = RecordingSession(
+            FakeResponse([], status_error=RuntimeError("gateway down"))
+        )
+
+        with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "gateway"):
+            rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="764",
+                date_range_type="LAST_7_DAYS",
+                environ=self._env(),
+                session=session,
+            )
+
+    def test_normalize_gateway_records_accepts_payload_envelope(self):
+        records = [click_record(0, 0), click_record(1, 3), click_record(2, 0)]
+
+        self.assertTrue(hasattr(rpa_adapter, "normalize_gateway_records"))
+        self.assertEqual(
+            rpa_adapter.normalize_gateway_records(
+                {"result_type": "payload", "payload": records}
+            ),
+            records,
+        )
+
+    def test_normalize_gateway_records_rejects_file_results(self):
+        error_type = getattr(rpa_adapter, "RpaAdapterError", Exception)
+        self.assertTrue(hasattr(rpa_adapter, "normalize_gateway_records"))
+        with self.assertRaisesRegex(error_type, "files"):
+            rpa_adapter.normalize_gateway_records(
+                {"result_type": "files", "files": []}
+            )
 
 
 class PeakSelectionTests(unittest.TestCase):
@@ -1665,7 +1810,7 @@ class CliTests(unittest.TestCase):
                 ["2 later peak frame(s) unavailable"],
             )
 
-    def test_rpa_source_is_explicitly_unconfigured(self):
+    def test_rpa_source_requires_shop_id(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             completed = subprocess.run(
                 [
@@ -1685,8 +1830,87 @@ class CliTests(unittest.TestCase):
                 check=False,
                 timeout=30,
             )
-        self.assertEqual(completed.returncode, 4)
-        self.assertIn("RPA entry is not configured", completed.stderr)
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--shop-id", completed.stderr)
+
+    def test_rpa_cli_fetches_downloads_and_reuses_local_pipeline(self):
+        import extract_peak_frames
+
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_video = root / "source.mp4"
+            output = root / "output"
+            self._make_video(ffmpeg, source_video)
+            records = [
+                click_record(second, value, material_id="764")
+                for second, value in enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])
+            ]
+            records.append(
+                {
+                    "recordType": "material_info",
+                    "materialId": "764",
+                    "videoUrl": "https://cdn.example/material.mp4",
+                    "videoDuration": 9.0,
+                }
+            )
+            downloaded = []
+
+            def fake_download(video_url, target_path):
+                downloaded.append((video_url, Path(target_path)))
+                Path(target_path).write_bytes(source_video.read_bytes())
+                return Path(target_path)
+
+            with patch(
+                "extract_peak_frames.fetch_material_diagnosis",
+                return_value=records,
+            ) as fetch_mock, patch(
+                "extract_peak_frames.download_video",
+                side_effect=fake_download,
+                create=True,
+            ):
+                try:
+                    completed = extract_peak_frames.main(
+                        [
+                            "--source",
+                            "rpa",
+                            "--shop-id",
+                            "shop-1",
+                            "--material-id",
+                            "764",
+                            "--date-range-type",
+                            "LAST_7_DAYS",
+                            "--output-dir",
+                            str(output),
+                            "--ffmpeg-bin",
+                            ffmpeg,
+                        ]
+                    )
+                except SystemExit as exc:
+                    completed = exc.code
+
+            self.assertEqual(completed, 0)
+            fetch_mock.assert_called_once_with(
+                shop_id="shop-1",
+                material_id="764",
+                date_range_type="LAST_7_DAYS",
+                custom_start_date=None,
+                custom_end_date=None,
+            )
+            self.assertEqual(downloaded[0][0], "https://cdn.example/material.mp4")
+            summary = json.loads(
+                (output / "764" / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["materialId"], "764")
+            self.assertEqual(
+                [frame["rankType"] for frame in summary["frames"]],
+                [
+                    "first_peak",
+                    "later_top_1",
+                    "later_top_2",
+                    "later_top_3",
+                ],
+            )
 
     def test_rpa_custom_range_requires_both_dates(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1696,6 +1920,8 @@ class CliTests(unittest.TestCase):
                     str(ROOT / "scripts" / "extract_peak_frames.py"),
                     "--source",
                     "rpa",
+                    "--shop-id",
+                    "shop-1",
                     "--material-id",
                     "m-123",
                     "--date-range-type",
