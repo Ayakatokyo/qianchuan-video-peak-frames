@@ -42,6 +42,26 @@ python scripts/extract_peak_frames.py \
 
 Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapter calls the fixed Yuce connector `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis`, downloads `material_info.videoUrl` to a temporary video file, then reuses the same local peak and frame pipeline.
 
+## TOP Materials RPA Run
+
+```bash
+python scripts/export_top_materials.py \
+  --start-date 2026-05-01 \
+  --end-date 2026-05-10 \
+  --output "/path/to/top_materials.json"
+
+python scripts/extract_peak_frames.py \
+  --source rpa \
+  --shop-id "<rpa-authorized-shop-id>" \
+  --top-materials-json "/path/to/top_materials.json" \
+  --date-range-type "CUSTOM" \
+  --custom-start-date "2026-05-01" \
+  --custom-end-date "2026-05-10" \
+  --output-dir "/path/to/output"
+```
+
+Batch RPA mode reads `materials[*].materialId` from `top_materials.json` and runs the same single-material RPA and frame pipeline for each selected material.
+
 ## Selection Contract
 
 - Read only `interaction_series` records whose metric is `CLICK_COUNT`.

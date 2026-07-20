@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -41,10 +42,54 @@ def build_parser():
     parser.add_argument("--ffmpeg-bin")
     parser.add_argument("--shop-id")
     parser.add_argument("--material-id")
+    parser.add_argument("--top-materials-json")
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
     return parser
+
+
+def _top_material_ids(path):
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(f"unable to read top materials JSON: {exc}") from exc
+    materials = payload.get("materials") if isinstance(payload, dict) else None
+    if not isinstance(materials, list) or not materials:
+        raise RpaAdapterError(
+            "top materials JSON must contain a nonempty materials list"
+        )
+
+    material_ids = []
+    for material in materials:
+        if not isinstance(material, dict):
+            raise RpaAdapterError("top materials entries must be objects")
+        material_id = str(material.get("materialId") or "").strip()
+        if not material_id:
+            raise RpaAdapterError("top materials entries require materialId")
+        material_ids.append(material_id)
+    return material_ids
+
+
+def _process_rpa_material(args, material_id):
+    records = fetch_material_diagnosis(
+        shop_id=args.shop_id,
+        material_id=material_id,
+        date_range_type=args.date_range_type,
+        custom_start_date=args.custom_start_date,
+        custom_end_date=args.custom_end_date,
+    )
+    video_url = find_material_video_url(records, material_id)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        video_path = Path(temp_dir) / f"{material_id}.mp4"
+        download_video(video_url, video_path)
+        return process_records(
+            records,
+            f"rpa://{FUNCTION_CODE}/{material_id}",
+            video_path,
+            args.output_dir,
+            ffmpeg_bin=args.ffmpeg_bin,
+        )
 
 
 def main(argv=None):
@@ -52,10 +97,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.source == "rpa":
-            if not args.shop_id or not args.material_id or not args.date_range_type:
+            if not args.shop_id or not args.date_range_type or not (
+                args.material_id or args.top_materials_json
+            ):
                 parser.error(
-                    "--shop-id, --material-id, and --date-range-type "
-                    "are required for --source rpa"
+                    "--shop-id, --date-range-type, and either --material-id "
+                    "or --top-materials-json are required for --source rpa"
                 )
             if args.date_range_type == "CUSTOM" and not (
                 args.custom_start_date and args.custom_end_date
@@ -64,24 +111,16 @@ def main(argv=None):
                     "CUSTOM requires --custom-start-date and "
                     "--custom-end-date"
                 )
-            records = fetch_material_diagnosis(
-                shop_id=args.shop_id,
-                material_id=args.material_id,
-                date_range_type=args.date_range_type,
-                custom_start_date=args.custom_start_date,
-                custom_end_date=args.custom_end_date,
+            material_ids = (
+                _top_material_ids(args.top_materials_json)
+                if args.top_materials_json
+                else [args.material_id]
             )
-            video_url = find_material_video_url(records, args.material_id)
-            with tempfile.TemporaryDirectory() as temp_dir:
-                video_path = Path(temp_dir) / f"{args.material_id}.mp4"
-                download_video(video_url, video_path)
-                result_dir, json_path, markdown_path = process_records(
-                    records,
-                    f"rpa://{FUNCTION_CODE}/{args.material_id}",
-                    video_path,
-                    args.output_dir,
-                    ffmpeg_bin=args.ffmpeg_bin,
-                )
+            results = [
+                _process_rpa_material(args, material_id)
+                for material_id in material_ids
+            ]
+            result_dir, json_path, markdown_path = results[-1]
 
         else:
             if not args.input_json or not args.video:

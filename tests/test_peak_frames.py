@@ -1912,6 +1912,83 @@ class CliTests(unittest.TestCase):
                 ],
             )
 
+    def test_rpa_cli_processes_top_materials_json(self):
+        import extract_peak_frames
+
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_video = root / "source.mp4"
+            output = root / "output"
+            top_materials = root / "top_materials.json"
+            self._make_video(ffmpeg, source_video)
+            top_materials.write_text(
+                json.dumps(
+                    {
+                        "materials": [
+                            {"rank": 1, "materialId": "764"},
+                            {"rank": 2, "materialId": "765"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def records_for(material_id):
+                records = [
+                    click_record(second, value, material_id=material_id)
+                    for second, value in enumerate(
+                        [0, 2, 0, 9, 0, 7, 0, 8, 0]
+                    )
+                ]
+                records.append(
+                    {
+                        "recordType": "material_info",
+                        "materialId": material_id,
+                        "videoUrl": f"https://cdn.example/{material_id}.mp4",
+                    }
+                )
+                return records
+
+            def fake_fetch(**kwargs):
+                return records_for(kwargs["material_id"])
+
+            def fake_download(_video_url, target_path):
+                Path(target_path).write_bytes(source_video.read_bytes())
+                return Path(target_path)
+
+            with patch(
+                "extract_peak_frames.fetch_material_diagnosis",
+                side_effect=fake_fetch,
+            ) as fetch_mock, patch(
+                "extract_peak_frames.download_video",
+                side_effect=fake_download,
+            ):
+                completed = extract_peak_frames.main(
+                    [
+                        "--source",
+                        "rpa",
+                        "--shop-id",
+                        "shop-1",
+                        "--top-materials-json",
+                        str(top_materials),
+                        "--date-range-type",
+                        "LAST_7_DAYS",
+                        "--output-dir",
+                        str(output),
+                        "--ffmpeg-bin",
+                        ffmpeg,
+                    ]
+                )
+
+            self.assertEqual(completed, 0)
+            self.assertEqual(
+                [call.kwargs["material_id"] for call in fetch_mock.call_args_list],
+                ["764", "765"],
+            )
+            self.assertTrue((output / "764" / "summary.json").exists())
+            self.assertTrue((output / "765" / "summary.json").exists())
+
     def test_rpa_custom_range_requires_both_dates(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             completed = subprocess.run(
