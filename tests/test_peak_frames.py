@@ -1920,6 +1920,7 @@ class CliTests(unittest.TestCase):
             root = Path(temp_dir)
             source_video = root / "source.mp4"
             output = root / "output"
+            diagnosis_records = root / "diagnosis-records"
             top_materials = root / "top_materials.json"
             self._make_video(ffmpeg, source_video)
             top_materials.write_text(
@@ -1976,6 +1977,8 @@ class CliTests(unittest.TestCase):
                         "LAST_7_DAYS",
                         "--output-dir",
                         str(output),
+                        "--diagnosis-records-dir",
+                        str(diagnosis_records),
                         "--ffmpeg-bin",
                         ffmpeg,
                     ]
@@ -1988,6 +1991,22 @@ class CliTests(unittest.TestCase):
             )
             self.assertTrue((output / "764" / "summary.json").exists())
             self.assertTrue((output / "765" / "summary.json").exists())
+            self.assertEqual(
+                json.loads(
+                    (diagnosis_records / "764.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                records_for("764"),
+            )
+            self.assertEqual(
+                json.loads(
+                    (diagnosis_records / "765.json").read_text(
+                        encoding="utf-8"
+                    )
+                ),
+                records_for("765"),
+            )
 
     def test_rpa_custom_range_requires_both_dates(self):
         with tempfile.TemporaryDirectory() as temp_dir:

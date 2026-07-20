@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
+import uuid
 
 from peak_frame_lib import (
     FfmpegError,
@@ -43,6 +45,7 @@ def build_parser():
     parser.add_argument("--shop-id")
     parser.add_argument("--material-id")
     parser.add_argument("--top-materials-json")
+    parser.add_argument("--diagnosis-records-dir")
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
@@ -71,6 +74,34 @@ def _top_material_ids(path):
     return material_ids
 
 
+def _write_diagnosis_records(records, records_dir, material_id):
+    target_dir = Path(records_dir)
+    target = target_dir / f"{material_id}.json"
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RpaAdapterError(
+            f"unable to create diagnosis records directory {target_dir}: {exc}"
+        ) from exc
+
+    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.json.tmp")
+    try:
+        staging.write_text(
+            json.dumps(records, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(staging, target)
+    except (OSError, TypeError, ValueError) as exc:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RpaAdapterError(
+            f"unable to write diagnosis records for material {material_id}: {exc}"
+        ) from exc
+    return target
+
+
 def _process_rpa_material(args, material_id):
     records = fetch_material_diagnosis(
         shop_id=args.shop_id,
@@ -79,6 +110,10 @@ def _process_rpa_material(args, material_id):
         custom_start_date=args.custom_start_date,
         custom_end_date=args.custom_end_date,
     )
+    if args.diagnosis_records_dir:
+        _write_diagnosis_records(
+            records, args.diagnosis_records_dir, material_id
+        )
     video_url = find_material_video_url(records, material_id)
     with tempfile.TemporaryDirectory() as temp_dir:
         video_path = Path(temp_dir) / f"{material_id}.mp4"
