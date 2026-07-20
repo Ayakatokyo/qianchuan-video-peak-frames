@@ -10,9 +10,10 @@ from asset_table_client import AssetTableClient, AssetTableError  # noqa: E402
 
 
 class FakeResponse:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, headers=None):
         self.payload = payload
         self.status_code = status_code
+        self.headers = headers or {}
 
     def json(self):
         return self.payload
@@ -83,6 +84,7 @@ class AssetTableDiscoveryTests(unittest.TestCase):
                         "headers": client.headers,
                         "cookies": {"YCSESSIONID": "session-value"},
                         "timeout": 15,
+                        "allow_redirects": False,
                     },
                 ),
                 (
@@ -93,6 +95,7 @@ class AssetTableDiscoveryTests(unittest.TestCase):
                         "headers": client.headers,
                         "cookies": {"YCSESSIONID": "session-value"},
                         "timeout": 15,
+                        "allow_redirects": False,
                     },
                 ),
                 (
@@ -102,6 +105,7 @@ class AssetTableDiscoveryTests(unittest.TestCase):
                         "headers": client.headers,
                         "cookies": {"YCSESSIONID": "session-value"},
                         "timeout": 15,
+                        "allow_redirects": False,
                     },
                 ),
             ],
@@ -174,8 +178,23 @@ class AssetTableClientTests(unittest.TestCase):
                 "headers": client.headers,
                 "cookies": {"YCSESSIONID": "token"},
                 "timeout": 15,
+                "allow_redirects": False,
             },
         )
+
+    def test_rejects_unsafe_base_urls_and_allows_http(self):
+        for base_url in (
+            "ftp://asset.example",
+            "https://user@asset.example",
+            "https://asset.example?source=test",
+            "https://asset.example#section",
+        ):
+            with self.subTest(base_url=base_url):
+                with self.assertRaisesRegex(AssetTableError, "base_url"):
+                    AssetTableClient(base_url, "token", session=FakeSession())
+
+        client = AssetTableClient("http://asset.example", "token", session=FakeSession())
+        self.assertEqual(client.base_url, "http://asset.example")
 
     def test_rejects_unsafe_table_or_invalid_partition_date_without_request(self):
         client = AssetTableClient("https://asset.example", "token", session=FakeSession())
@@ -200,6 +219,77 @@ class AssetTableClientTests(unittest.TestCase):
             list(client.iter_origin_data("material_table", "2026-07-20"))
 
         self.assertEqual(len(session.calls), 2)
+
+    def test_rejects_redirect_without_following_it(self):
+        session = FakeSession(post_responses=[FakeResponse({}, 302)])
+        client = AssetTableClient("https://asset.example", "token", session=session)
+
+        with self.assertRaisesRegex(AssetTableError, "HTTP status 302"):
+            list(client.iter_origin_data("material_table", "2026-07-20"))
+
+        self.assertEqual(len(session.calls), 1)
+        self.assertFalse(session.calls[0][2]["allow_redirects"])
+
+    def test_does_not_retry_client_error_statuses(self):
+        session = FakeSession(post_responses=[FakeResponse({}, 400)])
+        client = AssetTableClient("https://asset.example", "token", session=session)
+
+        with self.assertRaisesRegex(AssetTableError, "HTTP status 400"):
+            list(client.iter_origin_data("material_table", "2026-07-20"))
+
+        self.assertEqual(len(session.calls), 1)
+
+    def test_retries_429_after_retry_after_delay(self):
+        sleeps = []
+        session = FakeSession(
+            post_responses=[
+                FakeResponse({}, 429, headers={"Retry-After": "4"}),
+                platform_response({"fields": ["origin_data"], "rows": []}),
+            ]
+        )
+        client = AssetTableClient(
+            "https://asset.example", "token", session=session, retries=1, sleep=sleeps.append
+        )
+
+        self.assertEqual(
+            list(client.iter_origin_data("material_table", "2026-07-20")), []
+        )
+        self.assertEqual(len(session.calls), 2)
+        self.assertEqual(sleeps, [4.0])
+
+    def test_caps_retry_after_delay(self):
+        sleeps = []
+        session = FakeSession(
+            post_responses=[
+                FakeResponse({}, 503, headers={"Retry-After": "61"}),
+                platform_response({"fields": ["origin_data"], "rows": []}),
+            ]
+        )
+        client = AssetTableClient(
+            "https://asset.example", "token", session=session, retries=1, sleep=sleeps.append
+        )
+
+        self.assertEqual(
+            list(client.iter_origin_data("material_table", "2026-07-20")), []
+        )
+        self.assertEqual(sleeps, [60.0])
+
+    def test_ignores_non_finite_retry_after_delay(self):
+        sleeps = []
+        session = FakeSession(
+            post_responses=[
+                FakeResponse({}, 429, headers={"Retry-After": "nan"}),
+                platform_response({"fields": ["origin_data"], "rows": []}),
+            ]
+        )
+        client = AssetTableClient(
+            "https://asset.example", "token", session=session, retries=1, sleep=sleeps.append
+        )
+
+        self.assertEqual(
+            list(client.iter_origin_data("material_table", "2026-07-20")), []
+        )
+        self.assertEqual(sleeps, [])
 
     def test_rejects_malformed_origin_data_row(self):
         for rows in (

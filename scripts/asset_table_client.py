@@ -1,8 +1,10 @@
 """Read-only client for retrieving origin_data from an asset work table."""
 
 import re
+import time
+from math import isfinite
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 try:
     import requests
@@ -21,15 +23,34 @@ class AssetTableClient:
     _PARTITION_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
     _PAGE_SIZE = 2000
 
-    def __init__(self, base_url, session_token, session=None, timeout=15, retries=2):
+    def __init__(
+        self, base_url, session_token, session=None, timeout=15, retries=2, sleep=None
+    ):
         if not isinstance(base_url, str) or not base_url.strip():
             raise AssetTableError("base_url must be a non-empty string")
+        try:
+            parsed_base_url = urlsplit(base_url.strip())
+        except ValueError as error:
+            raise AssetTableError("base_url must be a valid HTTP URL") from error
+        if (
+            parsed_base_url.scheme not in ("http", "https")
+            or not parsed_base_url.netloc
+            or parsed_base_url.username is not None
+            or parsed_base_url.password is not None
+            or parsed_base_url.query
+            or parsed_base_url.fragment
+        ):
+            raise AssetTableError(
+                "base_url must be an HTTP URL without userinfo, query, or fragment"
+            )
         if not isinstance(session_token, str) or not session_token:
             raise AssetTableError("session_token must be a non-empty string")
         if not isinstance(retries, int) or retries < 0:
             raise AssetTableError("retries must be a non-negative integer")
+        if sleep is not None and not callable(sleep):
+            raise AssetTableError("sleep must be callable")
 
-        self.base_url = base_url.rstrip("/")
+        self.base_url = base_url.strip().rstrip("/")
         if session is None:
             if requests is None:
                 raise AssetTableError("requests must be installed to create a default session")
@@ -37,6 +58,7 @@ class AssetTableClient:
         self.session = session
         self.timeout = timeout
         self.retries = retries
+        self.sleep = sleep if sleep is not None else time.sleep
         self.headers = {
             "Accept": "application/json",
             "User-Agent": "qianchuan-video-peak-frames/1.0",
@@ -178,20 +200,28 @@ class AssetTableClient:
     def _request(self, method, path, **kwargs):
         url = self.base_url + path
         last_error = None
-        for _ in range(self.retries + 1):
+        for attempt in range(self.retries + 1):
             try:
                 response = getattr(self.session, method.lower())(
                     url,
                     headers=self.headers,
                     cookies=self.cookies,
                     timeout=self.timeout,
+                    allow_redirects=False,
                     **kwargs
                 )
             except self._request_exceptions() as error:
                 last_error = "request failed: {0}".format(error)
-                continue
+                if attempt < self.retries:
+                    continue
+                break
             if response.status_code != 200:
                 last_error = "HTTP status {0}".format(response.status_code)
+                if not self._is_retryable_status(response.status_code) or attempt == self.retries:
+                    break
+                retry_after = self._retry_after_seconds(response)
+                if retry_after is not None:
+                    self.sleep(retry_after)
                 continue
             return response
         raise AssetTableError("asset table request failed after retries: {0}".format(last_error))
@@ -201,6 +231,28 @@ class AssetTableClient:
         if requests is None:
             return (OSError,)
         return (requests.RequestException,)
+
+    @staticmethod
+    def _is_retryable_status(status_code):
+        return (
+            isinstance(status_code, int)
+            and not isinstance(status_code, bool)
+            and (status_code in (408, 429) or 500 <= status_code <= 599)
+        )
+
+    @staticmethod
+    def _retry_after_seconds(response):
+        headers = getattr(response, "headers", None)
+        if not hasattr(headers, "get"):
+            return None
+        value = headers.get("Retry-After")
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not isfinite(seconds) or seconds < 0:
+            return None
+        return min(seconds, 60.0)
 
     @staticmethod
     def _platform_data(response):
