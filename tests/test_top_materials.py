@@ -1,10 +1,12 @@
 import json
 import re
 import sys
+import tempfile
 import unittest
 from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +18,7 @@ from top_materials_lib import (  # noqa: E402
     build_output,
     select_materials,
 )
+from export_top_materials import main  # noqa: E402
 
 
 class FakeResponse:
@@ -528,6 +531,37 @@ class MaterialSelectionTests(unittest.TestCase):
                 ],
             },
         )
+
+class ExportCliTests(unittest.TestCase):
+    def test_exports_only_after_every_partition_succeeds(self):
+        rows = [origin_data(material_id="m-1", cost="3")]
+
+        class Client:
+            def __init__(self, *_args, **_kwargs): pass
+            def discover_table(self, _name): return "material_table"
+            def iter_origin_data(self, _table, _date): return iter(rows)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "top_materials.json"
+            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
+            with patch.dict("os.environ", environment, clear=True), patch("export_top_materials.AssetTableClient", Client):
+                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-02", "--output", str(output)]), 0)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["materials"][0]["rank"], 1)
+
+    def test_does_not_publish_when_partition_fails(self):
+        class Client:
+            def __init__(self, *_args, **_kwargs): pass
+            def discover_table(self, _name): return "material_table"
+            def iter_origin_data(self, _table, date):
+                if date == "2026-05-02": raise AssetTableError("unavailable")
+                return iter([origin_data(material_id="m-1", cost="3")])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "top_materials.json"
+            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
+            with patch.dict("os.environ", environment, clear=True), patch("export_top_materials.AssetTableClient", Client):
+                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-02", "--output", str(output)]), 1)
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":
