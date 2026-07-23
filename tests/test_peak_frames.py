@@ -28,6 +28,7 @@ from peak_frame_lib import (  # noqa: E402
     write_summaries,
 )
 import rpa_adapter  # noqa: E402
+import extract_peak_frames  # noqa: E402
 
 
 def click_record(second, value, material_id="m-123"):
@@ -1682,6 +1683,31 @@ class CliTests(unittest.TestCase):
             timeout=90,
         )
 
+    def _run_local_csv(
+        self, input_csv, video, output, ffmpeg, diagnosis_records_dir=None
+    ):
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / "extract_peak_frames.py"),
+            "--input-csv",
+            str(input_csv),
+            "--video",
+            str(video),
+            "--output-dir",
+            str(output),
+            "--ffmpeg-bin",
+            str(ffmpeg),
+        ]
+        if diagnosis_records_dir:
+            command.extend(["--diagnosis-records-dir", str(diagnosis_records_dir)])
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=90,
+        )
+
     def _write_series(self, path, seconds_and_values):
         path.write_text(
             json.dumps(
@@ -1726,6 +1752,72 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(summary["warnings"], [])
             self.assertIn(f"result_dir={result_dir}", completed.stdout)
+
+    def test_local_csv_cli_reuses_peak_frame_pipeline(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            input_csv = root / "diagnosis.csv"
+            output = root / "output"
+            diagnosis_records = root / "diagnosis-records"
+            self._make_video(ffmpeg, video, duration=9)
+            rows = [
+                "recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue",
+                *(
+                    f"\x02interaction_series\x01m-csv\x01CLICK_COUNT\x01{second}\x01{value}"
+                    for second, value in enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])
+                ),
+            ]
+            input_csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+            completed = self._run_local_csv(
+                input_csv,
+                video,
+                output,
+                ffmpeg,
+                diagnosis_records_dir=diagnosis_records,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(
+                (output / "m-csv" / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(summary["frames"]), 4)
+            saved_records = json.loads(
+                (diagnosis_records / "m-csv.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved_records[0]["durationSec"], 0.0)
+
+    def test_local_csv_cli_downloads_video_when_video_is_not_provided(self):
+        records = [
+            click_record(0, 0, material_id="m-csv"),
+            click_record(1, 2, material_id="m-csv"),
+            click_record(2, 0, material_id="m-csv"),
+            {
+                "recordType": "material_info",
+                "materialId": "m-csv",
+                "videoUrl": "https://video.example/material.mp4",
+            },
+        ]
+        output = Path(tempfile.gettempdir()) / "csv-output"
+        with patch.object(
+            extract_peak_frames, "parse_diagnosis_csv", return_value=records
+        ), patch.object(
+            extract_peak_frames,
+            "download_video",
+        ) as download_video, patch.object(
+            extract_peak_frames,
+            "process_records",
+            return_value=(output, output / "summary.json", output / "summary.md"),
+        ) as process_records:
+            result = extract_peak_frames.main(
+                ["--input-csv", "diagnosis.csv", "--output-dir", str(output)]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(download_video.call_args.args[0], records[-1]["videoUrl"])
+        self.assertEqual(process_records.call_args.args[0], records)
 
     def test_local_cli_rerun_removes_only_owned_stale_frames(self):
         ffmpeg = resolve_ffmpeg()

@@ -10,6 +10,7 @@ import uuid
 from peak_frame_lib import (
     FfmpegError,
     InputDataError,
+    parse_click_series,
     process_local,
     process_records,
 )
@@ -20,6 +21,7 @@ from rpa_adapter import (
     fetch_material_diagnosis,
     find_material_video_url,
 )
+from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 
 
 DATE_RANGE_TYPES = (
@@ -38,7 +40,9 @@ def build_parser():
         description="Extract video frames at Qianchuan CLICK_COUNT peaks."
     )
     parser.add_argument("--source", choices=("local", "rpa"), default="local")
-    parser.add_argument("--input-json")
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument("--input-json")
+    input_group.add_argument("--input-csv")
     parser.add_argument("--video")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--ffmpeg-bin")
@@ -158,16 +162,53 @@ def main(argv=None):
             result_dir, json_path, markdown_path = results[-1]
 
         else:
-            if not args.input_json or not args.video:
+            if not (args.input_json or args.input_csv) or (
+                args.input_json and not args.video
+            ):
                 parser.error(
-                    "--input-json and --video are required for local source"
+                    "--input-json requires --video; --input-csv can use "
+                    "material_info.videoUrl when --video is omitted"
                 )
-            result_dir, json_path, markdown_path = process_local(
-                args.input_json,
-                args.video,
-                args.output_dir,
-                ffmpeg_bin=args.ffmpeg_bin,
-            )
+            if args.input_csv:
+                records = parse_diagnosis_csv(args.input_csv)
+                material_id = ""
+                if args.diagnosis_records_dir or not args.video:
+                    material_id, _points = parse_click_series(records)
+                if args.diagnosis_records_dir:
+                    _write_diagnosis_records(
+                        records,
+                        args.diagnosis_records_dir,
+                        material_id or Path(args.video).stem,
+                    )
+                if args.video:
+                    result_dir, json_path, markdown_path = process_records(
+                        records,
+                        args.input_csv,
+                        args.video,
+                        args.output_dir,
+                        ffmpeg_bin=args.ffmpeg_bin,
+                    )
+                else:
+                    video_url = find_material_video_url(records, material_id)
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        video_path = Path(temp_dir) / (
+                            f"{material_id or Path(args.input_csv).stem}.mp4"
+                        )
+                        download_video(video_url, video_path)
+                        result_dir, json_path, markdown_path = process_records(
+                            records,
+                            args.input_csv,
+                            video_path,
+                            args.output_dir,
+                            ffmpeg_bin=args.ffmpeg_bin,
+                        )
+            else:
+                result_dir, json_path, markdown_path = process_local(
+                    args.input_json,
+                    args.video,
+                    args.output_dir,
+                    ffmpeg_bin=args.ffmpeg_bin,
+                )
     except InputDataError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -177,6 +218,9 @@ def main(argv=None):
     except RpaAdapterError as exc:
         print(str(exc), file=sys.stderr)
         return 4
+    except RpaCsvError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     print(f"result_dir={result_dir}")
     print(f"summary_json={json_path}")
