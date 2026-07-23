@@ -106,6 +106,12 @@ def _write_diagnosis_records(records, records_dir, material_id):
     return target
 
 
+def _diagnosis_csv_dir(args):
+    if args.diagnosis_records_dir:
+        return Path(args.diagnosis_records_dir).parent / "diagnosis-csv"
+    return Path(args.output_dir) / "diagnosis-csv"
+
+
 def _process_rpa_material(args, material_id):
     records = fetch_material_diagnosis(
         shop_id=args.shop_id,
@@ -113,6 +119,7 @@ def _process_rpa_material(args, material_id):
         date_range_type=args.date_range_type,
         custom_start_date=args.custom_start_date,
         custom_end_date=args.custom_end_date,
+        diagnosis_csv_dir=_diagnosis_csv_dir(args),
     )
     if args.diagnosis_records_dir:
         _write_diagnosis_records(

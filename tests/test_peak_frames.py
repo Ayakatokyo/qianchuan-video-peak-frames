@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -113,18 +114,19 @@ class FakeResponse:
 
 
 class RecordingSession:
-    def __init__(self, response):
-        self.response = response
+    def __init__(self, post_response, get_response=None):
+        self.post_response = post_response
+        self.get_response = post_response if get_response is None else get_response
         self.posts = []
         self.gets = []
 
     def post(self, url, **kwargs):
         self.posts.append((url, kwargs))
-        return self.response
+        return self.post_response
 
     def get(self, url, **kwargs):
         self.gets.append((url, kwargs))
-        return self.response
+        return self.get_response
 
 
 class RpaAdapterTests(unittest.TestCase):
@@ -134,6 +136,92 @@ class RpaAdapterTests(unittest.TestCase):
             "YUCE_AUTHORIZATION": "auth-token",
             "YUCE_SESSION_ID": "session-123",
         }
+
+    def _files_envelope(
+        self,
+        *,
+        success=True,
+        code="200",
+        status="COMPLETED",
+        failed_instances=0,
+        files=None,
+    ):
+        if files is None:
+            files = [
+                {
+                    "fileUrl": (
+                        "https://files.example/diagnosis.csv?secret=redacted"
+                    )
+                }
+            ]
+        return {
+            "success": success,
+            "code": code,
+            "data": {
+                "result_type": "files",
+                "result_content": {
+                    "status": status,
+                    "failedInstances": failed_instances,
+                    "files": files,
+                },
+            },
+        }
+
+    def test_fetch_material_diagnosis_downloads_nested_files_envelope(self):
+        envelope = {
+            "success": True,
+            "code": "200",
+            "data": {
+                "result_type": "files",
+                "result_content": {
+                    "status": "COMPLETED",
+                    "failedInstances": 0,
+                    "files": [
+                        {"fileUrl": "https://files.example/diagnosis.csv"}
+                    ],
+                },
+            },
+        }
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-files\x01CLICK_COUNT\x011\x012\n"
+        )
+        session = RecordingSession(
+            FakeResponse(envelope), FakeResponse(None, content=csv_bytes)
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_dir = Path(temp_dir) / "diagnosis-csv"
+            records = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-files",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=csv_dir,
+                environ=self._env(),
+                session=session,
+            )
+
+            self.assertEqual(records, [
+                {
+                    "recordType": "interaction_series",
+                    "materialId": "m-files",
+                    "interactionMetric": "CLICK_COUNT",
+                    "durationSec": 1.0,
+                    "metricValue": 2.0,
+                }
+            ])
+            self.assertEqual(
+                (csv_dir / "m-files.csv").read_bytes(), csv_bytes
+            )
+        self.assertEqual(
+            session.gets,
+            [
+                (
+                    "https://files.example/diagnosis.csv",
+                    {"stream": True, "timeout": 300},
+                )
+            ],
+        )
 
     def test_fetch_material_diagnosis_uses_fixed_connector_payload(self):
         records = [
@@ -229,13 +317,77 @@ class RpaAdapterTests(unittest.TestCase):
             records,
         )
 
-    def test_normalize_gateway_records_rejects_file_results(self):
-        error_type = getattr(rpa_adapter, "RpaAdapterError", Exception)
-        self.assertTrue(hasattr(rpa_adapter, "normalize_gateway_records"))
-        with self.assertRaisesRegex(error_type, "files"):
-            rpa_adapter.normalize_gateway_records(
-                {"result_type": "files", "files": []}
-            )
+    def test_fetch_rejects_invalid_files_envelopes_without_url_leakage(self):
+        invalid_envelopes = [
+            self._files_envelope(success=False),
+            self._files_envelope(code="500"),
+            self._files_envelope(status="RUNNING"),
+            self._files_envelope(failed_instances=1),
+            self._files_envelope(files=[]),
+            self._files_envelope(files=[{}]),
+        ]
+
+        for envelope in invalid_envelopes:
+            with self.subTest(envelope=envelope):
+                session = RecordingSession(FakeResponse(envelope))
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    with self.assertRaises(rpa_adapter.RpaAdapterError) as error:
+                        rpa_adapter.fetch_material_diagnosis(
+                            shop_id="shop-1",
+                            material_id="m-files",
+                            date_range_type="LAST_7_DAYS",
+                            diagnosis_csv_dir=Path(temp_dir),
+                            environ=self._env(),
+                            session=session,
+                        )
+                self.assertNotIn("secret=redacted", str(error.exception))
+                self.assertEqual(session.gets, [])
+
+    def test_fetch_redacts_download_error_url(self):
+        session = RecordingSession(
+            FakeResponse(self._files_envelope()),
+            FakeResponse(
+                None,
+                status_error=RuntimeError(
+                    "download https://files.example/diagnosis.csv?secret=redacted"
+                ),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(rpa_adapter.RpaAdapterError) as error:
+                rpa_adapter.fetch_material_diagnosis(
+                    shop_id="shop-1",
+                    material_id="m-files",
+                    date_range_type="LAST_7_DAYS",
+                    diagnosis_csv_dir=Path(temp_dir),
+                    environ=self._env(),
+                    session=session,
+                )
+
+        self.assertNotIn("secret=redacted", str(error.exception))
+
+    def test_fetch_retains_malformed_diagnostic_csv(self):
+        csv_bytes = b"recordType,materialId\ninteraction_series,m-files\n"
+        session = RecordingSession(
+            FakeResponse(self._files_envelope()),
+            FakeResponse(None, content=csv_bytes),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_dir = Path(temp_dir) / "diagnosis-csv"
+            with self.assertRaises(rpa_adapter.RpaAdapterError) as error:
+                rpa_adapter.fetch_material_diagnosis(
+                    shop_id="shop-1",
+                    material_id="m-files",
+                    date_range_type="LAST_7_DAYS",
+                    diagnosis_csv_dir=csv_dir,
+                    environ=self._env(),
+                    session=session,
+                )
+
+            self.assertEqual((csv_dir / "m-files.csv").read_bytes(), csv_bytes)
+        self.assertNotIn("secret=redacted", str(error.exception))
 
 
 class PeakSelectionTests(unittest.TestCase):
@@ -1988,6 +2140,7 @@ class CliTests(unittest.TestCase):
                 date_range_type="LAST_7_DAYS",
                 custom_start_date=None,
                 custom_end_date=None,
+                diagnosis_csv_dir=output / "diagnosis-csv",
             )
             self.assertEqual(downloaded[0][0], "https://cdn.example/material.mp4")
             summary = json.loads(
@@ -2002,6 +2155,95 @@ class CliTests(unittest.TestCase):
                     "later_top_2",
                     "later_top_3",
                 ],
+            )
+
+    def test_rpa_top_materials_cli_processes_retained_files_response(self):
+        ffmpeg = resolve_ffmpeg()
+        envelope = {
+            "success": True,
+            "code": "200",
+            "data": {
+                "result_type": "files",
+                "result_content": {
+                    "status": "COMPLETED",
+                    "failedInstances": 0,
+                    "files": [
+                        {"fileUrl": "https://files.example/diagnosis.csv"}
+                    ],
+                },
+            },
+        }
+        rows = [
+            "recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\x01videoUrl",
+            *(
+                f"\x02interaction_series\x01m-files\x01CLICK_COUNT\x01{second}\x01{value}\x01"
+                for second, value in enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])
+            ),
+            "\x02material_info\x01m-files\x01\x01\x01\x01https://video.example/m-files.mp4",
+        ]
+        csv_bytes = ("\n".join(rows) + "\n").encode("utf-8")
+        session = RecordingSession(
+            FakeResponse(envelope), FakeResponse(None, content=csv_bytes)
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_video = root / "source.mp4"
+            top_materials = root / "top_materials.json"
+            diagnosis_records = root / "diagnosis-records"
+            output = root / "peak-frames"
+            self._make_video(ffmpeg, source_video)
+            top_materials.write_text(
+                json.dumps({"materials": [{"rank": 1, "materialId": "m-files"}]}),
+                encoding="utf-8",
+            )
+
+            def fake_download(_video_url, target_path):
+                Path(target_path).write_bytes(source_video.read_bytes())
+                return Path(target_path)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "ENV_BACKEND_HOST": "https://gateway.example/",
+                    "YUCE_AUTHORIZATION": "auth-token",
+                    "YUCE_SESSION_ID": "session-123",
+                },
+                clear=False,
+            ), patch.object(
+                rpa_adapter, "_default_session", return_value=session
+            ), patch.object(
+                extract_peak_frames, "download_video", side_effect=fake_download
+            ):
+                result = extract_peak_frames.main(
+                    [
+                        "--source",
+                        "rpa",
+                        "--shop-id",
+                        "shop-1",
+                        "--top-materials-json",
+                        str(top_materials),
+                        "--date-range-type",
+                        "CUSTOM",
+                        "--custom-start-date",
+                        "2026-06-01",
+                        "--custom-end-date",
+                        "2026-06-02",
+                        "--diagnosis-records-dir",
+                        str(diagnosis_records),
+                        "--output-dir",
+                        str(output),
+                        "--ffmpeg-bin",
+                        ffmpeg,
+                    ]
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(len(list((output / "m-files").glob("*.jpg"))), 4)
+            self.assertTrue((diagnosis_records / "m-files.json").is_file())
+            self.assertEqual(
+                (root / "diagnosis-csv" / "m-files.csv").read_bytes(),
+                csv_bytes,
             )
 
     def test_rpa_cli_processes_top_materials_json(self):

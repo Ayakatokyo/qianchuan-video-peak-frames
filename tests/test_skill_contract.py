@@ -38,6 +38,15 @@ class BatchSkillContractTests(unittest.TestCase):
             skill,
         )
 
+    def test_files_response_documents_retained_csv_artifact(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("diagnosis-csv/<materialId>.csv", skill)
+        self.assertIn("CSV download or parsing failures remain blocking", skill)
+        self.assertNotIn(
+            "result_type=files` CSV-envelope response is blocking", skill
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

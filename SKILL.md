@@ -55,7 +55,7 @@ python scripts/extract_peak_frames.py \
   --output-dir "/path/to/run/peak-frames"
 ```
 
-Retain `top_materials.json`, normalized records, peak-frame summaries, JPEGs, and warnings. The current RPA `result_type=files` CSV-envelope response is blocking until its adapter integration is completed; do not report it as successful.
+Retain `top_materials.json`, raw diagnostic CSVs at `diagnosis-csv/<materialId>.csv`, normalized records, peak-frame summaries, JPEGs, and warnings. CSV download or parsing failures remain blocking; do not report a material as successful until its retained CSV and frame summary have been reviewed.
 
 ## Single-Material RPA Debug Run
 
@@ -103,4 +103,4 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 - Do not call batch RPA before asset-table selection or use `--material-id` to bypass it.
 - Do not use different ranking and diagnosis date ranges.
 - Do not overwrite or discard the run-local `top_materials.json`.
-- Treat an RPA `result_type=files` response as a blocking adapter limitation until CSV-envelope integration is available.
+- Treat an RPA CSV download or parsing failure as blocking; inspect the retained `diagnosis-csv/<materialId>.csv` when diagnosing it.

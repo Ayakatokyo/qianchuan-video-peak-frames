@@ -1,8 +1,11 @@
 from datetime import datetime
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import uuid
+
+from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 
 
 FUNCTION_CODE = "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis"
@@ -26,6 +29,11 @@ class RpaAdapterError(RuntimeError):
 
 class RpaNotConfiguredError(RpaAdapterError):
     """Backward-compatible name for older callers."""
+
+
+@dataclass(frozen=True)
+class GatewayFile:
+    file_url: str
 
 
 def _default_session():
@@ -129,12 +137,6 @@ def normalize_gateway_records(result):
     if not isinstance(result, dict):
         raise RpaAdapterError("RPA gateway result must be a list or object")
 
-    result_type = result.get("result_type")
-    if result_type == "files":
-        raise RpaAdapterError(
-            "RPA gateway returned files; this adapter requires payload records"
-        )
-
     payload = result.get("payload")
     if payload is None and isinstance(result.get("data"), list):
         payload = result["data"]
@@ -150,6 +152,73 @@ def normalize_gateway_records(result):
     return payload
 
 
+def unpack_gateway_result(result):
+    if isinstance(result, dict):
+        data = result.get("data")
+        if isinstance(data, dict) and data.get("result_type") == "files":
+            return GatewayFile(_files_response_url(result))
+    return normalize_gateway_records(result)
+
+
+def _files_response_url(result):
+    if result.get("success") is not True or result.get("code") not in (200, "200"):
+        raise RpaAdapterError("RPA gateway files response was not successful")
+
+    data = result.get("data")
+    content = data.get("result_content") if isinstance(data, dict) else None
+    if not isinstance(content, dict):
+        raise RpaAdapterError("RPA gateway files response is missing result_content")
+    if content.get("status") != "COMPLETED" or content.get("failedInstances") != 0:
+        raise RpaAdapterError("RPA gateway files task did not complete successfully")
+
+    files = content.get("files")
+    if not isinstance(files, list) or not files or not isinstance(files[0], dict):
+        raise RpaAdapterError("RPA gateway files response has no diagnostic CSV")
+    file_url = files[0].get("fileUrl")
+    if not isinstance(file_url, str) or not file_url.strip():
+        raise RpaAdapterError("RPA gateway diagnostic CSV URL is missing")
+    return file_url.strip()
+
+
+def download_diagnosis_csv(file_url, target_path, session=None, timeout=300):
+    session = _default_session() if session is None else session
+    target = Path(target_path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RpaAdapterError(
+            f"unable to create RPA diagnostic CSV directory {target.parent}: {exc}"
+        ) from exc
+
+    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.csv")
+    try:
+        response = session.get(file_url, stream=True, timeout=timeout)
+        try:
+            response.raise_for_status()
+        except Exception as exc:
+            raise RpaAdapterError("unable to download RPA diagnostic CSV") from exc
+        with staging.open("wb") as csv_file:
+            for chunk in response.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    csv_file.write(chunk)
+        if staging.stat().st_size == 0:
+            raise RpaAdapterError("downloaded RPA diagnostic CSV is empty")
+        os.replace(staging, target)
+    except RpaAdapterError:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    except Exception as exc:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RpaAdapterError(f"unable to download RPA diagnostic CSV: {exc}") from exc
+    return target
+
+
 def fetch_material_diagnosis(
     *,
     shop_id,
@@ -157,6 +226,7 @@ def fetch_material_diagnosis(
     date_range_type,
     custom_start_date=None,
     custom_end_date=None,
+    diagnosis_csv_dir=None,
     environ=None,
     session=None,
 ):
@@ -186,7 +256,19 @@ def fetch_material_diagnosis(
         timeout=3600,
     )
     _raise_for_status(response, "fetch RPA material diagnosis")
-    return normalize_gateway_records(response.json())
+    gateway_result = unpack_gateway_result(response.json())
+    if isinstance(gateway_result, list):
+        return gateway_result
+    if diagnosis_csv_dir is None:
+        raise RpaAdapterError(
+            "diagnosis_csv_dir is required for RPA files responses"
+        )
+    target = Path(diagnosis_csv_dir) / f"{business_params['material_id']}.csv"
+    download_diagnosis_csv(gateway_result.file_url, target, session=session)
+    try:
+        return parse_diagnosis_csv(target)
+    except RpaCsvError as exc:
+        raise RpaAdapterError(str(exc)) from exc
 
 
 def find_material_video_url(records, material_id=None):
