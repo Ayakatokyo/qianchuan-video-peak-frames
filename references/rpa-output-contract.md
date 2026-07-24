@@ -79,4 +79,5 @@ The connector documentation says successful gateway responses may be `payload` o
 - Direct list responses are treated as connector records.
 - `result_type=payload` must contain a record list in `payload`.
 - JSON-string payloads are decoded before processing.
-- `result_type=files` is rejected because this frame workflow needs structured records and `material_info.videoUrl`.
+- `result_type=files` must report a successful completed task with at least one diagnostic CSV. The workflow downloads the first CSV to the local diagnostic-CSV directory, parses it with `parse_diagnosis_csv`, and uses the resulting normalized records exactly as it would a direct payload.
+- Signed diagnostic CSV URLs are transient download inputs. They are not retained in diagnosis-record JSON, peak-frame summaries, or downstream diagnostic-analysis artifacts.

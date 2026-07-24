@@ -1,0 +1,437 @@
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from diagnostic_analysis_lib import (  # noqa: E402
+    DEFAULT_PROMPT_PATH,
+    DiagnosticAnalysisError,
+    build_diagnostic_analysis,
+    prepare_diagnostic_analysis,
+)
+
+
+def crowd_record(material_id, metric, dimension, bucket, value, **overrides):
+    record = {
+        "recordType": "crowd_analysis",
+        "materialId": material_id,
+        "displayMetric": metric,
+        "dimensionKey": dimension,
+        "dimensionName": {"age": "年龄", "gender": "性别"}.get(
+            dimension, dimension
+        ),
+        "dimensionValue": bucket,
+        "metricValue": value,
+        "metricPercentage": 999,
+    }
+    record.update(overrides)
+    return record
+
+
+class DiagnosticAnalysisAudienceTests(unittest.TestCase):
+    def test_aggregates_each_audience_metric_and_recomputes_percentages(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [
+                {"rank": 1, "materialId": "m-1", "materialName": "素材一"},
+                {"rank": 2, "materialId": "m-2", "materialName": "素材二"},
+            ],
+        }
+        records_by_material = {
+            "m-1": [
+                crowd_record("m-1", "SHOW_COUNT", "age", "18-23", 100),
+                crowd_record("m-1", "SHOW_COUNT", "age", "24-30", 300),
+                crowd_record(
+                    "m-1",
+                    "CLICK_COUNT",
+                    "age",
+                    "18-23",
+                    "",
+                    Metrics={"click": {"Value": "30"}},
+                ),
+                crowd_record(
+                    "m-1",
+                    "TRANSACTION_AMOUNT",
+                    "gender",
+                    "男",
+                    "",
+                    Metrics={"transaction": {"Value": 20}},
+                ),
+                crowd_record("m-1", "SHOW_COUNT", "age", "ignored", -5),
+                crowd_record("other", "SHOW_COUNT", "age", "ignored", 500),
+            ],
+            "m-2": [
+                crowd_record("m-2", "SHOW_COUNT", "age", "18-23", 100),
+                crowd_record(
+                    "m-2",
+                    "TRANSACTION_AMOUNT",
+                    "gender",
+                    "",
+                    "",
+                    dimensionValue="",
+                    Dimensions={"gender": {"ValueStr": "女"}},
+                    Metrics={"transaction": {"Value": 40}},
+                ),
+                crowd_record("m-2", "UNUSED_METRIC", "age", "18-23", 50),
+            ],
+        }
+
+        analysis = build_diagnostic_analysis(top_payload, records_by_material)
+
+        self.assertEqual(analysis["schemaVersion"], 1)
+        self.assertEqual(
+            analysis["period"],
+            {"actualStartDate": "2026-06-01", "actualEndDate": "2026-06-02"},
+        )
+        metrics = analysis["audience"]["metrics"]
+        self.assertEqual(
+            set(metrics), {"SHOW_COUNT", "CLICK_COUNT", "TRANSACTION_AMOUNT"}
+        )
+        age = metrics["SHOW_COUNT"]["dimensions"]["age"]
+        self.assertEqual(age["totalMetricValue"], 500.0)
+        self.assertEqual(age["sourceMaterialIds"], ["m-1", "m-2"])
+        self.assertEqual(
+            age["buckets"],
+            [
+                {
+                    "bucket": "24-30",
+                    "metricValue": 300.0,
+                    "metricPercentage": 60.0,
+                    "sourceMaterialIds": ["m-1"],
+                },
+                {
+                    "bucket": "18-23",
+                    "metricValue": 200.0,
+                    "metricPercentage": 40.0,
+                    "sourceMaterialIds": ["m-1", "m-2"],
+                },
+            ],
+        )
+        self.assertEqual(metrics["SHOW_COUNT"]["missingMaterialIds"], [])
+        self.assertEqual(metrics["CLICK_COUNT"]["missingMaterialIds"], ["m-2"])
+        gender = metrics["TRANSACTION_AMOUNT"]["dimensions"]["gender"]
+        self.assertEqual(gender["totalMetricValue"], 60.0)
+        self.assertEqual(
+            [(item["bucket"], item["metricValue"]) for item in gender["buckets"]],
+            [("女", 40.0), ("男", 20.0)],
+        )
+
+
+class DiagnosticAnalysisScriptAndDeliveryTests(unittest.TestCase):
+    def test_preserves_scripts_and_delivery_facts_without_aggregating_rates(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [
+                {"rank": 1, "materialId": "m-1"},
+                {"rank": 2, "materialId": "m-2"},
+                {"rank": 3, "materialId": "m-3"},
+            ],
+        }
+        records_by_material = {
+            "m-1": [
+                {
+                    "recordType": "script_analysis",
+                    "materialId": "m-1",
+                    "materialUri": "uri-1",
+                    "scriptInfo": (
+                        "{'formula': {'labels': [{'level_1_label': 1, "
+                        "'level_2_labels': [21]}]}, 'detail': {'21': "
+                        "{'label': '降价/折扣', 'list': ['今天四九折', '今天四九折']}}, "
+                        "'text': '完整口播', 'data': [{'level_1_label': "
+                        "{'value': 1, 'label': '价格优惠'}, 'level_2_labels': "
+                        "[{'value': 21, 'label': '降价/折扣'}]}]}"
+                    ),
+                },
+                {
+                    "recordType": "delivery_material_detail",
+                    "materialId": "m-1",
+                    "statDate": "2026-06-02",
+                    "clickCount": "1,490",
+                    "clickRate": "0.89%",
+                    "payRoi": "2.3",
+                    "netPayGmv": "47,793.00",
+                    "videoUrl": "https://signed.example/video.mp4?token=secret",
+                    "materialUri": "uri-1",
+                },
+            ],
+            "m-2": [
+                {
+                    "recordType": "script_analysis",
+                    "materialId": "m-2",
+                    "materialUri": "uri-2",
+                    "scriptInfo": (
+                        '{"detail": {"21": {"label": "降价/折扣", '
+                        '"list": ["今天四九折"]}}, "text": "第二段口播", '
+                        '"data": [{"level_1_label": {"value": 1, '
+                        '"label": "价格优惠"}, "level_2_labels": '
+                        '[{"value": 21, "label": "降价/折扣"}]}]}'
+                    ),
+                }
+            ],
+            "m-3": [
+                {
+                    "recordType": "script_analysis",
+                    "materialId": "m-3",
+                    "materialUri": "uri-3",
+                    "scriptInfo": "this is not structured data",
+                },
+                {
+                    "recordType": "delivery_material_detail",
+                    "materialId": "m-3",
+                    "statDate": "2026-06-02",
+                    "clickCount": "NaN",
+                },
+            ],
+        }
+
+        analysis = build_diagnostic_analysis(top_payload, records_by_material)
+
+        self.assertEqual(
+            analysis["scripts"]["materials"],
+            [
+                {
+                    "materialId": "m-1",
+                    "materialUri": "uri-1",
+                    "text": "完整口播",
+                    "labels": [{"level1": "价格优惠", "level2": "降价/折扣"}],
+                    "evidence": [
+                        {"level2": "降价/折扣", "sentence": "今天四九折"}
+                    ],
+                },
+                {
+                    "materialId": "m-2",
+                    "materialUri": "uri-2",
+                    "text": "第二段口播",
+                    "labels": [{"level1": "价格优惠", "level2": "降价/折扣"}],
+                    "evidence": [
+                        {"level2": "降价/折扣", "sentence": "今天四九折"}
+                    ],
+                },
+            ],
+        )
+        self.assertEqual(
+            analysis["scripts"]["labelSummary"],
+            [
+                {
+                    "level1": "价格优惠",
+                    "level2": "降价/折扣",
+                    "occurrenceCount": 2,
+                    "materialIds": ["m-1", "m-2"],
+                    "evidence": ["今天四九折"],
+                }
+            ],
+        )
+        self.assertEqual(
+            analysis["delivery"]["materials"],
+            [
+                {
+                    "materialId": "m-1",
+                    "facts": [
+                        {
+                            "statDate": "2026-06-02",
+                            "values": {
+                                "clickCount": 1490.0,
+                                "clickRate": "0.89%",
+                                "netPayGmv": 47793.0,
+                                "payRoi": 2.3,
+                            },
+                        }
+                    ],
+                },
+                {
+                    "materialId": "m-3",
+                    "facts": [
+                        {
+                            "statDate": "2026-06-02",
+                            "values": {"clickCount": "NaN"},
+                        }
+                    ],
+                },
+            ],
+        )
+        self.assertTrue(
+            any("invalid scriptInfo for material m-3" in item for item in analysis["warnings"])
+        )
+
+
+class DiagnosticAnalysisPublicationTests(unittest.TestCase):
+    def _write_json(self, path, payload):
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def test_publishes_fact_package_and_default_prompt_with_record_warnings(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            output_dir = root / "analysis"
+            records_dir.mkdir()
+            self._write_json(
+                top_materials,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-02",
+                    "materials": [
+                        {"rank": 1, "materialId": "m-1", "materialName": "素材一"},
+                        {"rank": 2, "materialId": "m-2", "materialName": "素材二"},
+                        {"rank": 3, "materialId": "m-3", "materialName": "素材三"},
+                    ],
+                },
+            )
+            self._write_json(
+                records_dir / "m-1.json",
+                [
+                    crowd_record("m-1", "SHOW_COUNT", "age", "24-30", 100),
+                    {
+                        "recordType": "delivery_material_detail",
+                        "materialId": "m-1",
+                        "statDate": "2026-06-02",
+                        "videoUrl": "https://signed.example/video.mp4?token=secret",
+                    },
+                ],
+            )
+            self._write_json(records_dir / "m-2.json", {"not": "a record list"})
+
+            data_path, prompt_path, analysis = prepare_diagnostic_analysis(
+                top_materials, records_dir, output_dir
+            )
+
+            self.assertEqual(data_path, output_dir / "diagnostic-analysis-data.json")
+            self.assertEqual(prompt_path, output_dir / "diagnostic-analysis-prompt.md")
+            self.assertEqual(
+                json.loads(data_path.read_text(encoding="utf-8")), analysis
+            )
+            self.assertEqual(
+                prompt_path.read_text(encoding="utf-8"),
+                DEFAULT_PROMPT_PATH.read_text(encoding="utf-8"),
+            )
+            self.assertNotIn("https://signed.example", data_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                analysis["materials"],
+                [
+                    {
+                        "rank": 1,
+                        "materialId": "m-1",
+                        "materialName": "素材一",
+                        "materialType": "",
+                        "videoType": "",
+                    },
+                    {
+                        "rank": 2,
+                        "materialId": "m-2",
+                        "materialName": "素材二",
+                        "materialType": "",
+                        "videoType": "",
+                    },
+                    {
+                        "rank": 3,
+                        "materialId": "m-3",
+                        "materialName": "素材三",
+                        "materialType": "",
+                        "videoType": "",
+                    },
+                ],
+            )
+            self.assertIn("diagnosis records for material m-2 are not a list", analysis["warnings"])
+            self.assertIn("missing diagnosis records for material m-3", analysis["warnings"])
+
+    def test_copies_override_prompt_and_rejects_missing_template_without_output(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            output_dir = root / "analysis"
+            template = root / "custom-prompt.md"
+            records_dir.mkdir()
+            self._write_json(
+                top_materials,
+                {"materials": [{"materialId": "m-1"}]},
+            )
+            self._write_json(records_dir / "m-1.json", [])
+            template.write_text("custom prompt\n", encoding="utf-8")
+
+            _data_path, prompt_path, _analysis = prepare_diagnostic_analysis(
+                top_materials, records_dir, output_dir, template
+            )
+
+            self.assertEqual(prompt_path.read_text(encoding="utf-8"), "custom prompt\n")
+            with self.assertRaisesRegex(DiagnosticAnalysisError, "prompt template"):
+                prepare_diagnostic_analysis(
+                    top_materials, records_dir, root / "bad-output", root / "missing.md"
+                )
+            self.assertFalse((root / "bad-output").exists())
+
+
+class DiagnosticAnalysisCliTests(unittest.TestCase):
+    def test_cli_writes_both_artifacts_and_reports_their_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            output_dir = root / "analysis"
+            records_dir.mkdir()
+            top_materials.write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                encoding="utf-8",
+            )
+            (records_dir / "m-1.json").write_text("[]", encoding="utf-8")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "prepare_diagnostic_analysis.py"),
+                    "--top-materials-json",
+                    str(top_materials),
+                    "--diagnosis-records-dir",
+                    str(records_dir),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn(
+                f"diagnostic_analysis_data={output_dir / 'diagnostic-analysis-data.json'}",
+                completed.stdout,
+            )
+            self.assertIn(
+                f"diagnostic_analysis_prompt={output_dir / 'diagnostic-analysis-prompt.md'}",
+                completed.stdout,
+            )
+            self.assertTrue((output_dir / "diagnostic-analysis-data.json").is_file())
+            self.assertTrue((output_dir / "diagnostic-analysis-prompt.md").is_file())
+
+    def test_cli_reports_invalid_input_with_exit_code_two(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "prepare_diagnostic_analysis.py"),
+                    "--top-materials-json",
+                    str(root / "missing.json"),
+                    "--diagnosis-records-dir",
+                    str(root / "records"),
+                    "--output-dir",
+                    str(root / "analysis"),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 2)
+            self.assertIn("unable to read top materials JSON", completed.stderr)
+            self.assertFalse((root / "analysis").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
