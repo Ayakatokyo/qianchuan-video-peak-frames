@@ -28,6 +28,7 @@ python scripts/extract_peak_frames.py \
 ```
 
 Pass `--ffmpeg-bin` when production manages FFmpeg separately. Keep paths as separate arguments; quoted paths containing spaces work on macOS and Windows.
+The bundled workflow allows up to 120 seconds for each FFmpeg probe or frame extraction. Override it for a managed execution environment with `--ffmpeg-timeout-sec <positive-seconds>`.
 
 ## Batch TOP Materials Run
 
@@ -52,10 +53,26 @@ python scripts/extract_peak_frames.py \
   --custom-start-date 2026-06-01 \
   --custom-end-date 2026-06-07 \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
+  --ffmpeg-timeout-sec 120 \
   --output-dir "/path/to/run/peak-frames"
 ```
 
 Retain `top_materials.json`, raw diagnostic CSVs at `diagnosis-csv/<materialId>.csv`, normalized records, peak-frame summaries, JPEGs, and warnings. CSV download or parsing failures remain blocking; do not report a material as successful until its retained CSV and frame summary have been reviewed.
+
+The command writes `batch-manifest.json` inside the peak-frame output directory. A failed material is recorded there and later TOP materials still run; the command exits nonzero when any material remains failed, even though successful artifacts are retained. Resume the exact same selected IDs, shop, and date range with `--resume`; it skips only successful materials whose retained summaries and JPEGs still validate, then retries failed or interrupted materials.
+
+```bash
+python scripts/extract_peak_frames.py \
+  --source rpa \
+  --shop-id "<rpa-authorized-shop-id>" \
+  --top-materials-json "/path/to/run/top_materials.json" \
+  --date-range-type CUSTOM \
+  --custom-start-date 2026-06-01 \
+  --custom-end-date 2026-06-07 \
+  --diagnosis-records-dir "/path/to/run/diagnosis-records" \
+  --output-dir "/path/to/run/peak-frames" \
+  --resume
+```
 
 ## Single-Material RPA Debug Run
 
@@ -87,9 +104,11 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 | --- | --- |
 | Default FFmpeg | Install `imageio-ffmpeg` from `requirements.txt` |
 | Managed FFmpeg | Add `--ffmpeg-bin "/path/to/ffmpeg"` |
+| FFmpeg timeout | Default is 120 seconds; override with `--ffmpeg-timeout-sec <positive-seconds>` |
 | Local result | Inspect `<output>/<material-id>/summary.json` |
 | RPA accounts | Use `scripts/rpa_adapter.py` helpers or the Yuce connector account list to find `shop_id` |
 | TOP-material batch | Run asset-table selection first, then pass its run-local `top_materials.json` to RPA with the same CUSTOM dates |
+| Resume TOP-material batch | Repeat the identical batch command with `--resume`; inspect `batch-manifest.json` first |
 | Single-material debug | Pass `--source rpa --shop-id ... --material-id ... --date-range-type ...` |
 | Regression check | Run `python -m unittest tests/test_peak_frames.py -v` |
 
@@ -103,4 +122,5 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 - Do not call batch RPA before asset-table selection or use `--material-id` to bypass it.
 - Do not use different ranking and diagnosis date ranges.
 - Do not overwrite or discard the run-local `top_materials.json`.
+- Do not use `--resume` with a different material selection, shop, or date range; start a new batch instead.
 - Treat an RPA CSV download or parsing failure as blocking; inspect the retained `diagnosis-csv/<materialId>.csv` when diagnosing it.

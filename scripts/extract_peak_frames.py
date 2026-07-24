@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import math
 import os
 import sys
 import tempfile
@@ -8,6 +9,7 @@ from pathlib import Path
 import uuid
 
 from peak_frame_lib import (
+    DEFAULT_FFMPEG_TIMEOUT_SEC,
     FfmpegError,
     InputDataError,
     parse_click_series,
@@ -34,6 +36,24 @@ DATE_RANGE_TYPES = (
     "CUSTOM",
 )
 
+BATCH_MANIFEST_NAME = "batch-manifest.json"
+BATCH_MANIFEST_VERSION = 1
+BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
+
+
+def _positive_timeout(value):
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError(
+            "FFmpeg timeout must be a positive finite number"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise argparse.ArgumentTypeError(
+            "FFmpeg timeout must be a positive finite number"
+        )
+    return timeout
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -46,10 +66,17 @@ def build_parser():
     parser.add_argument("--video")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--ffmpeg-bin")
+    parser.add_argument(
+        "--ffmpeg-timeout-sec",
+        type=_positive_timeout,
+        default=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    )
     parser.add_argument("--shop-id")
     parser.add_argument("--material-id")
     parser.add_argument("--top-materials-json")
     parser.add_argument("--diagnosis-records-dir")
+    parser.add_argument("--batch-manifest")
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
@@ -112,6 +139,190 @@ def _diagnosis_csv_dir(args):
     return Path(args.output_dir) / "diagnosis-csv"
 
 
+def _write_json_atomically(path, payload):
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RpaAdapterError(
+            f"unable to create batch manifest directory {target.parent}: {exc}"
+        ) from exc
+
+    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.json.tmp")
+    try:
+        staging.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(staging, target)
+    except (OSError, TypeError, ValueError) as exc:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise RpaAdapterError(
+            f"unable to write batch manifest {target}: {exc}"
+        ) from exc
+    return target
+
+
+def _batch_manifest_path(args):
+    if args.batch_manifest:
+        return Path(args.batch_manifest)
+    return Path(args.output_dir) / BATCH_MANIFEST_NAME
+
+
+def _new_batch_manifest(args, material_ids):
+    return {
+        "schemaVersion": BATCH_MANIFEST_VERSION,
+        "source": "rpa",
+        "shopId": args.shop_id,
+        "dateRange": {
+            "type": args.date_range_type,
+            "customStartDate": args.custom_start_date,
+            "customEndDate": args.custom_end_date,
+        },
+        "materialIds": material_ids,
+        "materials": {
+            material_id: {
+                "status": "pending",
+                "attempts": 0,
+                "summaryJson": None,
+                "summaryMd": None,
+                "errorType": None,
+                "errorMessage": None,
+            }
+            for material_id in material_ids
+        },
+    }
+
+
+def _load_resume_manifest(path, expected_manifest):
+    source = Path(path)
+    try:
+        manifest = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(
+            f"unable to read batch manifest for resume: {source}"
+        ) from exc
+
+    expected_fields = ("schemaVersion", "source", "shopId", "dateRange", "materialIds")
+    if not isinstance(manifest, dict) or any(
+        manifest.get(field) != expected_manifest[field]
+        for field in expected_fields
+    ):
+        raise RpaAdapterError(
+            "batch manifest does not match the requested RPA batch"
+        )
+    materials = manifest.get("materials")
+    if not isinstance(materials, dict) or any(
+        not isinstance(materials.get(material_id), dict)
+        for material_id in expected_manifest["materialIds"]
+    ):
+        raise RpaAdapterError("batch manifest has invalid material entries")
+    return manifest
+
+
+def _material_success_is_valid(material_id, entry):
+    if entry.get("status") != "succeeded":
+        return False
+    summary_json = entry.get("summaryJson")
+    summary_md = entry.get("summaryMd")
+    if not isinstance(summary_json, str) or not isinstance(summary_md, str):
+        return False
+    json_path = Path(summary_json)
+    markdown_path = Path(summary_md)
+    try:
+        if not json_path.is_file() or not markdown_path.is_file():
+            return False
+        summary = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(summary, dict) or summary.get("materialId") != material_id:
+        return False
+    frames = summary.get("frames")
+    if not isinstance(frames, list) or not frames:
+        return False
+    for frame in frames:
+        if not isinstance(frame, dict):
+            return False
+        frame_name = frame.get("framePath")
+        if not isinstance(frame_name, str) or Path(frame_name).name != frame_name:
+            return False
+        try:
+            if (json_path.parent / frame_name).stat().st_size <= 0:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _entry_result(entry):
+    return (
+        Path(entry["summaryJson"]).parent,
+        Path(entry["summaryJson"]),
+        Path(entry["summaryMd"]),
+    )
+
+
+def _run_rpa_batch(args, material_ids):
+    manifest_path = _batch_manifest_path(args)
+    expected_manifest = _new_batch_manifest(args, material_ids)
+    manifest = (
+        _load_resume_manifest(manifest_path, expected_manifest)
+        if args.resume
+        else expected_manifest
+    )
+    _write_json_atomically(manifest_path, manifest)
+
+    failures = []
+    last_result = None
+    for material_id in material_ids:
+        entry = manifest["materials"][material_id]
+        if args.resume and _material_success_is_valid(material_id, entry):
+            last_result = _entry_result(entry)
+            continue
+
+        entry.update(
+            {
+                "status": "running",
+                "attempts": entry.get("attempts", 0) + 1,
+                "errorType": None,
+                "errorMessage": None,
+            }
+        )
+        _write_json_atomically(manifest_path, manifest)
+        try:
+            result = _process_rpa_material(args, material_id)
+            result_dir, summary_json, summary_md = result
+            entry.update(
+                {
+                    "status": "succeeded",
+                    "summaryJson": str(summary_json),
+                    "summaryMd": str(summary_md),
+                }
+            )
+            if not _material_success_is_valid(material_id, entry):
+                raise InputDataError(
+                    f"material {material_id} did not produce valid retained outputs"
+                )
+            last_result = (Path(result_dir), Path(summary_json), Path(summary_md))
+        except (InputDataError, FfmpegError, RpaAdapterError, RpaCsvError) as exc:
+            entry.update(
+                {
+                    "status": "failed",
+                    "errorType": type(exc).__name__,
+                    "errorMessage": (
+                        f"{type(exc).__name__} while processing material {material_id}"
+                    ),
+                }
+            )
+            failures.append(material_id)
+        _write_json_atomically(manifest_path, manifest)
+
+    return manifest_path, last_result, failures
+
+
 def _process_rpa_material(args, material_id):
     records = fetch_material_diagnosis(
         shop_id=args.shop_id,
@@ -135,6 +346,7 @@ def _process_rpa_material(args, material_id):
             video_path,
             args.output_dir,
             ffmpeg_bin=args.ffmpeg_bin,
+            ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
         )
 
 
@@ -142,6 +354,13 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if (args.resume or args.batch_manifest) and not (
+            args.source == "rpa" and args.top_materials_json
+        ):
+            parser.error(
+                "--resume and --batch-manifest require --source rpa "
+                "with --top-materials-json"
+            )
         if args.source == "rpa":
             if not args.shop_id or not args.date_range_type or not (
                 args.material_id or args.top_materials_json
@@ -162,11 +381,18 @@ def main(argv=None):
                 if args.top_materials_json
                 else [args.material_id]
             )
-            results = [
-                _process_rpa_material(args, material_id)
-                for material_id in material_ids
-            ]
-            result_dir, json_path, markdown_path = results[-1]
+            if args.top_materials_json:
+                manifest_path, result, failures = _run_rpa_batch(
+                    args, material_ids
+                )
+                if failures:
+                    print(f"batch_manifest={manifest_path}", file=sys.stderr)
+                    return BATCH_PARTIAL_FAILURE_EXIT_CODE
+                result_dir, json_path, markdown_path = result
+            else:
+                result_dir, json_path, markdown_path = _process_rpa_material(
+                    args, material_ids[0]
+                )
 
         else:
             if not (args.input_json or args.input_csv) or (
@@ -194,6 +420,7 @@ def main(argv=None):
                         args.video,
                         args.output_dir,
                         ffmpeg_bin=args.ffmpeg_bin,
+                        ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
                     )
                 else:
                     video_url = find_material_video_url(records, material_id)
@@ -208,6 +435,7 @@ def main(argv=None):
                             video_path,
                             args.output_dir,
                             ffmpeg_bin=args.ffmpeg_bin,
+                            ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
                         )
             else:
                 result_dir, json_path, markdown_path = process_local(
@@ -215,6 +443,7 @@ def main(argv=None):
                     args.video,
                     args.output_dir,
                     ffmpeg_bin=args.ffmpeg_bin,
+                    ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
                 )
     except InputDataError as exc:
         print(str(exc), file=sys.stderr)

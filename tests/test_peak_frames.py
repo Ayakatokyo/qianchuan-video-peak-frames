@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from peak_frame_lib import (  # noqa: E402
+    DEFAULT_FFMPEG_TIMEOUT_SEC,
     FfmpegError,
     InputDataError,
     SelectedPeak,
@@ -23,6 +24,7 @@ from peak_frame_lib import (  # noqa: E402
     format_seconds_token,
     parse_click_series,
     probe_video_duration,
+    process_records,
     resolve_ffmpeg,
     select_peak_frames,
     validate_timestamps,
@@ -1136,7 +1138,9 @@ class FrameExtractionTests(unittest.TestCase):
             self.assertEqual(staging_path.suffix, output_path.suffix)
             self.assertFalse(staging_path.exists())
             self.assertEqual(output_path.read_bytes(), DECODABLE_JPEG)
-            self.assertEqual(extraction_call.kwargs["timeout"], 30.0)
+            self.assertEqual(
+                extraction_call.kwargs["timeout"], DEFAULT_FFMPEG_TIMEOUT_SEC
+            )
             self.assertEqual(
                 run_mock.call_args_list[1].args[0],
                 [
@@ -1153,7 +1157,10 @@ class FrameExtractionTests(unittest.TestCase):
                     "-",
                 ],
             )
-            self.assertEqual(run_mock.call_args_list[1].kwargs["timeout"], 30.0)
+            self.assertEqual(
+                run_mock.call_args_list[1].kwargs["timeout"],
+                DEFAULT_FFMPEG_TIMEOUT_SEC,
+            )
 
     def test_successive_extractions_use_unique_same_directory_staging_paths(self):
         staging_paths = []
@@ -1791,6 +1798,43 @@ class SummaryTests(unittest.TestCase):
             self.assertFalse((result_dir / "summary.md").exists())
 
 
+class ProcessingPipelineTests(unittest.TestCase):
+    def test_process_records_passes_configured_timeout_to_probe_and_frames(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def write_frame(_ffmpeg, _video, _timestamp, output, **_kwargs):
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=9.0
+            ) as probe_video, patch(
+                "peak_frame_lib.extract_frame", side_effect=write_frame
+            ) as extract:
+                process_records(
+                    records,
+                    "records.json",
+                    video,
+                    root / "output",
+                    ffmpeg_timeout_sec=120,
+                )
+
+        probe_video.assert_called_once_with("ffmpeg", video, timeout_sec=120)
+        self.assertEqual(extract.call_count, 4)
+        self.assertEqual(
+            [call.kwargs["timeout_sec"] for call in extract.call_args_list],
+            [120, 120, 120, 120],
+        )
+
+
 class CliTests(unittest.TestCase):
     def _make_video(self, ffmpeg, video, duration=9):
         completed = subprocess.run(
@@ -1870,6 +1914,265 @@ class CliTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+
+    def _write_batch_result(self, output, material_id):
+        result_dir = Path(output) / material_id
+        result_dir.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for index in range(4):
+            frame_path = result_dir / f"frame-{index}.jpg"
+            frame_path.write_bytes(DECODABLE_JPEG)
+            frames.append(
+                {
+                    "rankType": f"peak-{index}",
+                    "durationSec": float(index),
+                    "metricValue": float(index + 1),
+                    "framePath": frame_path.name,
+                }
+            )
+        summary_json = result_dir / "summary.json"
+        summary_md = result_dir / "summary.md"
+        summary_json.write_text(
+            json.dumps(
+                {
+                    "materialId": material_id,
+                    "frames": frames,
+                    "warnings": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary_md.write_text("# summary\n", encoding="utf-8")
+        return result_dir, summary_json, summary_md
+
+    def _batch_args(self, top_materials, output, *extra):
+        return [
+            "--source",
+            "rpa",
+            "--shop-id",
+            "shop-1",
+            "--top-materials-json",
+            str(top_materials),
+            "--date-range-type",
+            "CUSTOM",
+            "--custom-start-date",
+            "2026-06-01",
+            "--custom-end-date",
+            "2026-06-02",
+            "--output-dir",
+            str(output),
+            *extra,
+        ]
+
+    def test_rpa_batch_continues_after_material_failure_and_writes_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(
+                    {
+                        "materials": [
+                            {"materialId": "m-1"},
+                            {"materialId": "m-2"},
+                            {"materialId": "m-3"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            processed = []
+
+            def process_material(_args, material_id):
+                processed.append(material_id)
+                if material_id == "m-2":
+                    raise FfmpegError("timed out")
+                return self._write_batch_result(output, material_id)
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=process_material,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output)
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 5)
+        self.assertEqual(processed, ["m-1", "m-2", "m-3"])
+        self.assertEqual(
+            [manifest["materials"][material_id]["status"] for material_id in manifest["materialIds"]],
+            ["succeeded", "failed", "succeeded"],
+        )
+        self.assertEqual(manifest["materials"]["m-2"]["errorType"], "FfmpegError")
+
+    def test_rpa_batch_resume_retries_failed_material_only(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(
+                    {
+                        "materials": [
+                            {"materialId": "m-1"},
+                            {"materialId": "m-2"},
+                            {"materialId": "m-3"},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def first_attempt(_args, material_id):
+                if material_id == "m-2":
+                    raise FfmpegError("timed out")
+                return self._write_batch_result(output, material_id)
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=first_attempt,
+            ):
+                first_result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output)
+                )
+
+            resumed = []
+
+            def resumed_attempt(_args, material_id):
+                resumed.append(material_id)
+                return self._write_batch_result(output, material_id)
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=resumed_attempt,
+            ):
+                resumed_result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--resume")
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(first_result, 5)
+        self.assertEqual(resumed_result, 0)
+        self.assertEqual(resumed, ["m-2"])
+        self.assertEqual(
+            [manifest["materials"][material_id]["status"] for material_id in manifest["materialIds"]],
+            ["succeeded", "succeeded", "succeeded"],
+        )
+
+    def test_rpa_batch_resume_reprocesses_invalid_retained_success(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=lambda _args, material_id: self._write_batch_result(
+                    output, material_id
+                ),
+            ):
+                first_result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output)
+                )
+
+            (output / "m-1" / "frame-0.jpg").unlink()
+            resumed = []
+
+            def resumed_attempt(_args, material_id):
+                resumed.append(material_id)
+                return self._write_batch_result(output, material_id)
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=resumed_attempt,
+            ):
+                resumed_result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--resume")
+                )
+
+        self.assertEqual(first_result, 0)
+        self.assertEqual(resumed_result, 0)
+        self.assertEqual(resumed, ["m-1"])
+
+    def test_rpa_batch_resume_rejects_changed_material_selection(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=lambda _args, material_id: self._write_batch_result(
+                    output, material_id
+                ),
+            ):
+                self.assertEqual(
+                    extract_peak_frames.main(self._batch_args(top_materials, output)),
+                    0,
+                )
+
+            top_materials.write_text(
+                json.dumps({"materials": [{"materialId": "m-2"}]}),
+                encoding="utf-8",
+            )
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+            ) as process_material:
+                resumed_result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--resume")
+                )
+
+        self.assertEqual(resumed_result, 4)
+        process_material.assert_not_called()
+
+    def test_cli_passes_ffmpeg_timeout_to_local_pipeline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            result_dir = root / "output" / "m-123"
+            summary_json = result_dir / "summary.json"
+            summary_md = result_dir / "summary.md"
+            with patch.object(
+                extract_peak_frames,
+                "process_local",
+                return_value=(result_dir, summary_json, summary_md),
+            ) as process_local:
+                result = extract_peak_frames.main(
+                    [
+                        "--input-json",
+                        str(root / "input.json"),
+                        "--video",
+                        str(root / "video.mp4"),
+                        "--output-dir",
+                        str(root / "output"),
+                        "--ffmpeg-timeout-sec",
+                        "75",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(process_local.call_args.kwargs["ffmpeg_timeout_sec"], 75.0)
 
     def test_local_cli_outputs_four_frames_and_two_summaries(self):
         ffmpeg = resolve_ffmpeg()

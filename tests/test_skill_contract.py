@@ -47,6 +47,13 @@ class BatchSkillContractTests(unittest.TestCase):
             "result_type=files` CSV-envelope response is blocking", skill
         )
 
+    def test_batch_resume_documents_manifest_and_partial_failure(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("batch-manifest.json", skill)
+        self.assertIn("--resume", skill)
+        self.assertIn("later TOP materials still run", skill)
+
 
 if __name__ == "__main__":
     unittest.main()

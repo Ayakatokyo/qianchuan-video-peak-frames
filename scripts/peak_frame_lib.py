@@ -10,6 +10,9 @@ import subprocess
 import uuid
 
 
+DEFAULT_FFMPEG_TIMEOUT_SEC = 120.0
+
+
 class PeakFrameError(Exception):
     """Base error for expected peak-frame failures."""
 
@@ -128,7 +131,9 @@ def resolve_ffmpeg(
     raise FfmpegError(message)
 
 
-def probe_video_duration(ffmpeg_bin, video_path, timeout_sec=30.0):
+def probe_video_duration(
+    ffmpeg_bin, video_path, timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC
+):
     video = Path(video_path)
     if not video.is_file():
         raise InputDataError(f"video does not exist or is not a file: {video}")
@@ -214,7 +219,7 @@ def extract_frame(
     video_path,
     timestamp_sec,
     output_path,
-    timeout_sec=30.0,
+    timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
 ):
     video = Path(video_path)
     output = Path(output_path)
@@ -642,6 +647,7 @@ def process_local(
     video_path,
     output_dir,
     ffmpeg_bin=None,
+    ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
 ):
     """Run the complete local JSON/video peak-frame pipeline."""
     input_path = Path(input_json_path)
@@ -659,6 +665,7 @@ def process_local(
         video_path,
         output_dir,
         ffmpeg_bin=ffmpeg_bin,
+        ffmpeg_timeout_sec=ffmpeg_timeout_sec,
     )
 
 
@@ -668,6 +675,7 @@ def process_records(
     video_path,
     output_dir,
     ffmpeg_bin=None,
+    ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
 ):
     """Run the peak-frame pipeline with already-loaded RPA records."""
     video = Path(video_path)
@@ -675,8 +683,17 @@ def process_records(
         raise InputDataError(f"video does not exist or is not a file: {video}")
     material_id, points = parse_click_series(records)
     selected_peaks = select_peak_frames(find_local_peaks(points))
+    timeout_sec, _ = _canonical_seconds(
+        ffmpeg_timeout_sec, "FFmpeg timeout", FfmpegError
+    )
+    if timeout_sec <= 0:
+        raise FfmpegError(
+            f"FFmpeg timeout {ffmpeg_timeout_sec!r} must be greater than 0 seconds"
+        )
     ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
-    video_duration = probe_video_duration(ffmpeg, video)
+    video_duration = probe_video_duration(
+        ffmpeg, video, timeout_sec=timeout_sec
+    )
     validate_timestamps(selected_peaks, video_duration)
 
     summary_material_id = material_id or video.stem
@@ -704,7 +721,13 @@ def process_records(
             peak.duration_sec,
             peak.metric_value,
         )
-        extract_frame(ffmpeg, video, peak.duration_sec, frame_path)
+        extract_frame(
+            ffmpeg,
+            video,
+            peak.duration_sec,
+            frame_path,
+            timeout_sec=timeout_sec,
+        )
         frame_paths.append(frame_path)
 
     current_frames = set(frame_paths)
