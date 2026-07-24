@@ -1677,6 +1677,19 @@ class TimestampValidationTests(unittest.TestCase):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_summary_uses_stable_source_for_temporary_rpa_download(self):
+        summary = build_summary(
+            "m-123",
+            "rpa://connector/m-123",
+            "/temporary/download/m-123.mp4",
+            [SelectedPeak("first_peak", 1.0, 5.0)],
+            ["first.jpg"],
+            video_source="rpa-temporary-download",
+        )
+
+        self.assertEqual(summary["videoSource"], "rpa-temporary-download")
+        self.assertNotIn("videoPath", summary)
+
     def test_formats_integer_fractional_and_submicrosecond_seconds_safely(self):
         self.assertEqual(format_seconds_token(7.0), "0007s")
         self.assertEqual(format_seconds_token(7.5), "0007p5s")
@@ -1964,21 +1977,122 @@ class CliTests(unittest.TestCase):
             *extra,
         ]
 
-    def test_rpa_batch_continues_after_material_failure_and_writes_manifest(self):
+    def _top_materials_payload(self, material_ids, **overrides):
+        payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialCount": len(material_ids),
+            "materials": [
+                {"materialId": material_id} for material_id in material_ids
+            ],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_rpa_batch_rejects_exported_dates_that_differ_from_custom_range(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
             top_materials = root / "top_materials.json"
             top_materials.write_text(
                 json.dumps(
-                    {
-                        "materials": [
-                            {"materialId": "m-1"},
-                            {"materialId": "m-2"},
-                            {"materialId": "m-3"},
-                        ]
-                    }
+                    self._top_materials_payload(
+                        ["m-1"], actualStartDate="2026-05-31"
+                    )
                 ),
+                encoding="utf-8",
+            )
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=lambda _args, material_id: self._write_batch_result(
+                    output, material_id
+                ),
+            ) as process_material:
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output)
+                )
+
+        self.assertEqual(result, 4)
+        process_material.assert_not_called()
+
+    def test_rpa_batch_verify_writes_receipt_without_processing_materials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1"])),
+                encoding="utf-8",
+            )
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=lambda _args, material_id: self._write_batch_result(
+                    output, material_id
+                ),
+            ):
+                self.assertEqual(
+                    extract_peak_frames.main(self._batch_args(top_materials, output)),
+                    0,
+                )
+
+            with patch.object(
+                extract_peak_frames, "_process_rpa_material"
+            ) as process_material:
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--verify")
+                )
+            receipt = json.loads(
+                (output / "batch-verification.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        process_material.assert_not_called()
+        self.assertTrue(receipt["valid"])
+        self.assertEqual(receipt["materialCount"], 1)
+        self.assertEqual(receipt["warningCount"], 0)
+
+    def test_rpa_batch_verify_rejects_corrupt_retained_jpeg(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1"])),
+                encoding="utf-8",
+            )
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=lambda _args, material_id: self._write_batch_result(
+                    output, material_id
+                ),
+            ):
+                self.assertEqual(
+                    extract_peak_frames.main(self._batch_args(top_materials, output)),
+                    0,
+                )
+            (output / "m-1" / "frame-0.jpg").write_bytes(b"not-a-jpeg")
+
+            result = extract_peak_frames.main(
+                self._batch_args(top_materials, output, "--verify")
+            )
+            receipt = json.loads(
+                (output / "batch-verification.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 6)
+        self.assertFalse(receipt["valid"])
+        self.assertIn("not a structurally valid JPEG", receipt["errors"][0])
+
+    def test_rpa_batch_continues_after_material_failure_and_writes_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1", "m-2", "m-3"])),
                 encoding="utf-8",
             )
             processed = []
@@ -2016,15 +2130,7 @@ class CliTests(unittest.TestCase):
             output = root / "peak-frames"
             top_materials = root / "top_materials.json"
             top_materials.write_text(
-                json.dumps(
-                    {
-                        "materials": [
-                            {"materialId": "m-1"},
-                            {"materialId": "m-2"},
-                            {"materialId": "m-3"},
-                        ]
-                    }
-                ),
+                json.dumps(self._top_materials_payload(["m-1", "m-2", "m-3"])),
                 encoding="utf-8",
             )
 
@@ -2075,7 +2181,7 @@ class CliTests(unittest.TestCase):
             output = root / "peak-frames"
             top_materials = root / "top_materials.json"
             top_materials.write_text(
-                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                json.dumps(self._top_materials_payload(["m-1"])),
                 encoding="utf-8",
             )
 
@@ -2116,7 +2222,7 @@ class CliTests(unittest.TestCase):
             output = root / "peak-frames"
             top_materials = root / "top_materials.json"
             top_materials.write_text(
-                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                json.dumps(self._top_materials_payload(["m-1"])),
                 encoding="utf-8",
             )
 
@@ -2133,7 +2239,7 @@ class CliTests(unittest.TestCase):
                 )
 
             top_materials.write_text(
-                json.dumps({"materials": [{"materialId": "m-2"}]}),
+                json.dumps(self._top_materials_payload(["m-2"])),
                 encoding="utf-8",
             )
             with patch.object(
@@ -2497,7 +2603,7 @@ class CliTests(unittest.TestCase):
             output = root / "peak-frames"
             self._make_video(ffmpeg, source_video)
             top_materials.write_text(
-                json.dumps({"materials": [{"rank": 1, "materialId": "m-files"}]}),
+                json.dumps(self._top_materials_payload(["m-files"])),
                 encoding="utf-8",
             )
 
@@ -2561,14 +2667,7 @@ class CliTests(unittest.TestCase):
             top_materials = root / "top_materials.json"
             self._make_video(ffmpeg, source_video)
             top_materials.write_text(
-                json.dumps(
-                    {
-                        "materials": [
-                            {"rank": 1, "materialId": "764"},
-                            {"rank": 2, "materialId": "765"},
-                        ]
-                    }
-                ),
+                json.dumps(self._top_materials_payload(["764", "765"])),
                 encoding="utf-8",
             )
 

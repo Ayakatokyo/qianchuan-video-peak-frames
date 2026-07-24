@@ -16,7 +16,7 @@ Extract the first chronological click peak and the later top three click peaks, 
 3. Create an isolated Python 3.9+ environment and install `requirements.txt`.
 4. For an online TOP-material batch, confirm `ENV_BACKEND_HOST`, `YUCE_AUTHORIZATION`, `YUCE_SESSION_ID`, and the target `shop_id`.
 5. Select TOP materials from the asset table before invoking RPA. Use one explicit inclusive start/end date range for both operations and do not reuse a selection JSON from another run or period.
-6. Review `top_materials.json`, every path in each `summary.json`, the corresponding JPEG, `summary.md`, and all warnings before reporting success.
+6. Run batch verification before reporting success; review its retained warnings and do not treat a filename alone as evidence of a valid frame.
 
 ## Local Run
 
@@ -42,7 +42,7 @@ python scripts/export_top_materials.py \
   --output "/path/to/run/top_materials.json"
 ```
 
-Before RPA, inspect `top_materials.json`. Stop when `materials` is empty, an entry lacks `materialId`, or `actualStartDate`/`actualEndDate` differs from the requested range.
+The CLI requires `actualStartDate`, `actualEndDate`, and `materialCount` in `top_materials.json`. For a `CUSTOM` batch, its dates must exactly match `--custom-start-date` and `--custom-end-date`; duplicate material IDs and an incorrect count are rejected before any RPA call.
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -74,6 +74,22 @@ python scripts/extract_peak_frames.py \
   --resume
 ```
 
+After a fully successful run or a completed resume, verify the retained artifacts without contacting RPA, downloading video, or running FFmpeg:
+
+```bash
+python scripts/extract_peak_frames.py \
+  --source rpa \
+  --shop-id "<rpa-authorized-shop-id>" \
+  --top-materials-json "/path/to/run/top_materials.json" \
+  --date-range-type CUSTOM \
+  --custom-start-date 2026-06-01 \
+  --custom-end-date 2026-06-07 \
+  --output-dir "/path/to/run/peak-frames" \
+  --verify
+```
+
+Verification writes `batch-verification.json` atomically in the output directory. It binds the manifest to the selected IDs, shop, and date range; checks every material status, retained summaries, frame paths, nonempty JPEG structure, and collects summary warnings. It returns exit code `6` when retained artifacts fail verification. The receipt contains no credentials, video URLs, or signed diagnostic CSV URLs.
+
 ## Single-Material RPA Debug Run
 
 Use this only to diagnose or replay one already known material. `--material-id` is not an alternative selection method for a TOP-material batch run.
@@ -87,7 +103,7 @@ python scripts/extract_peak_frames.py \
   --output-dir "/path/to/output"
 ```
 
-Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapter calls the fixed Yuce connector `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis`, downloads `material_info.videoUrl` to a temporary video file, then reuses the same local peak and frame pipeline.
+Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapter calls the fixed Yuce connector `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis`, downloads `material_info.videoUrl` to a temporary video file, then reuses the same local peak and frame pipeline. RPA summaries record `videoSource: rpa-temporary-download`, not the deleted temporary download path.
 
 ## Selection Contract
 
@@ -109,6 +125,7 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 | RPA accounts | Use `scripts/rpa_adapter.py` helpers or the Yuce connector account list to find `shop_id` |
 | TOP-material batch | Run asset-table selection first, then pass its run-local `top_materials.json` to RPA with the same CUSTOM dates |
 | Resume TOP-material batch | Repeat the identical batch command with `--resume`; inspect `batch-manifest.json` first |
+| Verify TOP-material batch | Repeat the identical batch binding with `--verify`; inspect `batch-verification.json`, warnings, and exit code |
 | Single-material debug | Pass `--source rpa --shop-id ... --material-id ... --date-range-type ...` |
 | Regression check | Run `python -m unittest tests/test_peak_frames.py -v` |
 
@@ -123,4 +140,5 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 - Do not use different ranking and diagnosis date ranges.
 - Do not overwrite or discard the run-local `top_materials.json`.
 - Do not use `--resume` with a different material selection, shop, or date range; start a new batch instead.
+- Do not report a batch as successful before `--verify` returns zero; exit code `6` means retained outputs failed validation.
 - Treat an RPA CSV download or parsing failure as blocking; inspect the retained `diagnosis-csv/<materialId>.csv` when diagnosing it.

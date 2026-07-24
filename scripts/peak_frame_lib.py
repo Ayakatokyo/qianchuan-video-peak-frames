@@ -459,6 +459,7 @@ def build_summary(
     video_path,
     selected_peaks,
     frame_paths,
+    video_source=None,
 ):
     """Build the JSON-compatible result shared by both summary formats."""
     if len(selected_peaks) != len(frame_paths):
@@ -472,10 +473,9 @@ def build_summary(
         warnings.append(
             f"{missing_later} later peak frame(s) unavailable"
         )
-    return {
+    summary = {
         "materialId": str(material_id),
         "inputJsonPath": str(input_json_path),
-        "videoPath": str(Path(video_path)),
         "selectionRule": {
             "first": "earliest_local_peak",
             "later": "top_3_by_metric_desc_then_time_asc_after_first",
@@ -494,6 +494,11 @@ def build_summary(
         ],
         "warnings": warnings,
     }
+    if video_source is None:
+        summary["videoPath"] = str(Path(video_path))
+    else:
+        summary["videoSource"] = str(video_source)
+    return summary
 
 
 def _render_summary_markdown(summary):
@@ -502,7 +507,11 @@ def _render_summary_markdown(summary):
         f"# 千川点击峰值画面：{summary['materialId']}",
         "",
         f"- RPA JSON: {summary['inputJsonPath']}",
-        f"- 视频: {summary['videoPath']}",
+        (
+            f"- 视频来源: {summary['videoSource']}"
+            if "videoSource" in summary
+            else f"- 视频: {summary['videoPath']}"
+        ),
         "",
         "## 选择规则",
         "",
@@ -676,6 +685,7 @@ def process_records(
     output_dir,
     ffmpeg_bin=None,
     ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    video_source=None,
 ):
     """Run the peak-frame pipeline with already-loaded RPA records."""
     video = Path(video_path)
@@ -740,6 +750,7 @@ def process_records(
         video,
         selected_peaks,
         frame_paths,
+        video_source=video_source,
     )
     json_path, markdown_path = write_summaries(summary, result_dir)
     return result_dir, json_path, markdown_path

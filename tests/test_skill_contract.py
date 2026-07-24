@@ -54,6 +54,13 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("--resume", skill)
         self.assertIn("later TOP materials still run", skill)
 
+    def test_batch_verification_documents_receipt_and_failure_exit_code(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("--verify", skill)
+        self.assertIn("batch-verification.json", skill)
+        self.assertIn("exit code `6`", skill)
+
 
 if __name__ == "__main__":
     unittest.main()

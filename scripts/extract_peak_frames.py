@@ -39,6 +39,8 @@ DATE_RANGE_TYPES = (
 BATCH_MANIFEST_NAME = "batch-manifest.json"
 BATCH_MANIFEST_VERSION = 1
 BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
+BATCH_VERIFICATION_NAME = "batch-verification.json"
+BATCH_VERIFICATION_FAILURE_EXIT_CODE = 6
 
 
 def _positive_timeout(value):
@@ -77,18 +79,33 @@ def build_parser():
     parser.add_argument("--diagnosis-records-dir")
     parser.add_argument("--batch-manifest")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--verify", action="store_true")
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
     return parser
 
 
-def _top_material_ids(path):
+def _top_material_ids(path, date_range_type, custom_start_date, custom_end_date):
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RpaAdapterError(f"unable to read top materials JSON: {exc}") from exc
-    materials = payload.get("materials") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        raise RpaAdapterError("top materials JSON must be an object")
+    actual_start_date = payload.get("actualStartDate")
+    actual_end_date = payload.get("actualEndDate")
+    if not isinstance(actual_start_date, str) or not isinstance(actual_end_date, str):
+        raise RpaAdapterError(
+            "top materials JSON requires actualStartDate and actualEndDate"
+        )
+    if date_range_type == "CUSTOM" and (
+        actual_start_date != custom_start_date or actual_end_date != custom_end_date
+    ):
+        raise RpaAdapterError(
+            "top materials JSON date range does not match the requested CUSTOM range"
+        )
+    materials = payload.get("materials")
     if not isinstance(materials, list) or not materials:
         raise RpaAdapterError(
             "top materials JSON must contain a nonempty materials list"
@@ -101,7 +118,13 @@ def _top_material_ids(path):
         material_id = str(material.get("materialId") or "").strip()
         if not material_id:
             raise RpaAdapterError("top materials entries require materialId")
+        if material_id in material_ids:
+            raise RpaAdapterError("top materials entries must not repeat materialId")
         material_ids.append(material_id)
+    if payload.get("materialCount") != len(material_ids):
+        raise RpaAdapterError(
+            "top materials JSON materialCount does not match materials"
+        )
     return material_ids
 
 
@@ -224,37 +247,64 @@ def _load_resume_manifest(path, expected_manifest):
 
 
 def _material_success_is_valid(material_id, entry):
+    errors, _warnings = _material_output_issues(material_id, entry)
+    return not errors
+
+
+def _material_output_issues(material_id, entry):
+    errors = []
+    warnings = []
     if entry.get("status") != "succeeded":
-        return False
+        return [f"material {material_id} is not succeeded"], warnings
     summary_json = entry.get("summaryJson")
     summary_md = entry.get("summaryMd")
     if not isinstance(summary_json, str) or not isinstance(summary_md, str):
-        return False
+        return [f"material {material_id} is missing retained summary paths"], warnings
     json_path = Path(summary_json)
     markdown_path = Path(summary_md)
     try:
         if not json_path.is_file() or not markdown_path.is_file():
-            return False
+            return [f"material {material_id} retained summary is missing"], warnings
         summary = json.loads(json_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
+        return [f"material {material_id} retained summary JSON is unreadable"], warnings
     if not isinstance(summary, dict) or summary.get("materialId") != material_id:
-        return False
+        return [f"material {material_id} retained summary has the wrong materialId"], warnings
     frames = summary.get("frames")
     if not isinstance(frames, list) or not frames:
-        return False
+        return [f"material {material_id} retained summary has no frames"], warnings
+    summary_warnings = summary.get("warnings")
+    if not isinstance(summary_warnings, list) or not all(
+        isinstance(warning, str) for warning in summary_warnings
+    ):
+        return [f"material {material_id} retained summary has invalid warnings"], warnings
+    warnings.extend(summary_warnings)
     for frame in frames:
         if not isinstance(frame, dict):
-            return False
+            return [f"material {material_id} retained summary has an invalid frame"], warnings
         frame_name = frame.get("framePath")
         if not isinstance(frame_name, str) or Path(frame_name).name != frame_name:
-            return False
+            return [f"material {material_id} retained frame path is unsafe"], warnings
         try:
-            if (json_path.parent / frame_name).stat().st_size <= 0:
-                return False
+            frame_path = json_path.parent / frame_name
+            if frame_path.stat().st_size <= 0:
+                return [f"material {material_id} retained frame is empty"], warnings
+            with frame_path.open("rb") as frame_file:
+                start_marker = frame_file.read(2)
+                frame_file.seek(-2, os.SEEK_END)
+                end_marker = frame_file.read(2)
+                if start_marker != b"\xff\xd8" or end_marker != b"\xff\xd9":
+                    return [
+                        f"material {material_id} retained frame is not a structurally valid JPEG"
+                    ], warnings
         except OSError:
-            return False
-    return True
+            return [f"material {material_id} retained frame is missing"], warnings
+    try:
+        if markdown_path.stat().st_size <= 0:
+            return [f"material {material_id} retained Markdown summary is empty"], warnings
+    except OSError:
+        return [f"material {material_id} retained Markdown summary is missing"], warnings
+    return errors, warnings
 
 
 def _entry_result(entry):
@@ -263,6 +313,36 @@ def _entry_result(entry):
         Path(entry["summaryJson"]),
         Path(entry["summaryMd"]),
     )
+
+
+def _verify_rpa_batch(args, material_ids):
+    manifest_path = _batch_manifest_path(args)
+    manifest = _load_resume_manifest(
+        manifest_path, _new_batch_manifest(args, material_ids)
+    )
+    errors = []
+    warnings = []
+    for material_id in material_ids:
+        material_errors, material_warnings = _material_output_issues(
+            material_id, manifest["materials"][material_id]
+        )
+        errors.extend(material_errors)
+        warnings.extend(
+            {"materialId": material_id, "warning": warning}
+            for warning in material_warnings
+        )
+    receipt = {
+        "schemaVersion": 1,
+        "valid": not errors,
+        "materialCount": len(material_ids),
+        "materialIds": material_ids,
+        "warningCount": len(warnings),
+        "warnings": warnings,
+        "errors": errors,
+    }
+    receipt_path = Path(args.output_dir) / BATCH_VERIFICATION_NAME
+    _write_json_atomically(receipt_path, receipt)
+    return receipt_path, receipt
 
 
 def _run_rpa_batch(args, material_ids):
@@ -347,6 +427,7 @@ def _process_rpa_material(args, material_id):
             args.output_dir,
             ffmpeg_bin=args.ffmpeg_bin,
             ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+            video_source="rpa-temporary-download",
         )
 
 
@@ -354,13 +435,15 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if (args.resume or args.batch_manifest) and not (
+        if (args.resume or args.batch_manifest or args.verify) and not (
             args.source == "rpa" and args.top_materials_json
         ):
             parser.error(
-                "--resume and --batch-manifest require --source rpa "
+                "--resume, --batch-manifest, and --verify require --source rpa "
                 "with --top-materials-json"
             )
+        if args.verify and args.resume:
+            parser.error("--verify and --resume cannot be used together")
         if args.source == "rpa":
             if not args.shop_id or not args.date_range_type or not (
                 args.material_id or args.top_materials_json
@@ -377,11 +460,26 @@ def main(argv=None):
                     "--custom-end-date"
                 )
             material_ids = (
-                _top_material_ids(args.top_materials_json)
+                _top_material_ids(
+                    args.top_materials_json,
+                    args.date_range_type,
+                    args.custom_start_date,
+                    args.custom_end_date,
+                )
                 if args.top_materials_json
                 else [args.material_id]
             )
             if args.top_materials_json:
+                if args.verify:
+                    verification_path, receipt = _verify_rpa_batch(
+                        args, material_ids
+                    )
+                    print(f"batch_verification={verification_path}")
+                    return (
+                        0
+                        if receipt["valid"]
+                        else BATCH_VERIFICATION_FAILURE_EXIT_CODE
+                    )
                 manifest_path, result, failures = _run_rpa_batch(
                     args, material_ids
                 )
