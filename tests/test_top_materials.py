@@ -524,6 +524,7 @@ class MaterialSelectionTests(unittest.TestCase):
             {
                 "actualStartDate": "2026-05-01",
                 "actualEndDate": "2026-05-05",
+                "materialCount": 2,
                 "rankingMetric": "stat_cost_for_overall_roi2",
                 "filters": {
                     "materialNameRegex": "First|Second|Winter",

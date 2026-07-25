@@ -54,12 +54,13 @@ python scripts/extract_peak_frames.py \
   --custom-end-date 2026-06-07 \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
   --ffmpeg-timeout-sec 120 \
+  --concurrency 3 \
   --output-dir "/path/to/run/peak-frames"
 ```
 
 Retain `top_materials.json`, raw diagnostic CSVs at `diagnosis-csv/<materialId>.csv`, normalized records, peak-frame summaries, JPEGs, and warnings. CSV download or parsing failures remain blocking; do not report a material as successful until its retained CSV and frame summary have been reviewed.
 
-The command writes `batch-manifest.json` inside the peak-frame output directory. A failed material is recorded there and later TOP materials still run; the command exits nonzero when any material remains failed, even though successful artifacts are retained. Resume the exact same selected IDs, shop, and date range with `--resume`; it skips only successful materials whose retained summaries and JPEGs still validate, then retries failed or interrupted materials.
+The command writes `batch-manifest.json` inside the peak-frame output directory. Use `--concurrency <positive-integer>` for controlled parallelism across materials; omit it to keep the default single-material-at-a-time behavior. Each material entry records `timingsSec` with `rpaFetchSec`, `diagnosisRecordWriteSec`, `videoDownloadSec`, `frameExtractionSec`, and `totalSec` so slow runs can be attributed before tuning further. A failed material is recorded there and later TOP materials still run; the command exits nonzero when any material remains failed, even though successful artifacts are retained. Resume the exact same selected IDs, shop, and date range with `--resume`; it skips only successful materials whose retained summaries and JPEGs still validate, then retries failed or interrupted materials.
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -124,6 +125,7 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 | Local result | Inspect `<output>/<material-id>/summary.json` |
 | RPA accounts | Use `scripts/rpa_adapter.py` helpers or the Yuce connector account list to find `shop_id` |
 | TOP-material batch | Run asset-table selection first, then pass its run-local `top_materials.json` to RPA with the same CUSTOM dates |
+| Faster TOP-material batch | Add `--concurrency 3` for controlled parallelism after confirming the gateway can tolerate parallel RPA calls |
 | Resume TOP-material batch | Repeat the identical batch command with `--resume`; inspect `batch-manifest.json` first |
 | Verify TOP-material batch | Repeat the identical batch binding with `--verify`; inspect `batch-verification.json`, warnings, and exit code |
 | Single-material debug | Pass `--source rpa --shop-id ... --material-id ... --date-range-type ...` |

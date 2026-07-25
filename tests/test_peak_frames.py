@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -2123,6 +2125,98 @@ class CliTests(unittest.TestCase):
             ["succeeded", "failed", "succeeded"],
         )
         self.assertEqual(manifest["materials"]["m-2"]["errorType"], "FfmpegError")
+
+    def test_rpa_batch_records_material_timing_segments_in_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1"])),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=lambda _args, material_id: self._write_batch_result(
+                    output, material_id
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output)
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        timings = manifest["materials"]["m-1"]["timingsSec"]
+        self.assertEqual(
+            sorted(timings),
+            [
+                "diagnosisRecordWriteSec",
+                "frameExtractionSec",
+                "rpaFetchSec",
+                "totalSec",
+                "videoDownloadSec",
+            ],
+        )
+        self.assertGreaterEqual(timings["totalSec"], 0)
+
+    def test_rpa_batch_concurrency_limits_parallel_material_processing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = [f"m-{index}" for index in range(6)]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)),
+                encoding="utf-8",
+            )
+            lock = threading.Lock()
+            active = 0
+            max_active = 0
+            processed = []
+
+            def process_material(_args, material_id):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                    processed.append(material_id)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
+                return self._write_batch_result(output, material_id)
+
+            with patch.object(
+                extract_peak_frames,
+                "_process_rpa_material",
+                side_effect=process_material,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--concurrency",
+                        "3",
+                    )
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(sorted(processed), material_ids)
+        self.assertGreater(max_active, 1)
+        self.assertLessEqual(max_active, 3)
+        self.assertEqual(
+            [manifest["materials"][material_id]["status"] for material_id in material_ids],
+            ["succeeded"] * len(material_ids),
+        )
 
     def test_rpa_batch_resume_retries_failed_material_only(self):
         with tempfile.TemporaryDirectory() as temp_dir:

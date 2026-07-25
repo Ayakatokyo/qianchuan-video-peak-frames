@@ -124,6 +124,7 @@ def build_output(
     return {
         "actualStartDate": actual_start_date,
         "actualEndDate": actual_end_date,
+        "materialCount": len(materials),
         "rankingMetric": RANKING_METRIC,
         "filters": {
             "materialNameRegex": None if pattern is None else pattern.pattern,

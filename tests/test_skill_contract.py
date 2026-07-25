@@ -61,6 +61,15 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("batch-verification.json", skill)
         self.assertIn("exit code `6`", skill)
 
+    def test_batch_concurrency_and_timing_receipt_are_documented(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("--concurrency 3", skill)
+        self.assertIn("controlled parallelism", skill)
+        self.assertIn("timingsSec", skill)
+        self.assertIn("rpaFetchSec", skill)
+        self.assertIn("frameExtractionSec", skill)
+
 
 if __name__ == "__main__":
     unittest.main()

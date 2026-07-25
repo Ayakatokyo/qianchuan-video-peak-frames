@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import os
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 import uuid
 
@@ -41,6 +44,15 @@ BATCH_MANIFEST_VERSION = 1
 BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
 BATCH_VERIFICATION_NAME = "batch-verification.json"
 BATCH_VERIFICATION_FAILURE_EXIT_CODE = 6
+MATERIAL_TIMING_FIELDS = (
+    "rpaFetchSec",
+    "diagnosisRecordWriteSec",
+    "videoDownloadSec",
+    "frameExtractionSec",
+    "totalSec",
+)
+HANDLED_MATERIAL_ERRORS = (InputDataError, FfmpegError, RpaAdapterError, RpaCsvError)
+_MATERIAL_TIMING_STATE = threading.local()
 
 
 def _positive_timeout(value):
@@ -55,6 +67,20 @@ def _positive_timeout(value):
             "FFmpeg timeout must be a positive finite number"
         )
     return timeout
+
+
+def _positive_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "concurrency must be a positive integer"
+        ) from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError(
+            "concurrency must be a positive integer"
+        )
+    return number
 
 
 def build_parser():
@@ -80,6 +106,7 @@ def build_parser():
     parser.add_argument("--batch-manifest")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--concurrency", type=_positive_int, default=1)
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
@@ -200,12 +227,14 @@ def _new_batch_manifest(args, material_ids):
         "schemaVersion": BATCH_MANIFEST_VERSION,
         "source": "rpa",
         "shopId": args.shop_id,
+        "concurrency": args.concurrency,
         "dateRange": {
             "type": args.date_range_type,
             "customStartDate": args.custom_start_date,
             "customEndDate": args.custom_end_date,
         },
         "materialIds": material_ids,
+        "timingsSec": {"totalSec": 0.0},
         "materials": {
             material_id: {
                 "status": "pending",
@@ -214,6 +243,7 @@ def _new_batch_manifest(args, material_ids):
                 "summaryMd": None,
                 "errorType": None,
                 "errorMessage": None,
+                "timingsSec": _empty_material_timings(),
             }
             for material_id in material_ids
         },
@@ -315,6 +345,118 @@ def _entry_result(entry):
     )
 
 
+def _empty_material_timings():
+    return {field: 0.0 for field in MATERIAL_TIMING_FIELDS}
+
+
+def _elapsed_since(start_time):
+    return round(max(0.0, time.perf_counter() - start_time), 6)
+
+
+def _time_call(timings, field, function, *args, **kwargs):
+    started_at = time.perf_counter()
+    try:
+        return function(*args, **kwargs)
+    finally:
+        timings[field] = _elapsed_since(started_at)
+
+
+def _set_last_material_timings(timings):
+    _MATERIAL_TIMING_STATE.timings = timings
+
+
+def _pop_last_material_timings():
+    timings = getattr(_MATERIAL_TIMING_STATE, "timings", None)
+    if hasattr(_MATERIAL_TIMING_STATE, "timings"):
+        delattr(_MATERIAL_TIMING_STATE, "timings")
+    return timings
+
+
+def _timings_or_fallback(started_at):
+    timings = _pop_last_material_timings()
+    if timings is None:
+        timings = _empty_material_timings()
+        timings["totalSec"] = _elapsed_since(started_at)
+    elif timings.get("totalSec", 0.0) <= 0:
+        timings["totalSec"] = _elapsed_since(started_at)
+    return timings
+
+
+def _start_material_attempt(entry):
+    entry.update(
+        {
+            "status": "running",
+            "attempts": entry.get("attempts", 0) + 1,
+            "errorType": None,
+            "errorMessage": None,
+            "timingsSec": _empty_material_timings(),
+        }
+    )
+
+
+def _attempt_rpa_material(args, material_id):
+    started_at = time.perf_counter()
+    try:
+        result = _process_rpa_material(args, material_id)
+        return {
+            "materialId": material_id,
+            "result": result,
+            "error": None,
+            "timingsSec": _timings_or_fallback(started_at),
+        }
+    except HANDLED_MATERIAL_ERRORS as exc:
+        return {
+            "materialId": material_id,
+            "result": None,
+            "error": exc,
+            "timingsSec": _timings_or_fallback(started_at),
+        }
+
+
+def _apply_material_attempt(manifest, material_id, attempt):
+    entry = manifest["materials"][material_id]
+    entry["timingsSec"] = attempt["timingsSec"]
+    error = attempt["error"]
+    if error is not None:
+        entry.update(
+            {
+                "status": "failed",
+                "errorType": type(error).__name__,
+                "errorMessage": (
+                    f"{type(error).__name__} while processing material {material_id}"
+                ),
+            }
+        )
+        return
+
+    result_dir, summary_json, summary_md = attempt["result"]
+    entry.update(
+        {
+            "status": "succeeded",
+            "summaryJson": str(summary_json),
+            "summaryMd": str(summary_md),
+        }
+    )
+    if not _material_success_is_valid(material_id, entry):
+        entry.update(
+            {
+                "status": "failed",
+                "errorType": "InputDataError",
+                "errorMessage": (
+                    f"InputDataError while processing material {material_id}"
+                ),
+            }
+        )
+
+
+def _iter_pending_material_ids(args, manifest, material_ids):
+    for material_id in material_ids:
+        entry = manifest["materials"][material_id]
+        if args.resume and _material_success_is_valid(material_id, entry):
+            continue
+        yield material_id
+
+
 def _verify_rpa_batch(args, material_ids):
     manifest_path = _batch_manifest_path(args)
     manifest = _load_resume_manifest(
@@ -346,6 +488,7 @@ def _verify_rpa_batch(args, material_ids):
 
 
 def _run_rpa_batch(args, material_ids):
+    batch_started_at = time.perf_counter()
     manifest_path = _batch_manifest_path(args)
     expected_manifest = _new_batch_manifest(args, material_ids)
     manifest = (
@@ -353,82 +496,92 @@ def _run_rpa_batch(args, material_ids):
         if args.resume
         else expected_manifest
     )
+    manifest["concurrency"] = args.concurrency
+    manifest.setdefault("timingsSec", {})["totalSec"] = 0.0
     _write_json_atomically(manifest_path, manifest)
 
-    failures = []
-    last_result = None
-    for material_id in material_ids:
-        entry = manifest["materials"][material_id]
-        if args.resume and _material_success_is_valid(material_id, entry):
-            last_result = _entry_result(entry)
-            continue
+    pending_material_ids = list(_iter_pending_material_ids(args, manifest, material_ids))
+    for material_id in pending_material_ids:
+        _start_material_attempt(manifest["materials"][material_id])
+    _write_json_atomically(manifest_path, manifest)
 
-        entry.update(
-            {
-                "status": "running",
-                "attempts": entry.get("attempts", 0) + 1,
-                "errorType": None,
-                "errorMessage": None,
+    if args.concurrency == 1:
+        for material_id in pending_material_ids:
+            attempt = _attempt_rpa_material(args, material_id)
+            _apply_material_attempt(manifest, material_id, attempt)
+            _write_json_atomically(manifest_path, manifest)
+    else:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            futures = {
+                executor.submit(_attempt_rpa_material, args, material_id): material_id
+                for material_id in pending_material_ids
             }
-        )
-        _write_json_atomically(manifest_path, manifest)
-        try:
-            result = _process_rpa_material(args, material_id)
-            result_dir, summary_json, summary_md = result
-            entry.update(
-                {
-                    "status": "succeeded",
-                    "summaryJson": str(summary_json),
-                    "summaryMd": str(summary_md),
-                }
-            )
-            if not _material_success_is_valid(material_id, entry):
-                raise InputDataError(
-                    f"material {material_id} did not produce valid retained outputs"
-                )
-            last_result = (Path(result_dir), Path(summary_json), Path(summary_md))
-        except (InputDataError, FfmpegError, RpaAdapterError, RpaCsvError) as exc:
-            entry.update(
-                {
-                    "status": "failed",
-                    "errorType": type(exc).__name__,
-                    "errorMessage": (
-                        f"{type(exc).__name__} while processing material {material_id}"
-                    ),
-                }
-            )
-            failures.append(material_id)
-        _write_json_atomically(manifest_path, manifest)
+            for future in as_completed(futures):
+                material_id = futures[future]
+                _apply_material_attempt(manifest, material_id, future.result())
+                _write_json_atomically(manifest_path, manifest)
+
+    manifest["timingsSec"]["totalSec"] = _elapsed_since(batch_started_at)
+    _write_json_atomically(manifest_path, manifest)
+
+    failures = [
+        material_id
+        for material_id in material_ids
+        if manifest["materials"][material_id].get("status") == "failed"
+    ]
+    last_result = None
+    for material_id in reversed(material_ids):
+        entry = manifest["materials"][material_id]
+        if entry.get("status") == "succeeded":
+            last_result = _entry_result(entry)
+            break
 
     return manifest_path, last_result, failures
 
 
 def _process_rpa_material(args, material_id):
-    records = fetch_material_diagnosis(
-        shop_id=args.shop_id,
-        material_id=material_id,
-        date_range_type=args.date_range_type,
-        custom_start_date=args.custom_start_date,
-        custom_end_date=args.custom_end_date,
-        diagnosis_csv_dir=_diagnosis_csv_dir(args),
-    )
-    if args.diagnosis_records_dir:
-        _write_diagnosis_records(
-            records, args.diagnosis_records_dir, material_id
+    timings = _empty_material_timings()
+    total_started_at = time.perf_counter()
+    try:
+        records = _time_call(
+            timings,
+            "rpaFetchSec",
+            fetch_material_diagnosis,
+            shop_id=args.shop_id,
+            material_id=material_id,
+            date_range_type=args.date_range_type,
+            custom_start_date=args.custom_start_date,
+            custom_end_date=args.custom_end_date,
+            diagnosis_csv_dir=_diagnosis_csv_dir(args),
         )
-    video_url = find_material_video_url(records, material_id)
-    with tempfile.TemporaryDirectory() as temp_dir:
-        video_path = Path(temp_dir) / f"{material_id}.mp4"
-        download_video(video_url, video_path)
-        return process_records(
-            records,
-            f"rpa://{FUNCTION_CODE}/{material_id}",
-            video_path,
-            args.output_dir,
-            ffmpeg_bin=args.ffmpeg_bin,
-            ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
-            video_source="rpa-temporary-download",
-        )
+        if args.diagnosis_records_dir:
+            _time_call(
+                timings,
+                "diagnosisRecordWriteSec",
+                _write_diagnosis_records,
+                records,
+                args.diagnosis_records_dir,
+                material_id,
+            )
+        video_url = find_material_video_url(records, material_id)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            video_path = Path(temp_dir) / f"{material_id}.mp4"
+            _time_call(timings, "videoDownloadSec", download_video, video_url, video_path)
+            return _time_call(
+                timings,
+                "frameExtractionSec",
+                process_records,
+                records,
+                f"rpa://{FUNCTION_CODE}/{material_id}",
+                video_path,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                video_source="rpa-temporary-download",
+            )
+    finally:
+        timings["totalSec"] = _elapsed_since(total_started_at)
+        _set_last_material_timings(timings)
 
 
 def main(argv=None):
