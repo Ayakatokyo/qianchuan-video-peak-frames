@@ -42,6 +42,13 @@ python scripts/export_top_materials.py \
   --output "/path/to/run/top_materials.json"
 ```
 
+The exporter streams each retained `origin_data` row into an in-memory material
+aggregate and does not retain the full raw JSON row set across the date range.
+Use the full intended inclusive range first, including month-level ranges, so
+global ranking remains exact. Manual day-by-day candidate merging is only a
+low-memory fallback when the asset table service or execution sandbox still
+cannot complete the exact streaming export.
+
 The CLI requires `actualStartDate`, `actualEndDate`, and `materialCount` in `top_materials.json`. For a `CUSTOM` batch, its dates must exactly match `--custom-start-date` and `--custom-end-date`; duplicate material IDs and an incorrect count are rejected before any RPA call.
 
 ```bash

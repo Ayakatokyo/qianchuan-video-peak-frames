@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from asset_table_client import AssetTableClient, AssetTableError  # noqa: E402
 from top_materials_lib import (  # noqa: E402
+    MaterialAggregator,
     MaterialDataError,
     build_output,
     select_materials,
@@ -489,6 +490,32 @@ class MaterialSelectionTests(unittest.TestCase):
         self.assertEqual(materials[0].total_cost, Decimal("16"))
         self.assertEqual(excluded, [])
 
+    def test_streaming_aggregator_matches_selection_without_retaining_rows(self):
+        rows = [
+            origin_data(material_id="1", name="First name", cost="7"),
+            origin_data(material_id="2", name="Second name", cost="13"),
+            origin_data(material_id="1", name="First name", cost="6"),
+            origin_data(material_id="-2", cost="5"),
+        ]
+        aggregator = MaterialAggregator(
+            name_pattern=None,
+            material_types=[],
+            top_n=50,
+        )
+
+        for row in iter(rows):
+            aggregator.add_raw_origin_data(row)
+        streamed_materials, streamed_excluded = aggregator.select()
+        selected_materials, selected_excluded = select_materials(
+            rows,
+            name_pattern=None,
+            material_types=[],
+            top_n=50,
+        )
+
+        self.assertEqual(streamed_materials, selected_materials)
+        self.assertEqual(streamed_excluded, selected_excluded)
+
     def test_rejects_when_no_eligible_materials_remain(self):
         with self.assertRaisesRegex(MaterialDataError, "eligible"):
             select_materials(
@@ -580,6 +607,29 @@ class ExportCliTests(unittest.TestCase):
             with patch.dict("os.environ", environment, clear=True), patch("export_top_materials.AssetTableClient", Client):
                 self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-02", "--output", str(output)]), 0)
             self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["materials"][0]["rank"], 1)
+
+    def test_cli_streams_rows_without_raw_list_selection(self):
+        class Client:
+            def __init__(self, *_args, **_kwargs): pass
+            def discover_table(self, _name): return "material_table"
+            def iter_origin_data(self, _table, date):
+                yield origin_data(material_id=date, cost="3")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "top_materials.json"
+            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
+            with (
+                patch.dict("os.environ", environment, clear=True),
+                patch("export_top_materials.AssetTableClient", Client),
+                patch(
+                    "export_top_materials.select_materials",
+                    side_effect=MaterialDataError("raw list selection called"),
+                    create=True,
+                ),
+            ):
+                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-03", "--output", str(output)]), 0)
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["materialCount"], 3)
 
     def test_does_not_publish_when_partition_fails(self):
         class Client:

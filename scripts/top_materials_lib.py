@@ -58,56 +58,67 @@ class _MaterialAggregate:
         )
 
 
-def select_materials(raw_origin_data, name_pattern, material_types, top_n):
-    """Parse, filter, aggregate, and rank material-origin JSON rows."""
-    pattern = _normalise_name_pattern(name_pattern)
-    allowed_types = _normalise_material_types(material_types)
-    _validate_top_n(top_n)
+class MaterialAggregator:
+    """Incrementally aggregate material origin rows before final ranking."""
 
-    grouped = {}
-    aigc_count = 0
-    aigc_cost = Decimal("0")
+    def __init__(self, name_pattern, material_types, top_n):
+        self.pattern = _normalise_name_pattern(name_pattern)
+        self.allowed_types = _normalise_material_types(material_types)
+        _validate_top_n(top_n)
+        self.top_n = top_n
+        self.grouped = {}
+        self.aigc_count = 0
+        self.aigc_cost = Decimal("0")
 
-    for raw_row in raw_origin_data:
+    def add_raw_origin_data(self, raw_row):
         material_id, name, material_type, video_type, cost = _parse_origin_data(raw_row)
-        if pattern is not None and pattern.search(name) is None:
-            continue
-        if allowed_types and material_type not in allowed_types:
-            continue
+        if self.pattern is not None and self.pattern.search(name) is None:
+            return
+        if self.allowed_types and material_type not in self.allowed_types:
+            return
 
         if material_id == AIGC_MATERIAL_ID:
-            aigc_count += 1
-            aigc_cost += cost
-            continue
+            self.aigc_count += 1
+            self.aigc_cost += cost
+            return
 
-        previous = grouped.get(material_id)
+        previous = self.grouped.get(material_id)
         if previous is None:
             previous = _MaterialAggregate(
                 material_id=material_id,
                 total_cost=Decimal("0"),
                 metadata_costs={},
             )
-            grouped[material_id] = previous
+            self.grouped[material_id] = previous
         previous.add(name, material_type, video_type, cost)
 
-    materials = sorted(
-        (aggregate.to_material() for aggregate in grouped.values()),
-        key=lambda material: (-material.total_cost, material.material_id),
-    )[:top_n]
-    if not materials:
-        raise MaterialDataError("no eligible materials found")
+    def select(self):
+        materials = sorted(
+            (aggregate.to_material() for aggregate in self.grouped.values()),
+            key=lambda material: (-material.total_cost, material.material_id),
+        )[: self.top_n]
+        if not materials:
+            raise MaterialDataError("no eligible materials found")
 
-    excluded = []
-    if aigc_count:
-        excluded.append(
-            ExcludedMaterial(
-                material_id=AIGC_MATERIAL_ID,
-                reason=AIGC_EXCLUSION_REASON,
-                source_row_count=aigc_count,
-                total_cost=aigc_cost,
+        excluded = []
+        if self.aigc_count:
+            excluded.append(
+                ExcludedMaterial(
+                    material_id=AIGC_MATERIAL_ID,
+                    reason=AIGC_EXCLUSION_REASON,
+                    source_row_count=self.aigc_count,
+                    total_cost=self.aigc_cost,
+                )
             )
-        )
-    return materials, excluded
+        return materials, excluded
+
+
+def select_materials(raw_origin_data, name_pattern, material_types, top_n):
+    """Parse, filter, aggregate, and rank material-origin JSON rows."""
+    aggregator = MaterialAggregator(name_pattern, material_types, top_n)
+    for raw_row in raw_origin_data:
+        aggregator.add_raw_origin_data(raw_row)
+    return aggregator.select()
 
 
 def build_output(

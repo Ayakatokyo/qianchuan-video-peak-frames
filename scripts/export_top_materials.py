@@ -11,7 +11,7 @@ import sys
 import tempfile
 
 from asset_table_client import AssetTableClient, AssetTableError
-from top_materials_lib import MaterialDataError, build_output, select_materials
+from top_materials_lib import MaterialAggregator, MaterialDataError, build_output
 
 
 TABLE_NAME = "ods_api_jlqc_uni_overall_roi_live_video_info_du"
@@ -62,10 +62,11 @@ def main(argv=None):
 
         client = AssetTableClient(base_url, session_token)
         physical_table = client.discover_table(TABLE_NAME)
-        rows = []
+        aggregator = MaterialAggregator(pattern, args.material_type, args.top_n)
         for partition_date in iter_dates(start_date, end_date):
-            rows.extend(client.iter_origin_data(physical_table, partition_date))
-        materials, excluded = select_materials(rows, pattern, args.material_type, args.top_n)
+            for origin_data in client.iter_origin_data(physical_table, partition_date):
+                aggregator.add_raw_origin_data(origin_data)
+        materials, excluded = aggregator.select()
         payload = build_output(
             start_date.isoformat(), end_date.isoformat(), pattern,
             args.material_type, materials, excluded,
