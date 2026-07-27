@@ -1,9 +1,12 @@
 ---
-name: 千川视频点击峰值帧提取
-description: 适用于需要从巨量千川素材分析、视频推直播单条诊断、千川 RPA JSON 或预策 RPA 连接器中提取或审查 CLICK_COUNT 峰值帧的场景。
+name: 千川短视频素材分析
+description: 面向千川短视频投放复盘，帮助识别高消耗素材的表现亮点、内容结构、转化触发点和可复用创意模式，支持素材优劣判断、预算分配复盘、内容迭代方向和投放优化决策。
+argument_hint: 输入分析周期（如 2026-06-01 至 2026-06-15）、Top素材数量（如 9 或 50）和广告主id，生成千川短视频素材分析报告。
+metadata:
+  pre_input: 帮我生成千川短视频素材分析报告，分析周期是 ____，Top素材数量是 ____，广告主id是 ____。
 ---
 
-# 千川视频点击峰值帧提取
+# 千川短视频素材分析
 
 ## 概览
 
@@ -45,6 +48,7 @@ python scripts/export_top_materials.py \
 
 导出器会将每条保留的 `origin_data` 行流式汇总到内存中的素材聚合结果，不会在整个日期范围内保留完整原始 JSON 行集合。
 资产表选材必须传入与 RPA 店铺匹配的广告主 id；输出的 `top_materials.json` 会在 `filters.advertiserId` 保留该筛选条件，后续排查素材不存在时先核对此字段。
+`--advertiser-id` 是业务参数名；资产表物理过滤字段固定是 `adv_id`。不要把资产表过滤字段写成 `advertiser_id`，否则平台会返回 `COLUMN_NOT_EXIST`。
 应优先使用完整的目标闭区间（包括按月区间），以确保全局排序准确。只有当资产表服务或执行沙箱仍无法完成精确的流式导出时，才可将手动逐日合并候选项作为低内存兜底方案。
 
 CLI 要求 `top_materials.json` 中包含 `actualStartDate`、`actualEndDate` 与 `materialCount`。对于 `CUSTOM` 批次，其日期必须与 `--custom-start-date` 和 `--custom-end-date` 完全一致；在任何 RPA 调用前会拒绝重复素材 ID 或错误的数量。
@@ -172,6 +176,7 @@ python scripts/extract_peak_frames.py \
 - 不要仅凭文件名报告成功；需检查摘要和 JPEG。
 - 不要手写 `platform` 或 `function_code`；适配器会将其固定为巨量千川单素材诊断连接器。
 - 不要在资产表选材前调用批量 RPA，也不要使用 `--material-id` 绕过选材。
+- 不要把资产表过滤字段写成 `advertiser_id`；CLI 参数仍叫 `--advertiser-id`，但底层 SQL 必须使用资产表真实列 `adv_id`。若平台返回 `COLUMN_NOT_EXIST` 且提示 `advertiser_id` 不存在，说明执行环境里的脚本或手写 SQL 仍是旧字段。
 - 不要使用不同的排序和诊断日期范围。
 - 不要覆盖或丢弃运行目录中的 `top_materials.json`。
 - 不要对不同的素材选择、店铺或日期范围使用 `--resume`；应新建批次。

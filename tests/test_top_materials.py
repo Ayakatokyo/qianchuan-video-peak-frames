@@ -73,6 +73,7 @@ class AssetTableDiscoveryTests(unittest.TestCase):
                 platform_response({"tableName": "material_origin_records"}),
                 platform_response(
                     [
+                        {"fieldName": "adv_id", "partitionKey": False},
                         {"fieldName": "dt", "partitionKey": True},
                         {"fieldName": "origin_data", "partitionKey": False},
                     ]
@@ -135,6 +136,7 @@ class AssetTableDiscoveryTests(unittest.TestCase):
                 platform_response({"tableName": "material_origin_records"}, code="200"),
                 platform_response(
                     [
+                        {"fieldName": "adv_id", "partitionKey": False},
                         {"fieldName": "dt", "partitionKey": True},
                         {"fieldName": "origin_data", "partitionKey": False},
                     ],
@@ -150,19 +152,44 @@ class AssetTableDiscoveryTests(unittest.TestCase):
 
         self.assertEqual(table, "material_origin_records")
 
-    def test_discovery_rejects_missing_required_partition_field(self):
-        session = FakeSession(
-            get_responses=[platform_response([{"tableName": "Top", "objId": "id"}])],
-            post_responses=[
-                platform_response({"tableName": "physical_table"}),
-                platform_response([{"fieldName": "dt", "partitionKey": False}]),
-            ],
-        )
+    def test_discovery_rejects_missing_required_fields(self):
+        for fields, message in (
+            (
+                [
+                    {"fieldName": "adv_id", "partitionKey": False},
+                    {"fieldName": "dt", "partitionKey": False},
+                    {"fieldName": "origin_data", "partitionKey": False},
+                ],
+                "partition",
+            ),
+            (
+                [
+                    {"fieldName": "adv_id", "partitionKey": False},
+                    {"fieldName": "dt", "partitionKey": True},
+                ],
+                "origin_data",
+            ),
+            (
+                [
+                    {"fieldName": "dt", "partitionKey": True},
+                    {"fieldName": "origin_data", "partitionKey": False},
+                ],
+                "adv_id",
+            ),
+        ):
+            with self.subTest(message=message):
+                session = FakeSession(
+                    get_responses=[platform_response([{"tableName": "Top", "objId": "id"}])],
+                    post_responses=[
+                        platform_response({"tableName": "physical_table"}),
+                        platform_response(fields),
+                    ],
+                )
 
-        with self.assertRaisesRegex(AssetTableError, "partition"):
-            AssetTableClient("https://asset.example", "token", session=session).discover_table(
-                "Top"
-            )
+                with self.assertRaisesRegex(AssetTableError, message):
+                    AssetTableClient(
+                        "https://asset.example", "token", session=session
+                    ).discover_table("Top")
 
     def test_discovery_rejects_missing_or_malformed_search_result(self):
         for data in ([], [{"tableName": "Top"}], {"tableName": "Top"}):
@@ -221,7 +248,7 @@ class AssetTableClientTests(unittest.TestCase):
             },
         )
 
-    def test_iterates_with_advertiser_id_filter_in_restricted_sql(self):
+    def test_iterates_with_advertiser_id_filter_using_asset_table_adv_id_column(self):
         session = FakeSession(
             post_responses=[
                 platform_response(
@@ -240,7 +267,7 @@ class AssetTableClientTests(unittest.TestCase):
         self.assertEqual(rows, ["origin-1"])
         self.assertEqual(
             session.calls[0][2]["json"]["sql"],
-            "SELECT origin_data FROM material_origin_records WHERE dt = '2026-07-20' AND advertiser_id = '1765875532' ORDER BY origin_data LIMIT 2000 OFFSET 0",
+            "SELECT origin_data FROM material_origin_records WHERE dt = '2026-07-20' AND adv_id = '1765875532' ORDER BY origin_data LIMIT 2000 OFFSET 0",
         )
 
     def test_rejects_invalid_advertiser_id_without_request(self):

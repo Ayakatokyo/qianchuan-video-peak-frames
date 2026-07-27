@@ -152,7 +152,7 @@ class AssetTableClient:
         while True:
             where_clause = "dt = '{date}'".format(date=partition_date)
             if advertiser_id is not None:
-                where_clause += " AND advertiser_id = '{advertiser_id}'".format(
+                where_clause += " AND adv_id = '{advertiser_id}'".format(
                     advertiser_id=advertiser_id
                 )
             sql = (
@@ -211,6 +211,7 @@ class AssetTableClient:
 
         found_partition = False
         found_origin_data = False
+        found_advertiser_id = False
         for field in fields_data:
             if not isinstance(field, dict):
                 raise AssetTableError("field entry must be an object")
@@ -218,10 +219,14 @@ class AssetTableClient:
                 found_partition = True
             if field.get("fieldName") == "origin_data":
                 found_origin_data = True
+            if field.get("fieldName") == "adv_id":
+                found_advertiser_id = True
         if not found_partition:
             raise AssetTableError("required dt partition field is missing")
         if not found_origin_data:
             raise AssetTableError("required origin_data field is missing")
+        if not found_advertiser_id:
+            raise AssetTableError("required adv_id advertiser field is missing")
 
     def _request(self, method, path, **kwargs):
         url = self.base_url + path

@@ -10,8 +10,29 @@ class BatchSkillContractTests(unittest.TestCase):
     def test_frontmatter_is_chinese(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("name: 千川视频点击峰值帧提取", skill)
-        self.assertIn("description: 适用于", skill)
+        self.assertIn("name: 千川短视频素材分析", skill)
+        self.assertIn("description: 面向千川短视频投放复盘", skill)
+        self.assertIn("素材优劣判断", skill)
+        self.assertIn("投放优化决策", skill)
+        frontmatter = skill.split("---", 2)[1]
+        description_line = next(
+            line for line in frontmatter.splitlines() if line.startswith("description:")
+        )
+        self.assertNotIn("资产表", description_line)
+        self.assertNotIn("RPA", description_line)
+        self.assertNotIn("CLICK_COUNT", description_line)
+        self.assertNotIn("诊断数据拉取", description_line)
+        self.assertIn("argument_hint:", skill)
+        self.assertIn("生成千川短视频素材分析报告", skill)
+        self.assertNotIn("生成千川短视频闭环分析报告", skill)
+        self.assertIn("分析周期", skill)
+        self.assertIn("Top素材数量", skill)
+        self.assertIn("广告主id", skill)
+        self.assertIn("metadata:", skill)
+        self.assertIn("pre_input:", skill)
+        self.assertIn("分析周期是 ____", skill)
+        self.assertIn("Top素材数量是 ____", skill)
+        self.assertIn("广告主id是 ____", skill)
 
     def test_batch_workflow_exports_and_reuses_run_local_top_materials(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -38,6 +59,9 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("--advertiser-id", skill)
         self.assertIn("广告主 id", skill)
         self.assertIn("filters.advertiserId", skill)
+        self.assertIn("adv_id", skill)
+        self.assertIn("COLUMN_NOT_EXIST", skill)
+        self.assertIn("不要把资产表过滤字段写成 `advertiser_id`", skill)
 
     def test_single_material_rpa_is_documented_as_debugging_only(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
