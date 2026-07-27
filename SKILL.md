@@ -98,6 +98,32 @@ python scripts/extract_peak_frames.py \
 
 Verification writes `batch-verification.json` atomically in the output directory. It binds the manifest to the selected IDs, shop, and date range; checks every material status, retained summaries, frame paths, nonempty JPEG structure, and collects summary warnings. It returns exit code `6` when retained artifacts fail verification. The receipt contains no credentials, video URLs, or signed diagnostic CSV URLs.
 
+## Final HTML Report Loop
+
+After RPA extraction and `--verify`, prepare the local diagnostic fact package:
+
+```bash
+python scripts/prepare_diagnostic_analysis.py \
+  --top-materials-json "/path/to/run/top_materials.json" \
+  --diagnosis-records-dir "/path/to/run/diagnosis-records" \
+  --output-dir "/path/to/run/diagnostic-analysis"
+```
+
+Ask the external analysis environment to produce `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json` using the retained fact package and prompt. The final report renderer does not call external APIs and does not generate business conclusions. It only injects local structured conclusions from `diagnostic-ai-analysis.json`.
+
+Render the final HTML report:
+
+```bash
+python scripts/render_final_report.py \
+  --top-materials-json "/path/to/run/top_materials.json" \
+  --peak-output-dir "/path/to/run/peak-frames" \
+  --diagnosis-records-dir "/path/to/run/diagnosis-records" \
+  --analysis-json "/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json" \
+  --output-dir "/path/to/run/final-report"
+```
+
+Omit `--analysis-json` only when intentionally producing a draft report. Review `final-report/final-report-data.json`, `final-report/final-report.html`, batch verification errors, and warnings before treating the report as complete.
+
 ## Single-Material RPA Debug Run
 
 Use this only to diagnose or replay one already known material. `--material-id` is not an alternative selection method for a TOP-material batch run.
@@ -135,6 +161,8 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 | Faster TOP-material batch | Add `--concurrency 3` for controlled parallelism after confirming the gateway can tolerate parallel RPA calls |
 | Resume TOP-material batch | Repeat the identical batch command with `--resume`; inspect `batch-manifest.json` first |
 | Verify TOP-material batch | Repeat the identical batch binding with `--verify`; inspect `batch-verification.json`, warnings, and exit code |
+| Prepare diagnostic facts | Run `prepare_diagnostic_analysis.py` after RPA verification |
+| Final HTML report | Run `render_final_report.py`; omit `--analysis-json` only for a draft |
 | Single-material debug | Pass `--source rpa --shop-id ... --material-id ... --date-range-type ...` |
 | Regression check | Run `python -m unittest tests/test_peak_frames.py -v` |
 
@@ -151,3 +179,5 @@ Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapte
 - Do not use `--resume` with a different material selection, shop, or date range; start a new batch instead.
 - Do not report a batch as successful before `--verify` returns zero; exit code `6` means retained outputs failed validation.
 - Treat an RPA CSV download or parsing failure as blocking; inspect the retained `diagnosis-csv/<materialId>.csv` when diagnosing it.
+- Do not expect `render_final_report.py` to call a model or external API; provide `diagnostic-ai-analysis.json` for final conclusions.
+- Do not hide failed materials from the final report; preserve them with warnings and failure reasons.

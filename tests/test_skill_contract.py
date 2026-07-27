@@ -70,6 +70,15 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("rpaFetchSec", skill)
         self.assertIn("frameExtractionSec", skill)
 
+    def test_final_html_report_loop_is_documented(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("## Final HTML Report Loop", skill)
+        self.assertIn("prepare_diagnostic_analysis.py", skill)
+        self.assertIn("diagnostic-ai-analysis.json", skill)
+        self.assertIn("render_final_report.py", skill)
+        self.assertIn("does not call external APIs", skill)
+
 
 if __name__ == "__main__":
     unittest.main()
