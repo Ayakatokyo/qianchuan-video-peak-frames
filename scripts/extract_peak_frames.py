@@ -25,6 +25,7 @@ from rpa_adapter import (
     download_video,
     fetch_material_diagnosis,
     find_material_video_url,
+    list_accounts,
 )
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 
@@ -92,7 +93,7 @@ def build_parser():
     input_group.add_argument("--input-json")
     input_group.add_argument("--input-csv")
     parser.add_argument("--video")
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir")
     parser.add_argument("--ffmpeg-bin")
     parser.add_argument(
         "--ffmpeg-timeout-sec",
@@ -110,7 +111,57 @@ def build_parser():
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
+    parser.add_argument("--list-shop-accounts", action="store_true")
     return parser
+
+
+def _normalise_account_rows(payload):
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise RpaAdapterError("RPA authorization list must contain a data array")
+
+    accounts = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        shop_id = str(row.get("shop_id") or "").strip()
+        account = str(row.get("account") or "").strip()
+        if shop_id:
+            accounts.append({"account": account, "shop_id": shop_id})
+    return accounts
+
+
+def _format_account_rows(accounts):
+    return "\n".join(
+        f"{item['account'] or '<unknown-account>'}\t{item['shop_id']}"
+        for item in accounts
+    )
+
+
+def _list_shop_accounts():
+    accounts = _normalise_account_rows(list_accounts())
+    print("account\tshop_id")
+    if accounts:
+        print(_format_account_rows(accounts))
+    return 0
+
+
+def _resolve_shop_id(args):
+    explicit = str(args.shop_id or "").strip()
+    if explicit:
+        return explicit
+
+    accounts = _normalise_account_rows(list_accounts())
+    if not accounts:
+        raise RpaAdapterError(
+            "no authorized RPA accounts are available for the current credentials"
+        )
+    if len(accounts) > 1:
+        raise RpaAdapterError(
+            "multiple authorized RPA accounts were found; pass --shop-id explicitly:\n"
+            + _format_account_rows(accounts)
+        )
+    return accounts[0]["shop_id"]
 
 
 def _top_material_ids(path, date_range_type, custom_start_date, custom_end_date):
@@ -588,6 +639,8 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.list_shop_accounts:
+            return _list_shop_accounts()
         if (args.resume or args.batch_manifest or args.verify) and not (
             args.source == "rpa" and args.top_materials_json
         ):
@@ -598,11 +651,13 @@ def main(argv=None):
         if args.verify and args.resume:
             parser.error("--verify and --resume cannot be used together")
         if args.source == "rpa":
-            if not args.shop_id or not args.date_range_type or not (
+            if not args.output_dir:
+                parser.error("--output-dir is required")
+            if not args.date_range_type or not (
                 args.material_id or args.top_materials_json
             ):
                 parser.error(
-                    "--shop-id, --date-range-type, and either --material-id "
+                    "--date-range-type and either --material-id "
                     "or --top-materials-json are required for --source rpa"
                 )
             if args.date_range_type == "CUSTOM" and not (
@@ -612,6 +667,7 @@ def main(argv=None):
                     "CUSTOM requires --custom-start-date and "
                     "--custom-end-date"
                 )
+            args.shop_id = _resolve_shop_id(args)
             material_ids = (
                 _top_material_ids(
                     args.top_materials_json,
@@ -646,6 +702,8 @@ def main(argv=None):
                 )
 
         else:
+            if not args.output_dir:
+                parser.error("--output-dir is required")
             if not (args.input_json or args.input_csv) or (
                 args.input_json and not args.video
             ):

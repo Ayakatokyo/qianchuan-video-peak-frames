@@ -1,3 +1,4 @@
+import io
 import json
 import os
 from pathlib import Path
@@ -2557,12 +2558,84 @@ class CliTests(unittest.TestCase):
                 ["2 later peak frame(s) unavailable"],
             )
 
-    def test_rpa_source_requires_shop_id(self):
+    def test_rpa_source_auto_resolves_single_shop_id(self):
+        import extract_peak_frames
+
+        ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:
-            completed = subprocess.run(
+            root = Path(temp_dir)
+            source_video = root / "source.mp4"
+            output = root / "output"
+            self._make_video(ffmpeg, source_video)
+            records = [
+                click_record(second, value, material_id="764")
+                for second, value in enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])
+            ]
+            records.append(
+                {
+                    "recordType": "material_info",
+                    "materialId": "764",
+                    "videoUrl": "https://cdn.example/material.mp4",
+                    "videoDuration": 9.0,
+                }
+            )
+
+            def fake_download(_video_url, target_path):
+                Path(target_path).write_bytes(source_video.read_bytes())
+                return Path(target_path)
+
+            with patch(
+                "extract_peak_frames.list_accounts",
+                return_value={"data": [{"account": "only@example.com", "shop_id": "shop-1"}]},
+            ) as list_mock, patch(
+                "extract_peak_frames.fetch_material_diagnosis",
+                return_value=records,
+            ) as fetch_mock, patch(
+                "extract_peak_frames.download_video",
+                side_effect=fake_download,
+                create=True,
+            ):
+                completed = extract_peak_frames.main(
+                    [
+                        "--source",
+                        "rpa",
+                        "--material-id",
+                        "764",
+                        "--date-range-type",
+                        "LAST_7_DAYS",
+                        "--output-dir",
+                        str(output),
+                        "--ffmpeg-bin",
+                        ffmpeg,
+                    ]
+                )
+
+            self.assertEqual(completed, 0)
+            list_mock.assert_called_once()
+            fetch_mock.assert_called_once_with(
+                shop_id="shop-1",
+                material_id="764",
+                date_range_type="LAST_7_DAYS",
+                custom_start_date=None,
+                custom_end_date=None,
+                diagnosis_csv_dir=output / "diagnosis-csv",
+            )
+
+    def test_rpa_source_rejects_multiple_auto_resolved_shop_ids(self):
+        import extract_peak_frames
+
+        stderr = io.StringIO()
+        with patch(
+            "extract_peak_frames.list_accounts",
+            return_value={
+                "data": [
+                    {"account": "first@example.com", "shop_id": "shop-1"},
+                    {"account": "second@example.com", "shop_id": "shop-2"},
+                ]
+            },
+        ), patch("sys.stderr", stderr):
+            completed = extract_peak_frames.main(
                 [
-                    sys.executable,
-                    str(ROOT / "scripts" / "extract_peak_frames.py"),
                     "--source",
                     "rpa",
                     "--material-id",
@@ -2570,15 +2643,36 @@ class CliTests(unittest.TestCase):
                     "--date-range-type",
                     "LAST_7_DAYS",
                     "--output-dir",
-                    temp_dir,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
+                    ".test-output",
+                ]
             )
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("--shop-id", completed.stderr)
+
+        self.assertEqual(completed, 4)
+        self.assertIn("multiple authorized RPA accounts", stderr.getvalue())
+        self.assertIn("shop-1", stderr.getvalue())
+        self.assertIn("shop-2", stderr.getvalue())
+
+    def test_list_shop_accounts_prints_authorized_accounts(self):
+        import extract_peak_frames
+
+        stdout = io.StringIO()
+        with patch(
+            "extract_peak_frames.list_accounts",
+            return_value={
+                "data": [
+                    {"account": "first@example.com", "shop_id": "shop-1"},
+                    {"account": "second@example.com", "shop_id": "shop-2"},
+                ]
+            },
+        ) as list_mock, patch("sys.stdout", stdout):
+            completed = extract_peak_frames.main(["--list-shop-accounts"])
+
+        self.assertEqual(completed, 0)
+        list_mock.assert_called_once()
+        self.assertIn("first@example.com", stdout.getvalue())
+        self.assertIn("shop-1", stdout.getvalue())
+        self.assertIn("second@example.com", stdout.getvalue())
+        self.assertIn("shop-2", stdout.getvalue())
 
     def test_rpa_cli_fetches_downloads_and_reuses_local_pipeline(self):
         import extract_peak_frames
