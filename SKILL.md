@@ -1,24 +1,24 @@
 ---
-name: qianchuan-video-peak-frames
-description: Use when extracting or reviewing frames at CLICK_COUNT peaks from 巨量千川素材分析、视频推直播单条诊断、Qianchuan RPA JSON, either from local JSON/video files or the Yuce RPA connector.
+name: 千川视频点击峰值帧提取
+description: 适用于需要从巨量千川素材分析、视频推直播单条诊断、千川 RPA JSON 或预策 RPA 连接器中提取或审查 CLICK_COUNT 峰值帧的场景。
 ---
 
-# Qianchuan Video Peak Frames
+# 千川视频点击峰值帧提取
 
-## Overview
+## 概览
 
-Extract the first chronological click peak and the later top three click peaks, then save their JPEG frames and JSON/Markdown summaries. Use the bundled Python workflow so peak and frame rules remain deterministic across macOS and Windows.
+提取时间线上第一个点击峰值，以及其后点击次数最高的三个峰值，并保存对应的 JPEG 帧和 JSON/Markdown 摘要。请使用随附的 Python 流程，确保 macOS 与 Windows 上的峰值和取帧规则一致且确定。
 
-## Workflow
+## 工作流程
 
-1. Read `references/rpa-output-contract.md` when validating fields or preparing connector parameters.
-2. Use local mode when a matching video is already available.
-3. Create an isolated Python 3.9+ environment and install `requirements.txt`.
-4. For an online TOP-material batch, confirm `ENV_BACKEND_HOST`, `YUCE_AUTHORIZATION`, `YUCE_SESSION_ID`, and the target `shop_id`.
-5. Select TOP materials from the asset table before invoking RPA. Use one explicit inclusive start/end date range for both operations and do not reuse a selection JSON from another run or period.
-6. Run batch verification before reporting success; review its retained warnings and do not treat a filename alone as evidence of a valid frame.
+1. 校验字段或准备连接器参数时，阅读 `references/rpa-output-contract.md`。
+2. 已有匹配视频时，使用本地模式。
+3. 创建隔离的 Python 3.9+ 环境并安装 `requirements.txt`。
+4. 在线运行 TOP 素材批量任务前，确认 `ENV_BACKEND_HOST`、`YUCE_AUTHORIZATION`、`YUCE_SESSION_ID` 以及目标 `shop_id`。
+5. 调用 RPA 前，先从资产表选择 TOP 素材。两项操作都必须使用同一明确的闭区间起止日期，且不得复用其他运行或周期的选材 JSON。
+6. 报告成功前运行批次验证；审查保留的警告，且不要仅凭文件名认定帧有效。
 
-## Local Run
+## 本地运行
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -27,12 +27,12 @@ python scripts/extract_peak_frames.py \
   --output-dir "/path/to/output"
 ```
 
-Pass `--ffmpeg-bin` when production manages FFmpeg separately. Keep paths as separate arguments; quoted paths containing spaces work on macOS and Windows.
-The bundled workflow allows up to 120 seconds for each FFmpeg probe or frame extraction. Override it for a managed execution environment with `--ffmpeg-timeout-sec <positive-seconds>`.
+若生产环境单独管理 FFmpeg，请传入 `--ffmpeg-bin`。路径须作为独立参数传入；含空格的带引号路径可在 macOS 和 Windows 中使用。
+随附流程允许每次 FFmpeg 探测或取帧最长运行 120 秒。托管执行环境可通过 `--ffmpeg-timeout-sec <positive-seconds>` 覆盖该值。
 
-## Batch TOP Materials Run
+## TOP 素材批量运行
 
-Choose one empty run directory. The selection JSON is a required, retained batch artifact.
+选择一个空的运行目录。选材 JSON 是必须保留的批次产物。
 
 ```bash
 python scripts/export_top_materials.py \
@@ -42,14 +42,10 @@ python scripts/export_top_materials.py \
   --output "/path/to/run/top_materials.json"
 ```
 
-The exporter streams each retained `origin_data` row into an in-memory material
-aggregate and does not retain the full raw JSON row set across the date range.
-Use the full intended inclusive range first, including month-level ranges, so
-global ranking remains exact. Manual day-by-day candidate merging is only a
-low-memory fallback when the asset table service or execution sandbox still
-cannot complete the exact streaming export.
+导出器会将每条保留的 `origin_data` 行流式汇总到内存中的素材聚合结果，不会在整个日期范围内保留完整原始 JSON 行集合。
+应优先使用完整的目标闭区间（包括按月区间），以确保全局排序准确。只有当资产表服务或执行沙箱仍无法完成精确的流式导出时，才可将手动逐日合并候选项作为低内存兜底方案。
 
-The CLI requires `actualStartDate`, `actualEndDate`, and `materialCount` in `top_materials.json`. For a `CUSTOM` batch, its dates must exactly match `--custom-start-date` and `--custom-end-date`; duplicate material IDs and an incorrect count are rejected before any RPA call.
+CLI 要求 `top_materials.json` 中包含 `actualStartDate`、`actualEndDate` 与 `materialCount`。对于 `CUSTOM` 批次，其日期必须与 `--custom-start-date` 和 `--custom-end-date` 完全一致；在任何 RPA 调用前会拒绝重复素材 ID 或错误的数量。
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -65,9 +61,9 @@ python scripts/extract_peak_frames.py \
   --output-dir "/path/to/run/peak-frames"
 ```
 
-Retain `top_materials.json`, raw diagnostic CSVs at `diagnosis-csv/<materialId>.csv`, normalized records, peak-frame summaries, JPEGs, and warnings. CSV download or parsing failures remain blocking; do not report a material as successful until its retained CSV and frame summary have been reviewed.
+保留 `top_materials.json`、位于 `diagnosis-csv/<materialId>.csv` 的原始诊断 CSV、规范化记录、峰值帧摘要、JPEG 和警告。CSV 下载或解析失败仍会阻塞流程；在审查其保留的 CSV 和帧摘要之前，不得将该素材报告为成功。
 
-The command writes `batch-manifest.json` inside the peak-frame output directory. Use `--concurrency <positive-integer>` for controlled parallelism across materials; omit it to keep the default single-material-at-a-time behavior. Each material entry records `timingsSec` with `rpaFetchSec`, `diagnosisRecordWriteSec`, `videoDownloadSec`, `frameExtractionSec`, and `totalSec` so slow runs can be attributed before tuning further. A failed material is recorded there and later TOP materials still run; the command exits nonzero when any material remains failed, even though successful artifacts are retained. Resume the exact same selected IDs, shop, and date range with `--resume`; it skips only successful materials whose retained summaries and JPEGs still validate, then retries failed or interrupted materials.
+命令会在峰值帧输出目录写入 `batch-manifest.json`。使用 `--concurrency <positive-integer>` 控制素材间的受控并行；省略时默认一次处理一个素材。每个素材条目会记录 `timingsSec`，其中包含 `rpaFetchSec`、`diagnosisRecordWriteSec`、`videoDownloadSec`、`frameExtractionSec` 和 `totalSec`，以便在进一步调优前定位慢任务。失败素材会记录在此文件中，后续 TOP 素材仍会继续运行；即使成功产物已保留，只要有任一素材仍失败，命令就以非零状态退出。使用 `--resume` 可在完全相同的选中 ID、店铺和日期范围下恢复任务；它只跳过保留摘要和 JPEG 仍能通过验证的成功素材，并重试失败或中断的素材。
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -82,7 +78,7 @@ python scripts/extract_peak_frames.py \
   --resume
 ```
 
-After a fully successful run or a completed resume, verify the retained artifacts without contacting RPA, downloading video, or running FFmpeg:
+在完整成功运行或恢复完成后，无需调用 RPA、下载视频或运行 FFmpeg，即可验证保留产物：
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -96,11 +92,11 @@ python scripts/extract_peak_frames.py \
   --verify
 ```
 
-Verification writes `batch-verification.json` atomically in the output directory. It binds the manifest to the selected IDs, shop, and date range; checks every material status, retained summaries, frame paths, nonempty JPEG structure, and collects summary warnings. It returns exit code `6` when retained artifacts fail verification. The receipt contains no credentials, video URLs, or signed diagnostic CSV URLs.
+验证会在输出目录原子写入 `batch-verification.json`。它将清单与选中 ID、店铺和日期范围绑定；检查每个素材状态、保留摘要、帧路径、非空 JPEG 结构，并汇总警告。当保留产物未通过验证时返回退出码 `6`。回执不包含凭据、视频 URL 或带签名的诊断 CSV URL。
 
-## Final HTML Report Loop
+## 最终 HTML 报告流程
 
-After RPA extraction and `--verify`, prepare the local diagnostic fact package:
+完成 RPA 提取和 `--verify` 后，准备本地诊断事实包：
 
 ```bash
 python scripts/prepare_diagnostic_analysis.py \
@@ -109,9 +105,9 @@ python scripts/prepare_diagnostic_analysis.py \
   --output-dir "/path/to/run/diagnostic-analysis"
 ```
 
-Ask the external analysis environment to produce `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json` using the retained fact package and prompt. The final report renderer does not call external APIs and does not generate business conclusions. It only injects local structured conclusions from `diagnostic-ai-analysis.json`.
+让外部分析环境使用保留的事实包和提示词生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`。最终报告渲染器不会调用外部 API，也不会生成业务结论；它只注入 `diagnostic-ai-analysis.json` 中的本地结构化结论。
 
-Render the final HTML report:
+渲染最终 HTML 报告：
 
 ```bash
 python scripts/render_final_report.py \
@@ -122,11 +118,11 @@ python scripts/render_final_report.py \
   --output-dir "/path/to/run/final-report"
 ```
 
-Omit `--analysis-json` only when intentionally producing a draft report. Review `final-report/final-report-data.json`, `final-report/final-report.html`, batch verification errors, and warnings before treating the report as complete.
+仅在有意生成草稿报告时才省略 `--analysis-json`。将报告视为完成前，请审查 `final-report/final-report-data.json`、`final-report/final-report.html`、批次验证错误和警告。
 
-## Single-Material RPA Debug Run
+## 单素材 RPA 调试运行
 
-Use this only to diagnose or replay one already known material. `--material-id` is not an alternative selection method for a TOP-material batch run.
+仅用于诊断或重放一个已知素材。`--material-id` 不是 TOP 素材批量运行的替代选材方式。
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -137,47 +133,47 @@ python scripts/extract_peak_frames.py \
   --output-dir "/path/to/output"
 ```
 
-Use `CUSTOM` with both `--custom-start-date` and `--custom-end-date`. The adapter calls the fixed Yuce connector `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis`, downloads `material_info.videoUrl` to a temporary video file, then reuses the same local peak and frame pipeline. RPA summaries record `videoSource: rpa-temporary-download`, not the deleted temporary download path.
+使用 `CUSTOM` 时，必须同时提供 `--custom-start-date` 与 `--custom-end-date`。适配器调用固定的预策连接器 `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis`，将 `material_info.videoUrl` 下载到临时视频文件，然后复用本地峰值和取帧流程。RPA 摘要记录 `videoSource: rpa-temporary-download`，而不记录已删除的临时下载路径。
 
-## Selection Contract
+## 选峰契约
 
-- Read only `interaction_series` records whose metric is `CLICK_COUNT`.
-- Exclude the first and last time-series points.
-- Collapse an equal-valued plateau into one peak at its earliest second.
-- Select the earliest peak first.
-- Rank only later peaks by clicks descending, then second ascending; take three.
-- If fewer later peaks exist, return available frames with a warning. Never fabricate peaks.
+- 仅读取指标为 `CLICK_COUNT` 的 `interaction_series` 记录。
+- 排除时序的第一个和最后一个点。
+- 将等值平台合并为一个峰值，并取其最早秒数。
+- 先选择最早的峰值。
+- 仅对其后的峰值按点击数降序、秒数升序排序；取前三个。
+- 若其后峰值少于三个，返回可用帧并给出警告；绝不伪造峰值。
 
-## Quick Reference
+## 快速参考
 
-| Need | Action |
+| 需求 | 操作 |
 | --- | --- |
-| Default FFmpeg | Install `imageio-ffmpeg` from `requirements.txt` |
-| Managed FFmpeg | Add `--ffmpeg-bin "/path/to/ffmpeg"` |
-| FFmpeg timeout | Default is 120 seconds; override with `--ffmpeg-timeout-sec <positive-seconds>` |
-| Local result | Inspect `<output>/<material-id>/summary.json` |
-| RPA accounts | Use `scripts/rpa_adapter.py` helpers or the Yuce connector account list to find `shop_id` |
-| TOP-material batch | Run asset-table selection first, then pass its run-local `top_materials.json` to RPA with the same CUSTOM dates |
-| Faster TOP-material batch | Add `--concurrency 3` for controlled parallelism after confirming the gateway can tolerate parallel RPA calls |
-| Resume TOP-material batch | Repeat the identical batch command with `--resume`; inspect `batch-manifest.json` first |
-| Verify TOP-material batch | Repeat the identical batch binding with `--verify`; inspect `batch-verification.json`, warnings, and exit code |
-| Prepare diagnostic facts | Run `prepare_diagnostic_analysis.py` after RPA verification |
-| Final HTML report | Run `render_final_report.py`; omit `--analysis-json` only for a draft |
-| Single-material debug | Pass `--source rpa --shop-id ... --material-id ... --date-range-type ...` |
-| Regression check | Run `python -m unittest tests/test_peak_frames.py -v` |
+| 默认 FFmpeg | 从 `requirements.txt` 安装 `imageio-ffmpeg` |
+| 托管 FFmpeg | 添加 `--ffmpeg-bin "/path/to/ffmpeg"` |
+| FFmpeg 超时 | 默认 120 秒；通过 `--ffmpeg-timeout-sec <positive-seconds>` 覆盖 |
+| 本地结果 | 检查 `<output>/<material-id>/summary.json` |
+| RPA 账户 | 使用 `scripts/rpa_adapter.py` 助手或预策连接器账户列表查找 `shop_id` |
+| TOP 素材批量任务 | 先运行资产表选材，再将运行目录中的 `top_materials.json` 与相同的 CUSTOM 日期传给 RPA |
+| 加速 TOP 素材批量任务 | 确认网关可承受并行 RPA 调用后，添加 `--concurrency 3` 实现受控并行 |
+| 恢复 TOP 素材批量任务 | 使用完全相同的批次命令添加 `--resume`；先检查 `batch-manifest.json` |
+| 验证 TOP 素材批量任务 | 使用完全相同的批次绑定添加 `--verify`；检查 `batch-verification.json`、警告和退出码 |
+| 准备诊断事实 | 在 RPA 验证后运行 `prepare_diagnostic_analysis.py` |
+| 最终 HTML 报告 | 运行 `render_final_report.py`；仅草稿可省略 `--analysis-json` |
+| 单素材调试 | 传入 `--source rpa --shop-id ... --material-id ... --date-range-type ...` |
+| 回归检查 | 运行 `python -m unittest tests/test_peak_frames.py -v` |
 
-## Common Mistakes
+## 常见错误
 
-- Do not rank all peaks together; the earliest peak is fixed before later ranking.
-- Do not treat the first or last sample as a peak.
-- Do not fail merely because fewer than three later peaks exist; surface the warning.
-- Do not claim success from filenames alone; inspect summaries and JPEGs.
-- Do not handwrite `platform` or `function_code`; the adapter fixes them to the 巨量千川 single-material diagnosis connector.
-- Do not call batch RPA before asset-table selection or use `--material-id` to bypass it.
-- Do not use different ranking and diagnosis date ranges.
-- Do not overwrite or discard the run-local `top_materials.json`.
-- Do not use `--resume` with a different material selection, shop, or date range; start a new batch instead.
-- Do not report a batch as successful before `--verify` returns zero; exit code `6` means retained outputs failed validation.
-- Treat an RPA CSV download or parsing failure as blocking; inspect the retained `diagnosis-csv/<materialId>.csv` when diagnosing it.
-- Do not expect `render_final_report.py` to call a model or external API; provide `diagnostic-ai-analysis.json` for final conclusions.
-- Do not hide failed materials from the final report; preserve them with warnings and failure reasons.
+- 不要将所有峰值一起排序；最早峰值必须在后续排序前固定。
+- 不要将第一个或最后一个样本视为峰值。
+- 其后峰值不足三个不应直接失败；应给出警告。
+- 不要仅凭文件名报告成功；需检查摘要和 JPEG。
+- 不要手写 `platform` 或 `function_code`；适配器会将其固定为巨量千川单素材诊断连接器。
+- 不要在资产表选材前调用批量 RPA，也不要使用 `--material-id` 绕过选材。
+- 不要使用不同的排序和诊断日期范围。
+- 不要覆盖或丢弃运行目录中的 `top_materials.json`。
+- 不要对不同的素材选择、店铺或日期范围使用 `--resume`；应新建批次。
+- `--verify` 返回零前，不要报告批次成功；退出码 `6` 表示保留输出未通过验证。
+- 将 RPA CSV 下载或解析失败视为阻塞问题；诊断时检查保留的 `diagnosis-csv/<materialId>.csv`。
+- 不要期待 `render_final_report.py` 调用模型或外部 API；最终结论需提供 `diagnostic-ai-analysis.json`。
+- 不要在最终报告中隐藏失败素材；保留其警告和失败原因。
