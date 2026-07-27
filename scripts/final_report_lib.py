@@ -405,10 +405,27 @@ def _atomic_write_text(path, content):
         raise FinalReportError(f"unable to write report output {target}: {exc}") from exc
 
 
-def _render_frames(material):
+def _html_asset_src(path, asset_base_dir):
+    source = _text(path)
+    if not source or asset_base_dir is None:
+        return source
+    try:
+        source_path = Path(source)
+        if not source_path.is_absolute():
+            source_path = Path.cwd() / source_path
+        source_path = source_path.resolve()
+        relative = os.path.relpath(source_path, Path(asset_base_dir).resolve())
+    except (OSError, ValueError):
+        return source
+    return Path(relative).as_posix()
+
+
+def _render_frames(material, asset_base_dir=None):
     figures = []
     for frame in material.get("highlightFrames", []):
-        source = html.escape(frame.get("framePath", ""))
+        source = html.escape(
+            _html_asset_src(frame.get("framePath", ""), asset_base_dir)
+        )
         caption = (
             f"{html.escape(frame.get('rankType', ''))} · "
             f"{_format_number(frame.get('durationSec'))}s · "
@@ -421,7 +438,7 @@ def _render_frames(material):
     return "".join(figures) or "<p class=\"muted\">暂无高光帧</p>"
 
 
-def _render_html_report(data):
+def _render_html_report(data, asset_base_dir=None):
     conclusion = data["conclusion"]
     insights = "".join(
         f"<li><b>{html.escape(item['title'])}</b>"
@@ -453,7 +470,7 @@ def _render_html_report(data):
             f"状态 {html.escape(material.get('extractionStatus', ''))}</p></div>"
             f"<div class=\"score\"><span>建议</span><b>{html.escape(recommendation.get('decision', 'unknown'))}</b></div>"
             "</div>"
-            f"<div class=\"frame-grid\">{_render_frames(material)}</div>"
+            f"<div class=\"frame-grid\">{_render_frames(material, asset_base_dir)}</div>"
             "<div class=\"material-body\">"
             f"<div class=\"formula\"><b>判断理由</b><p>{html.escape(recommendation.get('reason', '') or '暂无')}</p></div>"
             f"<div class=\"formula\"><b>下一步</b><p>{html.escape(recommendation.get('nextAction', '') or '暂无')}</p></div>"
@@ -474,7 +491,7 @@ def _render_html_report(data):
             cover = frames[0]["framePath"]
             break
     cover_html = (
-        f"<img src=\"{html.escape(cover)}\" alt=\"代表高光帧\"/>"
+        f"<img src=\"{html.escape(_html_asset_src(cover, asset_base_dir))}\" alt=\"代表高光帧\"/>"
         if cover
         else "<div class=\"cover-empty\">暂无高光帧封面</div>"
     )
@@ -523,5 +540,5 @@ def generate_final_report(
     _atomic_write_text(
         data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )
-    _atomic_write_text(html_path, _render_html_report(data))
+    _atomic_write_text(html_path, _render_html_report(data, output_root))
     return data_path, html_path, data

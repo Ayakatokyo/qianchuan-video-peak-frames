@@ -265,6 +265,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("下一轮策略", html_text)
         self.assertIn("数据质量", html_text)
         self.assertIn("礼赠素材可以继续放量。", html_text)
+        self.assertIn('src="../peak-frames/m-1/first_peak_0001s_3.jpg"', html_text)
 
 
 class FinalReportCliTests(unittest.TestCase):
