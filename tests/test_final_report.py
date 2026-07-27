@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from final_report_lib import FinalReportError, load_conclusion_analysis  # noqa: E402
+from final_report_lib import build_final_report_data  # noqa: E402
 
 
 def write_json(path, payload):
@@ -53,3 +54,116 @@ class FinalReportConclusionTests(unittest.TestCase):
 
             with self.assertRaisesRegex(FinalReportError, "unsupported conclusion schemaVersion"):
                 load_conclusion_analysis(path)
+
+
+def material(material_id, rank=1, cost=100.0):
+    return {
+        "rank": rank,
+        "materialId": material_id,
+        "materialName": f"素材 {material_id}",
+        "materialType": "短视频",
+        "videoType": "素材视频",
+        "totalCost": cost,
+    }
+
+
+def click_record(material_id, second, value):
+    return {
+        "recordType": "interaction_series",
+        "interactionMetric": "CLICK_COUNT",
+        "durationSec": second,
+        "metricValue": value,
+        "materialId": material_id,
+    }
+
+
+class FinalReportDataTests(unittest.TestCase):
+    def test_builds_draft_report_without_conclusion_json(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-30",
+            "rankingMetric": "stat_cost_for_overall_roi2",
+            "materials": [material("m-1")],
+        }
+        records_by_material = {
+            "m-1": [
+                click_record("m-1", 0, 0),
+                click_record("m-1", 1, 3),
+                click_record("m-1", 2, 0),
+            ]
+        }
+        summaries_by_material = {
+            "m-1": {
+                "summaryPath": "/run/peak-frames/m-1/summary.json",
+                "frames": [
+                    {
+                        "rankType": "first_peak",
+                        "durationSec": 1,
+                        "metricValue": 3,
+                        "framePath": "/run/peak-frames/m-1/first_peak_0001s_3.jpg",
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+
+        result = build_final_report_data(
+            top_payload,
+            records_by_material,
+            summaries_by_material,
+            conclusion=None,
+            batch_verification=None,
+        )
+
+        self.assertEqual(result["status"], "draft")
+        self.assertEqual(result["overview"]["materialCount"], 1)
+        self.assertEqual(result["overview"]["highlightFrameCount"], 1)
+        self.assertEqual(result["materials"][0]["extractionStatus"], "succeeded")
+
+    def test_partial_report_keeps_failed_material(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-30",
+            "materials": [material("m-1", 1, 100), material("m-2", 2, 80)],
+        }
+        records_by_material = {"m-1": [], "m-2": []}
+        summaries_by_material = {
+            "m-1": {
+                "summaryPath": "/run/peak-frames/m-1/summary.json",
+                "frames": [
+                    {
+                        "rankType": "first_peak",
+                        "durationSec": 1,
+                        "metricValue": 3,
+                        "framePath": "/run/peak-frames/m-1/first_peak_0001s_3.jpg",
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+        batch_verification = {
+            "valid": False,
+            "errors": ["material m-2 is not succeeded"],
+            "warnings": [],
+        }
+
+        result = build_final_report_data(
+            top_payload,
+            records_by_material,
+            summaries_by_material,
+            conclusion={
+                "overallConclusion": "m-1 可复用",
+                "keyInsights": [],
+                "materialRecommendations": [],
+                "nextActions": [],
+                "warnings": [],
+            },
+            batch_verification=batch_verification,
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(
+            [item["materialId"] for item in result["materials"]], ["m-1", "m-2"]
+        )
+        self.assertEqual(result["materials"][1]["extractionStatus"], "missing_summary")
+        self.assertIn("material m-2 is not succeeded", result["warnings"])
