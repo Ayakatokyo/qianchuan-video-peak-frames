@@ -32,6 +32,13 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("--custom-start-date 2026-06-01", skill)
         self.assertIn("--custom-end-date 2026-06-07", skill)
 
+    def test_batch_workflow_requires_advertiser_id_for_asset_selection(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("--advertiser-id", skill)
+        self.assertIn("广告主 id", skill)
+        self.assertIn("filters.advertiserId", skill)
+
     def test_single_material_rpa_is_documented_as_debugging_only(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         self.assertIn("## TOP 素材批量运行", skill)

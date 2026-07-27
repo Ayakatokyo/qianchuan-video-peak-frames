@@ -24,6 +24,7 @@ def build_parser():
     parser.add_argument("--output", required=True)
     parser.add_argument("--name-regex")
     parser.add_argument("--material-type", action="append", default=[])
+    parser.add_argument("--advertiser-id")
     parser.add_argument("--top-n", type=int, default=50)
     return parser
 
@@ -64,12 +65,20 @@ def main(argv=None):
         physical_table = client.discover_table(TABLE_NAME)
         aggregator = MaterialAggregator(pattern, args.material_type, args.top_n)
         for partition_date in iter_dates(start_date, end_date):
-            for origin_data in client.iter_origin_data(physical_table, partition_date):
+            if args.advertiser_id is None:
+                origin_rows = client.iter_origin_data(physical_table, partition_date)
+            else:
+                origin_rows = client.iter_origin_data(
+                    physical_table,
+                    partition_date,
+                    advertiser_id=args.advertiser_id,
+                )
+            for origin_data in origin_rows:
                 aggregator.add_raw_origin_data(origin_data)
         materials, excluded = aggregator.select()
         payload = build_output(
             start_date.isoformat(), end_date.isoformat(), pattern,
-            args.material_type, materials, excluded,
+            args.material_type, args.advertiser_id, materials, excluded,
         )
         _write_atomic_json(output, payload)
     except (AssetTableError, MaterialDataError, ValueError, re.error) as error:

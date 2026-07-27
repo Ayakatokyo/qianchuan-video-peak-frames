@@ -221,6 +221,44 @@ class AssetTableClientTests(unittest.TestCase):
             },
         )
 
+    def test_iterates_with_advertiser_id_filter_in_restricted_sql(self):
+        session = FakeSession(
+            post_responses=[
+                platform_response(
+                    {"fields": ["origin_data"], "rows": [{"origs": ["origin-1"]}]}
+                )
+            ]
+        )
+        client = AssetTableClient("https://asset.example", "token", session=session)
+
+        rows = list(
+            client.iter_origin_data(
+                "material_origin_records", "2026-07-20", advertiser_id="1765875532"
+            )
+        )
+
+        self.assertEqual(rows, ["origin-1"])
+        self.assertEqual(
+            session.calls[0][2]["json"]["sql"],
+            "SELECT origin_data FROM material_origin_records WHERE dt = '2026-07-20' AND advertiser_id = '1765875532' ORDER BY origin_data LIMIT 2000 OFFSET 0",
+        )
+
+    def test_rejects_invalid_advertiser_id_without_request(self):
+        client = AssetTableClient("https://asset.example", "token", session=FakeSession())
+
+        for advertiser_id in ("", "abc", "123 OR 1=1", "123-456", True):
+            with self.subTest(advertiser_id=advertiser_id):
+                with self.assertRaisesRegex(AssetTableError, "advertiser_id"):
+                    list(
+                        client.iter_origin_data(
+                            "material_table",
+                            "2026-07-20",
+                            advertiser_id=advertiser_id,
+                        )
+                    )
+
+        self.assertEqual(client.session.calls, [])
+
     def test_rejects_unsafe_base_urls_and_allows_http(self):
         for base_url in (
             "ftp://asset.example",
@@ -542,6 +580,7 @@ class MaterialSelectionTests(unittest.TestCase):
             actual_end_date="2026-05-05",
             name_pattern=re.compile(r"First|Second|Winter"),
             material_types=["live_video"],
+            advertiser_id="1765875532",
             materials=materials,
             excluded=excluded,
         )
@@ -556,6 +595,7 @@ class MaterialSelectionTests(unittest.TestCase):
                 "filters": {
                     "materialNameRegex": "First|Second|Winter",
                     "materialTypes": ["live_video"],
+                    "advertiserId": "1765875532",
                 },
                 "excluded": [
                     {
@@ -609,10 +649,13 @@ class ExportCliTests(unittest.TestCase):
             self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["materials"][0]["rank"], 1)
 
     def test_cli_streams_rows_without_raw_list_selection(self):
+        calls = []
+
         class Client:
             def __init__(self, *_args, **_kwargs): pass
             def discover_table(self, _name): return "material_table"
-            def iter_origin_data(self, _table, date):
+            def iter_origin_data(self, table, date, advertiser_id=None):
+                calls.append((table, date, advertiser_id))
                 yield origin_data(material_id=date, cost="3")
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -627,9 +670,18 @@ class ExportCliTests(unittest.TestCase):
                     create=True,
                 ),
             ):
-                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-03", "--output", str(output)]), 0)
+                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-03", "--advertiser-id", "1765875532", "--output", str(output)]), 0)
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["materialCount"], 3)
+            self.assertEqual(
+                calls,
+                [
+                    ("material_table", "2026-05-01", "1765875532"),
+                    ("material_table", "2026-05-02", "1765875532"),
+                    ("material_table", "2026-05-03", "1765875532"),
+                ],
+            )
+            self.assertEqual(payload["filters"]["advertiserId"], "1765875532")
 
     def test_does_not_publish_when_partition_fails(self):
         class Client:

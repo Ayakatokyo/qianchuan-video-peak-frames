@@ -22,6 +22,7 @@ class AssetTableClient:
 
     _TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
     _PARTITION_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    _ADVERTISER_ID_PATTERN = re.compile(r"^\d+$")
     _PAGE_SIZE = 2000
     _MAX_RETRY_AFTER_SECONDS = 60.0
 
@@ -126,7 +127,7 @@ class AssetTableClient:
         self._validate_required_fields(fields_data)
         return physical_table
 
-    def iter_origin_data(self, physical_table, partition_date):
+    def iter_origin_data(self, physical_table, partition_date, advertiser_id=None):
         """Yield every origin_data value for one date partition in fixed-size pages."""
         if not isinstance(physical_table, str) or not self._TABLE_NAME_PATTERN.fullmatch(
             physical_table
@@ -140,15 +141,26 @@ class AssetTableClient:
             datetime.strptime(partition_date, "%Y-%m-%d")
         except ValueError as error:
             raise AssetTableError("partition_date must be a valid calendar date") from error
+        if advertiser_id is not None:
+            if isinstance(advertiser_id, bool) or not isinstance(advertiser_id, (str, int)):
+                raise AssetTableError("advertiser_id must contain digits only")
+            advertiser_id = str(advertiser_id).strip()
+            if not self._ADVERTISER_ID_PATTERN.fullmatch(advertiser_id):
+                raise AssetTableError("advertiser_id must contain digits only")
 
         offset = 0
         while True:
+            where_clause = "dt = '{date}'".format(date=partition_date)
+            if advertiser_id is not None:
+                where_clause += " AND advertiser_id = '{advertiser_id}'".format(
+                    advertiser_id=advertiser_id
+                )
             sql = (
-                "SELECT origin_data FROM {table} WHERE dt = '{date}' "
+                "SELECT origin_data FROM {table} WHERE {where_clause} "
                 "ORDER BY origin_data LIMIT {limit} OFFSET {offset}"
             ).format(
                 table=physical_table,
-                date=partition_date,
+                where_clause=where_clause,
                 limit=self._PAGE_SIZE,
                 offset=offset,
             )

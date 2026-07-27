@@ -126,21 +126,26 @@ def build_output(
     actual_end_date,
     name_pattern,
     material_types,
+    advertiser_id,
     materials,
     excluded,
 ):
     """Build the JSON-serializable output contract for selected materials."""
     pattern = _normalise_name_pattern(name_pattern)
     normalised_types = _normalise_material_types(material_types)
+    normalised_advertiser_id = _normalise_advertiser_id(advertiser_id)
+    filters = {
+        "materialNameRegex": None if pattern is None else pattern.pattern,
+        "materialTypes": list(normalised_types),
+    }
+    if normalised_advertiser_id is not None:
+        filters["advertiserId"] = normalised_advertiser_id
     return {
         "actualStartDate": actual_start_date,
         "actualEndDate": actual_end_date,
         "materialCount": len(materials),
         "rankingMetric": RANKING_METRIC,
-        "filters": {
-            "materialNameRegex": None if pattern is None else pattern.pattern,
-            "materialTypes": list(normalised_types),
-        },
+        "filters": filters,
         "excluded": [
             {
                 "materialId": item.material_id,
@@ -272,6 +277,17 @@ def _normalise_material_types(material_types):
 def _validate_top_n(top_n):
     if isinstance(top_n, bool) or not isinstance(top_n, int) or top_n <= 0:
         raise MaterialDataError("top_n must be positive")
+
+
+def _normalise_advertiser_id(advertiser_id):
+    if advertiser_id is None:
+        return None
+    if isinstance(advertiser_id, bool) or not isinstance(advertiser_id, (str, int)):
+        raise MaterialDataError("advertiser_id must contain digits only")
+    result = str(advertiser_id).strip()
+    if not re.fullmatch(r"\d+", result):
+        raise MaterialDataError("advertiser_id must contain digits only")
+    return result
 
 
 def _reject_json_constant(value):

@@ -14,8 +14,8 @@ description: 适用于需要从巨量千川素材分析、视频推直播单条�
 1. 校验字段或准备连接器参数时，阅读 `references/rpa-output-contract.md`。
 2. 已有匹配视频时，使用本地模式。
 3. 创建隔离的 Python 3.9+ 环境并安装 `requirements.txt`。
-4. 在线运行 TOP 素材批量任务前，确认 `ENV_BACKEND_HOST`、`YUCE_AUTHORIZATION`、`YUCE_SESSION_ID` 以及目标 `shop_id`。
-5. 调用 RPA 前，先从资产表选择 TOP 素材。两项操作都必须使用同一明确的闭区间起止日期，且不得复用其他运行或周期的选材 JSON。
+4. 在线运行 TOP 素材批量任务前，确认 `ENV_BACKEND_HOST`、`YUCE_AUTHORIZATION`、`YUCE_SESSION_ID`、目标 `shop_id` 以及该 RPA 店铺对应的广告主 id。
+5. 调用 RPA 前，先从资产表选择 TOP 素材。两项操作都必须使用同一明确的闭区间起止日期和广告主 id，且不得复用其他运行或周期的选材 JSON。
 6. 报告成功前运行批次验证；审查保留的警告，且不要仅凭文件名认定帧有效。
 
 ## 本地运行
@@ -38,11 +38,13 @@ python scripts/extract_peak_frames.py \
 python scripts/export_top_materials.py \
   --start-date 2026-06-01 \
   --end-date 2026-06-07 \
+  --advertiser-id "<advertiser-id>" \
   --top-n 50 \
   --output "/path/to/run/top_materials.json"
 ```
 
 导出器会将每条保留的 `origin_data` 行流式汇总到内存中的素材聚合结果，不会在整个日期范围内保留完整原始 JSON 行集合。
+资产表选材必须传入与 RPA 店铺匹配的广告主 id；输出的 `top_materials.json` 会在 `filters.advertiserId` 保留该筛选条件，后续排查素材不存在时先核对此字段。
 应优先使用完整的目标闭区间（包括按月区间），以确保全局排序准确。只有当资产表服务或执行沙箱仍无法完成精确的流式导出时，才可将手动逐日合并候选项作为低内存兜底方案。
 
 CLI 要求 `top_materials.json` 中包含 `actualStartDate`、`actualEndDate` 与 `materialCount`。对于 `CUSTOM` 批次，其日期必须与 `--custom-start-date` 和 `--custom-end-date` 完全一致；在任何 RPA 调用前会拒绝重复素材 ID 或错误的数量。
