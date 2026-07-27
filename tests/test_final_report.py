@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from final_report_lib import FinalReportError, load_conclusion_analysis  # noqa: E402
 from final_report_lib import build_final_report_data  # noqa: E402
+from final_report_lib import generate_final_report  # noqa: E402
 
 
 def write_json(path, payload):
@@ -167,3 +168,99 @@ class FinalReportDataTests(unittest.TestCase):
         )
         self.assertEqual(result["materials"][1]["extractionStatus"], "missing_summary")
         self.assertIn("material m-2 is not succeeded", result["warnings"])
+
+
+class FinalReportRenderTests(unittest.TestCase):
+    def test_generates_html_with_required_sections(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            analysis_path = (
+                root / "diagnostic-analysis" / "diagnostic-ai-analysis.json"
+            )
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-30",
+                    "rankingMetric": "stat_cost_for_overall_roi2",
+                    "materials": [material("m-1", 1, 123.45)],
+                },
+            )
+            write_json(records_dir / "m-1.json", [click_record("m-1", 0, 0)])
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_3.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "materialId": "m-1",
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 3,
+                            "framePath": frame_path.name,
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+            write_json(
+                peak_dir / "batch-verification.json",
+                {"valid": True, "errors": [], "warnings": []},
+            )
+            write_json(
+                analysis_path,
+                {
+                    "schemaVersion": 1,
+                    "overallConclusion": "礼赠素材可以继续放量。",
+                    "keyInsights": [
+                        {
+                            "title": "开箱强",
+                            "body": "高光帧集中。",
+                            "materialIds": ["m-1"],
+                        }
+                    ],
+                    "materialRecommendations": [
+                        {
+                            "materialId": "m-1",
+                            "decision": "scale",
+                            "reason": "表现稳定",
+                            "nextAction": "保留开箱",
+                        }
+                    ],
+                    "nextActions": [
+                        {
+                            "title": "扩展礼赠脚本",
+                            "body": "围绕送礼对象拆分。",
+                            "priority": "high",
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            data_path, html_path, data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                analysis_json=analysis_path,
+            )
+
+            html_text = html_path.read_text(encoding="utf-8")
+        self.assertEqual(data_path.name, "final-report-data.json")
+        self.assertEqual(html_path.name, "final-report.html")
+        self.assertEqual(data["status"], "complete")
+        self.assertIn("千川 TOP 素材池商业诊断报告", html_text)
+        self.assertIn("组合结论", html_text)
+        self.assertIn("关键洞察", html_text)
+        self.assertIn("素材证据", html_text)
+        self.assertIn("下一轮策略", html_text)
+        self.assertIn("数据质量", html_text)
+        self.assertIn("礼赠素材可以继续放量。", html_text)
