@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from final_report_lib import FinalReportError, load_conclusion_analysis  # noqa: E402
 from final_report_lib import build_final_report_data  # noqa: E402
 from final_report_lib import generate_final_report  # noqa: E402
+import render_final_report  # noqa: E402
 
 
 def write_json(path, payload):
@@ -264,3 +265,42 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("下一轮策略", html_text)
         self.assertIn("数据质量", html_text)
         self.assertIn("礼赠素材可以继续放量。", html_text)
+
+
+class FinalReportCliTests(unittest.TestCase):
+    def test_cli_rejects_invalid_analysis_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "final-report"
+            analysis_path = root / "bad.json"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-30",
+                    "materials": [material("m-1")],
+                },
+            )
+            records_dir.mkdir()
+            peak_dir.mkdir()
+            write_json(analysis_path, {"schemaVersion": 2})
+
+            result = render_final_report.main(
+                [
+                    "--top-materials-json",
+                    str(top_path),
+                    "--peak-output-dir",
+                    str(peak_dir),
+                    "--diagnosis-records-dir",
+                    str(records_dir),
+                    "--analysis-json",
+                    str(analysis_path),
+                    "--output-dir",
+                    str(output_dir),
+                ]
+            )
+
+        self.assertEqual(result, 2)
