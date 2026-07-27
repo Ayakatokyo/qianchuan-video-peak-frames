@@ -35,14 +35,14 @@ python scripts/extract_peak_frames.py \
 
 ## TOP 素材批量运行
 
-选择一个空的运行目录。选材 JSON 是必须保留的批次产物。
+选择一个空的运行目录。选材 JSON 是必须保留的批次产物。目标交付 Top N 时，资产表阶段先导出更大的候选池；例如目标 Top 50 时先导出 Top 150，避免把资产表可选中但 RPA 当前不可用的素材直接送入正式批次。
 
 ```bash
 python scripts/export_top_materials.py \
   --start-date 2026-06-01 \
   --end-date 2026-06-07 \
   --advertiser-id "<advertiser-id>" \
-  --top-n 50 \
+  --top-n 150 \
   --output "/path/to/run/top_materials.json"
 ```
 
@@ -53,11 +53,29 @@ python scripts/export_top_materials.py \
 
 CLI 要求 `top_materials.json` 中包含 `actualStartDate`、`actualEndDate` 与 `materialCount`。对于 `CUSTOM` 批次，其日期必须与 `--custom-start-date` 和 `--custom-end-date` 完全一致；在任何 RPA 调用前会拒绝重复素材 ID 或错误的数量。
 
+正式 RPA 截帧前必须先执行 RPA 预检补位。预检只校验连接器是否能返回可解析记录、目标素材是否有 `material_info`，以及 `material_info.videoUrl` 是否非空；不会下载视频、运行 FFmpeg 或生成 JPEG。
+
 ```bash
 python scripts/extract_peak_frames.py \
   --source rpa \
   --shop-id "<rpa-authorized-shop-id>" \
   --top-materials-json "/path/to/run/top_materials.json" \
+  --target-top-n 50 \
+  --preflight-only \
+  --date-range-type CUSTOM \
+  --custom-start-date 2026-06-01 \
+  --custom-end-date 2026-06-07 \
+  --diagnosis-records-dir "/path/to/run/diagnosis-records" \
+  --output-dir "/path/to/run/peak-frames"
+```
+
+预检会写入 `rpa-preflight.json` 和 `top_materials_rpa_ready.json`。检查 `rpa-preflight.json`：`selectedMaterials` 是补位后可进入正式批次的素材，`rejectedMaterials` 是 RPA 当前不可用的素材及失败原因；如果 `satisfied=false`，正式批次不得开始，应先扩大候选池或排查 RPA 配置。
+
+```bash
+python scripts/extract_peak_frames.py \
+  --source rpa \
+  --shop-id "<rpa-authorized-shop-id>" \
+  --top-materials-json "/path/to/run/top_materials_rpa_ready.json" \
   --date-range-type CUSTOM \
   --custom-start-date 2026-06-01 \
   --custom-end-date 2026-06-07 \
@@ -67,7 +85,7 @@ python scripts/extract_peak_frames.py \
   --output-dir "/path/to/run/peak-frames"
 ```
 
-保留 `top_materials.json`、位于 `diagnosis-csv/<materialId>.csv` 的原始诊断 CSV、规范化记录、峰值帧摘要、JPEG 和警告。CSV 下载或解析失败仍会阻塞流程；在审查其保留的 CSV 和帧摘要之前，不得将该素材报告为成功。
+保留 `top_materials.json`、`rpa-preflight.json`、`top_materials_rpa_ready.json`、位于 `diagnosis-csv/<materialId>.csv` 的原始诊断 CSV、规范化记录、峰值帧摘要、JPEG 和警告。CSV 下载或解析失败仍会阻塞流程；在审查其保留的 CSV 和帧摘要之前，不得将该素材报告为成功。
 
 命令会在峰值帧输出目录写入 `batch-manifest.json`。使用 `--concurrency <positive-integer>` 控制素材间的受控并行；省略时默认一次处理一个素材。每个素材条目会记录 `timingsSec`，其中包含 `rpaFetchSec`、`diagnosisRecordWriteSec`、`videoDownloadSec`、`frameExtractionSec` 和 `totalSec`，以便在进一步调优前定位慢任务。失败素材会记录在此文件中，后续 TOP 素材仍会继续运行；即使成功产物已保留，只要有任一素材仍失败，命令就以非零状态退出。使用 `--resume` 可在完全相同的选中 ID、店铺和日期范围下恢复任务；它只跳过保留摘要和 JPEG 仍能通过验证的成功素材，并重试失败或中断的素材。
 
@@ -75,7 +93,7 @@ python scripts/extract_peak_frames.py \
 python scripts/extract_peak_frames.py \
   --source rpa \
   --shop-id "<rpa-authorized-shop-id>" \
-  --top-materials-json "/path/to/run/top_materials.json" \
+  --top-materials-json "/path/to/run/top_materials_rpa_ready.json" \
   --date-range-type CUSTOM \
   --custom-start-date 2026-06-01 \
   --custom-end-date 2026-06-07 \
@@ -90,7 +108,7 @@ python scripts/extract_peak_frames.py \
 python scripts/extract_peak_frames.py \
   --source rpa \
   --shop-id "<rpa-authorized-shop-id>" \
-  --top-materials-json "/path/to/run/top_materials.json" \
+  --top-materials-json "/path/to/run/top_materials_rpa_ready.json" \
   --date-range-type CUSTOM \
   --custom-start-date 2026-06-01 \
   --custom-end-date 2026-06-07 \
@@ -106,7 +124,7 @@ python scripts/extract_peak_frames.py \
 
 ```bash
 python scripts/prepare_diagnostic_analysis.py \
-  --top-materials-json "/path/to/run/top_materials.json" \
+  --top-materials-json "/path/to/run/top_materials_rpa_ready.json" \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
   --output-dir "/path/to/run/diagnostic-analysis"
 ```
@@ -117,7 +135,7 @@ python scripts/prepare_diagnostic_analysis.py \
 
 ```bash
 python scripts/render_final_report.py \
-  --top-materials-json "/path/to/run/top_materials.json" \
+  --top-materials-json "/path/to/run/top_materials_rpa_ready.json" \
   --peak-output-dir "/path/to/run/peak-frames" \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
   --analysis-json "/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json" \
@@ -159,7 +177,7 @@ python scripts/extract_peak_frames.py \
 | FFmpeg 超时 | 默认 120 秒；通过 `--ffmpeg-timeout-sec <positive-seconds>` 覆盖 |
 | 本地结果 | 检查 `<output>/<material-id>/summary.json` |
 | RPA 账户 | 使用 `scripts/rpa_adapter.py` 助手或预策连接器账户列表查找 `shop_id` |
-| TOP 素材批量任务 | 先运行资产表选材，再将运行目录中的 `top_materials.json` 与相同的 CUSTOM 日期传给 RPA |
+| TOP 素材批量任务 | 先导出候选池 `top_materials.json`，再做 RPA 预检补位并将 `top_materials_rpa_ready.json` 传给正式 RPA |
 | 加速 TOP 素材批量任务 | 确认网关可承受并行 RPA 调用后，添加 `--concurrency 3` 实现受控并行 |
 | 恢复 TOP 素材批量任务 | 使用完全相同的批次命令添加 `--resume`；先检查 `batch-manifest.json` |
 | 验证 TOP 素材批量任务 | 使用完全相同的批次绑定添加 `--verify`；检查 `batch-verification.json`、警告和退出码 |

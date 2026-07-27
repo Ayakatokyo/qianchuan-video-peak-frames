@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
 import json
 import math
 import os
+import signal
 import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 import uuid
 
@@ -24,6 +27,7 @@ from rpa_adapter import (
     RpaAdapterError,
     download_video,
     fetch_material_diagnosis,
+    fetch_material_preflight,
     find_material_video_url,
     list_accounts,
 )
@@ -45,6 +49,8 @@ BATCH_MANIFEST_VERSION = 1
 BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
 BATCH_VERIFICATION_NAME = "batch-verification.json"
 BATCH_VERIFICATION_FAILURE_EXIT_CODE = 6
+RPA_PREFLIGHT_NAME = "rpa-preflight.json"
+RPA_READY_TOP_MATERIALS_NAME = "top_materials_rpa_ready.json"
 MATERIAL_TIMING_FIELDS = (
     "rpaFetchSec",
     "diagnosisRecordWriteSec",
@@ -54,6 +60,10 @@ MATERIAL_TIMING_FIELDS = (
 )
 HANDLED_MATERIAL_ERRORS = (InputDataError, FfmpegError, RpaAdapterError, RpaCsvError)
 _MATERIAL_TIMING_STATE = threading.local()
+
+
+class RpaPreflightDeadlineExceeded(TimeoutError):
+    """Raised when a single-material RPA preflight exceeds its wall-clock budget."""
 
 
 def _positive_timeout(value):
@@ -105,6 +115,11 @@ def build_parser():
     parser.add_argument("--top-materials-json")
     parser.add_argument("--diagnosis-records-dir")
     parser.add_argument("--batch-manifest")
+    parser.add_argument("--target-top-n", type=_positive_int)
+    parser.add_argument("--candidate-top-n", type=_positive_int)
+    parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=300)
+    parser.add_argument("--rpa-ready-top-materials-json")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--concurrency", type=_positive_int, default=1)
@@ -164,7 +179,7 @@ def _resolve_shop_id(args):
     return accounts[0]["shop_id"]
 
 
-def _top_material_ids(path, date_range_type, custom_start_date, custom_end_date):
+def _load_top_materials(path, date_range_type, custom_start_date, custom_end_date):
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -203,6 +218,13 @@ def _top_material_ids(path, date_range_type, custom_start_date, custom_end_date)
         raise RpaAdapterError(
             "top materials JSON materialCount does not match materials"
         )
+    return payload, material_ids
+
+
+def _top_material_ids(path, date_range_type, custom_start_date, custom_end_date):
+    _payload, material_ids = _load_top_materials(
+        path, date_range_type, custom_start_date, custom_end_date
+    )
     return material_ids
 
 
@@ -265,6 +287,204 @@ def _write_json_atomically(path, payload):
             f"unable to write batch manifest {target}: {exc}"
         ) from exc
     return target
+
+
+def _preflight_path(args):
+    return Path(args.output_dir) / RPA_PREFLIGHT_NAME
+
+
+def _ready_top_materials_path(args):
+    if args.rpa_ready_top_materials_json:
+        return Path(args.rpa_ready_top_materials_json)
+    return Path(args.output_dir) / RPA_READY_TOP_MATERIALS_NAME
+
+
+def _preflight_enabled(args):
+    return bool(args.target_top_n or args.preflight_only)
+
+
+def _material_entry_with_preflight(material, outcome):
+    enriched = dict(material)
+    enriched.update(
+        {
+            "rpaAvailable": bool(outcome.get("rpaAvailable")),
+            "failureReason": outcome.get("failureReason"),
+            "videoUrl": outcome.get("videoUrl"),
+        }
+    )
+    return enriched
+
+
+def _ready_top_materials_payload(candidate_payload, selected_materials):
+    ready_payload = dict(candidate_payload)
+    ready_payload["materialCount"] = len(selected_materials)
+    ready_payload["materials"] = [dict(material) for material in selected_materials]
+    return ready_payload
+
+
+@contextmanager
+def _rpa_preflight_deadline(timeout_sec):
+    if (
+        not hasattr(signal, "SIGALRM")
+        or not hasattr(signal, "setitimer")
+        or threading.current_thread() is not threading.main_thread()
+    ):
+        yield
+        return
+
+    def _handle_timeout(_signum, _frame):
+        raise RpaPreflightDeadlineExceeded(
+            f"RPA preflight exceeded {timeout_sec} seconds"
+        )
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout_sec)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
+def _preflight_receipt(args, candidate_payload, materials, selected, rejected):
+    target_top_n = args.target_top_n or len(materials)
+    return {
+        "schemaVersion": 1,
+        "requestedTopN": target_top_n,
+        "candidateCount": len(materials),
+        "shopId": args.shop_id,
+        "dateRange": {
+            "type": args.date_range_type,
+            "customStartDate": args.custom_start_date,
+            "customEndDate": args.custom_end_date,
+            "actualStartDate": candidate_payload.get("actualStartDate"),
+            "actualEndDate": candidate_payload.get("actualEndDate"),
+        },
+        "selectedMaterials": [dict(material) for material in selected],
+        "rejectedMaterials": [dict(material) for material in rejected],
+        "satisfied": len(selected) >= target_top_n,
+    }
+
+
+def _write_preflight_artifacts(args, candidate_payload, materials, selected, rejected):
+    receipt = _preflight_receipt(
+        args, candidate_payload, materials, selected, rejected
+    )
+    _write_json_atomically(_preflight_path(args), receipt)
+    ready_payload = _ready_top_materials_payload(candidate_payload, selected)
+    ready_path = _ready_top_materials_path(args)
+    _write_json_atomically(ready_path, ready_payload)
+    return receipt, ready_path, ready_payload
+
+
+def _preflight_failure(material_id, reason):
+    return {
+        "materialId": str(material_id or "").strip(),
+        "rpaAvailable": False,
+        "failureReason": reason,
+        "videoUrl": None,
+    }
+
+
+def _preflight_worker_entry(params, worker, queue):
+    try:
+        queue.put(worker(params))
+    except Exception:
+        queue.put(_preflight_failure(params.get("material_id"), "unknown_preflight_failure"))
+
+
+def _fetch_material_preflight_worker(params):
+    return fetch_material_preflight(**params)
+
+
+def _fetch_material_preflight_isolated(params, timeout_sec, worker=None):
+    worker = _fetch_material_preflight_worker if worker is None else worker
+    context = multiprocessing.get_context("fork")
+    queue = context.Queue()
+    process = context.Process(
+        target=_preflight_worker_entry,
+        args=(params, worker, queue),
+    )
+    process.start()
+    try:
+        process.join(timeout_sec)
+        if process.is_alive():
+            process.terminate()
+            process.join(1)
+            if process.is_alive() and hasattr(process, "kill"):
+                process.kill()
+                process.join(1)
+            return _preflight_failure(params.get("material_id"), "rpa_request_failed")
+        if not queue.empty():
+            return queue.get()
+        if process.exitcode == 0:
+            return _preflight_failure(
+                params.get("material_id"), "unknown_preflight_failure"
+            )
+        return _preflight_failure(params.get("material_id"), "rpa_request_failed")
+    except BaseException:
+        if process.is_alive():
+            process.terminate()
+            process.join(1)
+            if process.is_alive() and hasattr(process, "kill"):
+                process.kill()
+                process.join(1)
+        raise
+
+
+def _fetch_material_preflight_for_cli(args, material_id):
+    params = {
+        "shop_id": args.shop_id,
+        "material_id": material_id,
+        "date_range_type": args.date_range_type,
+        "custom_start_date": args.custom_start_date,
+        "custom_end_date": args.custom_end_date,
+        "diagnosis_csv_dir": _diagnosis_csv_dir(args),
+        "timeout_sec": args.rpa_preflight_timeout_sec,
+    }
+    if hasattr(fetch_material_preflight, "mock_calls"):
+        with _rpa_preflight_deadline(args.rpa_preflight_timeout_sec):
+            return fetch_material_preflight(**params)
+    return _fetch_material_preflight_isolated(
+        params, args.rpa_preflight_timeout_sec
+    )
+
+
+def _run_rpa_preflight(args, candidate_payload):
+    candidate_limit = args.candidate_top_n or len(candidate_payload["materials"])
+    materials = candidate_payload["materials"][:candidate_limit]
+    target_top_n = args.target_top_n or len(materials)
+    selected = []
+    rejected = []
+
+    for material in materials:
+        if len(selected) >= target_top_n:
+            break
+        material_id = str(material.get("materialId") or "").strip()
+        try:
+            outcome = _fetch_material_preflight_for_cli(args, material_id)
+        except RpaPreflightDeadlineExceeded:
+            outcome = _preflight_failure(material_id, "rpa_request_failed")
+        except RpaAdapterError:
+            outcome = _preflight_failure(material_id, "rpa_request_failed")
+        except Exception:
+            outcome = _preflight_failure(material_id, "unknown_preflight_failure")
+
+        if outcome.get("rpaAvailable"):
+            selected.append(dict(material))
+        else:
+            rejected.append(_material_entry_with_preflight(material, outcome))
+        _write_preflight_artifacts(
+            args, candidate_payload, materials, selected, rejected
+        )
+
+    return _write_preflight_artifacts(
+        args, candidate_payload, materials, selected, rejected
+    )
 
 
 def _batch_manifest_path(args):
@@ -667,18 +887,40 @@ def main(argv=None):
                     "CUSTOM requires --custom-start-date and "
                     "--custom-end-date"
                 )
+            if args.preflight_only and not args.top_materials_json:
+                parser.error("--preflight-only requires --top-materials-json")
+            if args.preflight_only and not args.target_top_n:
+                parser.error("--preflight-only requires --target-top-n")
+            if args.target_top_n and not args.top_materials_json:
+                parser.error("--target-top-n requires --top-materials-json")
             args.shop_id = _resolve_shop_id(args)
-            material_ids = (
-                _top_material_ids(
+            if args.top_materials_json:
+                top_materials_payload, material_ids = _load_top_materials(
                     args.top_materials_json,
                     args.date_range_type,
                     args.custom_start_date,
                     args.custom_end_date,
                 )
-                if args.top_materials_json
-                else [args.material_id]
-            )
+            else:
+                top_materials_payload = None
+                material_ids = [args.material_id]
             if args.top_materials_json:
+                if _preflight_enabled(args):
+                    receipt, ready_path, ready_payload = _run_rpa_preflight(
+                        args, top_materials_payload
+                    )
+                    print(f"rpa_preflight={_preflight_path(args)}")
+                    print(f"rpa_ready_top_materials_json={ready_path}")
+                    material_ids = [
+                        str(material["materialId"])
+                        for material in ready_payload["materials"]
+                    ]
+                    if not receipt["satisfied"]:
+                        raise RpaAdapterError(
+                            "RPA preflight did not satisfy requested Top N"
+                        )
+                    if args.preflight_only:
+                        return 0
                 if args.verify:
                     verification_path, receipt = _verify_rpa_batch(
                         args, material_ids

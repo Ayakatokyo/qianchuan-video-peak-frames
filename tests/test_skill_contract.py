@@ -53,6 +53,28 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("--custom-start-date 2026-06-01", skill)
         self.assertIn("--custom-end-date 2026-06-07", skill)
 
+    def test_batch_workflow_preflights_and_backfills_before_formal_rpa(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        self.assertIn("## TOP 素材批量运行", skill)
+        batch_start = skill.index("## TOP 素材批量运行")
+        export_start = skill.index(
+            "python scripts/export_top_materials.py", batch_start
+        )
+        preflight_start = skill.index("--preflight-only", batch_start)
+        formal_start = skill.index(
+            '--top-materials-json "/path/to/run/top_materials_rpa_ready.json"',
+            batch_start,
+        )
+
+        self.assertLess(export_start, preflight_start)
+        self.assertLess(preflight_start, formal_start)
+        self.assertIn("候选池", skill)
+        self.assertIn("RPA 预检补位", skill)
+        self.assertIn("rpa-preflight.json", skill)
+        self.assertIn("satisfied=false", skill)
+        self.assertIn("top_materials_rpa_ready.json", skill)
+        self.assertIn("正式批次不得开始", skill)
+
     def test_batch_workflow_requires_advertiser_id_for_asset_selection(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

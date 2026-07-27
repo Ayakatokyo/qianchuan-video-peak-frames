@@ -229,6 +229,7 @@ def fetch_material_diagnosis(
     diagnosis_csv_dir=None,
     environ=None,
     session=None,
+    timeout_sec=3600,
 ):
     if not str(shop_id or "").strip():
         raise RpaAdapterError("shop_id is required")
@@ -240,21 +241,26 @@ def fetch_material_diagnosis(
     )
     session = _default_session() if session is None else session
     api_base, authorization, session_id, cookies = runtime_config(environ)
-    response = session.post(
-        f"{api_base}/adg/v1/agent/invoke",
-        json={
-            "authorization": authorization,
-            "agent_session_id": session_id,
-            "data_source_type": DATA_SOURCE_TYPE,
-            "platform": PLATFORM,
-            "function_code": FUNCTION_CODE,
-            "business_params": business_params,
-            "shop_id": str(shop_id).strip(),
-        },
-        headers=HEADERS,
-        cookies=cookies,
-        timeout=3600,
-    )
+    try:
+        response = session.post(
+            f"{api_base}/adg/v1/agent/invoke",
+            json={
+                "authorization": authorization,
+                "agent_session_id": session_id,
+                "data_source_type": DATA_SOURCE_TYPE,
+                "platform": PLATFORM,
+                "function_code": FUNCTION_CODE,
+                "business_params": business_params,
+                "shop_id": str(shop_id).strip(),
+            },
+            headers=HEADERS,
+            cookies=cookies,
+            timeout=timeout_sec,
+        )
+    except Exception as exc:
+        raise RpaAdapterError(
+            f"unable to fetch RPA material diagnosis: {exc}"
+        ) from exc
     _raise_for_status(response, "fetch RPA material diagnosis")
     gateway_result = unpack_gateway_result(response.json())
     if isinstance(gateway_result, list):
@@ -285,6 +291,83 @@ def find_material_video_url(records, material_id=None):
         if video_url:
             return video_url
     raise RpaAdapterError("RPA records do not contain material_info.videoUrl")
+
+
+def _preflight_result(material_id, available, failure_reason=None, video_url=None):
+    return {
+        "materialId": str(material_id or "").strip(),
+        "rpaAvailable": available,
+        "failureReason": failure_reason,
+        "videoUrl": video_url,
+    }
+
+
+def preflight_material_availability(records, material_id):
+    wanted_material_id = str(material_id or "").strip()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("recordType") != "material_info":
+            continue
+        record_material_id = str(record.get("materialId") or "").strip()
+        if wanted_material_id and record_material_id != wanted_material_id:
+            continue
+        video_url = str(record.get("videoUrl") or "").strip()
+        if not video_url:
+            return _preflight_result(
+                wanted_material_id, False, "missing_video_url"
+            )
+        return _preflight_result(wanted_material_id, True, video_url=video_url)
+    return _preflight_result(wanted_material_id, False, "missing_material_info")
+
+
+def _preflight_failure_reason(error):
+    message = str(error)
+    payload_markers = (
+        "payload",
+        "record list",
+        "files response",
+        "diagnostic CSV",
+    )
+    if any(marker in message for marker in payload_markers):
+        return "rpa_payload_invalid"
+    return "rpa_request_failed"
+
+
+def fetch_material_preflight(
+    *,
+    shop_id,
+    material_id,
+    date_range_type,
+    custom_start_date=None,
+    custom_end_date=None,
+    diagnosis_csv_dir=None,
+    environ=None,
+    session=None,
+    timeout_sec=300,
+):
+    try:
+        records = fetch_material_diagnosis(
+            shop_id=shop_id,
+            material_id=material_id,
+            date_range_type=date_range_type,
+            custom_start_date=custom_start_date,
+            custom_end_date=custom_end_date,
+            diagnosis_csv_dir=diagnosis_csv_dir,
+            environ=environ,
+            session=session,
+            timeout_sec=timeout_sec,
+        )
+    except RpaAdapterError as exc:
+        return _preflight_result(
+            material_id, False, _preflight_failure_reason(exc)
+        )
+    except Exception:
+        return _preflight_result(material_id, False, "unknown_preflight_failure")
+    try:
+        return preflight_material_availability(records, material_id)
+    except Exception:
+        return _preflight_result(material_id, False, "rpa_payload_invalid")
 
 
 def download_video(video_url, target_path, session=None, timeout=300):

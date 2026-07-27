@@ -58,6 +58,33 @@ This example selects second 1 first, then seconds 3, 7, and 5 by later click ran
 
 Online mode reads the `material_info` record field `videoUrl`, downloads it to a temporary local video file, and then reuses the same local processing pipeline. `videoDuration` may be present in the connector output, but FFmpeg remains the source of truth for frame timestamp bounds.
 
+## RPA Preflight
+
+Batch RPA mode can run a lightweight preflight before formal frame extraction. The asset-table `top_materials.json` is treated as a candidate pool, not necessarily the final execution list.
+
+A material passes preflight only when:
+
+- the connector call returns parseable diagnosis records;
+- the record list contains the target material's `material_info`;
+- `material_info.videoUrl` is a non-empty string.
+
+Preflight does not download video, run FFmpeg, write summaries, or generate JPEGs. A preflight failure means "RPA currently unavailable for this material"; it is not a deletion verdict.
+
+Failure reasons:
+
+- `rpa_request_failed`: gateway, HTTP, network, or configured RPA request failure.
+- `rpa_payload_invalid`: gateway payload could not be normalized into usable records.
+- `missing_material_info`: no matching `material_info` record was returned.
+- `missing_video_url`: matching `material_info` exists but has no usable `videoUrl`.
+- `unknown_preflight_failure`: unexpected failure outside the known classes.
+
+Preflight writes:
+
+- `rpa-preflight.json`: receipt with `requestedTopN`, `candidateCount`, `shopId`, `dateRange`, `selectedMaterials`, `rejectedMaterials`, and `satisfied`.
+- `top_materials_rpa_ready.json`: same top-materials contract shape as `top_materials.json`, but `materials` contains only selected RPA-ready materials.
+
+Formal batch extraction must consume the ready list once preflight is enabled. If `rpa-preflight.json` has `satisfied=false`, formal frame extraction must not start.
+
 ## Connector Inputs
 
 Supported `date_range_type` values:
