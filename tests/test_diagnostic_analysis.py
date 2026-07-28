@@ -368,6 +368,65 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
                 )
             self.assertFalse((root / "bad-output").exists())
 
+    def test_publishes_highlight_evidence_and_warns_for_missing_jpeg(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "analysis"
+            records_dir.mkdir()
+            self._write_json(
+                top_materials,
+                {"materials": [{"materialId": "m-1", "materialName": "素材一"}]},
+            )
+            self._write_json(records_dir / "m-1.json", [])
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            (material_dir / "first_peak_0001s_3.jpg").write_bytes(
+                b"\xff\xd8fake-jpeg\xff\xd9"
+            )
+            self._write_json(
+                material_dir / "summary.json",
+                {
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 3,
+                            "framePath": "first_peak_0001s_3.jpg",
+                        },
+                        {
+                            "rankType": "later_top_1",
+                            "durationSec": 5,
+                            "metricValue": 2,
+                            "framePath": "later_top_1_0005s_2.jpg",
+                        },
+                    ]
+                },
+            )
+
+            data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+                top_materials,
+                records_dir,
+                output_dir,
+                peak_output_dir=peak_dir,
+            )
+
+            frames = analysis["highlights"]["materials"][0]["frames"]
+            self.assertEqual(frames[0]["evidenceRef"], "highlight:m-1:first_peak")
+            self.assertEqual(
+                frames[0]["framePath"],
+                str(material_dir / "first_peak_0001s_3.jpg"),
+            )
+            self.assertIn(
+                "missing high-light JPEG for material m-1: later_top_1",
+                analysis["warnings"],
+            )
+            self.assertEqual(
+                json.loads(data_path.read_text(encoding="utf-8")), analysis
+            )
+
 
 class DiagnosticAnalysisCliTests(unittest.TestCase):
     def test_cli_writes_both_artifacts_and_reports_their_paths(self):
@@ -431,6 +490,68 @@ class DiagnosticAnalysisCliTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2)
             self.assertIn("unable to read top materials JSON", completed.stderr)
             self.assertFalse((root / "analysis").exists())
+
+    def test_cli_accepts_peak_output_dir_and_writes_highlights(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "analysis"
+            records_dir.mkdir()
+            top_materials.write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                encoding="utf-8",
+            )
+            (records_dir / "m-1.json").write_text("[]", encoding="utf-8")
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            (material_dir / "first_peak_0001s_3.jpg").write_bytes(
+                b"\xff\xd8fake-jpeg\xff\xd9"
+            )
+            (material_dir / "summary.json").write_text(
+                json.dumps(
+                    {
+                        "frames": [
+                            {
+                                "rankType": "first_peak",
+                                "durationSec": 1,
+                                "metricValue": 3,
+                                "framePath": "first_peak_0001s_3.jpg",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "prepare_diagnostic_analysis.py"),
+                    "--top-materials-json",
+                    str(top_materials),
+                    "--diagnosis-records-dir",
+                    str(records_dir),
+                    "--peak-output-dir",
+                    str(peak_dir),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(
+                (output_dir / "diagnostic-analysis-data.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                payload["highlights"]["materials"][0]["frames"][0]["evidenceRef"],
+                "highlight:m-1:first_peak",
+            )
 
 
 if __name__ == "__main__":

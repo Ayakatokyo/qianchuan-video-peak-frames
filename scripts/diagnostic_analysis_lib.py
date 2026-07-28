@@ -23,6 +23,14 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
+def _safe_component(value):
+    cleaned = "".join(
+        character if character.isalnum() or character in "-_" else "_"
+        for character in str(value)
+    )
+    return cleaned.strip("_") or "unknown-material"
+
+
 def _finite_number(value):
     if isinstance(value, bool):
         return None
@@ -417,6 +425,66 @@ def _load_selected_records(top_payload, records_dir):
     return records_by_material, warnings
 
 
+def _highlight_evidence_ref(material_id, rank_type):
+    return f"highlight:{material_id}:{rank_type}"
+
+
+def _load_highlights(top_payload, peak_output_dir):
+    materials, _warnings = _selected_materials(top_payload)
+    root = Path(peak_output_dir)
+    result = {"materials": []}
+    warnings = []
+
+    for material in materials:
+        material_id = material["materialId"]
+        material_dir = root / _safe_component(material_id)
+        summary_path = material_dir / "summary.json"
+        frames = []
+        if not summary_path.is_file():
+            warnings.append(f"missing high-light summary for material {material_id}")
+        else:
+            try:
+                summary = _read_json(
+                    summary_path, f"high-light summary for material {material_id}"
+                )
+            except DiagnosticAnalysisError:
+                warnings.append(
+                    f"unable to read high-light summary for material {material_id}"
+                )
+                summary = {}
+            raw_frames = summary.get("frames", []) if isinstance(summary, dict) else []
+            if not isinstance(raw_frames, list):
+                warnings.append(
+                    f"high-light summary frames for material {material_id} are not a list"
+                )
+                raw_frames = []
+            for raw_frame in raw_frames:
+                if not isinstance(raw_frame, dict):
+                    continue
+                rank_type = _text(raw_frame.get("rankType"))
+                frame_name = _text(raw_frame.get("framePath"))
+                frame_path = material_dir / frame_name
+                if not rank_type or not frame_name or not frame_path.is_file():
+                    warnings.append(
+                        f"missing high-light JPEG for material {material_id}: "
+                        f"{rank_type or 'unknown'}"
+                    )
+                    continue
+                frames.append(
+                    {
+                        "materialId": material_id,
+                        "rankType": rank_type,
+                        "durationSec": raw_frame.get("durationSec"),
+                        "metricValue": raw_frame.get("metricValue"),
+                        "framePath": str(frame_path),
+                        "evidenceRef": _highlight_evidence_ref(material_id, rank_type),
+                    }
+                )
+        result["materials"].append({"materialId": material_id, "frames": frames})
+
+    return result, warnings
+
+
 def _publish_output_pair(output_dir, analysis, prompt):
     root = Path(output_dir)
     data_path = root / "diagnostic-analysis-data.json"
@@ -469,6 +537,7 @@ def prepare_diagnostic_analysis(
     diagnosis_records_dir,
     output_dir,
     prompt_template=None,
+    peak_output_dir=None,
 ):
     top_payload = _read_json(top_materials_json, "top materials JSON")
     records_by_material, read_warnings = _load_selected_records(
@@ -479,6 +548,11 @@ def prepare_diagnostic_analysis(
         "diagnostic prompt template",
     )
     analysis = build_diagnostic_analysis(top_payload, records_by_material)
-    analysis["warnings"] = read_warnings + analysis["warnings"]
+    highlight_warnings = []
+    if peak_output_dir:
+        analysis["highlights"], highlight_warnings = _load_highlights(
+            top_payload, peak_output_dir
+        )
+    analysis["warnings"] = read_warnings + analysis["warnings"] + highlight_warnings
     data_path, prompt_path = _publish_output_pair(output_dir, analysis, prompt)
     return data_path, prompt_path, analysis

@@ -11,6 +11,7 @@ def build_parser():
     )
     parser.add_argument("--top-materials-json", required=True)
     parser.add_argument("--diagnosis-records-dir", required=True)
+    parser.add_argument("--peak-output-dir")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--prompt-template")
     return parser
