@@ -32,16 +32,11 @@
     }
 
     .hero {
-      display: grid;
-      grid-template-columns: 1fr .86fr;
-      gap: 28px;
-      align-items: stretch;
       color: #fff;
       margin-bottom: 26px;
     }
 
     .hero-copy,
-    .cover,
     .section,
     .material-card {
       border: 1px solid var(--line);
@@ -49,11 +44,10 @@
     }
 
     .hero-copy {
-      min-height: 360px;
       display: flex;
       flex-direction: column;
       justify-content: flex-end;
-      padding: 36px;
+      padding: 30px 36px 32px;
       background: linear-gradient(145deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .04));
       color: #fff;
       border-radius: 28px;
@@ -106,28 +100,6 @@
       color: rgba(255, 255, 255, .78);
     }
 
-    .cover {
-      min-height: 360px;
-      overflow: hidden;
-      border-radius: 28px;
-      background: #24120d;
-    }
-
-    .cover img {
-      width: 100%;
-      height: 100%;
-      display: block;
-      object-fit: cover;
-    }
-
-    .cover-empty {
-      height: 100%;
-      min-height: 360px;
-      display: grid;
-      place-items: center;
-      color: #f7dec1;
-    }
-
     .section {
       margin: 22px 0;
       padding: 28px;
@@ -135,14 +107,13 @@
       background: var(--panel);
     }
 
-    .summary-grid {
+    .insight-layout {
       display: grid;
-      grid-template-columns: minmax(0, 1.1fr) minmax(340px, .9fr);
+      grid-template-columns: 1fr;
       gap: 18px;
       align-items: start;
     }
 
-    .summary-part,
     .rec-card,
     .formula {
       border: 1px solid var(--line);
@@ -150,9 +121,19 @@
       background: #fff;
     }
 
-    .summary-part,
     .rec-card {
       padding: 18px;
+    }
+
+    .primary-summary {
+      padding: 0;
+    }
+
+    .primary-summary b {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 18px;
+      line-height: 1.45;
     }
 
     .part-label {
@@ -177,9 +158,252 @@
       margin: 0;
     }
 
+    .insight-secondary {
+      width: 100%;
+      grid-template-columns: 1fr;
+    }
+
     .rec-card b {
       display: block;
       margin-bottom: 8px;
+    }
+
+    .data-dashboard {
+      display: grid;
+      gap: 14px;
+    }
+
+    .metric-switch {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .metric-switch span {
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .metric-switch button {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      padding: 8px 12px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+    }
+
+    .metric-switch button[aria-pressed="true"] {
+      background: #2c1810;
+      color: #fff;
+      border-color: #2c1810;
+    }
+
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .chart-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fff;
+      padding: 16px;
+    }
+
+    .chart-card h3 {
+      font-size: 18px;
+      margin-bottom: 12px;
+    }
+
+    .chart-card-full {
+      grid-column: 1 / -1;
+    }
+
+    .column-chart {
+      position: relative;
+      min-height: 300px;
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr);
+      gap: 12px;
+      padding-top: 8px;
+    }
+
+    .column-y-axis {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: flex-end;
+      color: var(--muted);
+      font-size: 13px;
+      padding-bottom: 42px;
+    }
+
+    .column-axis-title {
+      font-weight: 700;
+    }
+
+    .column-plot {
+      position: relative;
+      display: grid;
+      align-items: end;
+      gap: var(--column-gap, 12px);
+      min-width: 0;
+      padding: 0 8px 42px;
+      border-bottom: 1px solid rgba(82, 45, 24, .22);
+      background: repeating-linear-gradient(
+        to top,
+        transparent 0,
+        transparent 72px,
+        rgba(82, 45, 24, .11) 73px
+      );
+    }
+
+    .column-item {
+      position: relative;
+      min-width: 46px;
+      height: 230px;
+      display: flex;
+      align-items: end;
+      justify-content: center;
+    }
+
+    .column-bar {
+      width: min(64px, 72%);
+      min-height: 4px;
+      border-radius: 8px 8px 0 0;
+      background: linear-gradient(180deg, #d79a4b, #9b6a37);
+      cursor: default;
+    }
+
+    .column-label {
+      position: absolute;
+      left: 50%;
+      bottom: -34px;
+      width: 92px;
+      transform: translateX(-50%);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.25;
+      text-align: center;
+      word-break: break-word;
+    }
+
+    .chart-tooltip {
+      position: absolute;
+      z-index: 2;
+      left: 50%;
+      bottom: calc(100% + 10px);
+      min-width: 150px;
+      transform: translateX(-50%);
+      opacity: 0;
+      pointer-events: none;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .96);
+      box-shadow: 0 14px 34px rgba(43, 23, 12, .16);
+      color: var(--ink);
+      font-size: 13px;
+      line-height: 1.5;
+      transition: opacity .15s ease;
+    }
+
+    .chart-tooltip b {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .chart-tooltip-line {
+      display: block;
+    }
+
+    .column-item:hover .chart-tooltip {
+      opacity: 1;
+    }
+
+    .chart-card-plain {
+      border-color: transparent;
+      box-shadow: none;
+      padding-left: 10px;
+      padding-right: 10px;
+      padding-bottom: 0;
+    }
+
+    .pie-layout {
+      display: grid;
+      grid-template-columns: 320px minmax(0, .75fr);
+      gap: 14px;
+      align-items: center;
+    }
+
+    .pie-chart {
+      position: relative;
+      width: 320px;
+      aspect-ratio: 1;
+      border-radius: 50%;
+      background: conic-gradient(var(--gold) 0deg, var(--gold) 360deg);
+      box-shadow: 0 0 0 1px rgba(82, 45, 24, .1);
+    }
+
+    .pie-legend {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 8px;
+    }
+
+    .legend-item {
+      position: relative;
+      display: grid;
+      grid-template-columns: 12px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .legend-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+    }
+
+    .pie-slice-hitbox {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      cursor: default;
+    }
+
+    .chart-tooltip.is-visible {
+      opacity: 1;
+    }
+
+    .region-scale {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .region-scale-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .region-scale input[type="range"] {
+      width: 100%;
+      accent-color: #9b6a37;
+      cursor: pointer;
     }
 
     .side-tabs {
@@ -318,19 +542,17 @@
         padding-top: 24px;
       }
 
-      .hero,
-      .summary-grid,
+      .insight-layout,
       .rec-list,
+      .chart-grid,
       .side-tabs,
       .frame-grid,
       .material-body {
         grid-template-columns: 1fr;
       }
 
-      .hero-copy,
-      .cover,
-      .cover-empty {
-        min-height: 280px;
+      .hero-copy {
+        padding: 26px 24px 28px;
       }
 
       .tab-list {
@@ -357,33 +579,44 @@
       <h1>千川 TOP 素材池商业诊断报告</h1>
       <p class="subtitle" id="report-subtitle"></p>
     </div>
-    <div class="cover" id="report-cover"></div>
   </section>
 
   <section class="section">
     <h2>01｜TOP 素材组合结论</h2>
-    <div class="summary-grid">
-      <div class="summary-part">
-        <span class="part-label">第一部分：组合总述</span>
+    <div class="insight-layout">
+      <div class="primary-summary">
+        <span class="part-label">组合总述</span>
         <p id="overall-conclusion"></p>
       </div>
-      <ul class="rec-list" id="integrated-insights"></ul>
+      <ul class="rec-list insight-secondary" id="integrated-insights"></ul>
     </div>
   </section>
 
   <section class="section">
     <h2>02｜人群洞察</h2>
-    <ul class="rec-list" id="audience-insights"></ul>
+    <div class="insight-layout">
+      <div class="primary-summary" id="audience-primary"></div>
+      <ul class="rec-list insight-secondary" id="audience-insights"></ul>
+      <div class="data-dashboard" id="audience-dashboard"></div>
+    </div>
   </section>
 
   <section class="section">
     <h2>03｜脚本洞察</h2>
-    <ul class="rec-list" id="script-insights"></ul>
+    <div class="insight-layout">
+      <div class="primary-summary" id="script-primary"></div>
+      <ul class="rec-list insight-secondary" id="script-insights"></ul>
+      <div class="data-dashboard" id="script-dashboard"></div>
+    </div>
   </section>
 
   <section class="section">
     <h2>04｜高光帧洞察</h2>
-    <ul class="rec-list" id="highlight-insights"></ul>
+    <div class="insight-layout">
+      <div class="primary-summary" id="highlight-primary"></div>
+      <ul class="rec-list insight-secondary" id="highlight-insights"></ul>
+      <div class="data-dashboard" id="highlight-dashboard"></div>
+    </div>
   </section>
 
   <section class="section">
@@ -399,11 +632,6 @@
     <ul class="rec-list" id="next-actions"></ul>
   </section>
 
-  <section class="section">
-    <h2>07｜数据质量与方法说明</h2>
-    <p>人群与脚本数据是素材级相关性，不是单帧因果归因。高光帧用于辅助画面复盘，业务结论仅来自本地 diagnostic-ai-analysis.json。</p>
-    <ul id="report-warnings"></ul>
-  </section>
 </main>
 
 <script>
@@ -434,6 +662,66 @@ function element(tag, className, content) {
   return node;
 }
 
+const metricLabels = {
+  SHOW_COUNT: "曝光人群",
+  CLICK_COUNT: "点击人群",
+  TRANSACTION_AMOUNT: "成交金额",
+};
+
+const dimensionLabels = {
+  user_group_label_name: "八大人群",
+  age: "年龄",
+  gender: "性别",
+  province_name: "省份",
+  city_name: "城市",
+};
+
+const frameLabels = {
+  first_peak: "首个点击峰值画面",
+  later_top_1: "后段高峰画面 1",
+  later_top_2: "后段高峰画面 2",
+  later_top_3: "后段高峰画面 3",
+};
+
+function displayText(value) {
+  return text(value)
+    .replace(/\bSHOW_COUNT\b/g, "曝光人群")
+    .replace(/\bCLICK_COUNT\b/g, "点击人群")
+    .replace(/\bTRANSACTION_AMOUNT\b/g, "成交金额")
+    .replace(/\b(?:audience|script|highlight):[^\s，。；、]+/g, "对应数据证据")
+    .replace(/\b\d{15,}\b/g, "对应素材")
+    .replace(/对应素材([、，,]\s*对应素材)+/g, "对应素材")
+    .replace(/对应数据证据([ ·、，,]\s*对应数据证据)+/g, "对应数据证据");
+}
+
+function humanizeEvidenceRef(reference) {
+  const parts = text(reference).split(":");
+  if (parts[0] === "audience" && parts.length >= 4) {
+    const metric = metricLabels[parts[1]] || "人群数据";
+    const dimension = dimensionLabels[parts[2]] || parts[2];
+    return `${metric}：${dimension} ${parts.slice(3).join(":")}`;
+  }
+  if (parts[0] === "script" && parts.length >= 4) {
+    const labels = parts.slice(2).filter(Boolean);
+    const uniqueLabels = labels.filter((label, index) => labels.indexOf(label) === index);
+    return `脚本标签：${uniqueLabels.join(" / ")}`;
+  }
+  if (parts[0] === "highlight" && parts.length >= 3) {
+    return `高光帧：${frameLabels[parts[2]] || parts[2]}`;
+  }
+  return "结构化证据";
+}
+
+function humanizeEvidenceRefs(references) {
+  if (!Array.isArray(references)) return [];
+  const result = [];
+  references.forEach((reference) => {
+    const label = humanizeEvidenceRef(reference);
+    if (label && !result.includes(label)) result.push(label);
+  });
+  return result;
+}
+
 function emptyCard(label, title) {
   const item = element("li", "rec-card");
   item.append(element("span", "part-label", label));
@@ -442,39 +730,356 @@ function emptyCard(label, title) {
   return item;
 }
 
-function renderInsightCards(targetId, insights, conclusionLabel, evidenceLabel) {
+function renderEvidenceCards(targetId, insights, evidenceLabel) {
   const list = document.getElementById(targetId);
   list.replaceChildren();
   if (!Array.isArray(insights) || insights.length === 0) {
-    list.append(emptyCard(conclusionLabel, "暂无可用洞察"));
+    list.append(emptyCard(evidenceLabel, "暂无可用证据"));
     return;
   }
   insights.forEach((insight) => {
     const item = element("li", "rec-card");
-    item.append(element("span", "part-label", conclusionLabel));
-    item.append(element("b", "", text(insight.title)));
-    item.append(element("p", "", text(insight.conclusion)));
-    const evidenceTitle = element("span", "part-label evidence-label", evidenceLabel);
-    const evidence = element("small", "", Array.isArray(insight.evidenceRefs) ? insight.evidenceRefs.join(" · ") : "");
-    item.append(evidenceTitle, evidence);
+    item.append(element("span", "part-label", evidenceLabel));
+    item.append(element("b", "", displayText(insight.title)));
+    const evidence = element("small", "", humanizeEvidenceRefs(insight.evidenceRefs).join(" · "));
+    item.append(evidence);
     list.append(item);
   });
 }
 
-function renderCover() {
-  const cover = document.getElementById("report-cover");
-  const frame = (reportData.materials || [])
-    .flatMap((material) => material.highlightFrames || [])
-    .find((item) => item.framePath);
-  cover.replaceChildren();
-  if (!frame) {
-    cover.append(element("div", "cover-empty", "暂无高光帧封面"));
+function renderPrimaryInsight(targetId, insights, conclusionLabel, emptyTitle) {
+  const target = document.getElementById(targetId);
+  target.replaceChildren();
+  target.append(element("span", "part-label", conclusionLabel));
+  const first = Array.isArray(insights) && insights.length > 0 ? insights[0] : null;
+  target.append(
+    element("b", "", first ? displayText(first.title) : emptyTitle),
+    element("p", "", first ? displayText(first.conclusion) : "请补充结构化分析后重新渲染。")
+  );
+}
+
+function renderTopicInsight(primaryId, evidenceId, insights, conclusionLabel, evidenceLabel, emptyTitle) {
+  renderPrimaryInsight(primaryId, insights, conclusionLabel, emptyTitle);
+  renderEvidenceCards(evidenceId, insights, evidenceLabel);
+}
+
+function topBuckets(dimension, limit = 8) {
+  const buckets = Array.isArray(dimension?.buckets) ? dimension.buckets : [];
+  return buckets.slice(0, limit);
+}
+
+function appendTooltipLines(tooltip, title, lines) {
+  tooltip.replaceChildren();
+  tooltip.append(element("b", "", title));
+  (Array.isArray(lines) ? lines : [lines]).filter(Boolean).forEach((line) => {
+    tooltip.append(element("span", "chart-tooltip-line", line));
+  });
+}
+
+function renderColumnChart(title, buckets, valueFormatter, options = {}) {
+  const card = element("div", `chart-card chart-card-full${options.cardClass ? ` ${options.cardClass}` : ""}`);
+  card.append(element("h3", "", title));
+  if (!Array.isArray(buckets) || buckets.length === 0) {
+    card.append(element("p", "muted", "暂无可视化数据"));
+    return card;
+  }
+  const valueAccessor = options.valueAccessor || ((bucket) => Number(bucket.metricPercentage ?? bucket.value ?? 0));
+  const tooltipFormatter = options.tooltipFormatter || valueFormatter || ((bucket) => `${formatNumber(valueAccessor(bucket))}%`);
+  const tooltipLines = options.tooltipLines || ((bucket) => [tooltipFormatter(bucket)]);
+  const axisValueFormatter = options.axisValueFormatter || ((value) => valueFormatter ? valueFormatter({ value, metricPercentage: value }) : `${formatNumber(value)}%`);
+  const itemTitleFormatter = options.itemTitleFormatter || ((bucket) => `${text(bucket.bucket ?? bucket.label)}：${tooltipFormatter(bucket)}`);
+  const axisLabel = text(options.axisLabel);
+  const values = buckets.map((bucket) => valueAccessor(bucket));
+  const maxValue = Math.max(...values, 1);
+  const axisMax = Math.ceil(maxValue / 10) * 10 || 10;
+  const itemCount = buckets.length;
+  const labelStep = Math.max(1, Math.ceil(itemCount / (options.maxLabels || 12)));
+  const chart = element("div", "column-chart");
+  chart.style.setProperty("--column-count", String(itemCount));
+  const axis = element("div", "column-y-axis");
+  const axisTicks = Array.isArray(options.axisTicks) && options.axisTicks.length > 0
+    ? options.axisTicks
+    : [axisMax, axisMax * .75, axisMax * .5, axisMax * .25, 0];
+  if (axisLabel) {
+    axis.append(element("span", "column-axis-title", axisLabel));
+  }
+  axisTicks.forEach((value) => {
+    axis.append(element("span", "", axisValueFormatter(value)));
+  });
+  const plot = element("div", "column-plot");
+  plot.style.gridTemplateColumns = `repeat(${itemCount}, minmax(0, 1fr))`;
+  plot.style.setProperty("--column-gap", itemCount > 24 ? "4px" : itemCount > 14 ? "8px" : "18px");
+  buckets.forEach((bucket, index) => {
+    const value = valueAccessor(bucket);
+    const item = element("div", "column-item");
+    item.title = itemTitleFormatter(bucket);
+    item.style.minWidth = itemCount > 24 ? "0" : "46px";
+    const bar = element("div", "column-bar");
+    bar.style.height = `${Math.max(2, value / axisMax * 100)}%`;
+    bar.style.width = itemCount > 24 ? "100%" : "min(64px, 72%)";
+    const label = element("span", "column-label", index % labelStep === 0 || index === itemCount - 1 ? text(bucket.bucket ?? bucket.label) : "");
+    label.style.width = itemCount > 24 ? "48px" : itemCount > 14 ? "72px" : "92px";
+    const tooltip = element("div", "chart-tooltip");
+    appendTooltipLines(tooltip, text(bucket.bucket ?? bucket.label), tooltipLines(bucket));
+    item.append(bar, label, tooltip);
+    plot.append(item);
+  });
+  chart.append(axis, plot);
+  card.append(chart);
+  return card;
+}
+
+const chartColors = ["#9b6a37", "#d79a4b", "#6f7f5f", "#a14f38", "#6d5d4d", "#c7a36a", "#7d8f9a", "#b77d54"];
+
+function buildPieSliceTooltipMap(buckets) {
+  const total = buckets.reduce((sum, bucket) => sum + Number(bucket.metricPercentage || 0), 0) || 1;
+  let cursor = 0;
+  return buckets.map((bucket, index) => {
+    const percentage = Number(bucket.metricPercentage || 0);
+    const slice = {
+      bucket,
+      color: chartColors[index % chartColors.length],
+      startRatio: cursor / total,
+      endRatio: (cursor + percentage) / total,
+    };
+    cursor += percentage;
+    return slice;
+  });
+}
+
+function findPieBucketAtPosition(event, pie, slices) {
+  const rect = pie.getBoundingClientRect();
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  const dx = event.clientX - centerX;
+  const dy = event.clientY - centerY;
+  const radius = Math.min(rect.width, rect.height) / 2;
+  if (Math.sqrt(dx * dx + dy * dy) > radius) return null;
+  const angle = (Math.atan2(dy, dx) + Math.PI / 2 + Math.PI * 2) % (Math.PI * 2);
+  const ratio = angle / (Math.PI * 2);
+  return slices.find((slice) => ratio >= slice.startRatio && ratio < slice.endRatio) || slices[slices.length - 1] || null;
+}
+
+function renderPieChart(title, buckets) {
+  const card = element("div", "chart-card");
+  card.append(element("h3", "", title));
+  if (!Array.isArray(buckets) || buckets.length === 0) {
+    card.append(element("p", "muted", "暂无可视化数据"));
+    return card;
+  }
+  const pieTooltipBuckets = buildPieSliceTooltipMap(buckets);
+  const stops = pieTooltipBuckets.map((slice) => `${slice.color} ${slice.startRatio * 360}deg ${slice.endRatio * 360}deg`);
+  const layout = element("div", "pie-layout");
+  const pie = element("div", "pie-chart");
+  pie.style.background = `conic-gradient(${stops.join(", ")})`;
+  const pieTooltip = element("div", "chart-tooltip");
+  pie.append(pieTooltip);
+  function showPieTooltip(bucket) {
+    appendTooltipLines(pieTooltip, text(bucket.bucket), [`占比 ${formatNumber(bucket.metricPercentage)}%`]);
+    pie.title = `${text(bucket.bucket)}：占比 ${formatNumber(bucket.metricPercentage)}%`;
+    pieTooltip.classList.add("is-visible");
+  }
+  function syncPieTooltip(event) {
+    const activeBucket = findPieBucketAtPosition(event, pie, pieTooltipBuckets);
+    if (activeBucket) showPieTooltip(activeBucket.bucket);
+  }
+  pie.addEventListener("pointerenter", (event) => {
+    syncPieTooltip(event);
+  });
+  pie.addEventListener("pointermove", (event) => {
+    syncPieTooltip(event);
+  });
+  pie.addEventListener("pointerleave", () => {
+    pieTooltip.classList.remove("is-visible");
+  });
+  showPieTooltip(pieTooltipBuckets[0].bucket);
+  pieTooltip.classList.remove("is-visible");
+  const legend = element("ul", "pie-legend");
+  buckets.forEach((bucket, index) => {
+    const item = element("li", "legend-item");
+    item.title = `${text(bucket.bucket)}：占比 ${formatNumber(bucket.metricPercentage)}%`;
+    const swatch = element("span", "legend-swatch");
+    swatch.style.background = chartColors[index % chartColors.length];
+    item.append(swatch, element("span", "", text(bucket.bucket)), element("span", "", `${formatNumber(bucket.metricPercentage)}%`));
+    legend.append(item);
+  });
+  layout.append(pie, legend);
+  card.append(layout);
+  return card;
+}
+
+function createRegionScaleControl(state, onChange, totalCount) {
+  if (!state.control) {
+    const scale = element("div", "region-scale");
+    const head = element("div", "region-scale-head");
+    const title = element("span", "", "");
+    const detail = element("span", "", "");
+    head.append(title, detail);
+    const scaleInput = document.createElement("input");
+    scaleInput.type = "range";
+    scaleInput.max = "1";
+    scaleInput.step = "0.005";
+    scaleInput.addEventListener("input", () => {
+      state.ratio = Number(scaleInput.value);
+      if (state.metaTitle && state.metaDetail) {
+        const visibleRatio = Number(state.ratio || 0.35);
+        state.metaTitle.textContent = `柱状图展示比例 ${Math.round(visibleRatio * 100)}%`;
+        state.metaDetail.textContent = `当前显示 ${Math.max(1, Math.ceil(state.totalCount * visibleRatio))}/${state.totalCount}`;
+      }
+      onChange();
+    });
+    scale.append(head, scaleInput);
+    state.control = scaleInput;
+    state.metaTitle = title;
+    state.metaDetail = detail;
+    state.root = scale;
+  }
+  state.totalCount = totalCount;
+  state.control.min = String(state.minRatio || 0.02);
+  state.control.value = String(state.ratio || 0.35);
+  function syncScaleMeta() {
+    const visibleRatio = Number(state.ratio || 0.35);
+    state.metaTitle.textContent = `柱状图展示比例 ${Math.round(visibleRatio * 100)}%`;
+    state.metaDetail.textContent = `当前显示 ${Math.max(1, Math.ceil(totalCount * visibleRatio))}/${totalCount}`;
+  }
+  syncScaleMeta();
+  return state.root;
+}
+
+function renderRegionChart(card, dimensions) {
+  const tabs = element("div", "metric-switch");
+  tabs.append(element("span", "", "地域口径："));
+  const body = element("div", "");
+  card.append(tabs, body);
+  const options = [
+    ["province_name", "省份"],
+    ["city_name", "城市"],
+  ];
+  const regionState = {
+    province_name: { ratio: 0.35, minRatio: 0.05, minVisible: 6 },
+    city_name: { ratio: 0.16, minRatio: 0.005, minVisible: 4 },
+  };
+  let activeDimensionKey = "province_name";
+  const chartMount = element("div", "");
+  const scaleMount = element("div", "");
+  body.append(chartMount, scaleMount);
+  function renderRegion(dimensionKey) {
+    activeDimensionKey = dimensionKey || activeDimensionKey;
+    tabs.querySelectorAll("button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.dimension === activeDimensionKey));
+    });
+    const allBuckets = Array.isArray(dimensions[activeDimensionKey]?.buckets) ? dimensions[activeDimensionKey].buckets : [];
+    const state = regionState[activeDimensionKey] || { ratio: 0.35 };
+    const visibleRatio = Number(state.ratio || 0.35);
+    const minVisible = state.minVisible || (activeDimensionKey === "city_name" ? 12 : 8);
+    const visibleCount = Math.max(minVisible, Math.ceil(allBuckets.length * visibleRatio));
+    const visibleBuckets = allBuckets.slice(0, Math.min(allBuckets.length, visibleCount));
+    const chart = renderColumnChart(`${dimensionLabels[activeDimensionKey]}分布`, visibleBuckets, null, {
+      cardClass: "chart-card-plain",
+      axisLabel: "人数",
+      valueAccessor: (bucket) => Number(bucket.metricValue ?? bucket.value ?? 0),
+      axisValueFormatter: (value) => formatNumber(value),
+      tooltipFormatter: (bucket) => `地域占比 ${formatNumber(bucket.metricPercentage ?? 0)}% · 人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)}`,
+      itemTitleFormatter: (bucket) => `${text(bucket.bucket ?? bucket.label)}：人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)} · 地域占比 ${formatNumber(bucket.metricPercentage ?? 0)}%`,
+      tooltipLines: (bucket) => [
+        `占比 ${formatNumber(bucket.metricPercentage ?? 0)}%`,
+        `人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)}`,
+      ],
+      maxLabels: activeDimensionKey === "city_name" ? 16 : 18,
+    });
+    chartMount.replaceChildren(chart);
+    const scale = createRegionScaleControl(state, renderRegion, allBuckets.length);
+    if (scaleMount.firstChild !== scale) {
+      scaleMount.replaceChildren(scale);
+    }
+  }
+  options.forEach(([dimensionKey, label], index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.dimension = dimensionKey;
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.textContent = label;
+    button.addEventListener("click", () => renderRegion(dimensionKey));
+    tabs.append(button);
+  });
+  renderRegion(activeDimensionKey);
+}
+
+function renderAudienceDashboard() {
+  const root = document.getElementById("audience-dashboard");
+  const metrics = reportData.audience?.metrics || {};
+  const metricKeys = ["SHOW_COUNT", "TRANSACTION_AMOUNT", "CLICK_COUNT"].filter((key) => metrics[key]);
+  root.replaceChildren();
+  if (metricKeys.length === 0) {
+    root.append(element("p", "muted", "暂无人群汇总数据"));
     return;
   }
-  const image = document.createElement("img");
-  image.src = frame.framePath;
-  image.alt = "代表高光帧";
-  cover.append(image);
+  const switcher = element("div", "metric-switch");
+  switcher.append(element("span", "", "展示指标："));
+  const chartGrid = element("div", "chart-grid");
+  root.append(switcher, chartGrid);
+
+  function renderMetric(metricKey) {
+    switcher.querySelectorAll("button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.metric === metricKey));
+    });
+    chartGrid.replaceChildren();
+    const dimensions = metrics[metricKey]?.dimensions || {};
+    const regionCard = element("div", "chart-card chart-card-full chart-card-plain");
+    regionCard.append(element("h3", "", "地域分布"));
+    renderRegionChart(regionCard, dimensions);
+    chartGrid.append(
+      renderColumnChart("八大人群分布", topBuckets(dimensions.user_group_label_name), null, {
+        tooltipFormatter: (bucket) => `占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`,
+        tooltipLines: (bucket) => [`占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`],
+      }),
+      renderPieChart("年龄分布", topBuckets(dimensions.age, 6)),
+      renderPieChart("性别分布", topBuckets(dimensions.gender, 4)),
+      regionCard
+    );
+  }
+
+  metricKeys.forEach((metricKey, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.metric = metricKey;
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.textContent = metricLabels[metricKey] || metricKey;
+    button.addEventListener("click", () => renderMetric(metricKey));
+    switcher.append(button);
+  });
+  renderMetric(metricKeys[0]);
+}
+
+function renderScriptDashboard() {
+  const root = document.getElementById("script-dashboard");
+  const summary = Array.isArray(reportData.scripts?.labelSummary) ? reportData.scripts.labelSummary : [];
+  root.replaceChildren();
+  const level1 = {};
+  summary.forEach((item) => {
+    const key = text(item.level1, "其他");
+    level1[key] = (level1[key] || 0) + Number(item.occurrenceCount || 0);
+  });
+  const level1Buckets = Object.entries(level1)
+    .map(([label, value]) => ({ bucket: label, value }))
+    .sort((left, right) => right.value - left.value);
+  const totalOccurrences = level1Buckets.reduce((sum, bucket) => sum + Number(bucket.value || 0), 0) || 1;
+  const maxCount = Math.max(...level1Buckets.map((bucket) => Number(bucket.value || 0)), 0);
+  const chartGrid = element("div", "chart-grid");
+  chartGrid.append(renderColumnChart("内容公式一级标签分布", level1Buckets, (bucket) => `${formatNumber(bucket.value ?? bucket.metricPercentage)} 次`, {
+    axisTicks: [maxCount, Math.round(maxCount * 0.75), Math.round(maxCount * 0.5), Math.round(maxCount * 0.25), 0],
+    axisValueFormatter: (value) => `${Math.round(value)} 次`,
+    tooltipLines: (bucket) => [
+      `占比 ${formatNumber((Number(bucket.value || 0) / totalOccurrences) * 100)}%`,
+      `次数 ${formatNumber(bucket.value || 0)} 次`,
+    ],
+  }));
+  root.append(chartGrid);
+}
+
+function renderHighlightDashboard() {
+  const root = document.getElementById("highlight-dashboard");
+  root.replaceChildren();
 }
 
 function renderFrames(material) {
@@ -503,7 +1108,7 @@ function renderFrames(material) {
 function renderFormula(title, paragraphs) {
   const card = element("div", "formula");
   card.append(element("b", "", title));
-  paragraphs.forEach((paragraph) => card.append(element("p", "", text(paragraph))));
+  paragraphs.forEach((paragraph) => card.append(element("p", "", displayText(paragraph))));
   return card;
 }
 
@@ -519,8 +1124,8 @@ function renderMaterialPanel(material, selected) {
   const head = element("div", "material-head");
   const titleBlock = document.createElement("div");
   titleBlock.append(
-    element("p", "eyebrow", `#${text(material.rank)} · ${text(material.materialId)}`),
-    element("h3", "", text(material.materialName)),
+    element("p", "eyebrow", `#${text(material.rank)}`),
+    element("h3", "", displayText(material.materialName)),
     element("p", "muted", `状态 ${text(material.extractionStatus)}`)
   );
   const score = element("div", "score");
@@ -548,10 +1153,10 @@ function renderHighlightFormula(highlights) {
   highlights.forEach((item) => {
     const paragraph = element("p", "");
     paragraph.append(
-      element("b", "", `${text(item.frameRef)}：`),
-      document.createTextNode(text(item.visualObservation)),
+      element("b", "", `${humanizeEvidenceRef(item.frameRef)}：`),
+      document.createTextNode(displayText(item.visualObservation)),
       document.createElement("br"),
-      element("small", "", text(item.commercialInterpretation))
+      element("small", "", displayText(item.commercialInterpretation))
     );
     card.append(paragraph);
   });
@@ -621,34 +1226,24 @@ function renderNextActions() {
   }
   actions.forEach((action) => {
     const item = element("li", "rec-card");
-    item.append(element("b", "", text(action.title)), element("p", "", text(action.body)), element("small", "", text(action.priority, "medium")));
+    item.append(element("b", "", displayText(action.title)), element("p", "", displayText(action.body)), element("small", "", text(action.priority, "medium")));
     list.append(item);
   });
 }
 
-function renderWarnings() {
-  const list = document.getElementById("report-warnings");
-  const warnings = Array.isArray(reportData.warnings) ? reportData.warnings : [];
-  list.replaceChildren();
-  if (warnings.length === 0) {
-    list.append(element("li", "", "无阻断告警"));
-    return;
-  }
-  warnings.forEach((warning) => list.append(element("li", "", text(warning))));
-}
-
 function renderReport() {
   const period = reportData.period || {};
-  document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。报告状态：${text(reportData.status)}。`;
-  document.getElementById("overall-conclusion").textContent = text(reportData.conclusion?.overallConclusion, "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。");
-  renderCover();
-  renderInsightCards("integrated-insights", reportData.batchInsights?.integrated, "第二部分：组合关键洞察", "证据引用");
-  renderInsightCards("audience-insights", reportData.batchInsights?.audience, "第一部分：人群结论", "第二部分：人群证据");
-  renderInsightCards("script-insights", reportData.batchInsights?.script, "第一部分：脚本结论", "第二部分：脚本证据");
-  renderInsightCards("highlight-insights", reportData.batchInsights?.highlight, "第一部分：高光帧结论", "第二部分：高光帧证据");
+  document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。`;
+  document.getElementById("overall-conclusion").textContent = displayText(reportData.conclusion?.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。");
+  renderEvidenceCards("integrated-insights", reportData.batchInsights?.integrated, "数据口径证据");
+  renderTopicInsight("audience-primary", "audience-insights", reportData.batchInsights?.audience, "人群结论", "数据口径证据", "暂无人群结论");
+  renderTopicInsight("script-primary", "script-insights", reportData.batchInsights?.script, "脚本结论", "数据口径证据", "暂无脚本结论");
+  renderTopicInsight("highlight-primary", "highlight-insights", reportData.batchInsights?.highlight, "高光帧结论", "数据口径证据", "暂无高光帧结论");
+  renderAudienceDashboard();
+  renderScriptDashboard();
+  renderHighlightDashboard();
   renderMaterialTabs();
   renderNextActions();
-  renderWarnings();
 }
 
 renderReport();

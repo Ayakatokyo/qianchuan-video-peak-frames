@@ -764,6 +764,8 @@ def _report_data_for_template(data, asset_base_dir):
         "materials": materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
         "batchInsights": data.get("batchInsights", {}),
+        "audience": data.get("audience", {}),
+        "scripts": data.get("scripts", {}),
         "conclusion": {
             "overallConclusion": conclusion.get("overallConclusion", ""),
             "nextActions": conclusion.get("nextActions", []),
