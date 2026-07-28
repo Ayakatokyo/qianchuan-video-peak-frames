@@ -5,6 +5,7 @@ import multiprocessing
 import json
 import math
 import os
+import queue as queue_module
 import signal
 import sys
 import tempfile
@@ -275,6 +276,22 @@ def _write_diagnosis_records(records, records_dir, material_id):
     return target
 
 
+def _read_diagnosis_records(path, material_id):
+    source = Path(path)
+    try:
+        records = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(
+            f"unable to read diagnosis records for material {material_id}: {exc}"
+        ) from exc
+    if not isinstance(records, list):
+        raise RpaAdapterError(
+            f"diagnosis records for material {material_id} must be a list"
+        )
+    find_material_video_url(records, material_id)
+    return records
+
+
 def _diagnosis_csv_dir(args):
     if args.diagnosis_records_dir:
         return Path(args.diagnosis_records_dir).parent / "diagnosis-csv"
@@ -438,15 +455,77 @@ def _preflight_failure(material_id, reason):
     }
 
 
+def _materialize_preflight_records(args, outcome, material_id, timings=None):
+    records = outcome.get("records")
+    records_path = outcome.get("diagnosisRecordsPath")
+    if isinstance(records, list):
+        if records_path:
+            return records, Path(records_path)
+        if timings is None:
+            return records, _write_diagnosis_records(
+                records, _diagnosis_records_dir(args), material_id
+            )
+        return records, _time_call(
+            timings,
+            "diagnosisRecordWriteSec",
+            _write_diagnosis_records,
+            records,
+            _diagnosis_records_dir(args),
+            material_id,
+        )
+    if records_path:
+        return _read_diagnosis_records(records_path, material_id), Path(records_path)
+    records = [
+        {
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": outcome.get("videoUrl"),
+        }
+    ]
+    if timings is None:
+        return records, _write_diagnosis_records(
+            records, _diagnosis_records_dir(args), material_id
+        )
+    return records, _time_call(
+        timings,
+        "diagnosisRecordWriteSec",
+        _write_diagnosis_records,
+        records,
+        _diagnosis_records_dir(args),
+        material_id,
+    )
+
+
 def _preflight_worker_entry(params, worker, queue):
     try:
-        queue.put(worker(params))
+        outcome = worker(params)
+        if not isinstance(outcome, dict):
+            queue.put(
+                _preflight_failure(
+                    params.get("material_id"), "unknown_preflight_failure"
+                )
+            )
+            return
+        records = outcome.get("records")
+        records_dir = params.get("diagnosis_records_dir")
+        material_id = params.get("material_id")
+        if outcome.get("rpaAvailable") and isinstance(records, list) and records_dir:
+            records_path = _write_diagnosis_records(records, records_dir, material_id)
+            outcome = dict(outcome)
+            outcome.pop("records", None)
+            outcome["diagnosisRecordsPath"] = str(records_path)
+        queue.put(outcome)
     except Exception:
         queue.put(_preflight_failure(params.get("material_id"), "unknown_preflight_failure"))
 
 
 def _fetch_material_preflight_worker(params):
-    return fetch_material_preflight(**params)
+    adapter_params = {
+        key: value
+        for key, value in params.items()
+        if key != "diagnosis_records_dir"
+    }
+    return fetch_material_preflight(**adapter_params)
 
 
 def _fetch_material_preflight_isolated(params, timeout_sec, worker=None):
@@ -467,8 +546,10 @@ def _fetch_material_preflight_isolated(params, timeout_sec, worker=None):
                 process.kill()
                 process.join(1)
             return _preflight_failure(params.get("material_id"), "rpa_request_failed")
-        if not queue.empty():
-            return queue.get()
+        try:
+            return queue.get(timeout=1)
+        except queue_module.Empty:
+            pass
         if process.exitcode == 0:
             return _preflight_failure(
                 params.get("material_id"), "unknown_preflight_failure"
@@ -492,6 +573,7 @@ def _fetch_material_preflight_for_cli(args, material_id):
         "custom_start_date": args.custom_start_date,
         "custom_end_date": args.custom_end_date,
         "diagnosis_csv_dir": _diagnosis_csv_dir(args),
+        "diagnosis_records_dir": _diagnosis_records_dir(args),
         "timeout_sec": args.rpa_preflight_timeout_sec,
     }
     if hasattr(fetch_material_preflight, "mock_calls"):
@@ -543,11 +625,10 @@ def _run_rpa_preflight(args, candidate_payload):
         for index, material in enumerate(materials):
             outcome, timings = run_one(index)
             if outcome.get("rpaAvailable"):
-                records = outcome.get("records")
-                if not isinstance(records, list):
-                    records = [{"recordType": "material_info", "materialId": outcome["materialId"], "videoUrl": outcome.get("videoUrl")}]
                 try:
-                    records_path = _write_diagnosis_records(records, _diagnosis_records_dir(args), outcome["materialId"])
+                    _records, records_path = _materialize_preflight_records(
+                        args, outcome, outcome["materialId"]
+                    )
                     entry = _material_entry_with_preflight(material, outcome, "selected", timings)
                     entry["diagnosisRecordsPath"] = _run_relative_path(args, records_path)
                     entry["diagnosisCsvPath"] = _run_relative_path(args, outcome["diagnosisCsvPath"]) if outcome.get("diagnosisCsvPath") else None
@@ -591,11 +672,10 @@ def _run_rpa_preflight(args, candidate_payload):
                     outcome, timings = future.result()
                     material = materials[index]
                     if outcome.get("rpaAvailable"):
-                        records = outcome.get("records")
-                        if not isinstance(records, list):
-                            records = [{"recordType": "material_info", "materialId": outcome["materialId"], "videoUrl": outcome.get("videoUrl")}]
                         try:
-                            records_path = _write_diagnosis_records(records, _diagnosis_records_dir(args), outcome["materialId"])
+                            _records, records_path = _materialize_preflight_records(
+                                args, outcome, outcome["materialId"]
+                            )
                             entry = _material_entry_with_preflight(material, outcome, "selected", timings)
                             entry["diagnosisRecordsPath"] = _run_relative_path(args, records_path)
                             entry["diagnosisCsvPath"] = _run_relative_path(args, outcome["diagnosisCsvPath"]) if outcome.get("diagnosisCsvPath") else None
@@ -713,23 +793,9 @@ def _attempt_stream_rpa(args, entry):
         timings["totalSec"] = _elapsed_since(started_at)
         return updated
 
-    records = outcome.get("records")
-    if not isinstance(records, list):
-        records = [
-            {
-                "recordType": "material_info",
-                "materialId": material_id,
-                "videoUrl": outcome.get("videoUrl"),
-            }
-        ]
     try:
-        records_path = _time_call(
-            timings,
-            "diagnosisRecordWriteSec",
-            _write_diagnosis_records,
-            records,
-            _diagnosis_records_dir(args),
-            material_id,
+        records, records_path = _materialize_preflight_records(
+            args, outcome, material_id, timings
         )
     except RpaAdapterError:
         updated.update(
@@ -1163,6 +1229,14 @@ def _iter_pending_material_ids(args, manifest, material_ids):
 
 def _verify_rpa_batch(args, material_ids):
     manifest_path = _batch_manifest_path(args)
+    try:
+        raw_manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(
+            f"unable to read batch manifest for verification: {manifest_path}"
+        ) from exc
+    if isinstance(raw_manifest, dict) and raw_manifest.get("schemaVersion") == 2:
+        return _verify_streaming_rpa_batch(args, material_ids, raw_manifest)
     manifest = _load_resume_manifest(
         manifest_path, _new_batch_manifest(args, material_ids)
     )
@@ -1182,6 +1256,65 @@ def _verify_rpa_batch(args, material_ids):
         "valid": not errors,
         "materialCount": len(material_ids),
         "materialIds": material_ids,
+        "warningCount": len(warnings),
+        "warnings": warnings,
+        "errors": errors,
+    }
+    receipt_path = Path(args.output_dir) / BATCH_VERIFICATION_NAME
+    _write_json_atomically(receipt_path, receipt)
+    return receipt_path, receipt
+
+
+def _verify_streaming_rpa_batch(args, material_ids, manifest):
+    errors = []
+    warnings = []
+    selected = manifest.get("selectedMaterials")
+    rejected = manifest.get("rejectedMaterials")
+    cancelled = manifest.get("cancelledMaterials")
+    if not isinstance(selected, list):
+        raise RpaAdapterError("streaming batch manifest has invalid selectedMaterials")
+    if not isinstance(rejected, list):
+        raise RpaAdapterError("streaming batch manifest has invalid rejectedMaterials")
+    if not isinstance(cancelled, list):
+        raise RpaAdapterError("streaming batch manifest has invalid cancelledMaterials")
+
+    selected_by_id = {}
+    for entry in selected:
+        if not isinstance(entry, dict):
+            errors.append("streaming selected material entry is invalid")
+            continue
+        material_id = str(entry.get("materialId") or "").strip()
+        if material_id:
+            selected_by_id[material_id] = entry
+    for material_id in material_ids:
+        entry = selected_by_id.get(material_id)
+        if entry is None:
+            errors.append(f"material {material_id} is missing from streaming selectedMaterials")
+            continue
+        if entry.get("rpaStatus") != "selected":
+            errors.append(f"material {material_id} is not RPA selected")
+            continue
+        if entry.get("postprocessStatus") != "succeeded":
+            errors.append(f"material {material_id} postprocess is not succeeded")
+            continue
+        material_errors, material_warnings = _material_output_issues(
+            material_id, entry
+        )
+        errors.extend(material_errors)
+        warnings.extend(
+            {"materialId": material_id, "warning": warning}
+            for warning in material_warnings
+        )
+
+    receipt = {
+        "schemaVersion": 2,
+        "manifestSchemaVersion": 2,
+        "valid": not errors,
+        "materialCount": len(material_ids),
+        "materialIds": material_ids,
+        "selectedCount": len(selected),
+        "rejectedCount": len(rejected),
+        "cancelledCount": len(cancelled),
         "warningCount": len(warnings),
         "warnings": warnings,
         "errors": errors,
