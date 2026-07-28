@@ -1286,7 +1286,26 @@ def _verify_streaming_rpa_batch(args, material_ids, manifest):
         material_id = str(entry.get("materialId") or "").strip()
         if material_id:
             selected_by_id[material_id] = entry
-    for material_id in material_ids:
+
+    manifest_material_ids = manifest.get("materialIds")
+    if (
+        args.target_top_n
+        and isinstance(manifest_material_ids, list)
+        and set(material_ids) == set(manifest_material_ids)
+    ):
+        if len(selected) < args.target_top_n:
+            errors.append(
+                "streaming batch selectedMaterials does not satisfy targetTopN"
+            )
+        material_ids_to_verify = [
+            str(entry.get("materialId") or "").strip()
+            for entry in selected
+            if isinstance(entry, dict) and str(entry.get("materialId") or "").strip()
+        ]
+    else:
+        material_ids_to_verify = material_ids
+
+    for material_id in material_ids_to_verify:
         entry = selected_by_id.get(material_id)
         if entry is None:
             errors.append(f"material {material_id} is missing from streaming selectedMaterials")
@@ -1310,8 +1329,8 @@ def _verify_streaming_rpa_batch(args, material_ids, manifest):
         "schemaVersion": 2,
         "manifestSchemaVersion": 2,
         "valid": not errors,
-        "materialCount": len(material_ids),
-        "materialIds": material_ids,
+        "materialCount": len(material_ids_to_verify),
+        "materialIds": material_ids_to_verify,
         "selectedCount": len(selected),
         "rejectedCount": len(rejected),
         "cancelledCount": len(cancelled),
@@ -1322,6 +1341,43 @@ def _verify_streaming_rpa_batch(args, material_ids, manifest):
     receipt_path = Path(args.output_dir) / BATCH_VERIFICATION_NAME
     _write_json_atomically(receipt_path, receipt)
     return receipt_path, receipt
+
+
+def _streaming_batch_is_complete(args):
+    manifest_path = _batch_manifest_path(args)
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(manifest, dict) or manifest.get("schemaVersion") != 2:
+        return False
+    materials = manifest.get("materials")
+    terminal_statuses = {"succeeded", "failed", "cancelled"}
+    if isinstance(materials, list):
+        return all(
+            isinstance(entry, dict) and entry.get("status") in terminal_statuses
+            for entry in materials
+        )
+
+    material_ids = manifest.get("materialIds")
+    selected = manifest.get("selectedMaterials")
+    rejected = manifest.get("rejectedMaterials")
+    cancelled = manifest.get("cancelledMaterials")
+    if not all(isinstance(items, list) for items in (selected, rejected, cancelled)):
+        return False
+    if not isinstance(material_ids, list):
+        return False
+
+    accounted_ids = set()
+    for items in (selected, rejected, cancelled):
+        for entry in items:
+            if not isinstance(entry, dict):
+                return False
+            material_id = str(entry.get("materialId") or "").strip()
+            if not material_id:
+                return False
+            accounted_ids.add(material_id)
+    return len(accounted_ids) >= len(material_ids)
 
 
 def _run_rpa_batch(args, material_ids):
@@ -1531,7 +1587,17 @@ def main(argv=None):
                             "--rpa-preflight-json is incompatible with streaming --target-top-n"
                         )
                     if args.verify:
-                        parser.error("--verify is not available for a running streaming batch")
+                        if not _streaming_batch_is_complete(args):
+                            parser.error("--verify is not available for a running streaming batch")
+                        verification_path, receipt = _verify_rpa_batch(
+                            args, material_ids
+                        )
+                        print(f"batch_verification={verification_path}")
+                        return (
+                            0
+                            if receipt["valid"]
+                            else BATCH_VERIFICATION_FAILURE_EXIT_CODE
+                        )
                     manifest_path, result, failed = _run_streaming_rpa_batch(
                         args, top_materials_payload
                     )
