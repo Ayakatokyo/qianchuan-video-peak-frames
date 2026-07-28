@@ -103,6 +103,8 @@ python scripts/prepare_diagnostic_analysis.py \
 
 当前执行技能的模型必须读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，并实际查看事实包 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一次任务内生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`，必须使用 `schemaVersion: 2`，分开 `SHOW_COUNT`、`CLICK_COUNT` 与 `TRANSACTION_AMOUNT` 人群结论，并逐字引用事实包已有的 evidence ref。模型不得仅凭帧的秒数或点击值猜测画面；高光帧观察必须基于实际查看 JPEG。
 
+AI 二次分析只分析 RPA 提取到的业务事实，包括人群、脚本、投放明细和高光帧。不得分析执行过程，也不得把运行目录名、代码修复、`verify` 收口、`fresh rerun`、`rpa_request_failed`、候选失败、补位、取消、重跑、批次调度或素材 rank 缺口写入商业结论、洞察、下一步或 warnings。若当前对话或日志中出现这些流程信息，只能用于排障，不能进入 `diagnostic-ai-analysis.json`。
+
 最终报告渲染器不会调用外部 API，也不会生成业务结论；它只校验并注入当前执行技能的模型写入的本地结构化结论。若渲染器提示 schema 或证据引用错误，模型必须修正 `diagnostic-ai-analysis.json` 后重新渲染。
 
 渲染最终 HTML 报告：

@@ -184,6 +184,18 @@ class BatchSkillContractTests(unittest.TestCase):
         for metric in ("SHOW_COUNT", "CLICK_COUNT", "TRANSACTION_AMOUNT", "JPEG"):
             self.assertIn(metric, prompt)
 
+    def test_final_report_analysis_excludes_execution_process_narrative(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("只分析 RPA 提取到的业务事实", prompt)
+        self.assertIn("不得分析执行过程", prompt)
+        self.assertIn("补位", prompt)
+        self.assertIn("verify", prompt)
+        self.assertIn("rpa_request_failed", prompt)
+        self.assertIn("只分析 RPA 提取到的业务事实", skill)
+        self.assertIn("草稿不是完成的商业分析报告", skill)
+
 
 if __name__ == "__main__":
     unittest.main()

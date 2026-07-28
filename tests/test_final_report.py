@@ -303,8 +303,44 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
         with self.assertRaisesRegex(FinalReportError, "unknown evidence reference"):
             self._build_data(conclusion)
 
+    def test_rejects_v2_conclusion_that_analyzes_execution_process(self):
+        conclusion = self._conclusion()
+        conclusion["batchInsights"].append(
+            {
+                "topic": "integrated",
+                "title": "修复后的 fresh rerun 证明 verify 收口已闭合",
+                "conclusion": (
+                    "rank 2 素材因 rpa_request_failed 被剔除，"
+                    "后续素材补位进入 Top 6。"
+                ),
+                "evidenceRefs": ["highlight:m-1:first_peak"],
+            }
+        )
+
+        with self.assertRaisesRegex(FinalReportError, "execution process"):
+            self._build_data(conclusion)
+
 
 class FinalReportRenderTests(unittest.TestCase):
+    def test_template_keeps_current_structure_with_livecheck_visual_style(self):
+        template_path = ROOT / "templates" / "final-report-template.html"
+        html_text = template_path.read_text(encoding="utf-8")
+
+        self.assertIn('class="hero-copy"', html_text)
+        self.assertIn('class="material-tabs side-tabs"', html_text)
+        self.assertIn('id="report-data">__REPORT_DATA_JSON__</script>', html_text)
+        self.assertIn("--bg: #120b08;", html_text)
+        self.assertIn("--paper: #fff8ec;", html_text)
+        self.assertIn("--gold: #d79a4b;", html_text)
+        self.assertIn(
+            "background: linear-gradient(135deg, #160d09, #3b1f15 44%, #f5dfbd 44%, #fff8ec);",
+            html_text,
+        )
+        self.assertIn("border-radius: 28px;", html_text)
+        self.assertIn("--shadow: 0 28px 80px rgba(43, 23, 12, .18);", html_text)
+        self.assertIn("object-fit: contain;", html_text)
+        self.assertIn("grid-template-columns: 260px minmax(0, 1fr);", html_text)
+
     def test_generates_html_with_required_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -400,7 +436,72 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("06｜下一轮策略", html_text)
         self.assertIn("07｜数据质量与方法说明", html_text)
         self.assertIn("礼赠素材可以继续放量。", html_text)
-        self.assertIn('src="../peak-frames/m-1/first_peak_0001s_3.jpg"', html_text)
+        self.assertIn(
+            '"framePath":"../peak-frames/m-1/first_peak_0001s_3.jpg"',
+            html_text,
+        )
+        self.assertIn('<script type="application/json" id="report-data">', html_text)
+        self.assertIn('"materials"', html_text)
+        self.assertNotIn("__REPORT_DATA_JSON__", html_text)
+
+    def test_embedded_template_data_excludes_execution_process_metadata(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-30",
+                    "materials": [material("m-1", 1, 100)],
+                },
+            )
+            write_json(records_dir / "m-1.json", [click_record("m-1", 1, 3)])
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_3.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 3,
+                            "framePath": frame_path.name,
+                        }
+                    ]
+                },
+            )
+            write_json(
+                peak_dir / "batch-verification.json",
+                {
+                    "valid": False,
+                    "selectedMaterials": ["m-1"],
+                    "errors": ["verify failed for top_materials_rpa_ready.json"],
+                    "warnings": ["batchVerification includes execution process"],
+                },
+            )
+
+            _data_path, html_path, _data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+            )
+
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn('"materialId":"m-1"', html_text)
+        self.assertNotIn("batchVerification", html_text)
+        self.assertNotIn("selectedMaterials", html_text)
+        self.assertNotIn("top_materials_rpa_ready", html_text)
+        self.assertNotIn("verify failed", html_text)
+        self.assertNotIn("execution process", html_text)
 
     def test_renders_v2_analysis_with_accessible_material_tabs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -567,15 +668,181 @@ class FinalReportRenderTests(unittest.TestCase):
         ):
             self.assertIn(heading, html_text)
         self.assertIn('role="tablist"', html_text)
-        self.assertIn('role="tab"', html_text)
-        self.assertIn('role="tabpanel"', html_text)
-        self.assertIn('data-material-id="m-1"', html_text)
-        self.assertIn('data-material-id="m-2"', html_text)
-        self.assertIn('data-material-id="m-1" aria-selected="true"', html_text)
-        self.assertIn('data-material-id="m-2" aria-selected="false"', html_text)
+        self.assertIn('setAttribute("role", "tab")', html_text)
+        self.assertIn('setAttribute("role", "tabpanel")', html_text)
+        self.assertIn('"materialId":"m-1"', html_text)
+        self.assertIn('"materialId":"m-2"', html_text)
+        self.assertIn('tab.dataset.materialId = materialId', html_text)
+        self.assertIn('setAttribute("aria-selected", String(selected))', html_text)
         self.assertIn("function activateMaterialTab", html_text)
         self.assertIn("ArrowRight", html_text)
         self.assertIn("Home", html_text)
+
+    def test_explains_summary_parts_and_uses_side_material_tabs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            analysis_path = root / "analysis.json"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-30",
+                    "materials": [material("m-1", 1, 100)],
+                },
+            )
+            write_json(
+                records_dir / "m-1.json",
+                [
+                    {
+                        "recordType": "crowd_analysis",
+                        "materialId": "m-1",
+                        "displayMetric": "CLICK_COUNT",
+                        "dimensionKey": "age",
+                        "dimensionValue": "24-30",
+                        "metricValue": 30,
+                    },
+                    {
+                        "recordType": "script_analysis",
+                        "materialId": "m-1",
+                        "scriptInfo": json.dumps(
+                            {
+                                "text": "限时优惠",
+                                "data": [
+                                    {
+                                        "level_1_label": {
+                                            "value": 1,
+                                            "label": "价格优惠",
+                                        },
+                                        "level_2_labels": [
+                                            {"value": 21, "label": "降价/折扣"}
+                                        ],
+                                    }
+                                ],
+                                "detail": {
+                                    "21": {
+                                        "label": "降价/折扣",
+                                        "list": ["今天四九折"],
+                                    }
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+            )
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_3.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 3,
+                            "framePath": frame_path.name,
+                        }
+                    ]
+                },
+            )
+            write_json(
+                analysis_path,
+                {
+                    "schemaVersion": 2,
+                    "overallConclusion": "组合表现稳定。",
+                    "batchInsights": [
+                        {
+                            "topic": "audience",
+                            "title": "点击人群集中",
+                            "conclusion": "点击层 24-30 岁突出。",
+                            "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
+                        },
+                        {
+                            "topic": "script",
+                            "title": "优惠脚本可复用",
+                            "conclusion": "价格优惠标签出现。",
+                            "evidenceRefs": ["script:m-1:价格优惠:降价/折扣"],
+                        },
+                        {
+                            "topic": "highlight",
+                            "title": "产品近景有效",
+                            "conclusion": "产品近景与峰值同时出现。",
+                            "evidenceRefs": ["highlight:m-1:first_peak"],
+                        },
+                        {
+                            "topic": "integrated",
+                            "title": "组合模板稳定",
+                            "conclusion": "人群、脚本和画面可组合复用。",
+                            "evidenceRefs": ["highlight:m-1:first_peak"],
+                        },
+                    ],
+                    "materialAnalyses": [
+                        {
+                            "materialId": "m-1",
+                            "audienceConclusion": "点击层 24-30 岁突出。",
+                            "scriptConclusion": "价格优惠表达出现。",
+                            "highlightAnalyses": [
+                                {
+                                    "frameRef": "highlight:m-1:first_peak",
+                                    "visualObservation": "产品近景出现。",
+                                    "commercialInterpretation": "画面与点击峰值同时出现。",
+                                }
+                            ],
+                            "integratedConclusion": "保留产品近景开场。",
+                            "decision": "scale",
+                            "nextAction": "制作三条开场变体。",
+                            "evidenceRefs": [
+                                "audience:CLICK_COUNT:age:24-30",
+                                "script:m-1:价格优惠:降价/折扣",
+                                "highlight:m-1:first_peak",
+                            ],
+                        }
+                    ],
+                    "nextActions": [
+                        {
+                            "title": "扩展开场",
+                            "body": "测试三条变体。",
+                            "priority": "high",
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            _data_path, html_path, _data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                analysis_json=analysis_path,
+            )
+
+            html_text = html_path.read_text(encoding="utf-8")
+
+        for label in (
+            "第一部分：组合总述",
+            "第二部分：组合关键洞察",
+            "第一部分：人群结论",
+            "第二部分：人群证据",
+            "第一部分：脚本结论",
+            "第二部分：脚本证据",
+            "第一部分：高光帧结论",
+            "第二部分：高光帧证据",
+        ):
+            self.assertIn(label, html_text)
+        self.assertIn('class="material-tabs side-tabs"', html_text)
+        self.assertIn(".side-tabs {", html_text)
+        self.assertIn("grid-template-columns: 260px minmax(0, 1fr);", html_text)
+        self.assertIn("flex-direction: column;", html_text)
+        self.assertIn("object-fit: contain;", html_text)
+        self.assertIn(".material-body {", html_text)
+        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr));", html_text)
 
 
 class FinalReportCliTests(unittest.TestCase):

@@ -1,4 +1,3 @@
-import html
 import json
 from datetime import datetime, timezone
 import math
@@ -16,6 +15,29 @@ class FinalReportError(RuntimeError):
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script", "highlight", "integrated"}
+EXECUTION_PROCESS_TERMS = (
+    "--verify",
+    "verify",
+    "fresh rerun",
+    "rerun",
+    "rpa_request_failed",
+    "batch-manifest",
+    "batch-verification",
+    "batchVerification",
+    "top_materials_rpa_ready",
+    "selectedMaterials",
+    "rejectedMaterials",
+    "cancelledMaterials",
+    "补位",
+    "剔除",
+    "RPA 失败",
+    "执行过程",
+    "execution process",
+    "流程修复",
+    "修复后的",
+)
+REPORT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "final-report-template.html"
+REPORT_DATA_PLACEHOLDER = "__REPORT_DATA_JSON__"
 
 
 def _text(value):
@@ -88,6 +110,38 @@ def _validate_next_action(raw, index):
     if priority not in ALLOWED_PRIORITIES:
         raise FinalReportError(f"nextActions[{index}].priority is unsupported")
     return {"title": title, "body": body, "priority": priority}
+
+
+def _iter_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_strings(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_strings(item)
+
+
+def _execution_process_term(payload):
+    for text in _iter_strings(payload):
+        lowered = text.lower()
+        for term in EXECUTION_PROCESS_TERMS:
+            if term.lower() in lowered:
+                return term
+    return ""
+
+
+def _contains_execution_process_term(payload):
+    return bool(_execution_process_term(payload))
+
+
+def _reject_execution_process_narrative(payload):
+    term = _execution_process_term(payload)
+    if term:
+        raise FinalReportError(
+            "conclusion references execution process: " + term
+        )
 
 
 def _normalize_v1_conclusion(payload):
@@ -202,6 +256,7 @@ def _validate_v2_material_analysis(raw, index):
 
 
 def _normalize_v2_conclusion(payload):
+    _reject_execution_process_narrative(payload)
     for field_name in ("batchInsights", "materialAnalyses", "nextActions"):
         if field_name not in payload:
             raise FinalReportError(f"{field_name} is required for schemaVersion 2")
@@ -541,17 +596,6 @@ def _safe_component(value):
     return cleaned.strip("_") or "unknown-material"
 
 
-def _format_number(value):
-    number = _number(value, default=None)
-    if number is None:
-        return "-"
-    if abs(number) >= 1000:
-        return f"{number:,.2f}"
-    if number == int(number):
-        return f"{number:,.0f}"
-    return f"{number:,.2f}"
-
-
 def _load_records_for_materials(top_payload, records_dir):
     result = {}
     root = Path(records_dir)
@@ -657,170 +701,83 @@ def _html_asset_src(path, asset_base_dir):
     return Path(relative).as_posix()
 
 
-def _render_frames(material, asset_base_dir=None):
-    figures = []
-    for frame in material.get("highlightFrames", []):
-        source = html.escape(
-            _html_asset_src(frame.get("framePath", ""), asset_base_dir)
+def _load_report_template():
+    try:
+        template = REPORT_TEMPLATE_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise FinalReportError(f"unable to read report template: {REPORT_TEMPLATE_PATH}") from exc
+    if REPORT_DATA_PLACEHOLDER not in template:
+        raise FinalReportError(
+            f"report template is missing {REPORT_DATA_PLACEHOLDER}"
         )
-        caption = (
-            f"{html.escape(frame.get('rankType', ''))} · "
-            f"{_format_number(frame.get('durationSec'))}s · "
-            f"点击 {_format_number(frame.get('metricValue'))}"
-        )
-        figures.append(
-            f"<figure><img src=\"{source}\" alt=\"高光帧\"/>"
-            f"<figcaption>{caption}</figcaption></figure>"
-        )
-    return "".join(figures) or "<p class=\"muted\">暂无高光帧</p>"
+    return template
 
 
-def _render_insight_cards(insights):
-    return "".join(
-        "<li><b>{}</b><p>{}</p><small>{}</small></li>".format(
-            html.escape(item["title"]),
-            html.escape(item["conclusion"]),
-            html.escape(" · ".join(item.get("evidenceRefs", []))),
-        )
-        for item in insights
-    ) or "<li><b>暂无可用洞察</b><p>请补充结构化分析后重新渲染。</p></li>"
-
-
-def _render_material_panel(material, asset_base_dir):
-    analysis = material["analysis"]
-    visual_items = "".join(
-        "<p><b>{}</b>：{}<br/><small>{}</small></p>".format(
-            html.escape(item["frameRef"]),
-            html.escape(item["visualObservation"]),
-            html.escape(item["commercialInterpretation"]),
-        )
-        for item in analysis["highlightAnalyses"]
-    ) or "<p>暂无高光帧观察。</p>"
+def _json_for_html_script(data):
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return (
-        "<div class=\"material-head\">"
-        f"<div><p class=\"eyebrow\">#{html.escape(str(material['rank']))} · "
-        f"{html.escape(material['materialId'])}</p>"
-        f"<h3>{html.escape(material.get('materialName', ''))}</h3>"
-        f"<p class=\"muted\">状态 {html.escape(material['extractionStatus'])}</p></div>"
-        f"<div class=\"score\"><span>建议</span><b>{html.escape(analysis['decision'])}</b></div>"
-        "</div>"
-        f"<div class=\"frame-grid\">{_render_frames(material, asset_base_dir)}</div>"
-        "<div class=\"material-body\">"
-        "<div class=\"formula\"><b>人群与脚本证据</b>"
-        f"<p>{html.escape(analysis['audienceConclusion'])}</p>"
-        f"<p>{html.escape(analysis['scriptConclusion'])}</p></div>"
-        f"<div class=\"formula\"><b>高光帧观察</b>{visual_items}</div>"
-        "<div class=\"formula\"><b>综合判断与下一步</b>"
-        f"<p>{html.escape(analysis['integratedConclusion'])}</p>"
-        f"<p><b>下一步：</b>{html.escape(analysis['nextAction'])}</p></div>"
-        "</div>"
+        payload.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
     )
 
 
-def _render_material_tabs(materials, default_material_id, asset_base_dir):
-    buttons = []
-    panels = []
-    for material in materials:
-        material_id = material["materialId"]
-        safe_id = _safe_component(material_id)
-        selected = material_id == default_material_id
-        label = material.get("materialName") or material_id
-        buttons.append(
-            f'<button type="button" role="tab" id="tab-{safe_id}" '
-            f'data-material-id="{html.escape(material_id)}" '
-            f'aria-selected="{str(selected).lower()}" '
-            f'aria-controls="panel-{safe_id}" tabindex="{0 if selected else -1}">'
-            f'#{html.escape(str(material["rank"]))} {html.escape(label)}</button>'
+def _report_data_for_template(data, asset_base_dir):
+    materials = []
+    for material in data.get("materials", []):
+        highlight_frames = []
+        for frame in material.get("highlightFrames", []):
+            highlight_frames.append(
+                {
+                    "rankType": frame.get("rankType"),
+                    "durationSec": frame.get("durationSec"),
+                    "metricValue": frame.get("metricValue"),
+                    "framePath": _html_asset_src(
+                        frame.get("framePath", ""), asset_base_dir
+                    ),
+                }
+            )
+        materials.append(
+            {
+                "rank": material.get("rank"),
+                "materialId": material.get("materialId"),
+                "materialName": material.get("materialName"),
+                "extractionStatus": material.get("extractionStatus"),
+                "highlightFrameCount": material.get("highlightFrameCount"),
+                "highlightFrames": highlight_frames,
+                "analysis": material.get("analysis") or {},
+            }
         )
-        panels.append(
-            f'<article class="material-card" role="tabpanel" id="panel-{safe_id}" '
-            f'aria-labelledby="tab-{safe_id}" data-material-id="{html.escape(material_id)}" '
-            f'{"" if selected else "hidden"}>{_render_material_panel(material, asset_base_dir)}</article>'
-        )
-    return (
-        '<div class="material-tabs" data-material-tabs>'
-        '<div class="tab-list" role="tablist" aria-label="素材选择">'
-        + "".join(buttons)
-        + "</div><div class=\"material-panels\">"
-        + "".join(panels)
-        + "</div></div>"
-    )
+    conclusion = data.get("conclusion", {})
+    warnings = [
+        _text(warning)
+        for warning in data.get("warnings", [])
+        if _text(warning) and not _contains_execution_process_term(warning)
+    ]
+    return {
+        "schemaVersion": data.get("schemaVersion"),
+        "generatedAt": data.get("generatedAt"),
+        "status": data.get("status"),
+        "period": data.get("period", {}),
+        "materials": materials,
+        "defaultMaterialId": data.get("defaultMaterialId"),
+        "batchInsights": data.get("batchInsights", {}),
+        "conclusion": {
+            "overallConclusion": conclusion.get("overallConclusion", ""),
+            "nextActions": conclusion.get("nextActions", []),
+        },
+        "warnings": warnings,
+    }
 
 
 def _render_html_report(data, asset_base_dir=None):
-    conclusion = data["conclusion"]
-    insights = data["batchInsights"]
-    priority_order = {"high": 0, "medium": 1, "low": 2}
-    actions = sorted(
-        conclusion.get("nextActions", []),
-        key=lambda item: priority_order.get(item.get("priority"), 1),
+    template = _load_report_template()
+    template_data = _report_data_for_template(data, asset_base_dir)
+    return template.replace(
+        REPORT_DATA_PLACEHOLDER, _json_for_html_script(template_data)
     )
-    actions_html = "".join(
-        f"<li><b>{html.escape(item['title'])}</b><p>{html.escape(item['body'])}</p>"
-        f"<small>{html.escape(item.get('priority', 'medium'))}</small></li>"
-        for item in actions
-    ) or "<li><b>暂无下一轮策略</b><p>请补充结构化结论后重新渲染。</p></li>"
-    warnings_html = "".join(
-        f"<li>{html.escape(str(warning))}</li>" for warning in data.get("warnings", [])
-    ) or "<li>无阻断告警</li>"
-    cover = next(
-        (
-            frame["framePath"]
-            for material in data["materials"]
-            for frame in material.get("highlightFrames", [])
-            if frame.get("framePath")
-        ),
-        "",
-    )
-    cover_html = (
-        f'<img src="{html.escape(_html_asset_src(cover, asset_base_dir))}" alt="代表高光帧"/>'
-        if cover
-        else '<div class="cover-empty">暂无高光帧封面</div>'
-    )
-    return f"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>千川 TOP 素材池商业诊断报告</title>
-<style>
-:root{{--bg:#120b08;--paper:#fff8ec;--panel:rgba(255,248,236,.94);--ink:#2a170f;--muted:#806758;--gold:#d79a4b;--line:rgba(82,45,24,.15);--shadow:0 28px 80px rgba(43,23,12,.18)}}*{{box-sizing:border-box}}body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;background:linear-gradient(135deg,#160d09,#3b1f15 44%,#f5dfbd 44%,#fff8ec);color:var(--ink)}}main{{width:min(1260px,calc(100% - 42px));margin:0 auto;padding:42px 0 72px}}.hero{{display:grid;grid-template-columns:1fr .86fr;gap:28px;color:#fff;margin-bottom:26px}}.hero-card,.section{{border:1px solid var(--line);box-shadow:var(--shadow)}}.hero-card{{padding:36px;border-radius:28px;background:linear-gradient(145deg,rgba(255,255,255,.12),rgba(255,255,255,.04))}}h1{{font-size:clamp(38px,5vw,72px);line-height:.95;margin:14px 0 18px}}.subtitle{{font-size:18px;line-height:1.75;color:rgba(255,255,255,.8)}}.eyebrow{{letter-spacing:.14em;text-transform:uppercase;font-size:12px;color:var(--gold);font-weight:800}}.cover{{border-radius:28px;overflow:hidden;min-height:360px;background:#24120d;box-shadow:var(--shadow)}}.cover img{{width:100%;height:100%;object-fit:cover;display:block}}.cover-empty{{display:grid;place-items:center;height:360px;color:#f7dec1}}.section{{background:var(--panel);border-radius:28px;padding:28px;margin:22px 0}}h2{{font-size:31px;margin:0 0 18px}}h3{{margin:0 0 10px;font-size:24px}}p{{line-height:1.72}}.muted,small{{color:var(--muted)}}.rec-list{{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;list-style:none;padding:0}}.rec-list li{{background:#fff;border:1px solid var(--line);border-radius:20px;padding:18px}}.tab-list{{display:flex;gap:9px;overflow-x:auto;border-bottom:1px solid var(--line);padding-bottom:12px}}.tab-list button{{border:1px solid var(--line);border-radius:8px;background:#fff8ec;color:var(--ink);padding:10px 14px;white-space:nowrap;cursor:pointer;font:inherit}}.tab-list button[aria-selected="true"]{{background:#2c1810;color:#fff;border-color:#2c1810}}.tab-list button:focus-visible{{outline:3px solid var(--gold);outline-offset:2px}}.material-card{{background:#fffdf8;border:1px solid var(--line);border-radius:24px;padding:22px;margin:18px 0;box-shadow:0 16px 40px rgba(65,34,16,.1)}}.material-head{{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}}.score{{min-width:88px;text-align:center;border-radius:20px;background:#2c1810;color:#fff;padding:14px}}.score span{{display:block;color:#d9b98d;font-size:12px}}.score b{{font-size:20px}}.frame-grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}}figure{{margin:0;border-radius:18px;overflow:hidden;background:#f4e3cd;border:1px solid var(--line)}}figure img{{width:100%;height:190px;object-fit:cover;display:block}}figcaption{{padding:10px 12px;color:var(--muted);font-size:13px}}.material-body{{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}}.formula{{padding:17px;border-radius:18px;background:#f7ead8;border:1px solid var(--line)}}@media(max-width:980px){{.hero,.frame-grid,.material-body,.rec-list{{grid-template-columns:1fr}}.cover{{min-height:300px}}}}
-</style></head><body><main>
-<section class="hero"><div class="hero-card"><p class="eyebrow">QIANCHUAN MATERIAL PORTFOLIO REPORT</p><h1>千川 TOP 素材池商业诊断报告</h1><p class="subtitle">统计周期 {html.escape(data['period'].get('actualStartDate',''))} - {html.escape(data['period'].get('actualEndDate',''))}。报告状态：{html.escape(data['status'])}。</p></div><div class="cover">{cover_html}</div></section>
-<section class="section"><h2>01｜TOP 素材组合结论</h2><p>{html.escape(conclusion.get('overallConclusion') or '结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。')}</p><ul class="rec-list">{_render_insight_cards(insights['integrated'])}</ul></section>
-<section class="section"><h2>02｜人群洞察</h2><ul class="rec-list">{_render_insight_cards(insights['audience'])}</ul></section>
-<section class="section"><h2>03｜脚本洞察</h2><ul class="rec-list">{_render_insight_cards(insights['script'])}</ul></section>
-<section class="section"><h2>04｜高光帧洞察</h2><ul class="rec-list">{_render_insight_cards(insights['highlight'])}</ul></section>
-<section class="section"><h2>05｜单素材深度分析</h2>{_render_material_tabs(data['materials'], data['defaultMaterialId'], asset_base_dir)}</section>
-<section class="section"><h2>06｜下一轮策略</h2><ul class="rec-list">{actions_html}</ul></section>
-<section class="section"><h2>07｜数据质量与方法说明</h2><p>人群与脚本数据是素材级相关性，不是单帧因果归因。高光帧用于辅助画面复盘，业务结论仅来自本地 diagnostic-ai-analysis.json。</p><ul>{warnings_html}</ul></section>
-</main><script>
-function activateMaterialTab(tab) {{
-  const container = tab.closest('[data-material-tabs]');
-  container.querySelectorAll('[role="tab"]').forEach((item) => {{
-    const selected = item === tab;
-    item.setAttribute('aria-selected', String(selected));
-    item.tabIndex = selected ? 0 : -1;
-  }});
-  container.querySelectorAll('[role="tabpanel"]').forEach((panel) => {{
-    panel.hidden = panel.dataset.materialId !== tab.dataset.materialId;
-  }});
-  tab.focus();
-}}
-document.querySelectorAll('[data-material-tabs]').forEach((container) => {{
-  const tabs = Array.from(container.querySelectorAll('[role="tab"]'));
-  tabs.forEach((tab, index) => {{
-    tab.addEventListener('click', () => activateMaterialTab(tab));
-    tab.addEventListener('keydown', (event) => {{
-      let nextIndex = index;
-      if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
-      else if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
-      else if (event.key === 'Home') nextIndex = 0;
-      else if (event.key === 'End') nextIndex = tabs.length - 1;
-      else return;
-      event.preventDefault();
-      activateMaterialTab(tabs[nextIndex]);
-    }});
-  }});
-}});
-</script></body></html>"""
 
 
 def generate_final_report(

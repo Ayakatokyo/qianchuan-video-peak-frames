@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>千川 TOP 素材池商业诊断报告</title>
+  <style>
+    :root {
+      --bg: #120b08;
+      --paper: #fff8ec;
+      --panel: rgba(255, 248, 236, .94);
+      --ink: #2a170f;
+      --muted: #806758;
+      --gold: #d79a4b;
+      --line: rgba(82, 45, 24, .15);
+      --shadow: 0 28px 80px rgba(43, 23, 12, .18);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+      background: linear-gradient(135deg, #160d09, #3b1f15 44%, #f5dfbd 44%, #fff8ec);
+      color: var(--ink);
+    }
+
+    main {
+      width: min(1260px, calc(100% - 42px));
+      margin: 0 auto;
+      padding: 42px 0 72px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr .86fr;
+      gap: 28px;
+      align-items: stretch;
+      color: #fff;
+      margin-bottom: 26px;
+    }
+
+    .hero-copy,
+    .cover,
+    .section,
+    .material-card {
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-copy {
+      min-height: 360px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 36px;
+      background: linear-gradient(145deg, rgba(255, 255, 255, .12), rgba(255, 255, 255, .04));
+      color: #fff;
+      border-radius: 28px;
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      font-size: 12px;
+      line-height: 1.4;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--gold);
+      font-weight: 800;
+    }
+
+    h1 {
+      margin: 14px 0 18px;
+      font-size: clamp(38px, 5vw, 72px);
+      line-height: .95;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 31px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 0;
+      line-height: 1.72;
+    }
+
+    small,
+    .muted {
+      color: var(--muted);
+    }
+
+    .subtitle {
+      font-size: 18px;
+      line-height: 1.75;
+      color: rgba(255, 255, 255, .78);
+    }
+
+    .cover {
+      min-height: 360px;
+      overflow: hidden;
+      border-radius: 28px;
+      background: #24120d;
+    }
+
+    .cover img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+
+    .cover-empty {
+      height: 100%;
+      min-height: 360px;
+      display: grid;
+      place-items: center;
+      color: #f7dec1;
+    }
+
+    .section {
+      margin: 22px 0;
+      padding: 28px;
+      border-radius: 28px;
+      background: var(--panel);
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(340px, .9fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .summary-part,
+    .rec-card,
+    .formula {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: #fff;
+    }
+
+    .summary-part,
+    .rec-card {
+      padding: 18px;
+    }
+
+    .part-label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 800;
+      color: #9b6a37;
+      letter-spacing: .06em;
+    }
+
+    .evidence-label {
+      margin-top: 14px;
+    }
+
+    .rec-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .rec-card b {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .side-tabs {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+
+    .tab-list {
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      border-right: 1px solid var(--line);
+      padding: 0 14px 0 0;
+      position: sticky;
+      top: 18px;
+    }
+
+    .tab-list button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff8ec;
+      color: var(--ink);
+      padding: 10px 14px;
+      text-align: left;
+      line-height: 1.45;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .tab-list button[aria-selected="true"] {
+      background: #2c1810;
+      color: #fff;
+      border-color: #2c1810;
+    }
+
+    .tab-list button:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .material-panels {
+      min-width: 0;
+    }
+
+    .material-card {
+      margin: 0;
+      padding: 22px;
+      border-radius: 24px;
+      background: #fffdf9;
+      box-shadow: 0 16px 40px rgba(65, 34, 16, .1);
+    }
+
+    .material-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+    }
+
+    .score {
+      min-width: 88px;
+      padding: 14px;
+      border-radius: 20px;
+      background: #2c1810;
+      color: #fff;
+      text-align: center;
+    }
+
+    .score span {
+      display: block;
+      color: #d7b99d;
+      font-size: 12px;
+    }
+
+    .score b {
+      font-size: 20px;
+    }
+
+    .frame-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin: 18px 0;
+    }
+
+    figure {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #f4e3cd;
+    }
+
+    figure img {
+      width: 100%;
+      height: 230px;
+      object-fit: contain;
+      background: #efe6d9;
+      display: block;
+    }
+
+    figcaption {
+      padding: 10px 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .material-body {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .formula {
+      padding: 17px;
+      background: #f7ead8;
+      border-radius: 18px;
+    }
+
+    .formula b {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .formula p + p {
+      margin-top: 10px;
+    }
+
+    @media (max-width: 980px) {
+      main {
+        width: min(100% - 28px, 760px);
+        padding-top: 24px;
+      }
+
+      .hero,
+      .summary-grid,
+      .rec-list,
+      .side-tabs,
+      .frame-grid,
+      .material-body {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-copy,
+      .cover,
+      .cover-empty {
+        min-height: 280px;
+      }
+
+      .tab-list {
+        position: static;
+        flex-direction: row;
+        overflow-x: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+        padding: 0 0 12px;
+      }
+
+      .tab-list button {
+        min-width: 220px;
+      }
+    }
+  </style>
+</head>
+<body>
+<script type="application/json" id="report-data">__REPORT_DATA_JSON__</script>
+<main>
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">QIANCHUAN MATERIAL PORTFOLIO REPORT</p>
+      <h1>千川 TOP 素材池商业诊断报告</h1>
+      <p class="subtitle" id="report-subtitle"></p>
+    </div>
+    <div class="cover" id="report-cover"></div>
+  </section>
+
+  <section class="section">
+    <h2>01｜TOP 素材组合结论</h2>
+    <div class="summary-grid">
+      <div class="summary-part">
+        <span class="part-label">第一部分：组合总述</span>
+        <p id="overall-conclusion"></p>
+      </div>
+      <ul class="rec-list" id="integrated-insights"></ul>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>02｜人群洞察</h2>
+    <ul class="rec-list" id="audience-insights"></ul>
+  </section>
+
+  <section class="section">
+    <h2>03｜脚本洞察</h2>
+    <ul class="rec-list" id="script-insights"></ul>
+  </section>
+
+  <section class="section">
+    <h2>04｜高光帧洞察</h2>
+    <ul class="rec-list" id="highlight-insights"></ul>
+  </section>
+
+  <section class="section">
+    <h2>05｜单素材深度分析</h2>
+    <div class="material-tabs side-tabs" data-material-tabs>
+      <div class="tab-list" role="tablist" aria-label="素材选择" id="material-tab-list"></div>
+      <div class="material-panels" id="material-panels"></div>
+    </div>
+  </section>
+
+  <section class="section">
+    <h2>06｜下一轮策略</h2>
+    <ul class="rec-list" id="next-actions"></ul>
+  </section>
+
+  <section class="section">
+    <h2>07｜数据质量与方法说明</h2>
+    <p>人群与脚本数据是素材级相关性，不是单帧因果归因。高光帧用于辅助画面复盘，业务结论仅来自本地 diagnostic-ai-analysis.json。</p>
+    <ul id="report-warnings"></ul>
+  </section>
+</main>
+
+<script>
+const reportData = JSON.parse(document.getElementById("report-data").textContent);
+
+function text(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  const result = String(value).trim();
+  return result || fallback;
+}
+
+function formatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  if (Math.abs(number) >= 1000) return number.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+  if (Number.isInteger(number)) return String(number);
+  return number.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+}
+
+function safeId(value) {
+  return text(value, "unknown-material").replace(/[^a-zA-Z0-9_-]+/g, "_");
+}
+
+function element(tag, className, content) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (content !== undefined) node.textContent = content;
+  return node;
+}
+
+function emptyCard(label, title) {
+  const item = element("li", "rec-card");
+  item.append(element("span", "part-label", label));
+  item.append(element("b", "", title));
+  item.append(element("p", "", "请补充结构化分析后重新渲染。"));
+  return item;
+}
+
+function renderInsightCards(targetId, insights, conclusionLabel, evidenceLabel) {
+  const list = document.getElementById(targetId);
+  list.replaceChildren();
+  if (!Array.isArray(insights) || insights.length === 0) {
+    list.append(emptyCard(conclusionLabel, "暂无可用洞察"));
+    return;
+  }
+  insights.forEach((insight) => {
+    const item = element("li", "rec-card");
+    item.append(element("span", "part-label", conclusionLabel));
+    item.append(element("b", "", text(insight.title)));
+    item.append(element("p", "", text(insight.conclusion)));
+    const evidenceTitle = element("span", "part-label evidence-label", evidenceLabel);
+    const evidence = element("small", "", Array.isArray(insight.evidenceRefs) ? insight.evidenceRefs.join(" · ") : "");
+    item.append(evidenceTitle, evidence);
+    list.append(item);
+  });
+}
+
+function renderCover() {
+  const cover = document.getElementById("report-cover");
+  const frame = (reportData.materials || [])
+    .flatMap((material) => material.highlightFrames || [])
+    .find((item) => item.framePath);
+  cover.replaceChildren();
+  if (!frame) {
+    cover.append(element("div", "cover-empty", "暂无高光帧封面"));
+    return;
+  }
+  const image = document.createElement("img");
+  image.src = frame.framePath;
+  image.alt = "代表高光帧";
+  cover.append(image);
+}
+
+function renderFrames(material) {
+  const grid = element("div", "frame-grid");
+  const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
+  if (frames.length === 0) {
+    grid.append(element("p", "muted", "暂无高光帧"));
+    return grid;
+  }
+  frames.forEach((frame) => {
+    const figure = document.createElement("figure");
+    const image = document.createElement("img");
+    image.src = text(frame.framePath);
+    image.alt = "高光帧";
+    const caption = element(
+      "figcaption",
+      "",
+      `${text(frame.rankType)} · ${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`
+    );
+    figure.append(image, caption);
+    grid.append(figure);
+  });
+  return grid;
+}
+
+function renderFormula(title, paragraphs) {
+  const card = element("div", "formula");
+  card.append(element("b", "", title));
+  paragraphs.forEach((paragraph) => card.append(element("p", "", text(paragraph))));
+  return card;
+}
+
+function renderMaterialPanel(material, selected) {
+  const analysis = material.analysis || {};
+  const panel = element("article", "material-card");
+  panel.id = `panel-${safeId(material.materialId)}`;
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", `tab-${safeId(material.materialId)}`);
+  panel.dataset.materialId = text(material.materialId);
+  panel.hidden = !selected;
+
+  const head = element("div", "material-head");
+  const titleBlock = document.createElement("div");
+  titleBlock.append(
+    element("p", "eyebrow", `#${text(material.rank)} · ${text(material.materialId)}`),
+    element("h3", "", text(material.materialName)),
+    element("p", "muted", `状态 ${text(material.extractionStatus)}`)
+  );
+  const score = element("div", "score");
+  score.append(element("span", "", "建议"), element("b", "", text(analysis.decision, "unknown")));
+  head.append(titleBlock, score);
+
+  const body = element("div", "material-body");
+  body.append(
+    renderFormula("人群与脚本证据", [analysis.audienceConclusion, analysis.scriptConclusion]),
+    renderHighlightFormula(analysis.highlightAnalyses),
+    renderFormula("综合判断与下一步", [analysis.integratedConclusion, `下一步：${text(analysis.nextAction)}`])
+  );
+
+  panel.append(head, renderFrames(material), body);
+  return panel;
+}
+
+function renderHighlightFormula(highlights) {
+  const card = element("div", "formula");
+  card.append(element("b", "", "高光帧观察"));
+  if (!Array.isArray(highlights) || highlights.length === 0) {
+    card.append(element("p", "", "暂无高光帧观察。"));
+    return card;
+  }
+  highlights.forEach((item) => {
+    const paragraph = element("p", "");
+    paragraph.append(
+      element("b", "", `${text(item.frameRef)}：`),
+      document.createTextNode(text(item.visualObservation)),
+      document.createElement("br"),
+      element("small", "", text(item.commercialInterpretation))
+    );
+    card.append(paragraph);
+  });
+  return card;
+}
+
+function activateMaterialTab(tab) {
+  const container = tab.closest("[data-material-tabs]");
+  container.querySelectorAll('[role="tab"]').forEach((item) => {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  container.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+    panel.hidden = panel.dataset.materialId !== tab.dataset.materialId;
+  });
+  tab.focus();
+}
+
+function renderMaterialTabs() {
+  const tabs = document.getElementById("material-tab-list");
+  const panels = document.getElementById("material-panels");
+  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
+  tabs.replaceChildren();
+  panels.replaceChildren();
+  materials.forEach((material, index) => {
+    const materialId = text(material.materialId);
+    const selected = materialId === text(reportData.defaultMaterialId) || (!reportData.defaultMaterialId && index === 0);
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = `tab-${safeId(materialId)}`;
+    tab.dataset.materialId = materialId;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.setAttribute("aria-controls", `panel-${safeId(materialId)}`);
+    tab.tabIndex = selected ? 0 : -1;
+    tab.textContent = `#${text(material.rank)} ${text(material.materialName, materialId)}`;
+    tab.addEventListener("click", () => activateMaterialTab(tab));
+    tabs.append(tab);
+    panels.append(renderMaterialPanel(material, selected));
+  });
+  Array.from(tabs.querySelectorAll('[role="tab"]')).forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateMaterialTab(allTabs[nextIndex]);
+    });
+  });
+}
+
+function renderNextActions() {
+  const list = document.getElementById("next-actions");
+  const priorityOrder = { high: 0, medium: 1, low: 2 };
+  const actions = Array.isArray(reportData.conclusion?.nextActions) ? [...reportData.conclusion.nextActions] : [];
+  actions.sort((left, right) => (priorityOrder[left.priority] ?? 1) - (priorityOrder[right.priority] ?? 1));
+  list.replaceChildren();
+  if (actions.length === 0) {
+    const item = element("li", "rec-card");
+    item.append(element("b", "", "暂无下一轮策略"), element("p", "", "请补充结构化结论后重新渲染。"));
+    list.append(item);
+    return;
+  }
+  actions.forEach((action) => {
+    const item = element("li", "rec-card");
+    item.append(element("b", "", text(action.title)), element("p", "", text(action.body)), element("small", "", text(action.priority, "medium")));
+    list.append(item);
+  });
+}
+
+function renderWarnings() {
+  const list = document.getElementById("report-warnings");
+  const warnings = Array.isArray(reportData.warnings) ? reportData.warnings : [];
+  list.replaceChildren();
+  if (warnings.length === 0) {
+    list.append(element("li", "", "无阻断告警"));
+    return;
+  }
+  warnings.forEach((warning) => list.append(element("li", "", text(warning))));
+}
+
+function renderReport() {
+  const period = reportData.period || {};
+  document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。报告状态：${text(reportData.status)}。`;
+  document.getElementById("overall-conclusion").textContent = text(reportData.conclusion?.overallConclusion, "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。");
+  renderCover();
+  renderInsightCards("integrated-insights", reportData.batchInsights?.integrated, "第二部分：组合关键洞察", "证据引用");
+  renderInsightCards("audience-insights", reportData.batchInsights?.audience, "第一部分：人群结论", "第二部分：人群证据");
+  renderInsightCards("script-insights", reportData.batchInsights?.script, "第一部分：脚本结论", "第二部分：脚本证据");
+  renderInsightCards("highlight-insights", reportData.batchInsights?.highlight, "第一部分：高光帧结论", "第二部分：高光帧证据");
+  renderMaterialTabs();
+  renderNextActions();
+  renderWarnings();
+}
+
+renderReport();
+</script>
+</body>
+</html>
