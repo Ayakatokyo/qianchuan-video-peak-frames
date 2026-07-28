@@ -5,6 +5,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "SKILL.md"
 RPA_CONTRACT_PATH = ROOT / "references" / "rpa-output-contract.md"
+DIAGNOSTIC_PROMPT_PATH = ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md"
 
 
 class BatchSkillContractTests(unittest.TestCase):
@@ -170,6 +171,18 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("diagnostic-ai-analysis.json", skill)
         self.assertIn("render_final_report.py", skill)
         self.assertIn("不会调用外部 API", skill)
+
+    def test_final_report_requires_in_task_visual_analysis_and_v2_output(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("当前执行技能的模型", skill)
+        self.assertIn("实际查看", skill)
+        self.assertIn("--peak-output-dir", skill)
+        self.assertIn("--analysis-json", skill)
+        self.assertIn('"schemaVersion": 2', prompt)
+        for metric in ("SHOW_COUNT", "CLICK_COUNT", "TRANSACTION_AMOUNT", "JPEG"):
+            self.assertIn(metric, prompt)
 
 
 if __name__ == "__main__":

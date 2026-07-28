@@ -97,10 +97,13 @@ RPA 通道最多同时运行 3 个连接器请求，并严格从候选头部补�
 python scripts/prepare_diagnostic_analysis.py \
   --top-materials-json "/path/to/run/top_materials_rpa_ready.json" \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
+  --peak-output-dir "/path/to/run/peak-frames" \
   --output-dir "/path/to/run/diagnostic-analysis"
 ```
 
-让外部分析环境使用保留的事实包和提示词生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`。最终报告渲染器不会调用外部 API，也不会生成业务结论；它只注入 `diagnostic-ai-analysis.json` 中的本地结构化结论。
+当前执行技能的模型必须读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，并实际查看事实包 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一次任务内生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`，必须使用 `schemaVersion: 2`，分开 `SHOW_COUNT`、`CLICK_COUNT` 与 `TRANSACTION_AMOUNT` 人群结论，并逐字引用事实包已有的 evidence ref。模型不得仅凭帧的秒数或点击值猜测画面；高光帧观察必须基于实际查看 JPEG。
+
+最终报告渲染器不会调用外部 API，也不会生成业务结论；它只校验并注入当前执行技能的模型写入的本地结构化结论。若渲染器提示 schema 或证据引用错误，模型必须修正 `diagnostic-ai-analysis.json` 后重新渲染。
 
 渲染最终 HTML 报告：
 
@@ -113,7 +116,7 @@ python scripts/render_final_report.py \
   --output-dir "/path/to/run/final-report"
 ```
 
-仅在有意生成草稿报告时才省略 `--analysis-json`。将报告视为完成前，请审查 `final-report/final-report-data.json`、`final-report/final-report.html`、批次验证错误和警告。
+仅在有意生成草稿报告时才省略 `--analysis-json`；草稿不是完成的商业分析报告。将报告视为完成前，请审查 `final-report/final-report-data.json` 的状态为 `complete` 或已解释的 `partial`、`final-report/final-report.html`、批次验证错误和警告。
 
 ## 单素材 RPA 调试运行
 
@@ -153,8 +156,9 @@ python scripts/extract_peak_frames.py \
 | TOP 素材批量任务 | 导出候选池 `top_materials.json`，再用一次流式 RPA 命令传入 target 与 candidate Top N |
 | 加速 TOP 素材批量任务 | 使用 `--rpa-concurrency 3` 和 `--postprocess-concurrency 3` 实现受控并行 |
 | 批次状态 | 检查 `batch-manifest.json` 的 submitted、selected、rejected 和 cancelled 素材及失败原因 |
-| 准备诊断事实 | 在流式 RPA 批次完成后运行 `prepare_diagnostic_analysis.py` |
-| 最终 HTML 报告 | 运行 `render_final_report.py`；仅草稿可省略 `--analysis-json` |
+| 准备诊断事实 | 在流式 RPA 批次完成后运行带 `--peak-output-dir` 的 `prepare_diagnostic_analysis.py` |
+| 真实商业分析 | 当前执行技能的模型读取事实包、实际查看 JPEG、写出 schema v2 结论 JSON |
+| 最终 HTML 报告 | 运行带 `--analysis-json` 的 `render_final_report.py`；草稿不代表完成 |
 | 单素材调试 | 传入 `--source rpa --shop-id ... --material-id ... --date-range-type ...` |
 | 回归检查 | 运行 `python -m unittest tests/test_peak_frames.py -v` |
 
@@ -172,5 +176,5 @@ python scripts/extract_peak_frames.py \
 - 不要对不同的素材选择、店铺或日期范围使用 `--resume`；应新建批次。
 - `--verify` 返回零前，不要报告批次成功；退出码 `6` 表示保留输出未通过验证。
 - 将 RPA CSV 下载或解析失败视为阻塞问题；诊断时检查保留的 `diagnosis-csv/<materialId>.csv`。
-- 不要期待 `render_final_report.py` 调用模型或外部 API；最终结论需提供 `diagnostic-ai-analysis.json`。
+- 不要期待 `render_final_report.py` 调用模型或外部 API；当前执行技能的模型必须在同一任务中查看 JPEG、生成并修正 `diagnostic-ai-analysis.json`。
 - 不要在最终报告中隐藏失败素材；保留其警告和失败原因。
