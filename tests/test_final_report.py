@@ -392,13 +392,190 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertEqual(html_path.name, "final-report.html")
         self.assertEqual(data["status"], "complete")
         self.assertIn("千川 TOP 素材池商业诊断报告", html_text)
-        self.assertIn("组合结论", html_text)
-        self.assertIn("关键洞察", html_text)
-        self.assertIn("素材证据", html_text)
-        self.assertIn("下一轮策略", html_text)
-        self.assertIn("数据质量", html_text)
+        self.assertIn("01｜TOP 素材组合结论", html_text)
+        self.assertIn("02｜人群洞察", html_text)
+        self.assertIn("03｜脚本洞察", html_text)
+        self.assertIn("04｜高光帧洞察", html_text)
+        self.assertIn("05｜单素材深度分析", html_text)
+        self.assertIn("06｜下一轮策略", html_text)
+        self.assertIn("07｜数据质量与方法说明", html_text)
         self.assertIn("礼赠素材可以继续放量。", html_text)
         self.assertIn('src="../peak-frames/m-1/first_peak_0001s_3.jpg"', html_text)
+
+    def test_renders_v2_analysis_with_accessible_material_tabs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            analysis_path = root / "analysis.json"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-30",
+                    "materials": [material("m-1", 1, 100), material("m-2", 2, 80)],
+                },
+            )
+            write_json(
+                records_dir / "m-1.json",
+                [
+                    {
+                        "recordType": "crowd_analysis",
+                        "materialId": "m-1",
+                        "displayMetric": "CLICK_COUNT",
+                        "dimensionKey": "age",
+                        "dimensionName": "年龄",
+                        "dimensionValue": "24-30",
+                        "metricValue": 30,
+                    },
+                    {
+                        "recordType": "script_analysis",
+                        "materialId": "m-1",
+                        "scriptInfo": json.dumps(
+                            {
+                                "text": "限时优惠",
+                                "data": [
+                                    {
+                                        "level_1_label": {
+                                            "value": 1,
+                                            "label": "价格优惠",
+                                        },
+                                        "level_2_labels": [
+                                            {"value": 21, "label": "降价/折扣"}
+                                        ],
+                                    }
+                                ],
+                                "detail": {
+                                    "21": {
+                                        "label": "降价/折扣",
+                                        "list": ["今天四九折"],
+                                    }
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+            )
+            write_json(records_dir / "m-2.json", [])
+            for material_id in ("m-1", "m-2"):
+                material_dir = peak_dir / material_id
+                material_dir.mkdir(parents=True)
+                frame_path = material_dir / "first_peak_0001s_3.jpg"
+                frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+                write_json(
+                    material_dir / "summary.json",
+                    {
+                        "frames": [
+                            {
+                                "rankType": "first_peak",
+                                "durationSec": 1,
+                                "metricValue": 3,
+                                "framePath": frame_path.name,
+                            }
+                        ]
+                    },
+                )
+            write_json(
+                analysis_path,
+                {
+                    "schemaVersion": 2,
+                    "overallConclusion": "优先测试价格优惠的产品近景开场。",
+                    "batchInsights": [
+                        {
+                            "topic": "audience",
+                            "title": "点击人群集中",
+                            "conclusion": "点击层的 24-30 岁分桶领先。",
+                            "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
+                        },
+                        {
+                            "topic": "script",
+                            "title": "优惠脚本可复用",
+                            "conclusion": "价格优惠标签出现。",
+                            "evidenceRefs": ["script:m-1:价格优惠:降价/折扣"],
+                        },
+                    ],
+                    "materialAnalyses": [
+                        {
+                            "materialId": "m-1",
+                            "audienceConclusion": "点击层 24-30 岁突出。",
+                            "scriptConclusion": "价格优惠表达出现。",
+                            "highlightAnalyses": [
+                                {
+                                    "frameRef": "highlight:m-1:first_peak",
+                                    "visualObservation": "人物在产品近景旁口播。",
+                                    "commercialInterpretation": "画面与首个点击峰值同时出现。",
+                                }
+                            ],
+                            "integratedConclusion": "保留产品近景开场。",
+                            "decision": "scale",
+                            "nextAction": "制作三条开场变体。",
+                            "evidenceRefs": [
+                                "audience:CLICK_COUNT:age:24-30",
+                                "script:m-1:价格优惠:降价/折扣",
+                                "highlight:m-1:first_peak",
+                            ],
+                        },
+                        {
+                            "materialId": "m-2",
+                            "audienceConclusion": "数据不足以判断。",
+                            "scriptConclusion": "数据不足以判断。",
+                            "highlightAnalyses": [
+                                {
+                                    "frameRef": "highlight:m-2:first_peak",
+                                    "visualObservation": "产品近景出现。",
+                                    "commercialInterpretation": "画面与首个点击峰值同时出现。",
+                                }
+                            ],
+                            "integratedConclusion": "先补充诊断数据。",
+                            "decision": "hold",
+                            "nextAction": "补充人群和脚本数据后复盘。",
+                            "evidenceRefs": ["highlight:m-2:first_peak"],
+                        },
+                    ],
+                    "nextActions": [
+                        {
+                            "title": "扩展开场",
+                            "body": "测试三条变体。",
+                            "priority": "high",
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            _data_path, html_path, _data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                analysis_json=analysis_path,
+            )
+
+            html_text = html_path.read_text(encoding="utf-8")
+        self.assertNotIn("01｜组合总览", html_text)
+        for heading in (
+            "01｜TOP 素材组合结论",
+            "02｜人群洞察",
+            "03｜脚本洞察",
+            "04｜高光帧洞察",
+            "05｜单素材深度分析",
+            "06｜下一轮策略",
+            "07｜数据质量与方法说明",
+        ):
+            self.assertIn(heading, html_text)
+        self.assertIn('role="tablist"', html_text)
+        self.assertIn('role="tab"', html_text)
+        self.assertIn('role="tabpanel"', html_text)
+        self.assertIn('data-material-id="m-1"', html_text)
+        self.assertIn('data-material-id="m-2"', html_text)
+        self.assertIn('data-material-id="m-1" aria-selected="true"', html_text)
+        self.assertIn('data-material-id="m-2" aria-selected="false"', html_text)
+        self.assertIn("function activateMaterialTab", html_text)
+        self.assertIn("ArrowRight", html_text)
+        self.assertIn("Home", html_text)
 
 
 class FinalReportCliTests(unittest.TestCase):
