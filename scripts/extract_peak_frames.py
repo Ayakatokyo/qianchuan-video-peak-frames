@@ -533,6 +533,12 @@ def _run_rpa_preflight(args, candidate_payload):
             "totalSec": _elapsed_since(request_started),
         }
 
+    def selected_count():
+        return len([
+            entry for entry in completed.values()
+            if entry["preflightStatus"] == "selected"
+        ])
+
     if args.concurrency == 1:
         for index, material in enumerate(materials):
             outcome, timings = run_one(index)
@@ -564,14 +570,18 @@ def _run_rpa_preflight(args, candidate_payload):
                 args, candidate_payload, materials, partial_selected, partial_rejected,
                 [], started_at,
             )
-            if len([entry for entry in completed.values() if entry["preflightStatus"] == "selected"]) >= target_top_n:
+            if selected_count() >= target_top_n:
                 next_index = index + 1
                 break
         else:
             next_index = len(materials)
     else:
         with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-            while next_index < len(materials) and len(futures) < args.concurrency:
+            while (
+                next_index < len(materials)
+                and selected_count() + len(futures) < target_top_n
+                and len(futures) < args.concurrency
+            ):
                 futures[executor.submit(run_one, next_index)] = next_index
                 next_index += 1
             while futures:
@@ -594,9 +604,14 @@ def _run_rpa_preflight(args, candidate_payload):
                             completed[index] = _material_entry_with_preflight(material, _preflight_failure(outcome["materialId"], "rpa_request_failed"), "rejected", timings)
                     else:
                         completed[index] = _material_entry_with_preflight(material, outcome, "rejected", timings)
-                if len([entry for entry in completed.values() if entry["preflightStatus"] == "selected"]) >= target_top_n:
+                if selected_count() >= target_top_n:
                     stopped = True
-                while not stopped and next_index < len(materials) and len(futures) < args.concurrency:
+                while (
+                    not stopped
+                    and next_index < len(materials)
+                    and selected_count() + len(futures) < target_top_n
+                    and len(futures) < args.concurrency
+                ):
                     futures[executor.submit(run_one, next_index)] = next_index
                     next_index += 1
                 selected = [completed[index] for index in sorted(completed) if completed[index]["preflightStatus"] == "selected"][:target_top_n]

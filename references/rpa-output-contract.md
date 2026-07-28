@@ -85,6 +85,8 @@ The stream writes:
 - `diagnosis-records/<materialId>.json`: normalized records written before a candidate joins selected.
 - `diagnosis-csv/<materialId>.csv`: retained source CSV for a files-envelope response.
 
+Counting terms are intentionally separate. `assetSelectedMaterialCount` is the number of rank-ordered material IDs loaded from the asset-table candidate pool for this run, equivalent to `candidateCount` and capped by `candidateLimit`. `rpaSubmittedMaterialCount` is the number of material IDs actually sent to the RPA connector, equivalent to the length of `submittedMaterials`. The scheduler never submits the entire candidate pool up front; it submits from the candidate head until `targetTopN` selected materials exist or the candidate pool is exhausted.
+
 Selected and ready-list ordering always follows source candidate rank, even when lower-ranked RPA jobs finish first. Once Top N is selected the scheduler stops submitting new RPA work; unsubmitted candidates are cancelled and successful already-submitted extras are rejected. A postprocess failure remains selected with `postprocessStatus: failed`, makes the batch nonzero, and does not become an RPA rejection or trigger replacement.
 
 `--preflight-only`, `--rpa-preflight-json`, and `--allow-rpa-refetch` remain compatibility and diagnostic tools for old runs. They are not part of the recommended streaming Top-N command.
@@ -102,6 +104,8 @@ Supported `date_range_type` values:
 - `CUSTOM`
 
 `CUSTOM` requires both `custom_start_date` and `custom_end_date` in `YYYYMMDD` or `YYYY-MM-DD` form.
+
+Skill-driven natural-language date ranges should not be passed through as relative connector enums. 自然语言近七天、近三十天必须换算为 CUSTOM closed intervals using the skill's T+2 data-availability rule before calling the connector.
 
 ## Gateway Result Handling
 

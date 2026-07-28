@@ -3287,6 +3287,64 @@ class CliTests(unittest.TestCase):
             ["m-a", "m-b"],
         )
 
+    def test_rpa_preflight_parallelism_does_not_submit_beyond_in_flight_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3", "m-4"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)),
+                encoding="utf-8",
+            )
+            submitted = []
+
+            def preflight_material(**kwargs):
+                material_id = kwargs["material_id"]
+                submitted.append(material_id)
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                    "records": [{
+                        "recordType": "material_info",
+                        "materialId": material_id,
+                        "videoUrl": f"https://video.example/{material_id}.mp4",
+                    }],
+                    "diagnosisCsvPath": None,
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                side_effect=preflight_material,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n", "2", "--preflight-only",
+                        "--candidate-top-n", "4",
+                        "--concurrency", "3",
+                    )
+                )
+
+            receipt = json.loads(
+                (output / "rpa-preflight.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(submitted, ["m-1", "m-2"])
+        self.assertEqual(
+            [item["materialId"] for item in receipt["selectedMaterials"]],
+            ["m-1", "m-2"],
+        )
+        self.assertEqual(
+            [item["materialId"] for item in receipt["cancelledMaterials"]],
+            ["m-3", "m-4"],
+        )
+
     def test_rpa_batch_rejects_exported_dates_that_differ_from_custom_range(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

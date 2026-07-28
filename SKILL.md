@@ -23,7 +23,9 @@ metadata:
 
 ### 分析周期换算
 
-当用户输入“近七天”时，近七天不包含执行任务当天：固定换算为执行日前第 7 天至执行日前 1 天的七个完整自然日。例如任务执行日为 `2026-07-27` 时，必须使用 `2026-07-20` 至 `2026-07-26`。资产表导出、RPA 预检、正式截帧和验证必须复用该区间；不得将执行任务当天传入 RPA，因为平台可能将当天标记为不可选。
+自然语言相对周期按 T+2 数据回流口径换算，最新可用完整自然日固定为执行日前第 2 天。用户输入“近七天”时，必须使用执行日前第 8 天至执行日前第 2 天的七个完整自然日；例如任务执行日为 `2026-07-27` 时，使用 `2026-07-19` 至 `2026-07-25`。用户输入“近三十天”时，必须使用执行日前第 31 天至执行日前第 2 天的三十个完整自然日；例如任务执行日为 `2026-07-27` 时，使用 `2026-06-26` 至 `2026-07-25`。
+
+近七天、近三十天均应换算为明确的 `CUSTOM` 闭区间，并在资产表导出、RPA 预检、正式截帧和验证中复用同一区间；不得将执行任务当天或执行日前第 1 天传入 RPA。
 
 ## 本地运行
 
@@ -58,6 +60,8 @@ python scripts/export_top_materials.py \
 CLI 要求 `top_materials.json` 中包含 `actualStartDate`、`actualEndDate` 与 `materialCount`。对于 `CUSTOM` 批次，其日期必须与 `--custom-start-date` 和 `--custom-end-date` 完全一致；在任何 RPA 调用前会拒绝重复素材 ID 或错误的数量。
 
 正式 TOP 素材批次使用流式 RPA 补位和成功即后处理。候选池按资产表整体消耗降序排列；例如目标 9 个素材时导出 27 个候选。`--candidate-top-n 27` 是候选上限，不是 RPA 调用数量承诺：全部成功时只提交前 9 个；高排名素材 RPA 失败或无数据时才继续按排序补位。
+
+数量口径必须拆开记录：资产表获取素材 ID 数量是候选池数量，资产表阶段最多获取 `--candidate-top-n` 个素材 ID，写入 `top_materials.json` 后作为本次候选上限；传给 RPA 执行的素材 ID 数量是实际提交数量，不会一次性把候选池全部提交给 RPA。RPA 实际提交数量以 `submittedMaterials` 为准：查看 `batch-manifest.json` 的该数组长度；全成功时实际提交数量等于 `--target-top-n`；有失败时才继续补位提交后续候选，最多不超过 `--candidate-top-n`。
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -120,11 +124,13 @@ python scripts/extract_peak_frames.py \
   --source rpa \
   --shop-id "<rpa-authorized-shop-id>" \
   --material-id "7647499280192372763" \
-  --date-range-type "LAST_7_DAYS" \
+  --date-range-type CUSTOM \
+  --custom-start-date 2026-07-19 \
+  --custom-end-date 2026-07-25 \
   --output-dir "/path/to/output"
 ```
 
-使用 `CUSTOM` 时，必须同时提供 `--custom-start-date` 与 `--custom-end-date`。适配器调用固定的预策连接器 `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis`，将 `material_info.videoUrl` 下载到临时视频文件，然后复用本地峰值和取帧流程。RPA 摘要记录 `videoSource: rpa-temporary-download`，而不记录已删除的临时下载路径。
+自然语言近七天、近三十天调试同样先按 T+2 口径换算为 `CUSTOM`。使用 `CUSTOM` 时，必须同时提供 `--custom-start-date` 与 `--custom-end-date`。适配器调用固定的预策连接器 `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis`，将 `material_info.videoUrl` 下载到临时视频文件，然后复用本地峰值和取帧流程。RPA 摘要记录 `videoSource: rpa-temporary-download`，而不记录已删除的临时下载路径。
 
 ## 选峰契约
 

@@ -72,6 +72,18 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("--candidate-top-n 27", skill)
         self.assertIn("--rpa-concurrency 3", skill)
         self.assertIn("--postprocess-concurrency 3", skill)
+        self.assertIn("资产表获取素材 ID 数量", skill)
+        self.assertIn("传给 RPA 执行的素材 ID 数量", skill)
+        self.assertIn("资产表阶段最多获取 `--candidate-top-n` 个素材 ID", skill)
+        self.assertIn("不会一次性把候选池全部提交给 RPA", skill)
+        self.assertIn("RPA 实际提交数量以 `submittedMaterials` 为准", skill)
+        self.assertIn("全成功时实际提交数量等于 `--target-top-n`", skill)
+        self.assertIn(
+            "有失败时才继续补位提交后续候选，最多不超过 `--candidate-top-n`",
+            skill,
+        )
+        self.assertIn("assetSelectedMaterialCount", contract)
+        self.assertIn("rpaSubmittedMaterialCount", contract)
         self.assertIn("top_materials_rpa_ready.json", skill)
         self.assertIn("submittedMaterials", contract)
         self.assertIn("selectedMaterials", contract)
@@ -89,12 +101,21 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("COLUMN_NOT_EXIST", skill)
         self.assertIn("不要把资产表过滤字段写成 `advertiser_id`", skill)
 
-    def test_recent_seven_days_excludes_the_execution_day(self):
+    def test_recent_ranges_use_t_plus_two_data_window(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("近七天不包含执行任务当天", skill)
-        self.assertIn("执行日前第 7 天至执行日前 1 天", skill)
-        self.assertIn("不得将执行任务当天传入 RPA", skill)
+        self.assertIn("T+2 数据回流口径", skill)
+        self.assertIn("最新可用完整自然日固定为执行日前第 2 天", skill)
+        self.assertIn("近七天", skill)
+        self.assertIn("执行日前第 8 天至执行日前第 2 天", skill)
+        self.assertIn("2026-07-19", skill)
+        self.assertIn("2026-07-25", skill)
+        self.assertIn("近三十天", skill)
+        self.assertIn("执行日前第 31 天至执行日前第 2 天", skill)
+        self.assertIn("2026-06-26", skill)
+        self.assertIn("不得将执行任务当天或执行日前第 1 天传入 RPA", skill)
+        self.assertIn("自然语言近七天、近三十天必须换算为 CUSTOM", contract)
 
     def test_single_material_rpa_is_documented_as_debugging_only(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
