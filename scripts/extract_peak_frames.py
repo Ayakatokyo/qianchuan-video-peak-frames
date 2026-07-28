@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 import multiprocessing
 import json
 import math
@@ -46,6 +46,7 @@ DATE_RANGE_TYPES = (
 
 BATCH_MANIFEST_NAME = "batch-manifest.json"
 BATCH_MANIFEST_VERSION = 1
+STREAMING_BATCH_MANIFEST_VERSION = 2
 BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
 BATCH_VERIFICATION_NAME = "batch-verification.json"
 BATCH_VERIFICATION_FAILURE_EXIT_CODE = 6
@@ -118,16 +119,34 @@ def build_parser():
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
     parser.add_argument("--preflight-only", action="store_true")
-    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=300)
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=600)
     parser.add_argument("--rpa-ready-top-materials-json")
+    parser.add_argument("--rpa-preflight-json")
+    parser.add_argument("--allow-rpa-refetch", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify", action="store_true")
-    parser.add_argument("--concurrency", type=_positive_int, default=1)
+    parser.add_argument("--concurrency", type=_positive_int)
+    parser.add_argument("--rpa-concurrency", type=_positive_int, default=3)
+    parser.add_argument("--postprocess-concurrency", type=_positive_int, default=3)
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
     parser.add_argument("--list-shop-accounts", action="store_true")
     return parser
+
+
+def _argument_is_present(argv, name):
+    return any(token == name or token.startswith(f"{name}=") for token in argv)
+
+
+def _resolve_concurrency(args, argv):
+    legacy = args.concurrency
+    if legacy is not None:
+        if not _argument_is_present(argv, "--rpa-concurrency"):
+            args.rpa_concurrency = legacy
+        if not _argument_is_present(argv, "--postprocess-concurrency"):
+            args.postprocess_concurrency = legacy
+    args.concurrency = legacy or 1
 
 
 def _normalise_account_rows(payload):
@@ -262,6 +281,16 @@ def _diagnosis_csv_dir(args):
     return Path(args.output_dir) / "diagnosis-csv"
 
 
+def _diagnosis_records_dir(args):
+    if args.diagnosis_records_dir:
+        return Path(args.diagnosis_records_dir)
+    return Path(args.output_dir).parent / "diagnosis-records"
+
+
+def _run_relative_path(args, path):
+    return os.path.relpath(Path(path), Path(args.output_dir).parent)
+
+
 def _write_json_atomically(path, payload):
     target = Path(path)
     try:
@@ -303,22 +332,32 @@ def _preflight_enabled(args):
     return bool(args.target_top_n or args.preflight_only)
 
 
-def _material_entry_with_preflight(material, outcome):
+def _material_entry_with_preflight(material, outcome, status=None, timings=None):
     enriched = dict(material)
     enriched.update(
         {
             "rpaAvailable": bool(outcome.get("rpaAvailable")),
             "failureReason": outcome.get("failureReason"),
             "videoUrl": outcome.get("videoUrl"),
+            "preflightStatus": status or (
+                "selected" if outcome.get("rpaAvailable") else "rejected"
+            ),
         }
     )
+    if timings is not None:
+        enriched["timingsSec"] = timings
     return enriched
 
 
 def _ready_top_materials_payload(candidate_payload, selected_materials):
     ready_payload = dict(candidate_payload)
-    ready_payload["materialCount"] = len(selected_materials)
-    ready_payload["materials"] = [dict(material) for material in selected_materials]
+    selected_ids = {str(material.get("materialId") or "") for material in selected_materials}
+    ready_payload["materials"] = [
+        dict(material)
+        for material in candidate_payload["materials"]
+        if str(material.get("materialId") or "") in selected_ids
+    ]
+    ready_payload["materialCount"] = len(ready_payload["materials"])
     return ready_payload
 
 
@@ -350,12 +389,16 @@ def _rpa_preflight_deadline(timeout_sec):
             signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
-def _preflight_receipt(args, candidate_payload, materials, selected, rejected):
+def _preflight_receipt(
+    args, candidate_payload, materials, selected, rejected, cancelled=None, started_at=None
+):
     target_top_n = args.target_top_n or len(materials)
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "requestedTopN": target_top_n,
         "candidateCount": len(materials),
+        "candidateLimit": len(materials),
+        "preflightConcurrency": args.concurrency,
         "shopId": args.shop_id,
         "dateRange": {
             "type": args.date_range_type,
@@ -366,13 +409,18 @@ def _preflight_receipt(args, candidate_payload, materials, selected, rejected):
         },
         "selectedMaterials": [dict(material) for material in selected],
         "rejectedMaterials": [dict(material) for material in rejected],
+        "cancelledMaterials": [dict(material) for material in (cancelled or [])],
         "satisfied": len(selected) >= target_top_n,
+        "stoppedAfterSatisfied": len(selected) >= target_top_n and len(selected) < len(materials),
+        "timingsSec": {"totalSec": _elapsed_since(started_at)} if started_at else {"totalSec": 0.0},
     }
 
 
-def _write_preflight_artifacts(args, candidate_payload, materials, selected, rejected):
+def _write_preflight_artifacts(
+    args, candidate_payload, materials, selected, rejected, cancelled=None, started_at=None
+):
     receipt = _preflight_receipt(
-        args, candidate_payload, materials, selected, rejected
+        args, candidate_payload, materials, selected, rejected, cancelled, started_at
     )
     _write_json_atomically(_preflight_path(args), receipt)
     ready_payload = _ready_top_materials_payload(candidate_payload, selected)
@@ -458,13 +506,17 @@ def _run_rpa_preflight(args, candidate_payload):
     candidate_limit = args.candidate_top_n or len(candidate_payload["materials"])
     materials = candidate_payload["materials"][:candidate_limit]
     target_top_n = args.target_top_n or len(materials)
-    selected = []
-    rejected = []
+    started_at = time.perf_counter()
+    completed = {}
+    next_index = 0
+    futures = {}
+    stopped = False
 
-    for material in materials:
-        if len(selected) >= target_top_n:
-            break
+    def run_one(index):
+        material = materials[index]
         material_id = str(material.get("materialId") or "").strip()
+        queued_at = _elapsed_since(started_at)
+        request_started = time.perf_counter()
         try:
             outcome = _fetch_material_preflight_for_cli(args, material_id)
         except RpaPreflightDeadlineExceeded:
@@ -473,18 +525,384 @@ def _run_rpa_preflight(args, candidate_payload):
             outcome = _preflight_failure(material_id, "rpa_request_failed")
         except Exception:
             outcome = _preflight_failure(material_id, "unknown_preflight_failure")
+        finished_at = _elapsed_since(started_at)
+        return outcome, {
+            "queuedAtSec": queued_at,
+            "startedAtSec": queued_at,
+            "finishedAtSec": finished_at,
+            "totalSec": _elapsed_since(request_started),
+        }
 
-        if outcome.get("rpaAvailable"):
-            selected.append(dict(material))
+    if args.concurrency == 1:
+        for index, material in enumerate(materials):
+            outcome, timings = run_one(index)
+            if outcome.get("rpaAvailable"):
+                records = outcome.get("records")
+                if not isinstance(records, list):
+                    records = [{"recordType": "material_info", "materialId": outcome["materialId"], "videoUrl": outcome.get("videoUrl")}]
+                try:
+                    records_path = _write_diagnosis_records(records, _diagnosis_records_dir(args), outcome["materialId"])
+                    entry = _material_entry_with_preflight(material, outcome, "selected", timings)
+                    entry["diagnosisRecordsPath"] = _run_relative_path(args, records_path)
+                    entry["diagnosisCsvPath"] = _run_relative_path(args, outcome["diagnosisCsvPath"]) if outcome.get("diagnosisCsvPath") else None
+                    completed[index] = entry
+                except RpaAdapterError:
+                    completed[index] = _material_entry_with_preflight(material, _preflight_failure(outcome["materialId"], "rpa_request_failed"), "rejected", timings)
+            else:
+                completed[index] = _material_entry_with_preflight(material, outcome, "rejected", timings)
+            partial_selected = [
+                completed[item_index]
+                for item_index in sorted(completed)
+                if completed[item_index]["preflightStatus"] == "selected"
+            ][:target_top_n]
+            partial_rejected = [
+                completed[item_index]
+                for item_index in sorted(completed)
+                if completed[item_index]["preflightStatus"] == "rejected"
+            ]
+            _write_preflight_artifacts(
+                args, candidate_payload, materials, partial_selected, partial_rejected,
+                [], started_at,
+            )
+            if len([entry for entry in completed.values() if entry["preflightStatus"] == "selected"]) >= target_top_n:
+                next_index = index + 1
+                break
         else:
-            rejected.append(_material_entry_with_preflight(material, outcome))
-        _write_preflight_artifacts(
-            args, candidate_payload, materials, selected, rejected
-        )
+            next_index = len(materials)
+    else:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            while next_index < len(materials) and len(futures) < args.concurrency:
+                futures[executor.submit(run_one, next_index)] = next_index
+                next_index += 1
+            while futures:
+                done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = futures.pop(future)
+                    outcome, timings = future.result()
+                    material = materials[index]
+                    if outcome.get("rpaAvailable"):
+                        records = outcome.get("records")
+                        if not isinstance(records, list):
+                            records = [{"recordType": "material_info", "materialId": outcome["materialId"], "videoUrl": outcome.get("videoUrl")}]
+                        try:
+                            records_path = _write_diagnosis_records(records, _diagnosis_records_dir(args), outcome["materialId"])
+                            entry = _material_entry_with_preflight(material, outcome, "selected", timings)
+                            entry["diagnosisRecordsPath"] = _run_relative_path(args, records_path)
+                            entry["diagnosisCsvPath"] = _run_relative_path(args, outcome["diagnosisCsvPath"]) if outcome.get("diagnosisCsvPath") else None
+                            completed[index] = entry
+                        except RpaAdapterError:
+                            completed[index] = _material_entry_with_preflight(material, _preflight_failure(outcome["materialId"], "rpa_request_failed"), "rejected", timings)
+                    else:
+                        completed[index] = _material_entry_with_preflight(material, outcome, "rejected", timings)
+                if len([entry for entry in completed.values() if entry["preflightStatus"] == "selected"]) >= target_top_n:
+                    stopped = True
+                while not stopped and next_index < len(materials) and len(futures) < args.concurrency:
+                    futures[executor.submit(run_one, next_index)] = next_index
+                    next_index += 1
+                selected = [completed[index] for index in sorted(completed) if completed[index]["preflightStatus"] == "selected"][:target_top_n]
+                rejected = [completed[index] for index in sorted(completed) if completed[index]["preflightStatus"] == "rejected"]
+                _write_preflight_artifacts(args, candidate_payload, materials, selected, rejected, [], started_at)
 
+    selected = [completed[index] for index in sorted(completed) if completed[index]["preflightStatus"] == "selected"][:target_top_n]
+    rejected = [completed[index] for index in sorted(completed) if completed[index]["preflightStatus"] == "rejected"]
+    cancelled = [
+        _material_entry_with_preflight(materials[index], _preflight_failure(materials[index].get("materialId"), None), "cancelled")
+        for index in range(next_index, len(materials))
+    ]
     return _write_preflight_artifacts(
-        args, candidate_payload, materials, selected, rejected
+        args, candidate_payload, materials, selected, rejected, cancelled, started_at
     )
+
+
+def _stream_entry(material, rank):
+    entry = dict(material)
+    entry.update(
+        {
+            "rank": rank,
+            "materialId": str(material.get("materialId") or "").strip(),
+            "rpaStatus": "pending",
+            "postprocessStatus": "pending",
+            "status": "pending",
+            "failureReason": None,
+            "errorType": None,
+            "errorMessage": None,
+            "diagnosisRecordsPath": None,
+            "diagnosisCsvPath": None,
+            "summaryJson": None,
+            "summaryMd": None,
+            "timingsSec": _empty_material_timings(),
+        }
+    )
+    return entry
+
+
+def _stream_public_entry(entry):
+    return {key: value for key, value in entry.items() if key != "records"}
+
+
+def _stream_ordered(entries):
+    return [_stream_public_entry(entries[index]) for index in sorted(entries)]
+
+
+def _new_streaming_batch_manifest(args, candidates, entries, submitted, selected, rejected, cancelled):
+    ordered_materials = [_stream_public_entry(entries[index]) for index in sorted(entries)]
+    return {
+        "schemaVersion": STREAMING_BATCH_MANIFEST_VERSION,
+        "source": "rpa",
+        "shopId": args.shop_id,
+        "targetTopN": args.target_top_n,
+        "candidateCount": len(candidates),
+        "candidateLimit": len(candidates),
+        "rpaConcurrency": args.rpa_concurrency,
+        "postprocessConcurrency": args.postprocess_concurrency,
+        "dateRange": {
+            "type": args.date_range_type,
+            "customStartDate": args.custom_start_date,
+            "customEndDate": args.custom_end_date,
+        },
+        "materialIds": [entry["materialId"] for entry in ordered_materials],
+        "materials": ordered_materials,
+        "submittedMaterials": _stream_ordered(submitted),
+        "selectedMaterials": _stream_ordered(selected),
+        "rejectedMaterials": _stream_ordered(rejected),
+        "cancelledMaterials": _stream_ordered(cancelled),
+        "timingsSec": {"totalSec": 0.0},
+    }
+
+
+def _attempt_stream_rpa(args, entry):
+    started_at = time.perf_counter()
+    timings = _empty_material_timings()
+    material_id = entry["materialId"]
+    try:
+        outcome = _time_call(
+            timings, "rpaFetchSec", _fetch_material_preflight_for_cli, args, material_id
+        )
+    except RpaPreflightDeadlineExceeded:
+        outcome = _preflight_failure(material_id, "rpa_request_failed")
+    except RpaAdapterError:
+        outcome = _preflight_failure(material_id, "rpa_request_failed")
+    except Exception:
+        outcome = _preflight_failure(material_id, "unknown_preflight_failure")
+
+    updated = dict(entry)
+    updated["timingsSec"] = timings
+    if not outcome.get("rpaAvailable"):
+        updated.update(
+            {
+                "rpaStatus": "rejected",
+                "status": "failed",
+                "failureReason": outcome.get("failureReason"),
+            }
+        )
+        timings["totalSec"] = _elapsed_since(started_at)
+        return updated
+
+    records = outcome.get("records")
+    if not isinstance(records, list):
+        records = [
+            {
+                "recordType": "material_info",
+                "materialId": material_id,
+                "videoUrl": outcome.get("videoUrl"),
+            }
+        ]
+    try:
+        records_path = _time_call(
+            timings,
+            "diagnosisRecordWriteSec",
+            _write_diagnosis_records,
+            records,
+            _diagnosis_records_dir(args),
+            material_id,
+        )
+    except RpaAdapterError:
+        updated.update(
+            {
+                "rpaStatus": "rejected",
+                "status": "failed",
+                "failureReason": "rpa_request_failed",
+            }
+        )
+        timings["totalSec"] = _elapsed_since(started_at)
+        return updated
+
+    updated.update(
+        {
+            "rpaStatus": "selected",
+            "postprocessStatus": "queued",
+            "status": "running",
+            "diagnosisRecordsPath": _run_relative_path(args, records_path),
+            "diagnosisCsvPath": (
+                _run_relative_path(args, outcome["diagnosisCsvPath"])
+                if outcome.get("diagnosisCsvPath")
+                else None
+            ),
+            "records": records,
+        }
+    )
+    timings["totalSec"] = _elapsed_since(started_at)
+    return updated
+
+
+def _attempt_stream_postprocess(args, entry):
+    started_at = time.perf_counter()
+    timings = dict(entry["timingsSec"])
+    material_id = entry["materialId"]
+    try:
+        records = entry["records"]
+        video_url = find_material_video_url(records, material_id)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            video_path = Path(temp_dir) / f"{material_id}.mp4"
+            _time_call(timings, "videoDownloadSec", download_video, video_url, video_path)
+            result = _time_call(
+                timings,
+                "frameExtractionSec",
+                process_records,
+                records,
+                f"rpa://{FUNCTION_CODE}/{material_id}",
+                video_path,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                video_source="rpa-temporary-download",
+            )
+    except HANDLED_MATERIAL_ERRORS as exc:
+        timings["totalSec"] = _elapsed_since(started_at)
+        return {"result": None, "error": exc, "timingsSec": timings}
+    timings["totalSec"] = _elapsed_since(started_at)
+    return {"result": result, "error": None, "timingsSec": timings}
+
+
+def _run_streaming_rpa_batch(args, candidate_payload):
+    candidate_limit = args.candidate_top_n or args.target_top_n * 3
+    candidates = candidate_payload["materials"][:candidate_limit]
+    entries = {index: _stream_entry(material, index + 1) for index, material in enumerate(candidates)}
+    submitted = {}
+    selected = {}
+    rejected = {}
+    cancelled = {}
+    rpa_futures = {}
+    postprocess_futures = {}
+    next_index = 0
+    batch_started_at = time.perf_counter()
+    manifest_path = _batch_manifest_path(args)
+
+    def persist():
+        manifest = _new_streaming_batch_manifest(
+            args, candidates, entries, submitted, selected, rejected, cancelled
+        )
+        manifest["timingsSec"]["totalSec"] = _elapsed_since(batch_started_at)
+        _write_json_atomically(manifest_path, manifest)
+        return manifest
+
+    def submit_rpa(executor, index):
+        entry = entries[index]
+        entry.update({"rpaStatus": "submitted", "status": "running"})
+        submitted[index] = entry
+        rpa_futures[executor.submit(_attempt_stream_rpa, args, entry)] = index
+
+    with ThreadPoolExecutor(max_workers=args.rpa_concurrency) as rpa_executor, ThreadPoolExecutor(
+        max_workers=args.postprocess_concurrency
+    ) as postprocess_executor:
+        while (
+            next_index < len(candidates)
+            and len(selected) + len(rpa_futures) < args.target_top_n
+            and len(rpa_futures) < args.rpa_concurrency
+        ):
+            submit_rpa(rpa_executor, next_index)
+            next_index += 1
+        persist()
+
+        while rpa_futures or postprocess_futures:
+            done, _pending = wait(
+                set(rpa_futures) | set(postprocess_futures),
+                return_when=FIRST_COMPLETED,
+            )
+            for future in done:
+                if future in rpa_futures:
+                    index = rpa_futures.pop(future)
+                    entry = future.result()
+                    entries[index] = entry
+                    submitted[index] = entry
+                    if entry["rpaStatus"] == "selected" and len(selected) < args.target_top_n:
+                        selected[index] = entry
+                        postprocess_futures[
+                            postprocess_executor.submit(_attempt_stream_postprocess, args, entry)
+                        ] = index
+                    elif entry["rpaStatus"] == "selected":
+                        entry.update(
+                            {
+                                "rpaStatus": "rejected",
+                                "postprocessStatus": "not_started",
+                                "status": "failed",
+                                "failureReason": "top_n_already_selected",
+                            }
+                        )
+                        rejected[index] = entry
+                    else:
+                        rejected[index] = entry
+                else:
+                    index = postprocess_futures.pop(future)
+                    attempt = future.result()
+                    entry = entries[index]
+                    entry["timingsSec"] = attempt["timingsSec"]
+                    if attempt["error"] is not None:
+                        entry.update(
+                            {
+                                "postprocessStatus": "failed",
+                                "status": "failed",
+                                "errorType": type(attempt["error"]).__name__,
+                                "errorMessage": str(attempt["error"]),
+                            }
+                        )
+                    else:
+                        _result_dir, summary_json, summary_md = attempt["result"]
+                        entry.update(
+                            {
+                                "postprocessStatus": "succeeded",
+                                "status": "succeeded",
+                                "summaryJson": str(summary_json),
+                                "summaryMd": str(summary_md),
+                            }
+                        )
+
+            while (
+                next_index < len(candidates)
+                and len(selected) + len(rpa_futures) < args.target_top_n
+                and len(rpa_futures) < args.rpa_concurrency
+            ):
+                submit_rpa(rpa_executor, next_index)
+                next_index += 1
+            persist()
+
+    if len(selected) >= args.target_top_n:
+        for index in range(next_index, len(candidates)):
+            entry = entries[index]
+            entry.update(
+                {
+                    "rpaStatus": "cancelled",
+                    "postprocessStatus": "not_started",
+                    "status": "cancelled",
+                    "failureReason": "target_satisfied",
+                }
+            )
+            cancelled[index] = entry
+    manifest = persist()
+    ready_payload = _ready_top_materials_payload(
+        candidate_payload, _stream_ordered(selected)
+    )
+    _write_json_atomically(_ready_top_materials_path(args), ready_payload)
+    failures = len(selected) < args.target_top_n or any(
+        entry["postprocessStatus"] != "succeeded" for entry in selected.values()
+    )
+    last_result = None
+    for index in sorted(selected, reverse=True):
+        entry = selected[index]
+        if entry["postprocessStatus"] == "succeeded":
+            last_result = _entry_result(entry)
+            break
+    return manifest_path, last_result, failures
 
 
 def _batch_manifest_path(args):
@@ -814,17 +1232,19 @@ def _process_rpa_material(args, material_id):
     timings = _empty_material_timings()
     total_started_at = time.perf_counter()
     try:
-        records = _time_call(
-            timings,
-            "rpaFetchSec",
-            fetch_material_diagnosis,
-            shop_id=args.shop_id,
-            material_id=material_id,
-            date_range_type=args.date_range_type,
-            custom_start_date=args.custom_start_date,
-            custom_end_date=args.custom_end_date,
-            diagnosis_csv_dir=_diagnosis_csv_dir(args),
-        )
+        records = getattr(args, "rpa_preflight_records", {}).get(material_id)
+        if records is None:
+            records = _time_call(
+                timings,
+                "rpaFetchSec",
+                fetch_material_diagnosis,
+                shop_id=args.shop_id,
+                material_id=material_id,
+                date_range_type=args.date_range_type,
+                custom_start_date=args.custom_start_date,
+                custom_end_date=args.custom_end_date,
+                diagnosis_csv_dir=_diagnosis_csv_dir(args),
+            )
         if args.diagnosis_records_dir:
             _time_call(
                 timings,
@@ -855,9 +1275,61 @@ def _process_rpa_material(args, material_id):
         _set_last_material_timings(timings)
 
 
+def _load_preflight_records(args, candidate_payload, material_ids):
+    try:
+        receipt_path = Path(args.rpa_preflight_json)
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(f"unable to read RPA preflight receipt: {exc}") from exc
+    if not isinstance(receipt, dict) or receipt.get("schemaVersion") != 2:
+        raise RpaAdapterError("RPA preflight receipt must use schemaVersion 2")
+    if receipt.get("satisfied") is not True:
+        raise RpaAdapterError("RPA preflight receipt is not satisfied")
+    if receipt.get("shopId") != args.shop_id:
+        raise RpaAdapterError("RPA preflight receipt shopId does not match")
+    date_range = receipt.get("dateRange")
+    expected_dates = {
+        "type": args.date_range_type,
+        "customStartDate": args.custom_start_date,
+        "customEndDate": args.custom_end_date,
+        "actualStartDate": candidate_payload.get("actualStartDate"),
+        "actualEndDate": candidate_payload.get("actualEndDate"),
+    }
+    if not isinstance(date_range, dict) or any(
+        date_range.get(key) != value for key, value in expected_dates.items()
+    ):
+        raise RpaAdapterError("RPA preflight receipt date range does not match")
+    selected = receipt.get("selectedMaterials")
+    if not isinstance(selected, list):
+        raise RpaAdapterError("RPA preflight receipt selectedMaterials must be a list")
+    by_id = {str(item.get("materialId") or "").strip(): item for item in selected if isinstance(item, dict)}
+    records_by_id = {}
+    receipt_run_dir = receipt_path.parent.parent
+    for material_id in material_ids:
+        entry = by_id.get(material_id)
+        try:
+            if not entry or entry.get("preflightStatus") != "selected":
+                raise RpaAdapterError(f"RPA preflight receipt does not select material {material_id}")
+            relative_path = entry.get("diagnosisRecordsPath")
+            if not isinstance(relative_path, str) or not relative_path:
+                raise RpaAdapterError(f"RPA preflight records path is missing for material {material_id}")
+            records = json.loads((receipt_run_dir / relative_path).read_text(encoding="utf-8"))
+            if not isinstance(records, list):
+                raise RpaAdapterError(f"RPA preflight records must be a list for material {material_id}")
+            find_material_video_url(records, material_id)
+        except (OSError, UnicodeError, json.JSONDecodeError, RpaAdapterError) as exc:
+            if args.allow_rpa_refetch:
+                continue
+            raise RpaAdapterError(str(exc)) from exc
+        records_by_id[material_id] = records
+    return records_by_id
+
+
 def main(argv=None):
     parser = build_parser()
-    args = parser.parse_args(argv)
+    parsed_argv = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(parsed_argv)
+    _resolve_concurrency(args, parsed_argv)
     try:
         if args.list_shop_accounts:
             return _list_shop_accounts()
@@ -905,7 +1377,21 @@ def main(argv=None):
                 top_materials_payload = None
                 material_ids = [args.material_id]
             if args.top_materials_json:
-                if _preflight_enabled(args):
+                if args.target_top_n and not args.preflight_only:
+                    if args.rpa_preflight_json:
+                        parser.error(
+                            "--rpa-preflight-json is incompatible with streaming --target-top-n"
+                        )
+                    if args.verify:
+                        parser.error("--verify is not available for a running streaming batch")
+                    manifest_path, result, failed = _run_streaming_rpa_batch(
+                        args, top_materials_payload
+                    )
+                    if failed:
+                        print(f"batch_manifest={manifest_path}", file=sys.stderr)
+                        return BATCH_PARTIAL_FAILURE_EXIT_CODE
+                    result_dir, json_path, markdown_path = result
+                elif _preflight_enabled(args):
                     receipt, ready_path, ready_payload = _run_rpa_preflight(
                         args, top_materials_payload
                     )
@@ -921,23 +1407,29 @@ def main(argv=None):
                         )
                     if args.preflight_only:
                         return 0
-                if args.verify:
-                    verification_path, receipt = _verify_rpa_batch(
-                        args, material_ids
-                    )
-                    print(f"batch_verification={verification_path}")
-                    return (
-                        0
-                        if receipt["valid"]
-                        else BATCH_VERIFICATION_FAILURE_EXIT_CODE
-                    )
-                manifest_path, result, failures = _run_rpa_batch(
-                    args, material_ids
-                )
-                if failures:
-                    print(f"batch_manifest={manifest_path}", file=sys.stderr)
-                    return BATCH_PARTIAL_FAILURE_EXIT_CODE
-                result_dir, json_path, markdown_path = result
+                if not args.target_top_n or args.preflight_only:
+                    if args.rpa_preflight_json:
+                        args.rpa_preflight_records = _load_preflight_records(
+                            args, top_materials_payload, material_ids
+                        )
+                    if args.verify:
+                        verification_path, receipt = _verify_rpa_batch(
+                            args, material_ids
+                        )
+                        print(f"batch_verification={verification_path}")
+                        return (
+                            0
+                            if receipt["valid"]
+                            else BATCH_VERIFICATION_FAILURE_EXIT_CODE
+                        )
+                    if not args.preflight_only:
+                        manifest_path, result, failures = _run_rpa_batch(
+                            args, material_ids
+                        )
+                        if failures:
+                            print(f"batch_manifest={manifest_path}", file=sys.stderr)
+                            return BATCH_PARTIAL_FAILURE_EXIT_CODE
+                        result_dir, json_path, markdown_path = result
             else:
                 result_dir, json_path, markdown_path = _process_rpa_material(
                     args, material_ids[0]

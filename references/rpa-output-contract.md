@@ -58,17 +58,15 @@ This example selects second 1 first, then seconds 3, 7, and 5 by later click ran
 
 Online mode reads the `material_info` record field `videoUrl`, downloads it to a temporary local video file, and then reuses the same local processing pipeline. `videoDuration` may be present in the connector output, but FFmpeg remains the source of truth for frame timestamp bounds.
 
-## RPA Preflight
+## Streaming RPA Batch
 
-Batch RPA mode can run a lightweight preflight before formal frame extraction. The asset-table `top_materials.json` is treated as a candidate pool, not necessarily the final execution list.
-
-A material passes preflight only when:
+Top-N batch mode treats asset-table `top_materials.json` as a rank-ordered candidate pool, not a complete RPA request list. The default candidate limit is three times targetTopN. The scheduler submits candidates from the head with at most three RPA jobs in flight; a candidate becomes selected only when:
 
 - the connector call returns parseable diagnosis records;
 - the record list contains the target material's `material_info`;
 - `material_info.videoUrl` is a non-empty string.
 
-Preflight does not download video, run FFmpeg, write summaries, or generate JPEGs. A preflight failure means "RPA currently unavailable for this material"; it is not a deletion verdict.
+RPA success writes normalized records before postprocessing starts. Video download, FFmpeg extraction, and summary generation immediately follow selection on a separate bounded channel. RPA failure means "RPA currently unavailable for this material"; it is not a deletion verdict.
 
 Failure reasons:
 
@@ -77,13 +75,19 @@ Failure reasons:
 - `missing_material_info`: no matching `material_info` record was returned.
 - `missing_video_url`: matching `material_info` exists but has no usable `videoUrl`.
 - `unknown_preflight_failure`: unexpected failure outside the known classes.
+- `top_n_already_selected`: an already-submitted RPA success completed after targetTopN was selected; it is not postprocessed.
+- `target_satisfied`: a candidate was never submitted because targetTopN was already selected.
 
-Preflight writes:
+The stream writes:
 
-- `rpa-preflight.json`: receipt with `requestedTopN`, `candidateCount`, `shopId`, `dateRange`, `selectedMaterials`, `rejectedMaterials`, and `satisfied`.
-- `top_materials_rpa_ready.json`: same top-materials contract shape as `top_materials.json`, but `materials` contains only selected RPA-ready materials.
+- `batch-manifest.json`: schemaVersion 2 record with `targetTopN`, `candidateCount`, `candidateLimit`, `rpaConcurrency`, `postprocessConcurrency`, `submittedMaterials`, `selectedMaterials`, `rejectedMaterials`, and `cancelledMaterials`. Every candidate records rank, material metadata, RPA state, postprocess state, failure reason, paths, and timings.
+- `top_materials_rpa_ready.json`: compatibility top-materials shape containing rank-ordered selected materials only.
+- `diagnosis-records/<materialId>.json`: normalized records written before a candidate joins selected.
+- `diagnosis-csv/<materialId>.csv`: retained source CSV for a files-envelope response.
 
-Formal batch extraction must consume the ready list once preflight is enabled. If `rpa-preflight.json` has `satisfied=false`, formal frame extraction must not start.
+Selected and ready-list ordering always follows source candidate rank, even when lower-ranked RPA jobs finish first. Once Top N is selected the scheduler stops submitting new RPA work; unsubmitted candidates are cancelled and successful already-submitted extras are rejected. A postprocess failure remains selected with `postprocessStatus: failed`, makes the batch nonzero, and does not become an RPA rejection or trigger replacement.
+
+`--preflight-only`, `--rpa-preflight-json`, and `--allow-rpa-refetch` remain compatibility and diagnostic tools for old runs. They are not part of the recommended streaming Top-N command.
 
 ## Connector Inputs
 

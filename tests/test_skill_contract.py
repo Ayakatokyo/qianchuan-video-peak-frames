@@ -4,6 +4,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "SKILL.md"
+RPA_CONTRACT_PATH = ROOT / "references" / "rpa-output-contract.md"
 
 
 class BatchSkillContractTests(unittest.TestCase):
@@ -53,27 +54,30 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("--custom-start-date 2026-06-01", skill)
         self.assertIn("--custom-end-date 2026-06-07", skill)
 
-    def test_batch_workflow_preflights_and_backfills_before_formal_rpa(self):
+    def test_batch_workflow_streams_backfill_and_postprocess(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertIn("## TOP 素材批量运行", skill)
         batch_start = skill.index("## TOP 素材批量运行")
         export_start = skill.index(
             "python scripts/export_top_materials.py", batch_start
         )
-        preflight_start = skill.index("--preflight-only", batch_start)
-        formal_start = skill.index(
-            '--top-materials-json "/path/to/run/top_materials_rpa_ready.json"',
-            batch_start,
-        )
+        rpa_start = skill.index("python scripts/extract_peak_frames.py", batch_start)
 
-        self.assertLess(export_start, preflight_start)
-        self.assertLess(preflight_start, formal_start)
+        self.assertLess(export_start, rpa_start)
         self.assertIn("候选池", skill)
-        self.assertIn("RPA 预检补位", skill)
-        self.assertIn("rpa-preflight.json", skill)
-        self.assertIn("satisfied=false", skill)
+        self.assertIn("候选上限，不是 RPA 调用数量承诺", skill)
+        self.assertIn("成功即后处理", skill)
+        self.assertIn("--target-top-n 9", skill)
+        self.assertIn("--candidate-top-n 27", skill)
+        self.assertIn("--rpa-concurrency 3", skill)
+        self.assertIn("--postprocess-concurrency 3", skill)
         self.assertIn("top_materials_rpa_ready.json", skill)
-        self.assertIn("正式批次不得开始", skill)
+        self.assertIn("submittedMaterials", contract)
+        self.assertIn("selectedMaterials", contract)
+        self.assertIn("rejectedMaterials", contract)
+        self.assertIn("cancelledMaterials", contract)
+        self.assertIn("top_n_already_selected", contract)
 
     def test_batch_workflow_requires_advertiser_id_for_asset_selection(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -84,6 +88,13 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("adv_id", skill)
         self.assertIn("COLUMN_NOT_EXIST", skill)
         self.assertIn("不要把资产表过滤字段写成 `advertiser_id`", skill)
+
+    def test_recent_seven_days_excludes_the_execution_day(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("近七天不包含执行任务当天", skill)
+        self.assertIn("执行日前第 7 天至执行日前 1 天", skill)
+        self.assertIn("不得将执行任务当天传入 RPA", skill)
 
     def test_single_material_rpa_is_documented_as_debugging_only(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -123,7 +134,8 @@ class BatchSkillContractTests(unittest.TestCase):
     def test_batch_concurrency_and_timing_receipt_are_documented(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("--concurrency 3", skill)
+        self.assertIn("--rpa-concurrency 3", skill)
+        self.assertIn("--postprocess-concurrency 3", skill)
         self.assertIn("受控并行", skill)
         self.assertIn("timingsSec", skill)
         self.assertIn("rpaFetchSec", skill)

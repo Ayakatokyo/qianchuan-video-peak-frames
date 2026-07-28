@@ -230,6 +230,7 @@ def fetch_material_diagnosis(
     environ=None,
     session=None,
     timeout_sec=3600,
+    return_metadata=False,
 ):
     if not str(shop_id or "").strip():
         raise RpaAdapterError("shop_id is required")
@@ -264,17 +265,24 @@ def fetch_material_diagnosis(
     _raise_for_status(response, "fetch RPA material diagnosis")
     gateway_result = unpack_gateway_result(response.json())
     if isinstance(gateway_result, list):
-        return gateway_result
-    if diagnosis_csv_dir is None:
-        raise RpaAdapterError(
-            "diagnosis_csv_dir is required for RPA files responses"
-        )
-    target = Path(diagnosis_csv_dir) / f"{business_params['material_id']}.csv"
-    download_diagnosis_csv(gateway_result.file_url, target, session=session)
-    try:
-        return parse_diagnosis_csv(target)
-    except RpaCsvError as exc:
-        raise RpaAdapterError(str(exc)) from exc
+        records = gateway_result
+        diagnosis_csv_path = None
+    else:
+        if diagnosis_csv_dir is None:
+            raise RpaAdapterError(
+                "diagnosis_csv_dir is required for RPA files responses"
+            )
+        target = Path(diagnosis_csv_dir) / f"{business_params['material_id']}.csv"
+        download_diagnosis_csv(gateway_result.file_url, target, session=session)
+        try:
+            records = parse_diagnosis_csv(target)
+        except RpaCsvError as exc:
+            raise RpaAdapterError(str(exc)) from exc
+        diagnosis_csv_path = str(target)
+
+    if return_metadata:
+        return records, diagnosis_csv_path
+    return records
 
 
 def find_material_video_url(records, material_id=None):
@@ -347,7 +355,7 @@ def fetch_material_preflight(
     timeout_sec=300,
 ):
     try:
-        records = fetch_material_diagnosis(
+        records, diagnosis_csv_path = fetch_material_diagnosis(
             shop_id=shop_id,
             material_id=material_id,
             date_range_type=date_range_type,
@@ -357,6 +365,7 @@ def fetch_material_preflight(
             environ=environ,
             session=session,
             timeout_sec=timeout_sec,
+            return_metadata=True,
         )
     except RpaAdapterError as exc:
         return _preflight_result(
@@ -365,9 +374,13 @@ def fetch_material_preflight(
     except Exception:
         return _preflight_result(material_id, False, "unknown_preflight_failure")
     try:
-        return preflight_material_availability(records, material_id)
+        result = preflight_material_availability(records, material_id)
     except Exception:
         return _preflight_result(material_id, False, "rpa_payload_invalid")
+    if result["rpaAvailable"]:
+        result["records"] = records
+        result["diagnosisCsvPath"] = diagnosis_csv_path
+    return result
 
 
 def download_video(video_url, target_path, session=None, timeout=300):
