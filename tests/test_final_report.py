@@ -8,8 +8,12 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from final_report_lib import FinalReportError, load_conclusion_analysis  # noqa: E402
-from final_report_lib import build_final_report_data  # noqa: E402
+from final_report_lib import (  # noqa: E402
+    FinalReportError,
+    build_final_report_data,
+    load_conclusion_analysis,
+    normalize_conclusion_analysis,
+)
 from final_report_lib import generate_final_report  # noqa: E402
 import render_final_report  # noqa: E402
 
@@ -54,7 +58,9 @@ class FinalReportConclusionTests(unittest.TestCase):
             path = Path(temp_dir) / "diagnostic-ai-analysis.json"
             write_json(path, {"schemaVersion": 2, "overallConclusion": "bad"})
 
-            with self.assertRaisesRegex(FinalReportError, "unsupported conclusion schemaVersion"):
+            with self.assertRaisesRegex(
+                FinalReportError, "batchInsights is required for schemaVersion 2"
+            ):
                 load_conclusion_analysis(path)
 
 
@@ -169,6 +175,133 @@ class FinalReportDataTests(unittest.TestCase):
         )
         self.assertEqual(result["materials"][1]["extractionStatus"], "missing_summary")
         self.assertIn("material m-2 is not succeeded", result["warnings"])
+
+
+class FinalReportV2ConclusionTests(unittest.TestCase):
+    def setUp(self):
+        self.top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-30",
+            "materials": [material("m-1", 1, 100)],
+        }
+        self.records_by_material = {
+            "m-1": [
+                {
+                    "recordType": "crowd_analysis",
+                    "materialId": "m-1",
+                    "displayMetric": "CLICK_COUNT",
+                    "dimensionKey": "age",
+                    "dimensionName": "年龄",
+                    "dimensionValue": "24-30",
+                    "metricValue": 30,
+                },
+                {
+                    "recordType": "script_analysis",
+                    "materialId": "m-1",
+                    "scriptInfo": json.dumps(
+                        {
+                            "text": "限时优惠",
+                            "data": [
+                                {
+                                    "level_1_label": {
+                                        "value": 1,
+                                        "label": "价格优惠",
+                                    },
+                                    "level_2_labels": [
+                                        {"value": 21, "label": "降价/折扣"}
+                                    ],
+                                }
+                            ],
+                            "detail": {
+                                "21": {
+                                    "label": "降价/折扣",
+                                    "list": ["今天四九折"],
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        }
+        self.summaries_by_material = {
+            "m-1": {
+                "summaryPath": "/run/peak-frames/m-1/summary.json",
+                "frames": [
+                    {
+                        "rankType": "first_peak",
+                        "durationSec": 1,
+                        "metricValue": 3,
+                        "framePath": "/run/peak-frames/m-1/first_peak_0001s_3.jpg",
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+
+    def _conclusion(self):
+        return {
+            "schemaVersion": 2,
+            "overallConclusion": "24-30 岁点击人群值得继续验证。",
+            "batchInsights": [
+                {
+                    "topic": "audience",
+                    "title": "点击人群集中",
+                    "conclusion": "点击层的 24-30 岁分桶领先。",
+                    "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
+                }
+            ],
+            "materialAnalyses": [
+                {
+                    "materialId": "m-1",
+                    "audienceConclusion": "点击层 24-30 岁突出。",
+                    "scriptConclusion": "价格优惠表达出现。",
+                    "highlightAnalyses": [
+                        {
+                            "frameRef": "highlight:m-1:first_peak",
+                            "visualObservation": "人物在产品近景旁口播。",
+                            "commercialInterpretation": "该画面与首个点击峰值同时出现。",
+                        }
+                    ],
+                    "integratedConclusion": "保留产品近景开场。",
+                    "decision": "scale",
+                    "nextAction": "制作三条开场变体。",
+                    "evidenceRefs": [
+                        "audience:CLICK_COUNT:age:24-30",
+                        "script:m-1:价格优惠:降价/折扣",
+                        "highlight:m-1:first_peak",
+                    ],
+                }
+            ],
+            "nextActions": [
+                {"title": "扩展开场", "body": "测试三条变体。", "priority": "high"}
+            ],
+            "warnings": [],
+        }
+
+    def _build_data(self, conclusion):
+        return build_final_report_data(
+            self.top_payload,
+            self.records_by_material,
+            self.summaries_by_material,
+            conclusion=normalize_conclusion_analysis(conclusion),
+            batch_verification={"valid": True, "errors": [], "warnings": []},
+        )
+
+    def test_accepts_v2_conclusion_with_current_batch_evidence(self):
+        result = self._build_data(self._conclusion())
+
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["conclusion"]["schemaVersion"], 2)
+
+    def test_rejects_unknown_v2_evidence_reference(self):
+        conclusion = self._conclusion()
+        conclusion["batchInsights"][0]["evidenceRefs"] = [
+            "audience:SHOW_COUNT:age:24-30"
+        ]
+
+        with self.assertRaisesRegex(FinalReportError, "unknown evidence reference"):
+            self._build_data(conclusion)
 
 
 class FinalReportRenderTests(unittest.TestCase):

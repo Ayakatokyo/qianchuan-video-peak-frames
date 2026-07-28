@@ -15,6 +15,7 @@ class FinalReportError(RuntimeError):
 
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
+ALLOWED_INSIGHT_TOPICS = {"audience", "script", "highlight", "integrated"}
 
 
 def _text(value):
@@ -89,11 +90,7 @@ def _validate_next_action(raw, index):
     return {"title": title, "body": body, "priority": priority}
 
 
-def normalize_conclusion_analysis(payload):
-    if not isinstance(payload, dict):
-        raise FinalReportError("conclusion analysis must be an object")
-    if payload.get("schemaVersion") != 1:
-        raise FinalReportError("unsupported conclusion schemaVersion")
+def _normalize_v1_conclusion(payload):
     insights = payload.get("keyInsights", [])
     recommendations = payload.get("materialRecommendations", [])
     next_actions = payload.get("nextActions", [])
@@ -119,6 +116,134 @@ def normalize_conclusion_analysis(payload):
         ],
         "warnings": _string_list(payload.get("warnings", []), "warnings"),
     }
+
+
+def _validate_v2_insight(raw, index):
+    if not isinstance(raw, dict):
+        raise FinalReportError(f"batchInsights[{index}] must be an object")
+    topic = _text(raw.get("topic"))
+    title = _text(raw.get("title"))
+    conclusion = _text(raw.get("conclusion"))
+    if topic not in ALLOWED_INSIGHT_TOPICS:
+        raise FinalReportError(f"batchInsights[{index}].topic is unsupported")
+    if not title or not conclusion:
+        raise FinalReportError(
+            f"batchInsights[{index}] requires title and conclusion"
+        )
+    return {
+        "topic": topic,
+        "title": title,
+        "conclusion": conclusion,
+        "evidenceRefs": _string_list(
+            raw.get("evidenceRefs", []), f"batchInsights[{index}].evidenceRefs"
+        ),
+    }
+
+
+def _validate_v2_highlight_analysis(raw, material_index, index):
+    if not isinstance(raw, dict):
+        raise FinalReportError(
+            f"materialAnalyses[{material_index}].highlightAnalyses[{index}] "
+            "must be an object"
+        )
+    frame_ref = _text(raw.get("frameRef"))
+    visual_observation = _text(raw.get("visualObservation"))
+    commercial_interpretation = _text(raw.get("commercialInterpretation"))
+    if not frame_ref or not visual_observation or not commercial_interpretation:
+        raise FinalReportError(
+            f"materialAnalyses[{material_index}].highlightAnalyses[{index}] "
+            "requires frameRef, visualObservation, and commercialInterpretation"
+        )
+    return {
+        "frameRef": frame_ref,
+        "visualObservation": visual_observation,
+        "commercialInterpretation": commercial_interpretation,
+    }
+
+
+def _validate_v2_material_analysis(raw, index):
+    if not isinstance(raw, dict):
+        raise FinalReportError(f"materialAnalyses[{index}] must be an object")
+    material_id = _text(raw.get("materialId"))
+    audience_conclusion = _text(raw.get("audienceConclusion"))
+    script_conclusion = _text(raw.get("scriptConclusion"))
+    integrated_conclusion = _text(raw.get("integratedConclusion"))
+    decision = _text(raw.get("decision")) or "unknown"
+    next_action = _text(raw.get("nextAction"))
+    highlights = raw.get("highlightAnalyses", [])
+    if not material_id:
+        raise FinalReportError(f"materialAnalyses[{index}] requires materialId")
+    if not audience_conclusion or not script_conclusion or not integrated_conclusion:
+        raise FinalReportError(
+            f"materialAnalyses[{index}] requires audienceConclusion, "
+            "scriptConclusion, and integratedConclusion"
+        )
+    if decision not in ALLOWED_DECISIONS:
+        raise FinalReportError(f"materialAnalyses[{index}].decision is unsupported")
+    if not next_action:
+        raise FinalReportError(f"materialAnalyses[{index}] requires nextAction")
+    if not isinstance(highlights, list):
+        raise FinalReportError(f"materialAnalyses[{index}].highlightAnalyses must be a list")
+    return {
+        "materialId": material_id,
+        "audienceConclusion": audience_conclusion,
+        "scriptConclusion": script_conclusion,
+        "highlightAnalyses": [
+            _validate_v2_highlight_analysis(item, index, item_index)
+            for item_index, item in enumerate(highlights)
+        ],
+        "integratedConclusion": integrated_conclusion,
+        "decision": decision,
+        "nextAction": next_action,
+        "evidenceRefs": _string_list(
+            raw.get("evidenceRefs", []), f"materialAnalyses[{index}].evidenceRefs"
+        ),
+    }
+
+
+def _normalize_v2_conclusion(payload):
+    for field_name in ("batchInsights", "materialAnalyses", "nextActions"):
+        if field_name not in payload:
+            raise FinalReportError(f"{field_name} is required for schemaVersion 2")
+    insights = payload.get("batchInsights", [])
+    material_analyses = payload.get("materialAnalyses", [])
+    next_actions = payload.get("nextActions", [])
+    if not isinstance(insights, list):
+        raise FinalReportError("batchInsights must be a list")
+    if not isinstance(material_analyses, list):
+        raise FinalReportError("materialAnalyses must be a list")
+    if not isinstance(next_actions, list):
+        raise FinalReportError("nextActions must be a list")
+    normalized_materials = [
+        _validate_v2_material_analysis(item, index)
+        for index, item in enumerate(material_analyses)
+    ]
+    material_ids = [item["materialId"] for item in normalized_materials]
+    if len(set(material_ids)) != len(material_ids):
+        raise FinalReportError("materialAnalyses must not repeat materialId")
+    return {
+        "schemaVersion": 2,
+        "overallConclusion": _text(payload.get("overallConclusion")),
+        "batchInsights": [
+            _validate_v2_insight(item, index) for index, item in enumerate(insights)
+        ],
+        "materialAnalyses": normalized_materials,
+        "nextActions": [
+            _validate_next_action(item, index) for index, item in enumerate(next_actions)
+        ],
+        "warnings": _string_list(payload.get("warnings", []), "warnings"),
+    }
+
+
+def normalize_conclusion_analysis(payload):
+    if not isinstance(payload, dict):
+        raise FinalReportError("conclusion analysis must be an object")
+    schema_version = payload.get("schemaVersion")
+    if schema_version == 1:
+        return _normalize_v1_conclusion(payload)
+    if schema_version == 2:
+        return _normalize_v2_conclusion(payload)
+    raise FinalReportError("unsupported conclusion schemaVersion")
 
 
 def load_conclusion_analysis(path):
@@ -237,6 +362,67 @@ def _warnings(material_cards, conclusion, batch_verification):
     return warnings
 
 
+def _known_evidence_refs(diagnostic, summaries_by_material):
+    refs = set()
+    for metric, metric_data in diagnostic["audience"]["metrics"].items():
+        for dimension_key, dimension in metric_data["dimensions"].items():
+            for bucket in dimension["buckets"]:
+                refs.add(
+                    f"audience:{metric}:{dimension_key}:{bucket['bucket']}"
+                )
+    for material in diagnostic["scripts"]["materials"]:
+        for label in material["labels"]:
+            refs.add(
+                f"script:{material['materialId']}:{label['level1']}:"
+                f"{label['level2']}"
+            )
+    for material_id, summary in summaries_by_material.items():
+        if not isinstance(summary, dict):
+            continue
+        for frame in summary.get("frames", []):
+            if isinstance(frame, dict):
+                rank_type = _text(frame.get("rankType"))
+                if rank_type:
+                    refs.add(f"highlight:{material_id}:{rank_type}")
+    return refs
+
+
+def _validate_v2_evidence(conclusion, diagnostic, summaries_by_material, material_cards):
+    if not conclusion or conclusion.get("schemaVersion") != 2:
+        return
+    known_refs = _known_evidence_refs(diagnostic, summaries_by_material)
+    selected_ids = {material["materialId"] for material in material_cards}
+    successful_ids = {
+        material["materialId"]
+        for material in material_cards
+        if material["extractionStatus"] == "succeeded"
+    }
+    analysis_ids = set()
+
+    def require_known(reference):
+        if reference not in known_refs:
+            raise FinalReportError(f"unknown evidence reference: {reference}")
+
+    for insight in conclusion["batchInsights"]:
+        for reference in insight["evidenceRefs"]:
+            require_known(reference)
+    for material_analysis in conclusion["materialAnalyses"]:
+        material_id = material_analysis["materialId"]
+        if material_id not in selected_ids:
+            raise FinalReportError(f"unknown material analysis: {material_id}")
+        analysis_ids.add(material_id)
+        for reference in material_analysis["evidenceRefs"]:
+            require_known(reference)
+        for highlight in material_analysis["highlightAnalyses"]:
+            require_known(highlight["frameRef"])
+    missing_ids = sorted(successful_ids - analysis_ids)
+    if missing_ids:
+        raise FinalReportError(
+            "missing material analysis for succeeded material: "
+            + ", ".join(missing_ids)
+        )
+
+
 def build_final_report_data(
     top_payload,
     records_by_material,
@@ -255,6 +441,9 @@ def build_final_report_data(
         )
         for material in materials
     ]
+    _validate_v2_evidence(
+        conclusion, diagnostic, summaries_by_material, material_cards
+    )
     highlight_frame_count = sum(
         item["highlightFrameCount"] for item in material_cards
     )
