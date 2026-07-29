@@ -965,6 +965,23 @@ def _report_data_for_template(data, asset_base_dir):
                 "extractionStatus": material.get("extractionStatus"),
                 "highlightFrameCount": material.get("highlightFrameCount"),
                 "highlightFrames": highlight_frames,
+                "interactionTimeline": material.get(
+                    "interactionTimeline", {"metrics": []}
+                ),
+                "scriptAnalysis": material.get(
+                    "scriptAnalysis",
+                    {
+                        "materialUri": "",
+                        "formula": [],
+                        "labels": [],
+                        "evidence": [],
+                        "text": "",
+                    },
+                ),
+                "video": material.get(
+                    "video",
+                    {"src": "", "poster": "", "durationSec": None},
+                ),
                 "analysis": material.get("analysis") or {},
             }
         )
