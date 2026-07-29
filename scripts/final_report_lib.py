@@ -14,7 +14,7 @@ class FinalReportError(RuntimeError):
 
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
-ALLOWED_INSIGHT_TOPICS = {"audience", "script", "highlight", "integrated"}
+ALLOWED_INSIGHT_TOPICS = {"audience", "script", "integrated"}
 EXECUTION_PROCESS_TERMS = (
     "--verify",
     "verify",
@@ -284,9 +284,9 @@ def _normalize_v2_conclusion(payload):
         ],
         "materialAnalyses": normalized_materials,
         "nextActions": [
-            _validate_next_action(item, index) for index, item in enumerate(next_actions)
+            _validate_next_action(item, index)
+            for index, item in enumerate(next_actions)
         ],
-        "warnings": _string_list(payload.get("warnings", []), "warnings"),
     }
 
 
@@ -454,6 +454,86 @@ def _warnings(material_cards, conclusion, batch_verification):
     return warnings
 
 
+def _load_batch_manifest(peak_output_dir):
+    path = Path(peak_output_dir) / "batch-manifest.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _pipeline_summary(batch_manifest, batch_verification):
+    if not isinstance(batch_manifest, dict):
+        batch_manifest = {}
+    submitted_materials = batch_manifest.get("submittedMaterials", [])
+    if not isinstance(submitted_materials, list):
+        submitted_materials = []
+
+    selected_count = 0
+    rejected_count = 0
+    cancelled_count = 0
+    postprocess_succeeded_count = 0
+    postprocess_failed_count = 0
+
+    for item in submitted_materials:
+        if not isinstance(item, dict):
+            continue
+        rpa_status = _text(item.get("rpaStatus"))
+        postprocess_status = _text(item.get("postprocessStatus"))
+        if rpa_status == "selected":
+            selected_count += 1
+        elif rpa_status == "rejected":
+            rejected_count += 1
+        elif rpa_status in {"cancelled", "not_submitted"}:
+            cancelled_count += 1
+        if postprocess_status == "succeeded":
+            postprocess_succeeded_count += 1
+        elif postprocess_status == "failed":
+            postprocess_failed_count += 1
+
+    submitted_count = selected_count + rejected_count
+    verification_errors = []
+    verification_warnings = []
+    verification_valid = None
+    if isinstance(batch_verification, dict):
+        verification_valid = batch_verification.get("valid")
+        verification_errors = [
+            str(item)
+            for item in batch_verification.get("errors", [])
+            if _text(item) and not _contains_execution_process_term(item)
+        ]
+        verification_warnings = [
+            str(item)
+            for item in batch_verification.get("warnings", [])
+            if _text(item) and not _contains_execution_process_term(item)
+        ]
+
+    if (
+        not batch_manifest
+        and verification_valid is None
+        and not verification_errors
+        and not verification_warnings
+    ):
+        return {}
+
+    return {
+        "targetTopN": batch_manifest.get("targetTopN"),
+        "candidateCount": batch_manifest.get("candidateCount"),
+        "submittedCount": submitted_count,
+        "selectedCount": selected_count,
+        "rejectedCount": rejected_count,
+        "cancelledCount": cancelled_count,
+        "postprocessSucceededCount": postprocess_succeeded_count,
+        "postprocessFailedCount": postprocess_failed_count,
+        "verificationValid": verification_valid,
+        "verificationErrors": verification_errors,
+        "verificationWarnings": verification_warnings,
+    }
+
+
 def _known_evidence_refs(diagnostic, summaries_by_material):
     refs = set()
     for metric, metric_data in diagnostic["audience"]["metrics"].items():
@@ -521,6 +601,7 @@ def build_final_report_data(
     summaries_by_material,
     conclusion=None,
     batch_verification=None,
+    batch_manifest=None,
 ):
     materials = _selected_materials(top_payload)
     diagnostic = build_diagnostic_analysis(top_payload, records_by_material)
@@ -570,6 +651,7 @@ def build_final_report_data(
         },
         "materials": material_cards,
         "defaultMaterialId": default_material_id,
+        "pipelineSummary": _pipeline_summary(batch_manifest, batch_verification),
         "batchInsights": insights,
         "audience": diagnostic["audience"],
         "scripts": diagnostic["scripts"],
@@ -797,6 +879,7 @@ def generate_final_report(
         top_payload, peak_output_dir
     )
     batch_verification = _load_batch_verification(peak_output_dir)
+    batch_manifest = _load_batch_manifest(peak_output_dir)
     conclusion = load_conclusion_analysis(analysis_json) if analysis_json else None
     data = build_final_report_data(
         top_payload,
@@ -804,6 +887,7 @@ def generate_final_report(
         summaries_by_material,
         conclusion=conclusion,
         batch_verification=batch_verification,
+        batch_manifest=batch_manifest,
     )
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"

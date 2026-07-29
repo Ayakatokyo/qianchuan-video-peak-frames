@@ -207,6 +207,44 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("只分析 RPA 提取到的业务事实", skill)
         self.assertIn("草稿不是完成的商业分析报告", skill)
 
+    def test_final_report_prompt_matches_five_rendered_sections_with_next_action_cards(self):
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        for section in (
+            "01｜TOP 素材组合结论",
+            "02｜人群洞察",
+            "03｜脚本洞察",
+            "04｜单素材深度分析",
+            "05｜下一轮策略",
+        ):
+            self.assertIn(section, prompt)
+        self.assertNotIn("04｜高光帧洞察", prompt)
+        self.assertNotIn('"topic": "highlight"', prompt)
+        self.assertNotIn("highlight` 对应 `04", prompt)
+        self.assertIn("最终 HTML 页面保留以下 5 个 section", prompt)
+        self.assertNotIn("最终 HTML 页面只保留以下 4 个 section", prompt)
+        self.assertIn('"topic": "integrated"', prompt)
+        self.assertIn('`nextActions` 对应 `05｜下一轮策略`', prompt)
+        self.assertIn('"nextActions":', prompt)
+        self.assertIn("策略卡片只展示 title 和 body", prompt)
+        self.assertIn("不展示 priority", prompt)
+        self.assertNotIn("页面仅保留标题占位", prompt)
+        self.assertNotIn("不得输出顶层 `nextActions`", prompt)
+        self.assertNotIn("事实包有 warnings", prompt)
+        self.assertNotIn('"warnings": []', prompt)
+
+    def test_final_report_prompt_requires_data_rich_secondary_summary(self):
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("真实数据 + 一句总结结论", prompt)
+        self.assertIn("overallConclusion 必须综合人群、脚本、高光帧", prompt)
+        self.assertIn("展现次数", prompt)
+        self.assertIn("点击次数", prompt)
+        self.assertIn("成交金额", prompt)
+        self.assertIn("人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开", prompt)
+        self.assertIn("不得只写抽象结论", prompt)
+        self.assertIn("每条 batchInsights.conclusion 建议 120-220 个中文字符", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

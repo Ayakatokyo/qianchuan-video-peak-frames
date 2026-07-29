@@ -176,6 +176,75 @@ class FinalReportDataTests(unittest.TestCase):
         self.assertEqual(result["materials"][1]["extractionStatus"], "missing_summary")
         self.assertIn("material m-2 is not succeeded", result["warnings"])
 
+    def test_includes_pipeline_summary_from_manifest_and_verification(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-30",
+            "materials": [material("m-1", 1, 100), material("m-2", 2, 80)],
+        }
+        records_by_material = {"m-1": [], "m-2": []}
+        summaries_by_material = {
+            "m-1": {
+                "summaryPath": "/run/peak-frames/m-1/summary.json",
+                "frames": [
+                    {
+                        "rankType": "first_peak",
+                        "durationSec": 1,
+                        "metricValue": 3,
+                        "framePath": "/run/peak-frames/m-1/first_peak_0001s_3.jpg",
+                    }
+                ],
+                "warnings": [],
+            }
+        }
+        batch_manifest = {
+            "targetTopN": 2,
+            "candidateCount": 6,
+            "submittedMaterials": [
+                {"materialId": "m-1", "rpaStatus": "selected", "postprocessStatus": "succeeded"},
+                {"materialId": "m-2", "rpaStatus": "selected", "postprocessStatus": "failed"},
+                {"materialId": "m-3", "rpaStatus": "rejected", "postprocessStatus": "pending"},
+                {"materialId": "m-4", "rpaStatus": "cancelled", "postprocessStatus": "not_started"},
+            ],
+        }
+        batch_verification = {
+            "valid": False,
+            "errors": ["material m-2 is not succeeded"],
+            "warnings": [],
+        }
+
+        result = build_final_report_data(
+            top_payload,
+            records_by_material,
+            summaries_by_material,
+            conclusion={
+                "overallConclusion": "m-1 可复用",
+                "keyInsights": [],
+                "materialRecommendations": [],
+                "nextActions": [],
+                "warnings": [],
+            },
+            batch_verification=batch_verification,
+            batch_manifest=batch_manifest,
+        )
+
+        self.assertEqual(
+            result["pipelineSummary"],
+            {
+                "targetTopN": 2,
+                "candidateCount": 6,
+                "submittedCount": 3,
+                "selectedCount": 2,
+                "rejectedCount": 1,
+                "cancelledCount": 1,
+                "postprocessSucceededCount": 1,
+                "postprocessFailedCount": 1,
+                "verificationValid": False,
+                "verificationErrors": ["material m-2 is not succeeded"],
+                "verificationWarnings": [],
+            },
+        )
+
 
 class FinalReportV2ConclusionTests(unittest.TestCase):
     def setUp(self):
@@ -242,11 +311,11 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
     def _conclusion(self):
         return {
             "schemaVersion": 2,
-            "overallConclusion": "24-30 岁点击人群值得继续验证。",
+            "overallConclusion": "24-30 岁点击次数值得继续验证。",
             "batchInsights": [
                 {
                     "topic": "audience",
-                    "title": "点击人群集中",
+                    "title": "点击次数集中",
                     "conclusion": "点击层的 24-30 岁分桶领先。",
                     "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
                 }
@@ -293,6 +362,36 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["conclusion"]["schemaVersion"], 2)
+
+    def test_rejects_v2_conclusion_without_next_actions(self):
+        conclusion = self._conclusion()
+        conclusion.pop("nextActions")
+
+        with self.assertRaisesRegex(FinalReportError, "nextActions is required"):
+            self._build_data(conclusion)
+
+    def test_rejects_v2_highlight_batch_insight(self):
+        conclusion = self._conclusion()
+        conclusion["batchInsights"].append(
+            {
+                "topic": "highlight",
+                "title": "产品近景有效",
+                "conclusion": "产品近景与峰值同时出现。",
+                "evidenceRefs": ["highlight:m-1:first_peak"],
+            }
+        )
+
+        with self.assertRaisesRegex(FinalReportError, "topic is unsupported"):
+            normalize_conclusion_analysis(conclusion)
+
+    def test_v2_conclusion_drops_page_unused_warnings(self):
+        conclusion = self._conclusion()
+        conclusion["warnings"] = ["素材 m-1 缺少补充帧，仅作谨慎判断。"]
+
+        result = self._build_data(conclusion)
+
+        self.assertNotIn("warnings", result["conclusion"])
+        self.assertNotIn("素材 m-1 缺少补充帧，仅作谨慎判断。", result["warnings"])
 
     def test_rejects_unknown_v2_evidence_reference(self):
         conclusion = self._conclusion()
@@ -350,18 +449,18 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("min-height: 360px;", html_text)
         self.assertIn("function humanizeEvidenceRef", html_text)
         self.assertIn("function displayText", html_text)
-        self.assertIn("曝光人群", html_text)
-        self.assertIn("点击人群", html_text)
+        self.assertIn("展现次数", html_text)
+        self.assertIn("点击次数", html_text)
         self.assertIn("成交金额", html_text)
         self.assertIn("脚本标签", html_text)
         self.assertIn("高光帧", html_text)
         self.assertNotIn("evidenceRefs.join", html_text)
         self.assertIn('id="audience-dashboard"', html_text)
         self.assertIn('id="script-dashboard"', html_text)
-        self.assertIn('id="highlight-dashboard"', html_text)
+        self.assertNotIn('id="highlight-dashboard"', html_text)
         self.assertIn("function renderAudienceDashboard", html_text)
         self.assertIn("function renderScriptDashboard", html_text)
-        self.assertIn("function renderHighlightDashboard", html_text)
+        self.assertNotIn("function renderHighlightDashboard", html_text)
         self.assertIn("八大人群分布", html_text)
         self.assertIn("年龄分布", html_text)
         self.assertIn("性别分布", html_text)
@@ -535,12 +634,16 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("01｜TOP 素材组合结论", html_text)
         self.assertIn("02｜人群洞察", html_text)
         self.assertIn("03｜脚本洞察", html_text)
-        self.assertIn("04｜高光帧洞察", html_text)
-        self.assertIn("05｜单素材深度分析", html_text)
-        self.assertIn("06｜下一轮策略", html_text)
-        self.assertNotIn("07｜数据质量与方法说明", html_text)
+        self.assertNotIn("04｜高光帧洞察", html_text)
+        self.assertIn("04｜单素材深度分析", html_text)
+        self.assertIn("05｜下一轮策略", html_text)
+        self.assertNotIn("06｜下一轮策略", html_text)
+        self.assertNotIn("07｜数据质量与执行口径", html_text)
         self.assertNotIn('id="report-cover"', html_text)
         self.assertNotIn("renderWarnings", html_text)
+        self.assertIn('id="next-actions"', html_text)
+        self.assertIn("扩展礼赠脚本", html_text)
+        self.assertIn("围绕送礼对象拆分。", html_text)
         self.assertIn("礼赠素材可以继续放量。", html_text)
         self.assertIn(
             '"framePath":"../peak-frames/m-1/first_peak_0001s_3.jpg"',
@@ -594,7 +697,6 @@ class FinalReportRenderTests(unittest.TestCase):
                     "warnings": ["batchVerification includes execution process"],
                 },
             )
-
             _data_path, html_path, _data = generate_final_report(
                 top_path,
                 peak_dir,
@@ -605,11 +707,11 @@ class FinalReportRenderTests(unittest.TestCase):
             html_text = html_path.read_text(encoding="utf-8")
 
         self.assertIn('"materialId":"m-1"', html_text)
-        self.assertNotIn("batchVerification", html_text)
+        self.assertNotIn("pipelineSummary", html_text)
         self.assertNotIn("selectedMaterials", html_text)
         self.assertNotIn("top_materials_rpa_ready", html_text)
-        self.assertNotIn("verify failed", html_text)
-        self.assertNotIn("execution process", html_text)
+        self.assertNotIn('"batchVerification":', html_text)
+        self.assertNotIn("batchVerification includes execution process", html_text)
 
     def test_renders_v2_analysis_with_accessible_material_tabs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -695,7 +797,7 @@ class FinalReportRenderTests(unittest.TestCase):
                     "batchInsights": [
                         {
                             "topic": "audience",
-                            "title": "点击人群集中",
+                            "title": "点击次数集中",
                             "conclusion": "点击层的 24-30 岁分桶领先。",
                             "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
                         },
@@ -769,12 +871,13 @@ class FinalReportRenderTests(unittest.TestCase):
             "01｜TOP 素材组合结论",
             "02｜人群洞察",
             "03｜脚本洞察",
-            "04｜高光帧洞察",
-            "05｜单素材深度分析",
-            "06｜下一轮策略",
+            "04｜单素材深度分析",
+            "05｜下一轮策略",
         ):
             self.assertIn(heading, html_text)
-        self.assertNotIn("07｜数据质量与方法说明", html_text)
+        self.assertNotIn("04｜高光帧洞察", html_text)
+        self.assertNotIn("06｜下一轮策略", html_text)
+        self.assertNotIn("07｜数据质量与执行口径", html_text)
         self.assertIn('role="tablist"', html_text)
         self.assertIn('setAttribute("role", "tab")', html_text)
         self.assertIn('setAttribute("role", "tabpanel")', html_text)
@@ -867,7 +970,7 @@ class FinalReportRenderTests(unittest.TestCase):
                     "batchInsights": [
                         {
                             "topic": "audience",
-                            "title": "点击人群集中",
+                            "title": "点击次数集中",
                             "conclusion": "点击层 24-30 岁突出。",
                             "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
                         },
@@ -876,12 +979,6 @@ class FinalReportRenderTests(unittest.TestCase):
                             "title": "优惠脚本可复用",
                             "conclusion": "价格优惠标签出现。",
                             "evidenceRefs": ["script:m-1:价格优惠:降价/折扣"],
-                        },
-                        {
-                            "topic": "highlight",
-                            "title": "产品近景有效",
-                            "conclusion": "产品近景与峰值同时出现。",
-                            "evidenceRefs": ["highlight:m-1:first_peak"],
                         },
                         {
                             "topic": "integrated",
@@ -933,29 +1030,59 @@ class FinalReportRenderTests(unittest.TestCase):
 
             html_text = html_path.read_text(encoding="utf-8")
 
-        for label in (
-            "组合总述",
-            "人群结论",
-            "脚本结论",
-            "高光帧结论",
-            "数据口径证据",
-        ):
-            self.assertIn(label, html_text)
+        self.assertNotIn("数据口径证据", html_text)
+        for label in ("组合总述", "人群结论", "脚本结论", "高光帧结论"):
+            self.assertNotIn(label, html_text)
         self.assertNotIn("第一部分：", html_text)
         self.assertNotIn("第二部分：", html_text)
         self.assertIn('class="material-tabs side-tabs"', html_text)
         self.assertIn(".side-tabs {", html_text)
         self.assertIn(".insight-layout {", html_text)
         self.assertIn(".primary-summary {", html_text)
-        self.assertIn("renderTopicInsight", html_text)
-        self.assertIn("humanizeEvidenceRefs(insight.evidenceRefs).join", html_text)
+        self.assertIn(".primary-summary > p {", html_text)
+        self.assertIn("font-size: 18px;", html_text)
+        self.assertIn("font-weight: 800;", html_text)
+        self.assertNotIn("renderTopicInsight", html_text)
+        self.assertNotIn('id="integrated-insights"', html_text)
+        self.assertNotIn('id="audience-insights"', html_text)
+        self.assertNotIn('id="script-insights"', html_text)
+        self.assertNotIn('id="highlight-insights"', html_text)
+        self.assertNotIn("renderEvidenceCards", html_text)
+        self.assertNotIn("renderEvidenceSummary", html_text)
+        self.assertNotIn("humanizeEvidenceRefs", html_text)
+        self.assertIn("metricValue", html_text)
+        self.assertIn("metricPercentage", html_text)
+        self.assertIn("occurrenceCount", html_text)
+        self.assertIn("durationSec", html_text)
+        self.assertIn("展现次数", html_text)
+        self.assertIn("点击次数", html_text)
+        self.assertNotIn("曝光人群", html_text)
+        self.assertNotIn("点击人群", html_text)
         self.assertIn("displayText(first.conclusion)", html_text)
         self.assertIn("displayText(paragraph)", html_text)
-        self.assertIn("humanizeEvidenceRef(item.frameRef)", html_text)
+        self.assertIn("displayStatus(material.extractionStatus)", html_text)
+        self.assertIn('succeeded: "已完成"', html_text)
+        self.assertNotIn("`状态 ${text(material.extractionStatus)}`", html_text)
+        self.assertNotIn('class="score"', html_text)
+        self.assertNotIn(".score {", html_text)
+        self.assertNotIn('element("span", "", "建议")', html_text)
+        self.assertNotIn("text(analysis.decision, \"unknown\")", html_text)
+        self.assertIn("`${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`", html_text)
+        self.assertNotIn("${text(frame.rankType)} ·", html_text)
+        self.assertIn('element("p", "highlight-note")', html_text)
+        self.assertIn('element("b", "", `${index + 1}：`)', html_text)
+        self.assertIn(".highlight-note b {", html_text)
+        self.assertNotIn("humanizeEvidenceRef(item.frameRef)", html_text)
         self.assertIn('element("p", "eyebrow", `#${text(material.rank)}`)', html_text)
         self.assertIn("renderAudienceDashboard();", html_text)
         self.assertIn("renderScriptDashboard();", html_text)
-        self.assertIn("renderHighlightDashboard();", html_text)
+        self.assertNotIn("renderHighlightDashboard();", html_text)
+        self.assertIn("renderNextActions();", html_text)
+        self.assertIn("function renderNextActions", html_text)
+        self.assertIn('id="next-actions"', html_text)
+        self.assertIn('element("b", "", displayText(action.title))', html_text)
+        self.assertIn('element("p", "", displayText(action.body))', html_text)
+        self.assertNotIn('element("small", "", text(action.priority, "medium"))', html_text)
         self.assertIn("内容公式一级标签分布", html_text)
         self.assertNotIn("高频脚本标签", html_text)
         self.assertNotIn("本视频内容公式", html_text)
@@ -969,9 +1096,11 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("report-warnings", html_text)
         self.assertIn("grid-template-columns: 260px minmax(0, 1fr);", html_text)
         self.assertIn("flex-direction: column;", html_text)
+        self.assertIn("overflow-y: auto;", html_text)
+        self.assertIn("align-items: stretch;", html_text)
         self.assertIn("object-fit: contain;", html_text)
         self.assertIn(".material-body {", html_text)
-        self.assertIn("grid-template-columns: repeat(3, minmax(0, 1fr));", html_text)
+        self.assertIn("grid-template-columns: 1fr;", html_text)
 
 
 class FinalReportCliTests(unittest.TestCase):

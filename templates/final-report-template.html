@@ -133,7 +133,15 @@
       display: block;
       margin-bottom: 8px;
       font-size: 18px;
+      font-weight: 800;
       line-height: 1.45;
+    }
+
+    .primary-summary > p {
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.72;
+      color: var(--ink);
     }
 
     .part-label {
@@ -410,7 +418,7 @@
       display: grid;
       grid-template-columns: 260px minmax(0, 1fr);
       gap: 20px;
-      align-items: start;
+      align-items: stretch;
     }
 
     .tab-list {
@@ -421,6 +429,9 @@
       padding: 0 14px 0 0;
       position: sticky;
       top: 18px;
+      align-self: stretch;
+      max-height: calc(100vh - 36px);
+      overflow-y: auto;
     }
 
     .tab-list button {
@@ -460,29 +471,7 @@
     }
 
     .material-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 18px;
-      align-items: flex-start;
-    }
-
-    .score {
-      min-width: 88px;
-      padding: 14px;
-      border-radius: 20px;
-      background: #2c1810;
-      color: #fff;
-      text-align: center;
-    }
-
-    .score span {
       display: block;
-      color: #d7b99d;
-      font-size: 12px;
-    }
-
-    .score b {
-      font-size: 20px;
     }
 
     .frame-grid {
@@ -517,8 +506,9 @@
 
     .material-body {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: 1fr;
       gap: 14px;
+      align-items: stretch;
     }
 
     .formula {
@@ -530,6 +520,11 @@
     .formula b {
       display: block;
       margin-bottom: 8px;
+    }
+
+    .highlight-note b {
+      display: inline;
+      margin: 0 4px 0 0;
     }
 
     .formula p + p {
@@ -585,10 +580,8 @@
     <h2>01｜TOP 素材组合结论</h2>
     <div class="insight-layout">
       <div class="primary-summary">
-        <span class="part-label">组合总述</span>
         <p id="overall-conclusion"></p>
       </div>
-      <ul class="rec-list insight-secondary" id="integrated-insights"></ul>
     </div>
   </section>
 
@@ -596,7 +589,6 @@
     <h2>02｜人群洞察</h2>
     <div class="insight-layout">
       <div class="primary-summary" id="audience-primary"></div>
-      <ul class="rec-list insight-secondary" id="audience-insights"></ul>
       <div class="data-dashboard" id="audience-dashboard"></div>
     </div>
   </section>
@@ -605,22 +597,12 @@
     <h2>03｜脚本洞察</h2>
     <div class="insight-layout">
       <div class="primary-summary" id="script-primary"></div>
-      <ul class="rec-list insight-secondary" id="script-insights"></ul>
       <div class="data-dashboard" id="script-dashboard"></div>
     </div>
   </section>
 
   <section class="section">
-    <h2>04｜高光帧洞察</h2>
-    <div class="insight-layout">
-      <div class="primary-summary" id="highlight-primary"></div>
-      <ul class="rec-list insight-secondary" id="highlight-insights"></ul>
-      <div class="data-dashboard" id="highlight-dashboard"></div>
-    </div>
-  </section>
-
-  <section class="section">
-    <h2>05｜单素材深度分析</h2>
+    <h2>04｜单素材深度分析</h2>
     <div class="material-tabs side-tabs" data-material-tabs>
       <div class="tab-list" role="tablist" aria-label="素材选择" id="material-tab-list"></div>
       <div class="material-panels" id="material-panels"></div>
@@ -628,7 +610,7 @@
   </section>
 
   <section class="section">
-    <h2>06｜下一轮策略</h2>
+    <h2>05｜下一轮策略</h2>
     <ul class="rec-list" id="next-actions"></ul>
   </section>
 
@@ -663,8 +645,8 @@ function element(tag, className, content) {
 }
 
 const metricLabels = {
-  SHOW_COUNT: "曝光人群",
-  CLICK_COUNT: "点击人群",
+  SHOW_COUNT: "展现次数",
+  CLICK_COUNT: "点击次数",
   TRANSACTION_AMOUNT: "成交金额",
 };
 
@@ -683,10 +665,24 @@ const frameLabels = {
   later_top_3: "后段高峰画面 3",
 };
 
+const statusLabels = {
+  succeeded: "已完成",
+  missing_summary: "缺少摘要",
+  failed: "失败",
+  pending: "待处理",
+  not_started: "未开始",
+  unknown: "未知",
+};
+
+function displayStatus(value) {
+  const status = text(value, "unknown");
+  return statusLabels[status] || status;
+}
+
 function displayText(value) {
   return text(value)
-    .replace(/\bSHOW_COUNT\b/g, "曝光人群")
-    .replace(/\bCLICK_COUNT\b/g, "点击人群")
+    .replace(/\bSHOW_COUNT\b/g, "展现次数")
+    .replace(/\bCLICK_COUNT\b/g, "点击次数")
     .replace(/\bTRANSACTION_AMOUNT\b/g, "成交金额")
     .replace(/\b(?:audience|script|highlight):[^\s，。；、]+/g, "对应数据证据")
     .replace(/\b\d{15,}\b/g, "对应素材")
@@ -712,55 +708,14 @@ function humanizeEvidenceRef(reference) {
   return "结构化证据";
 }
 
-function humanizeEvidenceRefs(references) {
-  if (!Array.isArray(references)) return [];
-  const result = [];
-  references.forEach((reference) => {
-    const label = humanizeEvidenceRef(reference);
-    if (label && !result.includes(label)) result.push(label);
-  });
-  return result;
-}
-
-function emptyCard(label, title) {
-  const item = element("li", "rec-card");
-  item.append(element("span", "part-label", label));
-  item.append(element("b", "", title));
-  item.append(element("p", "", "请补充结构化分析后重新渲染。"));
-  return item;
-}
-
-function renderEvidenceCards(targetId, insights, evidenceLabel) {
-  const list = document.getElementById(targetId);
-  list.replaceChildren();
-  if (!Array.isArray(insights) || insights.length === 0) {
-    list.append(emptyCard(evidenceLabel, "暂无可用证据"));
-    return;
-  }
-  insights.forEach((insight) => {
-    const item = element("li", "rec-card");
-    item.append(element("span", "part-label", evidenceLabel));
-    item.append(element("b", "", displayText(insight.title)));
-    const evidence = element("small", "", humanizeEvidenceRefs(insight.evidenceRefs).join(" · "));
-    item.append(evidence);
-    list.append(item);
-  });
-}
-
 function renderPrimaryInsight(targetId, insights, conclusionLabel, emptyTitle) {
   const target = document.getElementById(targetId);
   target.replaceChildren();
-  target.append(element("span", "part-label", conclusionLabel));
   const first = Array.isArray(insights) && insights.length > 0 ? insights[0] : null;
   target.append(
     element("b", "", first ? displayText(first.title) : emptyTitle),
     element("p", "", first ? displayText(first.conclusion) : "请补充结构化分析后重新渲染。")
   );
-}
-
-function renderTopicInsight(primaryId, evidenceId, insights, conclusionLabel, evidenceLabel, emptyTitle) {
-  renderPrimaryInsight(primaryId, insights, conclusionLabel, emptyTitle);
-  renderEvidenceCards(evidenceId, insights, evidenceLabel);
 }
 
 function topBuckets(dimension, limit = 8) {
@@ -1077,11 +1032,6 @@ function renderScriptDashboard() {
   root.append(chartGrid);
 }
 
-function renderHighlightDashboard() {
-  const root = document.getElementById("highlight-dashboard");
-  root.replaceChildren();
-}
-
 function renderFrames(material) {
   const grid = element("div", "frame-grid");
   const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
@@ -1097,7 +1047,7 @@ function renderFrames(material) {
     const caption = element(
       "figcaption",
       "",
-      `${text(frame.rankType)} · ${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`
+      `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`
     );
     figure.append(image, caption);
     grid.append(figure);
@@ -1126,11 +1076,9 @@ function renderMaterialPanel(material, selected) {
   titleBlock.append(
     element("p", "eyebrow", `#${text(material.rank)}`),
     element("h3", "", displayText(material.materialName)),
-    element("p", "muted", `状态 ${text(material.extractionStatus)}`)
+    element("p", "muted", `状态 ${displayStatus(material.extractionStatus)}`)
   );
-  const score = element("div", "score");
-  score.append(element("span", "", "建议"), element("b", "", text(analysis.decision, "unknown")));
-  head.append(titleBlock, score);
+  head.append(titleBlock);
 
   const body = element("div", "material-body");
   body.append(
@@ -1150,10 +1098,10 @@ function renderHighlightFormula(highlights) {
     card.append(element("p", "", "暂无高光帧观察。"));
     return card;
   }
-  highlights.forEach((item) => {
-    const paragraph = element("p", "");
+  highlights.forEach((item, index) => {
+    const paragraph = element("p", "highlight-note");
     paragraph.append(
-      element("b", "", `${humanizeEvidenceRef(item.frameRef)}：`),
+      element("b", "", `${index + 1}：`),
       document.createTextNode(displayText(item.visualObservation)),
       document.createElement("br"),
       element("small", "", displayText(item.commercialInterpretation))
@@ -1226,7 +1174,7 @@ function renderNextActions() {
   }
   actions.forEach((action) => {
     const item = element("li", "rec-card");
-    item.append(element("b", "", displayText(action.title)), element("p", "", displayText(action.body)), element("small", "", text(action.priority, "medium")));
+    item.append(element("b", "", displayText(action.title)), element("p", "", displayText(action.body)));
     list.append(item);
   });
 }
@@ -1235,13 +1183,10 @@ function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。`;
   document.getElementById("overall-conclusion").textContent = displayText(reportData.conclusion?.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。");
-  renderEvidenceCards("integrated-insights", reportData.batchInsights?.integrated, "数据口径证据");
-  renderTopicInsight("audience-primary", "audience-insights", reportData.batchInsights?.audience, "人群结论", "数据口径证据", "暂无人群结论");
-  renderTopicInsight("script-primary", "script-insights", reportData.batchInsights?.script, "脚本结论", "数据口径证据", "暂无脚本结论");
-  renderTopicInsight("highlight-primary", "highlight-insights", reportData.batchInsights?.highlight, "高光帧结论", "数据口径证据", "暂无高光帧结论");
+  renderPrimaryInsight("audience-primary", reportData.batchInsights?.audience, "", "暂无人群洞察");
+  renderPrimaryInsight("script-primary", reportData.batchInsights?.script, "", "暂无脚本洞察");
   renderAudienceDashboard();
   renderScriptDashboard();
-  renderHighlightDashboard();
   renderMaterialTabs();
   renderNextActions();
 }
