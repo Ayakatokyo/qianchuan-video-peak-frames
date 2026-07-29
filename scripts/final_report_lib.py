@@ -1,3 +1,4 @@
+import ast
 import json
 from datetime import datetime, timezone
 import math
@@ -15,6 +16,15 @@ class FinalReportError(RuntimeError):
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script", "integrated"}
+INTERACTION_METRIC_LABELS = {
+    "CLICK_COUNT": "整体点击次数",
+    "LOSE_COUNT": "整体流失数",
+    "LIKE_COUNT": "整体点赞次数",
+    "COMMENT_COUNT": "整体评论次数",
+    "SHARE_COUNT": "整体转发次数",
+    "NEW_FOLLOWER_COUNT": "整体新增粉丝数",
+}
+INTERACTION_METRIC_ORDER = tuple(INTERACTION_METRIC_LABELS.keys())
 EXECUTION_PROCESS_TERMS = (
     "--verify",
     "verify",
@@ -401,7 +411,124 @@ def _batch_insights(conclusion):
     return result
 
 
-def _material_card(material, summary, analysis):
+def _material_interaction_timeline(records):
+    grouped = {metric: [] for metric in INTERACTION_METRIC_ORDER}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("recordType") != "interaction_series":
+            continue
+        metric = _text(record.get("interactionMetric"))
+        if metric not in grouped:
+            continue
+        second = _number(record.get("durationSec"), default=None)
+        value = _number(record.get("metricValue"), default=None)
+        if second is None or value is None:
+            continue
+        grouped[metric].append({"second": second, "value": value})
+
+    metrics = []
+    for metric in INTERACTION_METRIC_ORDER:
+        points = sorted(grouped[metric], key=lambda item: item["second"])
+        if not points:
+            continue
+        peak = max(points, key=lambda item: (item["value"], -item["second"]))
+        metrics.append(
+            {
+                "metric": metric,
+                "label": INTERACTION_METRIC_LABELS[metric],
+                "points": points,
+                "peak": {"second": peak["second"], "value": peak["value"]},
+            }
+        )
+    return {"metrics": metrics}
+
+
+def _parse_script_info_for_formula(value):
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError, TypeError):
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _script_formula_from_record(record):
+    if not isinstance(record, dict):
+        return []
+    script_info = _parse_script_info_for_formula(record.get("scriptInfo"))
+    formula = script_info.get("formula", [])
+    if not isinstance(formula, list):
+        return []
+    result = []
+    seen = set()
+    for item in formula:
+        if not isinstance(item, dict):
+            continue
+        level1 = item.get("level_1_label") or {}
+        level2 = item.get("level_2_label") or {}
+        label1 = _text(level1.get("label") if isinstance(level1, dict) else "")
+        label2 = _text(level2.get("label") if isinstance(level2, dict) else "")
+        key = (label1, label2)
+        if label1 and label2 and key not in seen:
+            seen.add(key)
+            result.append({"level1": label1, "level2": label2})
+    return result
+
+
+def _scripts_by_material(diagnostic_scripts):
+    result = {}
+    if not isinstance(diagnostic_scripts, dict):
+        return result
+    for material in diagnostic_scripts.get("materials", []):
+        if not isinstance(material, dict):
+            continue
+        material_id = _text(material.get("materialId"))
+        if material_id:
+            result[material_id] = material
+    return result
+
+
+def _script_records_by_material(records_by_material):
+    result = {}
+    for material_id, records in records_by_material.items():
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if isinstance(record, dict) and record.get("recordType") == "script_analysis":
+                result[material_id] = record
+                break
+    return result
+
+
+def _material_script_analysis(material_id, script_facts, script_records):
+    facts = script_facts.get(material_id, {})
+    record = script_records.get(material_id, {})
+    formula = _script_formula_from_record(record) or list(facts.get("labels", []))
+    return {
+        "materialUri": _text(facts.get("materialUri") or record.get("materialUri")),
+        "formula": formula,
+        "labels": list(facts.get("labels", [])),
+        "evidence": list(facts.get("evidence", [])),
+        "text": _text(facts.get("text")),
+    }
+
+
+def _empty_script_analysis():
+    return {
+        "materialUri": "",
+        "formula": [],
+        "labels": [],
+        "evidence": [],
+        "text": "",
+    }
+
+
+def _material_card(material, summary, analysis, records=None, script_analysis=None):
     frames = summary.get("frames", []) if isinstance(summary, dict) else []
     warnings = summary.get("warnings", []) if isinstance(summary, dict) else []
     extraction_status = "succeeded" if frames else "missing_summary"
@@ -415,6 +542,9 @@ def _material_card(material, summary, analysis):
         "highlightFrames": frames,
         "warnings": warnings,
         "analysis": analysis or _empty_material_analysis(material["materialId"]),
+        "interactionTimeline": _material_interaction_timeline(records or []),
+        "scriptAnalysis": script_analysis or _empty_script_analysis(),
+        "video": {"src": "", "poster": "", "durationSec": None},
     }
 
 
@@ -606,11 +736,17 @@ def build_final_report_data(
     materials = _selected_materials(top_payload)
     diagnostic = build_diagnostic_analysis(top_payload, records_by_material)
     analyses = _analyses_by_material(conclusion)
+    script_facts = _scripts_by_material(diagnostic["scripts"])
+    script_records = _script_records_by_material(records_by_material)
     material_cards = [
         _material_card(
             material,
             summaries_by_material.get(material["materialId"], {}),
             analyses.get(material["materialId"]),
+            records_by_material.get(material["materialId"], []),
+            _material_script_analysis(
+                material["materialId"], script_facts, script_records
+            ),
         )
         for material in materials
     ]

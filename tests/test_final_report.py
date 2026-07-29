@@ -85,7 +85,122 @@ def click_record(material_id, second, value):
     }
 
 
+def interaction_record(material_id, metric, second, value):
+    return {
+        "recordType": "interaction_series",
+        "interactionMetric": metric,
+        "durationSec": second,
+        "metricValue": value,
+        "materialId": material_id,
+    }
+
+
+def script_record(material_id):
+    return {
+        "recordType": "script_analysis",
+        "materialId": material_id,
+        "materialUri": f"uri-{material_id}",
+        "scriptInfo": json.dumps(
+            {
+                "text": "早餐可以不碰碳水，但鲜炖燕窝一定要坚持吃。",
+                "formula": [
+                    {
+                        "level_1_label": {"value": 1, "label": "商品卖点"},
+                        "level_2_label": {"value": 11, "label": "适用场景"},
+                    }
+                ],
+                "data": [
+                    {
+                        "level_1_label": {"value": 1, "label": "商品卖点"},
+                        "level_2_labels": [
+                            {"value": 11, "label": "适用场景"},
+                            {"value": 12, "label": "使用感受"},
+                        ],
+                    }
+                ],
+                "detail": {
+                    "11": {
+                        "label": "适用场景",
+                        "list": ["早餐可以不碰碳水，但鲜炖燕窝一定要坚持吃。"],
+                    },
+                    "12": {
+                        "label": "使用感受",
+                        "list": ["浓稠捞丝，吃起来口感 q 弹。"],
+                    },
+                },
+            },
+            ensure_ascii=False,
+        ),
+    }
+
+
 class FinalReportDataTests(unittest.TestCase):
+    def test_material_cards_include_interaction_timeline_and_script_analysis(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-30",
+            "materials": [material("m-1")],
+        }
+        records_by_material = {
+            "m-1": [
+                interaction_record("m-1", "CLICK_COUNT", 2, 5),
+                interaction_record("m-1", "CLICK_COUNT", 1, 9),
+                interaction_record("m-1", "CLICK_COUNT", 3, 9),
+                interaction_record("m-1", "LIKE_COUNT", 1, 2),
+                interaction_record("m-1", "LOSE_COUNT", 1, 7),
+                interaction_record("m-1", "COMMENT_COUNT", 1, 1),
+                interaction_record("m-1", "SHARE_COUNT", 1, 3),
+                interaction_record("m-1", "NEW_FOLLOWER_COUNT", 1, 4),
+                script_record("m-1"),
+            ]
+        }
+        summaries_by_material = {
+            "m-1": {
+                "summaryPath": "/run/peak-frames/m-1/summary.json",
+                "frames": [],
+                "warnings": [],
+            }
+        }
+
+        result = build_final_report_data(
+            top_payload,
+            records_by_material,
+            summaries_by_material,
+            conclusion=None,
+            batch_verification=None,
+        )
+
+        card = result["materials"][0]
+        timeline = card["interactionTimeline"]
+        self.assertEqual(
+            [metric["metric"] for metric in timeline["metrics"]],
+            [
+                "CLICK_COUNT",
+                "LOSE_COUNT",
+                "LIKE_COUNT",
+                "COMMENT_COUNT",
+                "SHARE_COUNT",
+                "NEW_FOLLOWER_COUNT",
+            ],
+        )
+        click_metric = timeline["metrics"][0]
+        self.assertEqual(click_metric["label"], "整体点击次数")
+        self.assertEqual(
+            click_metric["points"],
+            [
+                {"second": 1.0, "value": 9.0},
+                {"second": 2.0, "value": 5.0},
+                {"second": 3.0, "value": 9.0},
+            ],
+        )
+        self.assertEqual(click_metric["peak"], {"second": 1.0, "value": 9.0})
+        script = card["scriptAnalysis"]
+        self.assertEqual(script["materialUri"], "uri-m-1")
+        self.assertEqual(script["text"], "早餐可以不碰碳水，但鲜炖燕窝一定要坚持吃。")
+        self.assertIn({"level1": "商品卖点", "level2": "适用场景"}, script["labels"])
+        self.assertIn({"level1": "商品卖点", "level2": "适用场景"}, script["formula"])
+        self.assertEqual(script["evidence"][0]["level2"], "适用场景")
+
     def test_builds_draft_report_without_conclusion_json(self):
         top_payload = {
             "actualStartDate": "2026-06-01",
