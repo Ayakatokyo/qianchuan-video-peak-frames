@@ -181,6 +181,66 @@
       gap: 14px;
     }
 
+    .collapsible-head {
+      margin-bottom: 12px;
+    }
+
+    .collapsible-toggle {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f7ead8;
+      color: var(--ink);
+      padding: 12px 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      font: inherit;
+      text-align: left;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, .52);
+    }
+
+    .collapsible-toggle:hover {
+      border-color: rgba(82, 45, 24, .24);
+      background: #fff1dc;
+    }
+
+    .collapsible-toggle:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .collapsible-toggle-label {
+      min-width: 0;
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .collapsible-toggle-action {
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: #2c1810;
+      color: #fff;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .collapsible-body {
+      display: grid;
+      gap: 12px;
+    }
+
+    .collapsible-body[hidden] {
+      display: none;
+    }
+
     .metric-switch {
       display: flex;
       flex-wrap: wrap;
@@ -416,8 +476,8 @@
 
     .side-tabs {
       display: grid;
-      grid-template-columns: 260px minmax(0, 1fr);
-      gap: 20px;
+      grid-template-columns: 190px minmax(0, 1fr);
+      gap: 18px;
       align-items: stretch;
     }
 
@@ -440,11 +500,12 @@
       border-radius: 8px;
       background: #fff8ec;
       color: var(--ink);
-      padding: 10px 14px;
+      padding: 8px 9px;
       text-align: left;
-      line-height: 1.45;
+      line-height: 1.35;
       cursor: pointer;
       font: inherit;
+      font-size: 12px;
     }
 
     .tab-list button[aria-selected="true"] {
@@ -474,11 +535,33 @@
       display: block;
     }
 
+    .visual-strip {
+      --visual-height: 560px;
+      --video-width: calc(var(--visual-height) * 9 / 16);
+      display: grid;
+      grid-template-columns: var(--video-width) minmax(0, 1fr);
+      gap: 14px;
+      align-items: stretch;
+      margin: 18px 0;
+    }
+
+    .video-panel {
+      min-width: 0;
+      width: var(--video-width);
+      height: var(--visual-height);
+      display: flex;
+      align-items: stretch;
+      justify-self: start;
+      overflow: hidden;
+    }
+
     .frame-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-rows: repeat(2, minmax(0, 1fr));
       gap: 12px;
-      margin: 18px 0;
+      height: var(--visual-height);
+      margin: 0;
     }
 
     figure {
@@ -487,11 +570,30 @@
       border: 1px solid var(--line);
       border-radius: 18px;
       background: #f4e3cd;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+    }
+
+    .frame-preview-button {
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: zoom-in;
+      display: block;
+    }
+
+    .frame-preview-button:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: -3px;
     }
 
     figure img {
       width: 100%;
-      height: 230px;
+      height: 100%;
+      min-height: 0;
       object-fit: contain;
       background: #efe6d9;
       display: block;
@@ -532,17 +634,120 @@
 
     .timeline-chart {
       width: 100%;
-      height: 180px;
+      height: 320px;
       display: block;
       border-radius: 14px;
       background: #fff8ec;
       border: 1px solid rgba(82, 45, 24, .1);
     }
 
+    .timeline-metric-label {
+      fill: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .timeline-axis-label,
+    .timeline-tick-label {
+      fill: var(--muted);
+      font-size: 12px;
+    }
+
+    .timeline-axis-line,
+    .timeline-grid-line {
+      stroke: rgba(82, 45, 24, .16);
+      stroke-width: 1;
+    }
+
+    .timeline-line {
+      fill: none;
+      stroke: var(--gold);
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .timeline-point-dot {
+      fill: #9b6a37;
+      stroke: #fff8ec;
+      stroke-width: 2;
+    }
+
+    .timeline-peak-dot {
+      fill: #fff;
+      stroke: #9b6a37;
+      stroke-width: 3;
+    }
+
+    .timeline-point-hitbox {
+      cursor: default;
+    }
+
+    .timeline-tooltip {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .12s ease;
+    }
+
+    .timeline-point-hitbox:hover .timeline-tooltip,
+    .timeline-point-hitbox:focus .timeline-tooltip {
+      opacity: 1;
+    }
+
     .timeline-peak {
       margin-top: 10px;
       color: var(--ink);
       font-weight: 800;
+    }
+
+    .timeline-scale {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .timeline-scale-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    .timeline-scale input[type="range"] {
+      width: 100%;
+      height: 8px;
+      appearance: none;
+      border-radius: 999px;
+      background: linear-gradient(
+        90deg,
+        #9b6a37 0%,
+        #9b6a37 var(--timeline-scale-progress, 100%),
+        #ead8c0 var(--timeline-scale-progress, 100%),
+        #ead8c0 100%
+      );
+      accent-color: #9b6a37;
+      cursor: pointer;
+    }
+
+    .timeline-scale input[type="range"]::-webkit-slider-thumb {
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #fff8ec;
+      border-radius: 999px;
+      background: #9b6a37;
+      box-shadow: 0 2px 8px rgba(82, 45, 24, .22);
+    }
+
+    .timeline-scale input[type="range"]::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border: 2px solid #fff8ec;
+      border-radius: 999px;
+      background: #9b6a37;
+      box-shadow: 0 2px 8px rgba(82, 45, 24, .22);
     }
 
     .chip-list {
@@ -564,36 +769,99 @@
       font-weight: 800;
     }
 
-    .evidence-list {
-      display: grid;
-      gap: 8px;
-      margin: 8px 0 12px;
+    .formula-chip {
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
     }
 
-    .evidence-row {
-      padding: 10px 12px;
-      border-radius: 12px;
-      background: #fff8ec;
-      color: var(--ink);
-      line-height: 1.65;
+    .formula-chip[aria-pressed="true"] {
+      background: #2c1810;
+      border-color: #2c1810;
+      color: #fff;
     }
 
     .transcript {
-      max-height: 120px;
-      overflow: auto;
-      padding: 12px;
+      overflow: visible;
+      padding: 10px 12px;
       border-radius: 12px;
       background: #f7ead8;
       color: var(--ink);
-      line-height: 1.7;
+      font-size: 14px;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+
+    .script-highlight {
+      border-radius: 6px;
+      background: rgba(215, 154, 75, .32);
+      box-shadow: 0 0 0 2px rgba(215, 154, 75, .16);
+      color: var(--ink);
+      font-weight: 800;
     }
 
     .material-video {
       width: 100%;
-      max-height: 520px;
-      margin: 18px 0;
+      height: 100%;
+      aspect-ratio: 9 / 16;
+      min-height: 0;
+      margin: 0;
       border-radius: 18px;
       background: #120b08;
+      object-fit: cover;
+    }
+
+    .frame-lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      place-items: center;
+      padding: 32px;
+      background: rgba(18, 11, 8, .84);
+    }
+
+    .frame-lightbox[hidden] {
+      display: none;
+    }
+
+    .frame-lightbox-dialog {
+      position: relative;
+      max-width: min(92vw, 1120px);
+      max-height: 90vh;
+      display: grid;
+      gap: 12px;
+    }
+
+    .frame-lightbox img {
+      max-width: min(92vw, 1120px);
+      max-height: 82vh;
+      object-fit: contain;
+      border-radius: 18px;
+      background: #120b08;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, .34);
+    }
+
+    .frame-lightbox-caption {
+      color: #fff8ec;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .frame-lightbox-close {
+      position: absolute;
+      top: -16px;
+      right: -16px;
+      width: 38px;
+      height: 38px;
+      border: 1px solid rgba(255, 248, 236, .4);
+      border-radius: 999px;
+      background: #fff8ec;
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: 22px;
+      line-height: 1;
     }
 
     .formula b {
@@ -620,6 +888,7 @@
       .rec-list,
       .chart-grid,
       .side-tabs,
+      .visual-strip,
       .frame-grid,
       .material-body {
         grid-template-columns: 1fr;
@@ -640,6 +909,10 @@
 
       .tab-list button {
         min-width: 220px;
+      }
+
+      .material-video {
+        min-height: 0;
       }
     }
   </style>
@@ -694,6 +967,13 @@
   </section>
 
 </main>
+<div class="frame-lightbox" id="frame-lightbox" role="dialog" aria-modal="true" aria-label="高光帧大图" hidden>
+  <div class="frame-lightbox-dialog">
+    <button class="frame-lightbox-close" type="button" aria-label="关闭大图">×</button>
+    <img alt="高光帧大图" id="frame-lightbox-image"/>
+    <p class="frame-lightbox-caption" id="frame-lightbox-caption"></p>
+  </div>
+</div>
 
 <script>
 const reportData = JSON.parse(document.getElementById("report-data").textContent);
@@ -721,6 +1001,33 @@ function element(tag, className, content) {
   if (className) node.className = className;
   if (content !== undefined) node.textContent = content;
   return node;
+}
+
+function createCollapseToggle(target, title, defaultExpanded = true) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "collapsible-toggle";
+  const label = element("span", "collapsible-toggle-label", title);
+  const action = element("span", "collapsible-toggle-action", "");
+  button.append(label, action);
+  let expanded = Boolean(defaultExpanded);
+  function sync() {
+    button.setAttribute("aria-expanded", String(expanded));
+    action.textContent = expanded ? "收起数据" : "展开数据";
+    target.hidden = !expanded;
+  }
+  button.addEventListener("click", () => {
+    expanded = !expanded;
+    sync();
+  });
+  sync();
+  return button;
+}
+
+function appendCollapsibleHead(root, title, target) {
+  const head = element("div", "collapsible-head");
+  head.append(createCollapseToggle(target, title));
+  root.append(head);
 }
 
 const metricLabels = {
@@ -1048,10 +1355,13 @@ function renderAudienceDashboard() {
     root.append(element("p", "muted", "暂无人群汇总数据"));
     return;
   }
+  const body = element("div", "collapsible-body");
+  appendCollapsibleHead(root, "人群真实数据", body);
   const switcher = element("div", "metric-switch");
   switcher.append(element("span", "", "展示指标："));
   const chartGrid = element("div", "chart-grid");
-  root.append(switcher, chartGrid);
+  body.append(switcher, chartGrid);
+  root.append(body);
 
   function renderMetric(metricKey) {
     switcher.querySelectorAll("button").forEach((button) => {
@@ -1120,18 +1430,40 @@ function renderFrames(material) {
   }
   frames.forEach((frame) => {
     const figure = document.createElement("figure");
+    const button = document.createElement("button");
     const image = document.createElement("img");
+    const captionText = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
+    button.type = "button";
+    button.className = "frame-preview-button";
+    button.setAttribute("aria-label", `查看大图：${captionText}`);
     image.src = text(frame.framePath);
     image.alt = "高光帧";
-    const caption = element(
-      "figcaption",
-      "",
-      `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`
-    );
-    figure.append(image, caption);
+    button.append(image);
+    button.addEventListener("click", () => openFrameLightbox(text(frame.framePath), captionText));
+    const caption = element("figcaption", "", captionText);
+    figure.append(button, caption);
     grid.append(figure);
   });
   return grid;
+}
+
+function openFrameLightbox(src, caption) {
+  const lightbox = document.getElementById("frame-lightbox");
+  const image = document.getElementById("frame-lightbox-image");
+  const captionNode = document.getElementById("frame-lightbox-caption");
+  image.src = src;
+  captionNode.textContent = caption;
+  lightbox.hidden = false;
+  document.body.style.overflow = "hidden";
+  lightbox.querySelector(".frame-lightbox-close").focus();
+}
+
+function closeFrameLightbox() {
+  const lightbox = document.getElementById("frame-lightbox");
+  const image = document.getElementById("frame-lightbox-image");
+  lightbox.hidden = true;
+  image.removeAttribute("src");
+  document.body.style.overflow = "";
 }
 
 function renderFormula(title, paragraphs) {
@@ -1141,76 +1473,269 @@ function renderFormula(title, paragraphs) {
   return card;
 }
 
-function renderTimelineChart(metric) {
+function formatTimelineSecond(second) {
+  const safeSecond = Math.max(0, Math.round(Number(second || 0)));
+  const minutes = Math.floor(safeSecond / 60);
+  const seconds = safeSecond % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function svgElement(tagName, attributes = {}) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+  Object.entries(attributes).forEach(([key, value]) => {
+    node.setAttribute(key, String(value));
+  });
+  return node;
+}
+
+function updateTimelineScaleTrack(state) {
+  if (!state.control) return;
+  const min = Number(state.control.min || 0);
+  const max = Number(state.control.max || 1);
+  const value = Number(state.control.value || state.visibleRatio || 1);
+  const progress = max > min ? ((value - min) / (max - min)) * 100 : 100;
+  state.control.style.setProperty("--timeline-scale-progress", `${Math.max(0, Math.min(100, progress))}%`);
+}
+
+function createTimelineScaleControl(state, onChange) {
+  if (!state.control) {
+    const scale = element("div", "timeline-scale");
+    const head = element("div", "timeline-scale-head");
+    const title = element("span", "", "");
+    const detail = element("span", "", "");
+    head.append(title, detail);
+    const scaleInput = document.createElement("input");
+    scaleInput.type = "range";
+    scaleInput.min = "0.25";
+    scaleInput.max = "1";
+    scaleInput.step = "0.05";
+    scaleInput.addEventListener("input", () => {
+      state.visibleRatio = Number(scaleInput.value);
+      updateTimelineScaleTrack(state);
+      if (state.activeMetric) {
+        onChange(state.activeMetric);
+      }
+    });
+    scale.append(head, scaleInput);
+    state.control = scaleInput;
+    state.metaTitle = title;
+    state.metaDetail = detail;
+    state.root = scale;
+  }
+  const ratio = Number(state.visibleRatio || 1);
+  const maxSecond = Number(state.maxSecond || 0);
+  state.control.value = String(ratio);
+  updateTimelineScaleTrack(state);
+  state.metaTitle.textContent = `时间范围 ${Math.round(ratio * 100)}%`;
+  state.metaDetail.textContent = maxSecond > 0
+    ? `当前显示 00:00-${formatTimelineSecond(maxSecond * ratio)} / ${formatTimelineSecond(maxSecond)}`
+    : "暂无可缩放时长";
+  return state.root;
+}
+
+function renderTimelineChart(metric, visibleRatio = 1) {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("class", "timeline-chart");
-  svg.setAttribute("viewBox", "0 0 640 180");
+  svg.setAttribute("viewBox", "0 0 840 320");
   svg.setAttribute("role", "img");
   svg.setAttribute("aria-label", `${text(metric.label)}趋势图`);
-  const points = Array.isArray(metric.points) ? metric.points : [];
+  const allPoints = Array.isArray(metric.points) ? metric.points : [];
+  const maxSecond = Math.max(...allPoints.map((point) => Number(point.second || 0)), 1);
+  const visibleMaxSecond = Math.max(1, maxSecond * Number(visibleRatio || 1));
+  const points = allPoints.filter((point) => Number(point.second || 0) <= visibleMaxSecond);
   if (points.length === 0) {
     return svg;
   }
-  const maxSecond = Math.max(...points.map((point) => Number(point.second || 0)), 1);
+  const bounds = {
+    left: 78,
+    right: 810,
+    top: 56,
+    bottom: 266,
+  };
+  const width = bounds.right - bounds.left;
+  const height = bounds.bottom - bounds.top;
   const maxValue = Math.max(...points.map((point) => Number(point.value || 0)), 1);
+  const yTicks = [maxValue, maxValue * 0.75, maxValue * 0.5, maxValue * 0.25, 0];
+  yTicks.forEach((value) => {
+    const y = bounds.bottom - (Number(value || 0) / maxValue) * height;
+    svg.append(
+      svgElement("line", {
+        class: "timeline-grid-line",
+        x1: bounds.left,
+        x2: bounds.right,
+        y1: y.toFixed(2),
+        y2: y.toFixed(2),
+      }),
+      svgElement("text", {
+        class: "timeline-tick-label",
+        x: bounds.left - 12,
+        y: (y + 4).toFixed(2),
+        "text-anchor": "end",
+      })
+    );
+    svg.lastChild.textContent = formatNumber(value);
+  });
+  const xTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => visibleMaxSecond * ratio);
+  xTicks.forEach((second) => {
+    const x = bounds.left + (Number(second || 0) / visibleMaxSecond) * width;
+    svg.append(
+      svgElement("line", {
+        class: "timeline-grid-line",
+        x1: x.toFixed(2),
+        x2: x.toFixed(2),
+        y1: bounds.top,
+        y2: bounds.bottom,
+      }),
+      svgElement("text", {
+        class: "timeline-tick-label",
+        x: x.toFixed(2),
+        y: bounds.bottom + 24,
+        "text-anchor": "middle",
+      })
+    );
+    svg.lastChild.textContent = formatTimelineSecond(second);
+  });
+  svg.append(
+    svgElement("line", {
+      class: "timeline-axis-line",
+      x1: bounds.left,
+      x2: bounds.left,
+      y1: bounds.top,
+      y2: bounds.bottom,
+    }),
+    svgElement("line", {
+      class: "timeline-axis-line",
+      x1: bounds.left,
+      x2: bounds.right,
+      y1: bounds.bottom,
+      y2: bounds.bottom,
+    })
+  );
+  const axisLabel = svgElement("text", {
+    class: "timeline-metric-label",
+    x: bounds.left,
+    y: 30,
+  });
+  axisLabel.textContent = text(metric.label);
+  svg.append(axisLabel);
   const pathData = points.map((point, index) => {
-    const x = 24 + (Number(point.second || 0) / maxSecond) * 592;
-    const y = 146 - (Number(point.value || 0) / maxValue) * 112;
+    const x = bounds.left + (Number(point.second || 0) / visibleMaxSecond) * width;
+    const y = bounds.bottom - (Number(point.value || 0) / maxValue) * height;
     return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
   }).join(" ");
-  const gridLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  gridLine.setAttribute("x1", "24");
-  gridLine.setAttribute("x2", "616");
-  gridLine.setAttribute("y1", "146");
-  gridLine.setAttribute("y2", "146");
-  gridLine.setAttribute("stroke", "rgba(82,45,24,.18)");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", pathData);
-  path.setAttribute("fill", "none");
-  path.setAttribute("stroke", "#d79a4b");
-  path.setAttribute("stroke-width", "4");
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  svg.append(gridLine, path);
+  const path = svgElement("path", {
+    class: "timeline-line",
+    d: pathData,
+  });
+  svg.append(path);
   const peak = metric.peak || {};
-  if (peak.second !== undefined && peak.value !== undefined) {
-    const cx = 24 + (Number(peak.second || 0) / maxSecond) * 592;
-    const cy = 146 - (Number(peak.value || 0) / maxValue) * 112;
-    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    dot.setAttribute("cx", cx.toFixed(2));
-    dot.setAttribute("cy", cy.toFixed(2));
-    dot.setAttribute("r", "6");
-    dot.setAttribute("fill", "#2c1810");
-    svg.append(dot);
+  points.forEach((point) => {
+    const cx = bounds.left + (Number(point.second || 0) / visibleMaxSecond) * width;
+    const cy = bounds.bottom - (Number(point.value || 0) / maxValue) * height;
+    const group = svgElement("g", {
+      class: "timeline-point-hitbox",
+      tabindex: "0",
+    });
+    group.append(
+      svgElement("circle", {
+        cx: cx.toFixed(2),
+        cy: cy.toFixed(2),
+        r: "10",
+        fill: "transparent",
+      }),
+      svgElement("circle", {
+        cx: cx.toFixed(2),
+        cy: cy.toFixed(2),
+        r: "4",
+        class: "timeline-point-dot",
+      })
+    );
+    const tooltip = svgElement("g", {
+      class: "timeline-tooltip",
+      transform: `translate(${Math.min(bounds.right - 150, Math.max(bounds.left, cx - 74)).toFixed(2)} ${Math.max(bounds.top + 8, cy - 58).toFixed(2)})`,
+    });
+    tooltip.append(svgElement("rect", {
+      width: "148",
+      height: "46",
+      rx: "8",
+      fill: "rgba(255, 255, 255, .96)",
+      stroke: "rgba(82, 45, 24, .16)",
+    }));
+    const tooltipTime = svgElement("text", {
+      x: "12",
+      y: "18",
+      fill: "#2a170f",
+      "font-size": "12",
+      "font-weight": "800",
+    });
+    tooltipTime.textContent = formatTimelineSecond(point.second);
+    const tooltipValue = svgElement("text", {
+      x: "12",
+      y: "36",
+      fill: "#806758",
+      "font-size": "12",
+    });
+    tooltipValue.textContent = `${text(metric.label)}：${formatNumber(point.value)}`;
+    tooltip.append(tooltipTime, tooltipValue);
+    group.append(tooltip);
+    svg.append(group);
+  });
+  if (peak.second !== undefined && peak.value !== undefined && Number(peak.second || 0) <= visibleMaxSecond) {
+    const cx = bounds.left + (Number(peak.second || 0) / visibleMaxSecond) * width;
+    const cy = bounds.bottom - (Number(peak.value || 0) / maxValue) * height;
+    const dot = svgElement("circle", {
+      class: "timeline-peak-dot",
+      cx: cx.toFixed(2),
+      cy: cy.toFixed(2),
+      r: "6",
+    });
+    const label = svgElement("text", {
+      class: "timeline-axis-label",
+      x: Math.min(bounds.right - 34, cx + 10).toFixed(2),
+      y: Math.max(bounds.top + 12, cy - 10).toFixed(2),
+    });
+    label.textContent = "峰值";
+    svg.append(dot, label);
   }
   return svg;
 }
 
 function renderInteractionTimeline(material) {
   const card = element("div", "raw-fact-card");
-  card.append(element("b", "", "互动时序分析"));
   const metrics = Array.isArray(material.interactionTimeline?.metrics)
     ? material.interactionTimeline.metrics
     : [];
   if (metrics.length === 0) {
+    card.append(element("b", "", "互动时序分析"));
     card.append(element("p", "muted", "暂无互动时序数据"));
     return card;
   }
+  const body = element("div", "collapsible-body");
+  appendCollapsibleHead(card, "互动时序分析", body);
   const switcher = element("div", "metric-switch");
   const chartMount = element("div", "");
+  const scaleMount = element("div", "");
   const peakNote = element("p", "timeline-peak");
+  const state = { visibleRatio: 1, activeMetric: null };
   card.dataset.timelineReady = "false";
   card._timelineMetrics = metrics;
   card._timelineRenderMetric = renderMetric;
-  card.append(switcher, chartMount, peakNote);
+  body.append(switcher, chartMount, scaleMount, peakNote);
+  card.append(body);
 
   function renderMetric(metric) {
+    state.activeMetric = metric;
+    state.maxSecond = Math.max(...(Array.isArray(metric.points) ? metric.points : []).map((point) => Number(point.second || 0)), 1);
     switcher.querySelectorAll("button").forEach((button) => {
       button.setAttribute("aria-pressed", String(button.dataset.metric === metric.metric));
     });
-    chartMount.replaceChildren(renderTimelineChart(metric));
+    chartMount.replaceChildren(renderTimelineChart(metric, state.visibleRatio));
+    const scale = createTimelineScaleControl(state, renderMetric);
+    if (scaleMount.firstChild !== scale) {
+      scaleMount.replaceChildren(scale);
+    }
     const peak = metric.peak || {};
-    peakNote.textContent = `${text(metric.label)}峰值：${formatNumber(peak.second)}s，${formatNumber(peak.value)} 次`;
+    peakNote.textContent = `${text(metric.label)}峰值：${formatTimelineSecond(peak.second)}，${formatNumber(peak.value)} 次`;
   }
 
   metrics.forEach((metric, index) => {
@@ -1239,36 +1764,120 @@ function renderChipList(items) {
   return list;
 }
 
+function scriptFormulaLabel(item) {
+  if (typeof item === "string") return text(item);
+  return `${text(item.level1)} / ${text(item.level2)}`;
+}
+
+function formulaMatchesEvidence(formulaItem, evidenceItem) {
+  const formulaLevel1 = text(formulaItem.level1);
+  const formulaLevel2 = text(formulaItem.level2);
+  const evidenceLevel1 = text(evidenceItem.level1);
+  const evidenceLevel2 = text(evidenceItem.level2);
+  return Boolean(
+    (formulaLevel2 && (formulaLevel2 === evidenceLevel2 || formulaLevel2 === evidenceLevel1)) ||
+    (formulaLevel1 && (formulaLevel1 === evidenceLevel1 || formulaLevel1 === evidenceLevel2))
+  );
+}
+
+function matchingEvidenceSentences(formulaItem, evidence) {
+  if (!formulaItem || !Array.isArray(evidence)) return [];
+  const sentences = [];
+  evidence.forEach((item) => {
+    const sentence = text(item.sentence);
+    if (sentence && formulaMatchesEvidence(formulaItem, item) && !sentences.includes(sentence)) {
+      sentences.push(sentence);
+    }
+  });
+  return sentences;
+}
+
+function appendHighlightedTranscript(root, scriptText, highlightSentences) {
+  root.replaceChildren();
+  const fullText = text(scriptText);
+  const ranges = [];
+  highlightSentences.forEach((sentence) => {
+    const highlightText = text(sentence);
+    const start = fullText.indexOf(highlightText);
+    if (start >= 0) {
+      ranges.push({ start, end: start + highlightText.length });
+    }
+  });
+  ranges.sort((left, right) => left.start - right.start);
+  const merged = [];
+  ranges.forEach((range) => {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.start >= previous.end) {
+      merged.push(range);
+    }
+  });
+  if (merged.length === 0) {
+    root.textContent = fullText;
+    return;
+  }
+  let cursor = 0;
+  merged.forEach((range) => {
+    if (range.start > cursor) {
+      root.append(document.createTextNode(fullText.slice(cursor, range.start)));
+    }
+    root.append(element("span", "script-highlight", fullText.slice(range.start, range.end)));
+    cursor = range.end;
+  });
+  if (cursor < fullText.length) {
+    root.append(document.createTextNode(fullText.slice(cursor)));
+  }
+}
+
+function renderScriptTranscript(scriptText, evidence, activeFormula) {
+  const transcript = element("div", "transcript script-transcript");
+  appendHighlightedTranscript(transcript, scriptText, matchingEvidenceSentences(activeFormula, evidence));
+  return transcript;
+}
+
+function renderFormulaButtons(formula, evidence, transcriptMount, scriptText) {
+  const list = element("div", "chip-list");
+  formula.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip formula-chip";
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.textContent = scriptFormulaLabel(item);
+    button.addEventListener("click", () => {
+      list.querySelectorAll("button").forEach((node) => {
+        node.setAttribute("aria-pressed", String(node === button));
+      });
+      if (transcriptMount) {
+        transcriptMount.replaceChildren(renderScriptTranscript(scriptText, evidence, item));
+      }
+    });
+    list.append(button);
+  });
+  return list;
+}
+
 function renderScriptAnalysis(material) {
   const card = element("div", "raw-fact-card");
-  card.append(element("b", "", "脚本分析数据"));
   const script = material.scriptAnalysis || {};
-  const labels = Array.isArray(script.labels) ? script.labels : [];
   const formula = Array.isArray(script.formula) ? script.formula : [];
   const evidence = Array.isArray(script.evidence) ? script.evidence : [];
   const scriptText = text(script.text);
-  if (labels.length === 0 && evidence.length === 0 && !scriptText) {
+  if (formula.length === 0 && !scriptText) {
+    card.append(element("b", "", "脚本分析数据"));
     card.append(element("p", "muted", "暂无脚本分析数据"));
     return card;
   }
+  const body = element("div", "collapsible-body");
+  appendCollapsibleHead(card, "脚本分析数据", body);
+  const transcriptMount = scriptText ? element("div", "") : null;
   if (formula.length > 0) {
-    card.append(element("p", "muted", "本视频内容公式"), renderChipList(formula));
-  }
-  if (labels.length > 0) {
-    card.append(element("p", "muted", "脚本标签"), renderChipList(labels));
-  }
-  if (evidence.length > 0) {
-    const evidenceList = element("div", "evidence-list");
-    evidence.slice(0, 6).forEach((item) => {
-      evidenceList.append(
-        element("div", "evidence-row", `${text(item.level2)}：${displayText(item.sentence)}`)
-      );
-    });
-    card.append(element("p", "muted", "证据句"), evidenceList);
+    body.append(element("p", "muted", "本视频内容公式"), renderFormulaButtons(formula, evidence, transcriptMount, scriptText));
   }
   if (scriptText) {
-    card.append(element("p", "muted", "脚本文案"), element("div", "transcript", scriptText));
+    const activeFormula = formula.length > 0 ? formula[0] : null;
+    transcriptMount.append(renderScriptTranscript(scriptText, evidence, activeFormula));
+    body.append(element("p", "muted", "脚本文案"), transcriptMount);
   }
+  card.append(body);
   return card;
 }
 
@@ -1287,6 +1896,19 @@ function renderVideoPreview(material) {
     video.poster = text(videoData.poster);
   }
   return video;
+}
+
+function renderVisualStrip(material) {
+  const strip = element("div", "visual-strip");
+  const videoPanel = element("div", "video-panel");
+  const videoPreview = renderVideoPreview(material);
+  if (videoPreview) {
+    videoPanel.append(videoPreview);
+  } else {
+    videoPanel.append(element("p", "muted", "暂无真实视频"));
+  }
+  strip.append(videoPanel, renderFrames(material));
+  return strip;
 }
 
 function hydrateMaterialPanel(panel) {
@@ -1318,19 +1940,14 @@ function renderMaterialPanel(material, selected) {
 
   const body = element("div", "material-body");
   body.append(
-    renderInteractionTimeline(material),
-    renderScriptAnalysis(material),
-    renderFormula("人群与脚本证据", [analysis.audienceConclusion, analysis.scriptConclusion]),
     renderHighlightFormula(analysis.highlightAnalyses),
+    renderInteractionTimeline(material),
+    renderFormula("人群与脚本证据", [analysis.audienceConclusion, analysis.scriptConclusion]),
+    renderScriptAnalysis(material),
     renderFormula("综合判断与下一步", [analysis.integratedConclusion, `下一步：${text(analysis.nextAction)}`])
   );
 
-  const videoPreview = renderVideoPreview(material);
-  const visualNodes = [renderFrames(material)];
-  if (videoPreview) {
-    visualNodes.push(videoPreview);
-  }
-  panel.append(head, ...visualNodes, body);
+  panel.append(head, renderVisualStrip(material), body);
   if (selected) {
     hydrateMaterialPanel(panel);
   }
@@ -1428,6 +2045,18 @@ function renderNextActions() {
     list.append(item);
   });
 }
+
+document.querySelector(".frame-lightbox-close").addEventListener("click", closeFrameLightbox);
+document.getElementById("frame-lightbox").addEventListener("click", (event) => {
+  if (event.target.id === "frame-lightbox") {
+    closeFrameLightbox();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !document.getElementById("frame-lightbox").hidden) {
+    closeFrameLightbox();
+  }
+});
 
 function renderReport() {
   const period = reportData.period || {};

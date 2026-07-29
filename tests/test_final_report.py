@@ -134,6 +134,16 @@ def script_record(material_id):
     }
 
 
+def material_info_record(material_id):
+    return {
+        "recordType": "material_info",
+        "materialId": material_id,
+        "videoUrl": f"https://video.example/{material_id}.mp4?token=signed",
+        "thumbnailUrl": f"https://image.example/{material_id}.jpg?token=signed",
+        "videoDuration": "46.022",
+    }
+
+
 class FinalReportDataTests(unittest.TestCase):
     def test_material_cards_include_interaction_timeline_and_script_analysis(self):
         top_payload = {
@@ -200,6 +210,31 @@ class FinalReportDataTests(unittest.TestCase):
         self.assertIn({"level1": "商品卖点", "level2": "适用场景"}, script["labels"])
         self.assertIn({"level1": "商品卖点", "level2": "适用场景"}, script["formula"])
         self.assertEqual(script["evidence"][0]["level2"], "适用场景")
+
+    def test_material_cards_include_video_metadata_from_material_info(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-30",
+            "materials": [material("m-1")],
+        }
+        records_by_material = {"m-1": [material_info_record("m-1")]}
+
+        result = build_final_report_data(
+            top_payload,
+            records_by_material,
+            summaries_by_material={},
+            conclusion=None,
+            batch_verification=None,
+        )
+
+        self.assertEqual(
+            result["materials"][0]["video"],
+            {
+                "src": "https://video.example/m-1.mp4?token=signed",
+                "poster": "https://image.example/m-1.jpg?token=signed",
+                "durationSec": 46.022,
+            },
+        )
 
     def test_builds_draft_report_without_conclusion_json(self):
         top_payload = {
@@ -558,7 +593,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(".insight-secondary {", html_text)
         self.assertIn("width: 100%;", html_text)
         self.assertIn("grid-template-columns: 1fr;", html_text)
-        self.assertIn("grid-template-columns: 260px minmax(0, 1fr);", html_text)
+        self.assertIn("grid-template-columns: 190px minmax(0, 1fr);", html_text)
         self.assertIn("统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。", html_text)
         self.assertNotIn("报告状态", html_text)
         self.assertNotIn("min-height: 360px;", html_text)
@@ -575,15 +610,103 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn('id="highlight-dashboard"', html_text)
         self.assertIn("function renderAudienceDashboard", html_text)
         self.assertIn("function renderScriptDashboard", html_text)
+        self.assertIn("function createCollapseToggle", html_text)
+        self.assertIn("collapsible-toggle", html_text)
+        self.assertIn("collapsible-toggle-action", html_text)
+        self.assertIn("width: 100%;", html_text)
+        self.assertIn("collapsible-body", html_text)
+        self.assertIn(".collapsible-body[hidden] {", html_text)
+        self.assertIn("display: none;", html_text)
+        self.assertIn('button.setAttribute("aria-expanded", String(expanded));', html_text)
+        self.assertIn('action.textContent = expanded ? "收起数据" : "展开数据";', html_text)
+        self.assertIn("target.hidden = !expanded;", html_text)
+        self.assertIn("收起数据", html_text)
+        self.assertIn("展开数据", html_text)
+        self.assertNotIn("收起真实数据", html_text)
+        self.assertNotIn("展开真实数据", html_text)
         self.assertIn("function renderInteractionTimeline", html_text)
         self.assertIn("function renderTimelineChart", html_text)
+        self.assertIn("function formatTimelineSecond", html_text)
+        self.assertIn("function createTimelineScaleControl", html_text)
+        self.assertIn("timeline-scale", html_text)
+        self.assertIn("timeline-tooltip", html_text)
+        self.assertIn("timeline-axis-label", html_text)
+        self.assertIn("timeline-metric-label", html_text)
+        self.assertIn("timeline-point-hitbox", html_text)
+        self.assertIn("height: 320px;", html_text)
+        self.assertIn('svg.setAttribute("viewBox", "0 0 840 320");', html_text)
+        self.assertIn("right: 810,", html_text)
+        self.assertIn("top: 56,", html_text)
+        self.assertIn("bottom: 266,", html_text)
+        self.assertIn('class: "timeline-metric-label"', html_text)
+        self.assertIn("时间范围", html_text)
+        self.assertIn("text(metric.label)", html_text)
+        self.assertIn("formatTimelineSecond(point.second)", html_text)
+        self.assertIn("renderTimelineChart(metric, state.visibleRatio)", html_text)
+        self.assertIn("function updateTimelineScaleTrack", html_text)
+        self.assertIn("--timeline-scale-progress", html_text)
+        self.assertIn("updateTimelineScaleTrack(state);", html_text)
+        self.assertIn("stroke: var(--gold);", html_text)
+        self.assertIn("fill: #9b6a37;", html_text)
+        self.assertIn("accent-color: #9b6a37;", html_text)
+        self.assertNotIn("#2f66ff", html_text)
         self.assertIn("function hydrateMaterialPanel", html_text)
+        self.assertIn("function renderVisualStrip", html_text)
+        self.assertIn('element("div", "visual-strip")', html_text)
+        self.assertIn('element("div", "video-panel")', html_text)
+        self.assertIn("--visual-height: 560px;", html_text)
+        self.assertIn("--video-width: calc(var(--visual-height) * 9 / 16);", html_text)
+        self.assertIn("grid-template-columns: var(--video-width) minmax(0, 1fr);", html_text)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", html_text)
+        self.assertIn("height: var(--visual-height);", html_text)
+        self.assertIn("width: var(--video-width);", html_text)
+        self.assertIn("justify-self: start;", html_text)
+        self.assertIn("aspect-ratio: 9 / 16;", html_text)
+        self.assertIn("grid-template-rows: repeat(2, minmax(0, 1fr));", html_text)
+        self.assertIn("grid-template-rows: minmax(0, 1fr) auto;", html_text)
+        self.assertIn("min-height: 0;", html_text)
+        self.assertNotIn("height: 175px;", html_text)
+        self.assertNotIn("min-height: 430px;", html_text)
+        self.assertIn("frame-preview-button", html_text)
+        self.assertIn("frame-lightbox", html_text)
+        self.assertIn('id="frame-lightbox"', html_text)
+        self.assertIn('aria-modal="true"', html_text)
+        self.assertIn("function openFrameLightbox", html_text)
+        self.assertIn("function closeFrameLightbox", html_text)
+        self.assertIn('event.key === "Escape"', html_text)
+        self.assertIn('button.setAttribute("aria-label", `查看大图：${captionText}`)', html_text)
         self.assertIn("function renderScriptAnalysis", html_text)
         self.assertIn("互动时序分析", html_text)
         self.assertIn("脚本分析数据", html_text)
         self.assertIn("暂无互动时序数据", html_text)
         self.assertIn("暂无脚本分析数据", html_text)
+        self.assertNotIn('element("p", "muted", "脚本标签")', html_text)
+        self.assertIn("function renderFormulaButtons", html_text)
+        self.assertIn("function renderScriptTranscript", html_text)
+        self.assertIn("script-highlight", html_text)
+        self.assertIn("font-size: 14px;", html_text)
+        self.assertIn("line-height: 1.55;", html_text)
+        self.assertIn("overflow: visible;", html_text)
+        self.assertNotIn("max-height: 120px;", html_text)
+        self.assertIn('button.className = "chip formula-chip"', html_text)
+        self.assertNotIn('card.append(element("p", "muted", "证据句"), evidenceList)', html_text)
         self.assertIn('video.preload = "metadata"', html_text)
+        self.assertNotIn("const visualNodes = [renderFrames(material)];", html_text)
+        self.assertNotIn("panel.append(head, ...visualNodes, body);", html_text)
+        self.assertIn(
+            "body.append(\n"
+            "    renderHighlightFormula(analysis.highlightAnalyses),\n"
+            "    renderInteractionTimeline(material),",
+            html_text,
+        )
+        self.assertIn(
+            "body.append(\n"
+            "    renderHighlightFormula(analysis.highlightAnalyses),\n"
+            "    renderInteractionTimeline(material),\n"
+            "    renderFormula(\"人群与脚本证据\", [analysis.audienceConclusion, analysis.scriptConclusion]),\n"
+            "    renderScriptAnalysis(material),",
+            html_text,
+        )
         self.assertNotIn("function renderHighlightDashboard", html_text)
         self.assertNotIn("data:video/", html_text)
         self.assertIn("八大人群分布", html_text)
@@ -868,6 +991,7 @@ class FinalReportRenderTests(unittest.TestCase):
             write_json(
                 records_dir / "m-1.json",
                 [
+                    material_info_record("m-1"),
                     interaction_record("m-1", "CLICK_COUNT", 1, 9),
                     interaction_record("m-1", "LIKE_COUNT", 1, 2),
                     script_record("m-1"),
@@ -906,7 +1030,12 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('"scriptAnalysis"', html_text)
         self.assertIn('"formula"', html_text)
         self.assertIn('"早餐可以不碰碳水', html_text)
-        self.assertIn('"video":{"src":"","poster":"","durationSec":null}', html_text)
+        self.assertIn(
+            '"video":{"src":"https://video.example/m-1.mp4?token=signed",'
+            '"poster":"https://image.example/m-1.jpg?token=signed",'
+            '"durationSec":46.022}',
+            html_text,
+        )
         self.assertNotIn("data:video/", html_text)
         self.assertNotIn(";base64", html_text)
 
@@ -1300,7 +1429,10 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("cover-title", html_text)
         self.assertNotIn("cover-empty", html_text)
         self.assertNotIn("report-warnings", html_text)
-        self.assertIn("grid-template-columns: 260px minmax(0, 1fr);", html_text)
+        self.assertIn("grid-template-columns: 190px minmax(0, 1fr);", html_text)
+        self.assertIn("grid-template-columns: var(--video-width) minmax(0, 1fr);", html_text)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", html_text)
+        self.assertIn("--visual-height: 560px;", html_text)
         self.assertIn("flex-direction: column;", html_text)
         self.assertIn("overflow-y: auto;", html_text)
         self.assertIn("align-items: stretch;", html_text)

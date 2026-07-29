@@ -528,7 +528,30 @@ def _empty_script_analysis():
     }
 
 
+def _empty_video_metadata():
+    return {"src": "", "poster": "", "durationSec": None}
+
+
+def _material_video_metadata(records):
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("recordType") != "material_info":
+            continue
+        video_url = _text(record.get("videoUrl"))
+        if not video_url:
+            continue
+        duration = _number(record.get("videoDuration"), default=None)
+        return {
+            "src": video_url,
+            "poster": _text(record.get("thumbnailUrl")),
+            "durationSec": duration,
+        }
+    return _empty_video_metadata()
+
+
 def _material_card(material, summary, analysis, records=None, script_analysis=None):
+    material_records = records or []
     frames = summary.get("frames", []) if isinstance(summary, dict) else []
     warnings = summary.get("warnings", []) if isinstance(summary, dict) else []
     extraction_status = "succeeded" if frames else "missing_summary"
@@ -542,9 +565,9 @@ def _material_card(material, summary, analysis, records=None, script_analysis=No
         "highlightFrames": frames,
         "warnings": warnings,
         "analysis": analysis or _empty_material_analysis(material["materialId"]),
-        "interactionTimeline": _material_interaction_timeline(records or []),
+        "interactionTimeline": _material_interaction_timeline(material_records),
         "scriptAnalysis": script_analysis or _empty_script_analysis(),
-        "video": {"src": "", "poster": "", "durationSec": None},
+        "video": _material_video_metadata(material_records),
     }
 
 
