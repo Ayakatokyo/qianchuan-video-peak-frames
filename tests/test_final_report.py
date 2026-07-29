@@ -668,6 +668,18 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("bar-track", html_text)
         self.assertNotIn("bar-fill", html_text)
 
+    def test_prompt_explains_material_ai_summary_complements_raw_fact_cards(self):
+        prompt_text = (ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("04｜单素材深度分析", prompt_text)
+        self.assertIn("互动时序分析", prompt_text)
+        self.assertIn("脚本分析数据", prompt_text)
+        self.assertIn("AI 二次总结", prompt_text)
+        self.assertIn("不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句", prompt_text)
+        self.assertIn("解释这些事实为什么影响素材放量、改写或保留判断", prompt_text)
+
     def test_generates_html_with_required_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

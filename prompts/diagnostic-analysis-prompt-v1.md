@@ -34,7 +34,7 @@
 - `01｜TOP 素材组合结论`：使用 `overallConclusion` 和 `batchInsights` 中 `topic` 为 `integrated` 的洞察。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜单素材深度分析`：使用 `materialAnalyses`。
+- `04｜单素材深度分析`：页面会先展示确定性的 `互动时序分析` 和 `脚本分析数据`，再展示 `materialAnalyses` 中的 AI 二次总结。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 - `nextActions` 对应 `05｜下一轮策略`：策略卡片只展示 title 和 body，不展示 priority。
 
 不得输出 `batchInsights.topic=highlight`；高光帧只允许作为 `overallConclusion`、`batchInsights.topic=integrated` 和 `materialAnalyses[*].highlightAnalyses` 的证据来源，不再生成单独的批量高光帧洞察段落。
