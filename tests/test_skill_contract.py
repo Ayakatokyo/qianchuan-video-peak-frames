@@ -92,6 +92,17 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("cancelledMaterials", contract)
         self.assertIn("top_n_already_selected", contract)
 
+    def test_top18_prompt_does_not_stop_at_54_candidate_export(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("用户要求 Top18", skill)
+        self.assertIn("--top-n 54", skill)
+        self.assertIn("--target-top-n 18", skill)
+        self.assertIn("--candidate-top-n 54", skill)
+        self.assertIn("仅完成 `top_materials.json` 导出不代表已经分析 18 个素材", skill)
+        self.assertIn("不得把 `top_materials.json` 传给诊断事实包或最终报告", skill)
+        self.assertIn("peak-frames/top_materials_rpa_ready.json", skill)
+
     def test_batch_workflow_requires_advertiser_id_for_asset_selection(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

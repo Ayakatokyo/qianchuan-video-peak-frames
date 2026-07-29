@@ -63,6 +63,8 @@ CLI 要求 `top_materials.json` 中包含 `actualStartDate`、`actualEndDate` �
 
 数量口径必须拆开记录：资产表获取素材 ID 数量是候选池数量，资产表阶段最多获取 `--candidate-top-n` 个素材 ID，写入 `top_materials.json` 后作为本次候选上限；传给 RPA 执行的素材 ID 数量是实际提交数量，不会一次性把候选池全部提交给 RPA。RPA 实际提交数量以 `submittedMaterials` 为准：查看 `batch-manifest.json` 的该数组长度；全成功时实际提交数量等于 `--target-top-n`；有失败时才继续补位提交后续候选，最多不超过 `--candidate-top-n`。
 
+防错口径：用户要求 Top18 时，资产表导出可以使用 `--top-n 54` 建立候选池，但这只是候选上限。必须继续执行流式 RPA 命令，并明确传入 `--target-top-n 18` 与 `--candidate-top-n 54`；仅完成 `top_materials.json` 导出不代表已经分析 18 个素材。准备诊断事实包、AI 二次分析和最终报告时，必须使用 `peak-frames/top_materials_rpa_ready.json`；不得把 `top_materials.json` 传给诊断事实包或最终报告，也不得把候选池数量写成最终分析素材数量。
+
 ```bash
 python scripts/extract_peak_frames.py \
   --source rpa \
