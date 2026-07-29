@@ -1,0 +1,526 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>脱敏示例｜千川 TOP 素材池商业诊断报告</title>
+  <style>
+    :root {
+      --bg: #eef0ea;
+      --paper: #fffdf8;
+      --ink: #233036;
+      --muted: #647277;
+      --line: #d9ded7;
+      --green: #1d6a58;
+      --blue: #2f5f9a;
+      --amber: #b36a1c;
+      --rose: #a9483c;
+      --soft-green: #e6f2ed;
+      --soft-blue: #e9eef8;
+      --soft-amber: #f8edd7;
+      --soft-rose: #f8e9e6;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    .shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 46px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding-bottom: 20px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .topbar a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+      color: var(--ink);
+      text-decoration: none;
+    }
+
+    .hero,
+    .section,
+    .metric,
+    .insight,
+    .material,
+    .frame,
+    .action {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--paper);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr);
+      gap: 18px;
+      padding: 26px;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      max-width: 760px;
+      font-size: clamp(32px, 5vw, 58px);
+      line-height: 1.04;
+    }
+
+    h2 {
+      font-size: 24px;
+      line-height: 1.26;
+    }
+
+    h3 {
+      font-size: 18px;
+      line-height: 1.35;
+    }
+
+    p {
+      line-height: 1.7;
+    }
+
+    .lead {
+      max-width: 800px;
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .meta-grid,
+    .metrics,
+    .insight-grid,
+    .frame-grid,
+    .material-grid,
+    .action-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .meta-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-self: start;
+    }
+
+    .metric {
+      padding: 14px;
+    }
+
+    .metric b {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 22px;
+      line-height: 1.1;
+    }
+
+    .muted,
+    .metric span {
+      color: var(--muted);
+    }
+
+    .section {
+      padding: 22px;
+      margin: 18px 0;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 9px;
+      border-radius: 8px;
+      background: var(--soft-green);
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .metrics {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 18px;
+    }
+
+    .insight-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .insight {
+      padding: 16px;
+    }
+
+    .insight b {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .insight.audience {
+      background: var(--soft-blue);
+    }
+
+    .insight.script {
+      background: var(--soft-amber);
+    }
+
+    .insight.highlight {
+      background: var(--soft-rose);
+    }
+
+    .frame-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .frame {
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .thumb {
+      aspect-ratio: 16 / 9;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-weight: 900;
+      text-align: center;
+      padding: 12px;
+      background:
+        linear-gradient(135deg, rgba(29, 106, 88, .9), rgba(47, 95, 154, .74)),
+        repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 10px, rgba(255,255,255,.05) 10px 20px);
+    }
+
+    .thumb.alt {
+      background:
+        linear-gradient(135deg, rgba(179, 106, 28, .9), rgba(169, 72, 60, .75)),
+        repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 10px, rgba(255,255,255,.05) 10px 20px);
+    }
+
+    .thumb.cool {
+      background:
+        linear-gradient(135deg, rgba(47, 95, 154, .92), rgba(29, 106, 88, .7)),
+        repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 10px, rgba(255,255,255,.05) 10px 20px);
+    }
+
+    .frame-body,
+    .material-body {
+      padding: 14px;
+    }
+
+    .frame-body p + p,
+    .material-body p + p {
+      margin-top: 8px;
+    }
+
+    .material-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .material {
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .material-head {
+      padding: 14px;
+      color: #fff;
+      background: var(--green);
+    }
+
+    .material:nth-child(2) .material-head {
+      background: var(--blue);
+    }
+
+    .material:nth-child(3) .material-head {
+      background: var(--amber);
+    }
+
+    .decision {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      margin-top: 10px;
+      padding: 0 9px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .2);
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .action-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .action {
+      padding: 16px;
+      background: #fff;
+    }
+
+    .action b {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    .data-note {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8faf8;
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    @media (max-width: 960px) {
+      .hero,
+      .insight-grid,
+      .material-grid,
+      .action-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metrics,
+      .frame-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 640px) {
+      .shell {
+        width: min(100% - 20px, 1180px);
+        padding-top: 14px;
+      }
+
+      .topbar,
+      .section-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .hero,
+      .section {
+        padding: 16px;
+      }
+
+      .meta-grid,
+      .metrics,
+      .frame-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <nav class="topbar" aria-label="报告导航">
+      <span>脱敏示例报告</span>
+      <a href="index.html">返回技能介绍</a>
+    </nav>
+
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Anonymized Final Report Sample</p>
+        <h1>某滋补食品品牌｜千川 TOP 素材池商业诊断报告</h1>
+        <p class="lead">本报告为脱敏示例，展示技能最终报告的结构、分析口径和交付形态。示例不含真实客户、账户、素材、金额、路径、链接或画面。</p>
+      </div>
+      <div class="meta-grid" aria-label="脱敏批次信息">
+        <div class="metric"><b>2026-07-01 至 2026-07-14</b><span>分析周期</span></div>
+        <div class="metric"><b>ADV-XXXXXX</b><span>广告主 id</span></div>
+        <div class="metric"><b>SHOP-XXXXXX</b><span>RPA 店铺 id</span></div>
+        <div class="metric"><b>3 / 9</b><span>示例展示素材 / 目标 Top 数</span></div>
+      </div>
+    </header>
+
+    <section class="section" aria-labelledby="summary-title">
+      <div class="section-head">
+        <h2 id="summary-title">01｜TOP 素材组合结论</h2>
+        <span class="tag">integrated</span>
+      </div>
+      <p>本批 Top 素材呈现“明确利益点 + 场景化食用 + 信任背书”组合特征。点击峰值集中出现在产品打开、浓稠质感展示和优惠机制出现后的短窗口，说明用户对可感知品质和低决策成本信息更敏感。下一轮建议优先放大质感展示稳定、脚本节奏清晰的素材，同时对优惠过早出现但转化承接不足的素材做结构改编。</p>
+      <div class="metrics">
+        <div class="metric"><b>100</b><span>消耗指数基准</span></div>
+        <div class="metric"><b>高</b><span>质感画面点击响应</span></div>
+        <div class="metric"><b>中高</b><span>场景脚本复用价值</span></div>
+        <div class="metric"><b>3 类</b><span>下一轮测试方向</span></div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="audience-title">
+      <div class="section-head">
+        <h2 id="audience-title">02｜人群洞察</h2>
+        <span class="tag">audience</span>
+      </div>
+      <div class="insight-grid">
+        <article class="insight audience">
+          <b>SHOW_COUNT 人群</b>
+          <p>展现侧更容易触达关注日常滋补、送礼体面和精致生活的人群。画面首秒需要快速出现品类识别，避免用户把素材误判为普通食品广告。</p>
+        </article>
+        <article class="insight audience">
+          <b>CLICK_COUNT 人群</b>
+          <p>点击侧对“即食、开盖、浓稠、原料可见”的视觉信号反应更强。点击峰值通常晚于产品露出，需要给用户 2 至 4 秒完成价值理解。</p>
+        </article>
+        <article class="insight audience">
+          <b>TRANSACTION_AMOUNT 人群</b>
+          <p>转化金额侧更看重信任与规格信息。只强调低价会带来点击，但若缺少品质与适用场景，成交承接会变弱。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="script-title">
+      <div class="section-head">
+        <h2 id="script-title">03｜脚本洞察</h2>
+        <span class="tag">script</span>
+      </div>
+      <div class="insight-grid">
+        <article class="insight script">
+          <b>有效结构</b>
+          <p>“场景痛点 -> 产品开盖 -> 质感证明 -> 规格权益 -> 行动召唤”的顺序更稳。它能先建立购买理由，再给价格或活动承接。</p>
+        </article>
+        <article class="insight script">
+          <b>风险结构</b>
+          <p>开头直接堆促销信息容易制造点击，但无法解释为什么值得买。后续素材应避免只用折扣承担全部说服任务。</p>
+        </article>
+        <article class="insight script">
+          <b>复拍方向</b>
+          <p>保留真人近景和产品动作镜头，补充“适合谁、什么时候吃、送礼是否体面”的明确句式。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="highlight-title">
+      <div class="section-head">
+        <h2 id="highlight-title">04｜高光帧洞察</h2>
+        <span class="tag">highlight</span>
+      </div>
+      <div class="frame-grid">
+        <article class="frame">
+          <div class="thumb">MAT-A001<br>开盖质感帧</div>
+          <div class="frame-body">
+            <h3>视觉观察</h3>
+            <p class="muted">画面中心是产品开盖与内容物近景，手部动作明确，用户能快速识别品类和质地。</p>
+            <p><b>商业解释：</b>该帧把“真材实料”从文案转成可见证据，适合作为复拍保留镜头。</p>
+          </div>
+        </article>
+        <article class="frame">
+          <div class="thumb alt">MAT-A002<br>送礼场景帧</div>
+          <div class="frame-body">
+            <h3>视觉观察</h3>
+            <p class="muted">礼盒、桌面和人物递送动作同时出现，画面传达体面与使用场景。</p>
+            <p><b>商业解释：</b>适合承接节庆、人情往来和家庭关怀人群，但需要补充规格说明。</p>
+          </div>
+        </article>
+        <article class="frame">
+          <div class="thumb cool">MAT-A003<br>权益承接帧</div>
+          <div class="frame-body">
+            <h3>视觉观察</h3>
+            <p class="muted">字幕强调组合权益，产品陈列清楚，但人物表情和使用动作较弱。</p>
+            <p><b>商业解释：</b>可作为中后段转化承接，不建议放在首秒承担主吸引。</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="material-title">
+      <div class="section-head">
+        <h2 id="material-title">05｜单素材深度分析</h2>
+        <span class="tag">material</span>
+      </div>
+      <div class="material-grid">
+        <article class="material">
+          <div class="material-head">
+            <h3>MAT-A001｜日常滋补场景</h3>
+            <span class="decision">建议：scale</span>
+          </div>
+          <div class="material-body">
+            <p><b>综合判断：</b>产品动作、质感证明和人群语境匹配度高，是本批最适合放量的结构。</p>
+            <p><b>下一步：</b>保留开盖近景，增加 2 个不同人群开头，测试首秒利益点差异。</p>
+          </div>
+        </article>
+        <article class="material">
+          <div class="material-head">
+            <h3>MAT-A002｜送礼表达场景</h3>
+            <span class="decision">建议：remix</span>
+          </div>
+          <div class="material-body">
+            <p><b>综合判断：</b>场景表达强，但规格、品质和购买理由出现偏晚，点击后承接不足。</p>
+            <p><b>下一步：</b>把礼盒展示提前，并在中段补充适用人群和产品价值证明。</p>
+          </div>
+        </article>
+        <article class="material">
+          <div class="material-head">
+            <h3>MAT-A003｜权益促销场景</h3>
+            <span class="decision">建议：hold</span>
+          </div>
+          <div class="material-body">
+            <p><b>综合判断：</b>权益信息清晰，能拉动短时点击，但缺少更强产品理由支撑成交。</p>
+            <p><b>下一步：</b>暂不直接放量，作为权益承接模块并入高质感素材测试。</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="action-title">
+      <div class="section-head">
+        <h2 id="action-title">06｜下一轮策略</h2>
+        <span class="tag">next actions</span>
+      </div>
+      <div class="action-grid">
+        <article class="action">
+          <b>高优先级｜放大质感证明</b>
+          <p class="muted">围绕开盖、拉丝、勺取和近景质地复拍 3 条变体，首秒只保留一个明确视觉锚点。</p>
+        </article>
+        <article class="action">
+          <b>中优先级｜拆分人群开头</b>
+          <p class="muted">分别测试日常自用、家庭关怀、节日送礼三个开头，正文保持相同产品证明。</p>
+        </article>
+        <article class="action">
+          <b>中优先级｜重排权益位置</b>
+          <p class="muted">把权益信息放到产品价值成立之后，避免素材只靠促销制造点击。</p>
+        </article>
+      </div>
+      <p class="data-note">脱敏说明：本页使用匿名素材编号、区间化或指数化指标、CSS 画面占位和模拟业务结论。它仅用于展示技能生成的最终报告形态，不代表任何真实账户或真实投放结果。</p>
+    </section>
+  </main>
+</body>
+</html>
