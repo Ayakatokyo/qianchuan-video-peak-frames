@@ -517,6 +517,85 @@
       border-radius: 18px;
     }
 
+    .raw-fact-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fff;
+      padding: 17px;
+    }
+
+    .raw-fact-card > b {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+
+    .timeline-chart {
+      width: 100%;
+      height: 180px;
+      display: block;
+      border-radius: 14px;
+      background: #fff8ec;
+      border: 1px solid rgba(82, 45, 24, .1);
+    }
+
+    .timeline-peak {
+      margin-top: 10px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0 12px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid rgba(82, 45, 24, .14);
+      border-radius: 999px;
+      padding: 5px 10px;
+      background: #f7ead8;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .evidence-list {
+      display: grid;
+      gap: 8px;
+      margin: 8px 0 12px;
+    }
+
+    .evidence-row {
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #fff8ec;
+      color: var(--ink);
+      line-height: 1.65;
+    }
+
+    .transcript {
+      max-height: 120px;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 12px;
+      background: #f7ead8;
+      color: var(--ink);
+      line-height: 1.7;
+    }
+
+    .material-video {
+      width: 100%;
+      max-height: 520px;
+      margin: 18px 0;
+      border-radius: 18px;
+      background: #120b08;
+    }
+
     .formula b {
       display: block;
       margin-bottom: 8px;
@@ -1062,6 +1141,163 @@ function renderFormula(title, paragraphs) {
   return card;
 }
 
+function renderTimelineChart(metric) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "timeline-chart");
+  svg.setAttribute("viewBox", "0 0 640 180");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${text(metric.label)}趋势图`);
+  const points = Array.isArray(metric.points) ? metric.points : [];
+  if (points.length === 0) {
+    return svg;
+  }
+  const maxSecond = Math.max(...points.map((point) => Number(point.second || 0)), 1);
+  const maxValue = Math.max(...points.map((point) => Number(point.value || 0)), 1);
+  const pathData = points.map((point, index) => {
+    const x = 24 + (Number(point.second || 0) / maxSecond) * 592;
+    const y = 146 - (Number(point.value || 0) / maxValue) * 112;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
+  }).join(" ");
+  const gridLine = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  gridLine.setAttribute("x1", "24");
+  gridLine.setAttribute("x2", "616");
+  gridLine.setAttribute("y1", "146");
+  gridLine.setAttribute("y2", "146");
+  gridLine.setAttribute("stroke", "rgba(82,45,24,.18)");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", pathData);
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "#d79a4b");
+  path.setAttribute("stroke-width", "4");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.append(gridLine, path);
+  const peak = metric.peak || {};
+  if (peak.second !== undefined && peak.value !== undefined) {
+    const cx = 24 + (Number(peak.second || 0) / maxSecond) * 592;
+    const cy = 146 - (Number(peak.value || 0) / maxValue) * 112;
+    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("cx", cx.toFixed(2));
+    dot.setAttribute("cy", cy.toFixed(2));
+    dot.setAttribute("r", "6");
+    dot.setAttribute("fill", "#2c1810");
+    svg.append(dot);
+  }
+  return svg;
+}
+
+function renderInteractionTimeline(material) {
+  const card = element("div", "raw-fact-card");
+  card.append(element("b", "", "互动时序分析"));
+  const metrics = Array.isArray(material.interactionTimeline?.metrics)
+    ? material.interactionTimeline.metrics
+    : [];
+  if (metrics.length === 0) {
+    card.append(element("p", "muted", "暂无互动时序数据"));
+    return card;
+  }
+  const switcher = element("div", "metric-switch");
+  const chartMount = element("div", "");
+  const peakNote = element("p", "timeline-peak");
+  card.dataset.timelineReady = "false";
+  card._timelineMetrics = metrics;
+  card._timelineRenderMetric = renderMetric;
+  card.append(switcher, chartMount, peakNote);
+
+  function renderMetric(metric) {
+    switcher.querySelectorAll("button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.metric === metric.metric));
+    });
+    chartMount.replaceChildren(renderTimelineChart(metric));
+    const peak = metric.peak || {};
+    peakNote.textContent = `${text(metric.label)}峰值：${formatNumber(peak.second)}s，${formatNumber(peak.value)} 次`;
+  }
+
+  metrics.forEach((metric, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.metric = text(metric.metric);
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.textContent = text(metric.label || metric.metric);
+    button.addEventListener("click", () => {
+      renderMetric(metric);
+      card.dataset.timelineReady = "true";
+    });
+    switcher.append(button);
+  });
+  return card;
+}
+
+function renderChipList(items) {
+  const list = element("div", "chip-list");
+  items.forEach((item) => {
+    const label = typeof item === "string" ? item : `${text(item.level1)} / ${text(item.level2)}`;
+    if (label.trim()) {
+      list.append(element("span", "chip", label));
+    }
+  });
+  return list;
+}
+
+function renderScriptAnalysis(material) {
+  const card = element("div", "raw-fact-card");
+  card.append(element("b", "", "脚本分析数据"));
+  const script = material.scriptAnalysis || {};
+  const labels = Array.isArray(script.labels) ? script.labels : [];
+  const formula = Array.isArray(script.formula) ? script.formula : [];
+  const evidence = Array.isArray(script.evidence) ? script.evidence : [];
+  const scriptText = text(script.text);
+  if (labels.length === 0 && evidence.length === 0 && !scriptText) {
+    card.append(element("p", "muted", "暂无脚本分析数据"));
+    return card;
+  }
+  if (formula.length > 0) {
+    card.append(element("p", "muted", "本视频内容公式"), renderChipList(formula));
+  }
+  if (labels.length > 0) {
+    card.append(element("p", "muted", "脚本标签"), renderChipList(labels));
+  }
+  if (evidence.length > 0) {
+    const evidenceList = element("div", "evidence-list");
+    evidence.slice(0, 6).forEach((item) => {
+      evidenceList.append(
+        element("div", "evidence-row", `${text(item.level2)}：${displayText(item.sentence)}`)
+      );
+    });
+    card.append(element("p", "muted", "证据句"), evidenceList);
+  }
+  if (scriptText) {
+    card.append(element("p", "muted", "脚本文案"), element("div", "transcript", scriptText));
+  }
+  return card;
+}
+
+function renderVideoPreview(material) {
+  const videoData = material.video || {};
+  const src = text(videoData.src);
+  if (!src) {
+    return null;
+  }
+  const video = document.createElement("video");
+  video.className = "material-video";
+  video.controls = true;
+  video.preload = "metadata";
+  video.src = src;
+  if (videoData.poster) {
+    video.poster = text(videoData.poster);
+  }
+  return video;
+}
+
+function hydrateMaterialPanel(panel) {
+  const timeline = panel.querySelector("[data-timeline-ready='false']");
+  if (!timeline || !Array.isArray(timeline._timelineMetrics) || timeline._timelineMetrics.length === 0) {
+    return;
+  }
+  timeline._timelineRenderMetric(timeline._timelineMetrics[0]);
+  timeline.dataset.timelineReady = "true";
+}
+
 function renderMaterialPanel(material, selected) {
   const analysis = material.analysis || {};
   const panel = element("article", "material-card");
@@ -1082,12 +1318,22 @@ function renderMaterialPanel(material, selected) {
 
   const body = element("div", "material-body");
   body.append(
+    renderInteractionTimeline(material),
+    renderScriptAnalysis(material),
     renderFormula("人群与脚本证据", [analysis.audienceConclusion, analysis.scriptConclusion]),
     renderHighlightFormula(analysis.highlightAnalyses),
     renderFormula("综合判断与下一步", [analysis.integratedConclusion, `下一步：${text(analysis.nextAction)}`])
   );
 
-  panel.append(head, renderFrames(material), body);
+  const videoPreview = renderVideoPreview(material);
+  const visualNodes = [renderFrames(material)];
+  if (videoPreview) {
+    visualNodes.push(videoPreview);
+  }
+  panel.append(head, ...visualNodes, body);
+  if (selected) {
+    hydrateMaterialPanel(panel);
+  }
   return panel;
 }
 
@@ -1119,7 +1365,11 @@ function activateMaterialTab(tab) {
     item.tabIndex = selected ? 0 : -1;
   });
   container.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
-    panel.hidden = panel.dataset.materialId !== tab.dataset.materialId;
+    const selected = panel.dataset.materialId === tab.dataset.materialId;
+    panel.hidden = !selected;
+    if (selected) {
+      hydrateMaterialPanel(panel);
+    }
   });
   tab.focus();
 }
