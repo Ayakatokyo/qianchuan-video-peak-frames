@@ -4,6 +4,8 @@
 
 只分析 RPA 提取到的业务事实：人群、脚本、投放明细和高光帧。不得分析执行过程，不得把运行目录名、任务上下文、代码修复、`verify` 收口、`fresh rerun`、`rpa_request_failed`、候选失败、补位、取消、重跑或批次调度写入任何输出字段。素材 rank 只表示当前已提取素材在输入中的排序；rank 缺口不得被解释为补位或失败。
 
+`materials[*].video` 仅用于最终报告保留素材来源元数据；其中的 `src` 是平台临时签名 URL。不得在任何分析字段中引用、复述、评价或建议使用该 URL。
+
 将结果写入单独的 `diagnostic-ai-analysis.json`。只输出合法 JSON，不要用 Markdown 代码块包裹。
 
 ## 证据与归因规则
@@ -16,6 +18,7 @@
 - 换言之，overallConclusion 必须综合人群、脚本、高光帧，不得和下方任一单项洞察重复或冲突。
 - `batchInsights.topic=integrated` 必须同时引用人群、脚本和高光帧证据；结论要说明这些证据如何组成可复用的 TOP 素材组合公式。
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
+- 每一张高光帧都必须对应一条 `highlightAnalyses`；`highlightAnalyses` 数量必须等于该素材 `highlights.materials[*].frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 first_peak 和 later_top_1；若事实包包含 later_top_2 或 later_top_3，也必须分别输出对应分析。缺失任何一帧都不能视为完成。
 - 高光帧的 `visualObservation` 必须来自实际查看 JPEG 的画面观察；`commercialInterpretation` 使用“与点击峰值同时出现”“待验证假设”等谨慎表述。
 - `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。
@@ -70,8 +73,8 @@
       "scriptConclusion": "脚本分析或数据不足说明",
       "highlightAnalyses": [
         {
-          "frameRef": "事实包中已有的高光帧引用",
-          "visualObservation": "基于 JPEG 的画面观察",
+          "frameRef": "逐字复制该素材 frames[*].evidenceRef；每张高光帧一条",
+          "visualObservation": "基于该 JPEG 的画面观察",
           "commercialInterpretation": "谨慎的商业解释"
         }
       ],

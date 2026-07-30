@@ -184,6 +184,26 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("render_final_report.py", skill)
         self.assertIn("不会调用外部 API", skill)
 
+    def test_final_report_non_ai_steps_are_scripted(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("--copy-assets", skill)
+        self.assertIn("默认不要使用 `--embed-assets`", skill)
+        self.assertIn("自动抽取 `videoUrl`", skill)
+        self.assertIn("允许用外链播放器展示视频", skill)
+        self.assertIn('preload="none"', skill)
+        self.assertIn("不得下载后转成 base64", skill)
+        self.assertIn("禁止绕过校验直接改 HTML", skill)
+        self.assertIn("prepare_diagnostic_analysis.py` injects `videoUrl`", contract)
+        self.assertIn('external `<video>` preview with `preload="none"`', contract)
+        self.assertIn("video bytes must never be embedded", contract)
+        self.assertIn("render_final_report.py --copy-assets", contract)
+        self.assertIn("Use `--embed-assets` only for small one-file debug reports", contract)
+        self.assertIn("临时签名 URL", prompt)
+        self.assertIn("不得在任何分析字段中引用", prompt)
+
     def test_final_report_requires_in_task_visual_analysis_and_v2_output(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
@@ -245,6 +265,19 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开", prompt)
         self.assertIn("不得只写抽象结论", prompt)
         self.assertIn("每条 batchInsights.conclusion 建议 120-220 个中文字符", prompt)
+
+    def test_final_report_prompt_requires_every_highlight_frame_analysis(self):
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("每一张高光帧都必须对应一条 `highlightAnalyses`", prompt)
+        self.assertIn(
+            "`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致",
+            prompt,
+        )
+        self.assertIn("不得只分析 first_peak 和 later_top_1", prompt)
+        self.assertIn("缺失任何一帧都不能视为完成", prompt)
+        self.assertIn("later_top_2", prompt)
+        self.assertIn("later_top_3", prompt)
 
 
 if __name__ == "__main__":

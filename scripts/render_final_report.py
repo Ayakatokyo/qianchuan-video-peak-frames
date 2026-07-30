@@ -14,6 +14,17 @@ def build_parser():
     parser.add_argument("--diagnosis-records-dir", required=True)
     parser.add_argument("--analysis-json")
     parser.add_argument("--output-dir", required=True)
+    asset_group = parser.add_mutually_exclusive_group()
+    asset_group.add_argument(
+        "--copy-assets",
+        action="store_true",
+        help="copy high-light JPEG assets into final-report/assets and reference them",
+    )
+    asset_group.add_argument(
+        "--embed-assets",
+        action="store_true",
+        help="embed high-light JPEG assets into the generated HTML",
+    )
     return parser
 
 
@@ -26,6 +37,8 @@ def main(argv=None):
             args.diagnosis_records_dir,
             args.output_dir,
             analysis_json=args.analysis_json,
+            embed_assets=args.embed_assets,
+            copy_assets=args.copy_assets,
         )
     except FinalReportError as exc:
         print(str(exc), file=sys.stderr)

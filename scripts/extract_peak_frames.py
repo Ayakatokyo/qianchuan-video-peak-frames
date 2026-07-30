@@ -1288,12 +1288,19 @@ def _verify_streaming_rpa_batch(args, material_ids, manifest):
             selected_by_id[material_id] = entry
 
     manifest_material_ids = manifest.get("materialIds")
+    try:
+        manifest_target_top_n = int(manifest.get("targetTopN") or 0)
+    except (TypeError, ValueError):
+        manifest_target_top_n = 0
+    if manifest_target_top_n <= 0:
+        manifest_target_top_n = None
+    target_top_n = args.target_top_n or manifest_target_top_n
     if (
-        args.target_top_n
+        target_top_n
         and isinstance(manifest_material_ids, list)
         and set(material_ids) == set(manifest_material_ids)
     ):
-        if len(selected) < args.target_top_n:
+        if len(selected) < target_top_n:
             errors.append(
                 "streaming batch selectedMaterials does not satisfy targetTopN"
             )

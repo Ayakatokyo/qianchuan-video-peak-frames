@@ -1,9 +1,12 @@
 import ast
+import base64
 import json
 from datetime import datetime, timezone
 import math
+import mimetypes
 import os
 from pathlib import Path
+import shutil
 import uuid
 
 from diagnostic_analysis_lib import (
@@ -854,6 +857,15 @@ def _safe_component(value):
     return cleaned.strip("_") or "unknown-material"
 
 
+def _safe_asset_filename(value):
+    name = Path(_text(value)).name
+    cleaned = "".join(
+        character if character.isalnum() or character in "-_." else "_"
+        for character in name
+    ).strip("._")
+    return cleaned or "asset.jpg"
+
+
 def _load_records_for_materials(top_payload, records_dir):
     result = {}
     warnings = []
@@ -938,15 +950,61 @@ def _atomic_write_text(path, content):
         raise FinalReportError(f"unable to write report output {target}: {exc}") from exc
 
 
-def _html_asset_src(path, asset_base_dir):
+def _copy_html_asset(source_path, asset_base_dir, material_id):
+    target_dir = (
+        Path(asset_base_dir)
+        / "assets"
+        / "highlight-frames"
+        / _safe_component(material_id)
+    )
+    target_path = target_dir / _safe_asset_filename(source_path.name)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        resolved_source = source_path.resolve()
+        resolved_target = target_path.resolve()
+        resolved_base = Path(asset_base_dir).resolve()
+        if resolved_source != resolved_target:
+            shutil.copy2(resolved_source, resolved_target)
+        return os.path.relpath(resolved_target, resolved_base)
+    except OSError as exc:
+        raise FinalReportError(
+            f"unable to copy report image asset: {source_path}"
+        ) from exc
+
+
+def _html_asset_src(
+    path,
+    asset_base_dir,
+    embed_assets=False,
+    copy_assets=False,
+    material_id="",
+):
     source = _text(path)
     if not source or asset_base_dir is None:
         return source
+    if embed_assets and copy_assets:
+        raise FinalReportError("--embed-assets and --copy-assets are mutually exclusive")
     try:
         source_path = Path(source)
         if not source_path.is_absolute():
             source_path = Path.cwd() / source_path
         source_path = source_path.resolve()
+        if embed_assets:
+            try:
+                payload = source_path.read_bytes()
+            except OSError as exc:
+                raise FinalReportError(
+                    f"unable to embed report image asset: {source_path}"
+                ) from exc
+            mime_type, _encoding = mimetypes.guess_type(str(source_path))
+            if not mime_type or not mime_type.startswith("image/"):
+                mime_type = "image/jpeg"
+            encoded = base64.b64encode(payload).decode("ascii")
+            return f"data:{mime_type};base64,{encoded}"
+        if copy_assets:
+            return Path(
+                _copy_html_asset(source_path, asset_base_dir, material_id)
+            ).as_posix()
         relative = os.path.relpath(source_path, Path(asset_base_dir).resolve())
     except (OSError, ValueError):
         return source
@@ -976,9 +1034,15 @@ def _json_for_html_script(data):
     )
 
 
-def _report_data_for_template(data, asset_base_dir):
+def _report_data_for_template(
+    data,
+    asset_base_dir,
+    embed_assets=False,
+    copy_assets=False,
+):
     materials = []
     for material in data.get("materials", []):
+        material_id = material.get("materialId")
         highlight_frames = []
         for frame in material.get("highlightFrames", []):
             highlight_frames.append(
@@ -987,14 +1051,18 @@ def _report_data_for_template(data, asset_base_dir):
                     "durationSec": frame.get("durationSec"),
                     "metricValue": frame.get("metricValue"),
                     "framePath": _html_asset_src(
-                        frame.get("framePath", ""), asset_base_dir
+                        frame.get("framePath", ""),
+                        asset_base_dir,
+                        embed_assets,
+                        copy_assets,
+                        material_id,
                     ),
                 }
             )
         materials.append(
             {
                 "rank": material.get("rank"),
-                "materialId": material.get("materialId"),
+                "materialId": material_id,
                 "materialName": material.get("materialName"),
                 "extractionStatus": material.get("extractionStatus"),
                 "highlightFrameCount": material.get("highlightFrameCount"),
@@ -1043,9 +1111,19 @@ def _report_data_for_template(data, asset_base_dir):
     }
 
 
-def _render_html_report(data, asset_base_dir=None):
+def _render_html_report(
+    data,
+    asset_base_dir=None,
+    embed_assets=False,
+    copy_assets=False,
+):
     template = _load_report_template()
-    template_data = _report_data_for_template(data, asset_base_dir)
+    template_data = _report_data_for_template(
+        data,
+        asset_base_dir,
+        embed_assets,
+        copy_assets,
+    )
     return template.replace(
         REPORT_DATA_PLACEHOLDER, _json_for_html_script(template_data)
     )
@@ -1057,6 +1135,8 @@ def generate_final_report(
     diagnosis_records_dir,
     output_dir,
     analysis_json=None,
+    embed_assets=False,
+    copy_assets=False,
 ):
     top_payload = _read_json(top_materials_json, "top materials JSON")
     records_by_material, record_warnings = _load_records_for_materials(
@@ -1083,5 +1163,13 @@ def generate_final_report(
     _atomic_write_text(
         data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )
-    _atomic_write_text(html_path, _render_html_report(data, output_root))
+    _atomic_write_text(
+        html_path,
+        _render_html_report(
+            data,
+            output_root,
+            embed_assets=embed_assets,
+            copy_assets=copy_assets,
+        ),
+    )
     return data_path, html_path, data

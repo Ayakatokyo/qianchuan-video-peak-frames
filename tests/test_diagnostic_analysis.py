@@ -62,6 +62,37 @@ def write_diagnosis_csv(path, records):
 
 
 class DiagnosticAnalysisAudienceTests(unittest.TestCase):
+    def test_materials_include_video_metadata_from_retained_material_info(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [{"rank": 1, "materialId": "m-1", "materialName": "素材一"}],
+        }
+        records_by_material = {
+            "m-1": [
+                {
+                    "recordType": "material_info",
+                    "materialId": "m-1",
+                    "videoUrl": "https://video.example/m-1.mp4?token=signed",
+                    "thumbnailUrl": "https://image.example/m-1.jpg?token=signed",
+                    "videoDuration": "46.022",
+                    "materialUri": "material-uri-1",
+                }
+            ]
+        }
+
+        analysis = build_diagnostic_analysis(top_payload, records_by_material)
+
+        self.assertEqual(
+            analysis["materials"][0]["video"],
+            {
+                "src": "https://video.example/m-1.mp4?token=signed",
+                "poster": "https://image.example/m-1.jpg?token=signed",
+                "durationSec": 46.022,
+                "materialUri": "material-uri-1",
+            },
+        )
+
     def test_aggregates_each_audience_metric_and_recomputes_percentages(self):
         top_payload = {
             "actualStartDate": "2026-06-01",

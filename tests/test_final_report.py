@@ -175,6 +175,130 @@ def material_info_record(material_id):
 
 
 class FinalReportDataTests(unittest.TestCase):
+    def test_copied_asset_report_keeps_highlight_images_out_of_html(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-02",
+                    "materials": [material("m-1")],
+                },
+            )
+            write_json(
+                records_dir / "m-1.json",
+                [material_info_record("m-1"), click_record("m-1", 1, 9)],
+            )
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_9.jpg"
+            frame_path.write_bytes(b"\xff\xd8" + (b"large-jpeg" * 1000) + b"\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 9,
+                            "framePath": frame_path.name,
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            _data_path, html_path, _data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                copy_assets=True,
+            )
+
+            html_text = html_path.read_text(encoding="utf-8")
+            copied_frame = (
+                output_dir
+                / "assets"
+                / "highlight-frames"
+                / "m-1"
+                / "first_peak_0001s_9.jpg"
+            )
+            copied_frame_exists = copied_frame.is_file()
+            copied_frame_payload = copied_frame.read_bytes() if copied_frame_exists else b""
+            original_frame_payload = frame_path.read_bytes()
+
+        self.assertTrue(copied_frame_exists)
+        self.assertEqual(copied_frame_payload, original_frame_payload)
+        self.assertIn("assets/highlight-frames/m-1/first_peak_0001s_9.jpg", html_text)
+        self.assertNotIn("data:image/", html_text)
+        self.assertNotIn("../peak-frames/", html_text)
+        self.assertIn("document.createElement(\"video\")", html_text)
+        self.assertIn('video.preload = "none"', html_text)
+        self.assertIn("video.src = src", html_text)
+        self.assertNotIn("data:video/", html_text)
+
+    def test_embedded_report_inlines_highlight_images_and_keeps_external_video_preview(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-02",
+                    "materials": [material("m-1")],
+                },
+            )
+            write_json(
+                records_dir / "m-1.json",
+                [material_info_record("m-1"), click_record("m-1", 1, 9)],
+            )
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_9.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 9,
+                            "framePath": frame_path.name,
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            _data_path, html_path, _data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                embed_assets=True,
+            )
+
+            html_text = html_path.read_text(encoding="utf-8")
+
+        self.assertIn("data:image/jpeg;base64,", html_text)
+        self.assertNotIn("../peak-frames/", html_text)
+        self.assertIn("document.createElement(\"video\")", html_text)
+        self.assertIn('video.preload = "none"', html_text)
+        self.assertIn("video.src = src", html_text)
+        self.assertNotIn("<video", html_text)
+        self.assertNotIn("data:video/", html_text)
+
     def test_material_cards_include_interaction_timeline_and_script_analysis(self):
         top_payload = {
             "actualStartDate": "2026-06-01",
@@ -893,7 +1017,10 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("max-height: 120px;", html_text)
         self.assertIn('button.className = "chip formula-chip"', html_text)
         self.assertNotIn('card.append(element("p", "muted", "证据句"), evidenceList)', html_text)
-        self.assertIn('video.preload = "metadata"', html_text)
+        self.assertIn("document.createElement(\"video\")", html_text)
+        self.assertIn('video.preload = "none"', html_text)
+        self.assertIn('image.loading = "lazy"', html_text)
+        self.assertIn('image.decoding = "async"', html_text)
         self.assertNotIn("const visualNodes = [renderFrames(material)];", html_text)
         self.assertNotIn("panel.append(head, ...visualNodes, body);", html_text)
         self.assertIn(
@@ -1645,6 +1772,69 @@ class FinalReportRenderTests(unittest.TestCase):
 
 
 class FinalReportCliTests(unittest.TestCase):
+    def test_cli_copies_assets_without_embedding_images(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-02",
+                    "materials": [material("m-1")],
+                },
+            )
+            write_json(records_dir / "m-1.json", [click_record("m-1", 1, 9)])
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_9.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 9,
+                            "framePath": frame_path.name,
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            result = render_final_report.main(
+                [
+                    "--top-materials-json",
+                    str(top_path),
+                    "--peak-output-dir",
+                    str(peak_dir),
+                    "--diagnosis-records-dir",
+                    str(records_dir),
+                    "--copy-assets",
+                    "--output-dir",
+                    str(output_dir),
+                ]
+            )
+
+            html_text = (output_dir / "final-report.html").read_text(encoding="utf-8")
+            copied_frame_exists = (
+                output_dir
+                / "assets"
+                / "highlight-frames"
+                / "m-1"
+                / "first_peak_0001s_9.jpg"
+            ).is_file()
+
+        self.assertEqual(result, 0)
+        self.assertTrue(copied_frame_exists)
+        self.assertIn("assets/highlight-frames/m-1/first_peak_0001s_9.jpg", html_text)
+        self.assertNotIn("data:image/", html_text)
+
     def test_cli_rejects_invalid_analysis_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

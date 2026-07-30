@@ -3805,6 +3805,93 @@ class CliTests(unittest.TestCase):
         self.assertEqual(receipt["selectedCount"], 2)
         self.assertEqual(receipt["cancelledCount"], 1)
 
+    def test_streaming_batch_verify_infers_target_top_n_from_manifest_for_candidate_json(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            candidate_ids = ["m-1", "m-2", "m-3", "m-4"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(candidate_ids)),
+                encoding="utf-8",
+            )
+            selected = []
+            for rank, material_id in enumerate(["m-1", "m-3"], start=1):
+                _result_dir, summary_json, summary_md = self._write_batch_result(
+                    output, material_id
+                )
+                selected.append(
+                    {
+                        "rank": rank,
+                        "materialId": material_id,
+                        "rpaStatus": "selected",
+                        "postprocessStatus": "succeeded",
+                        "status": "succeeded",
+                        "summaryJson": str(summary_json),
+                        "summaryMd": str(summary_md),
+                    }
+                )
+            manifest = {
+                "schemaVersion": 2,
+                "source": "rpa",
+                "shopId": "shop-1",
+                "targetTopN": 2,
+                "candidateCount": 4,
+                "candidateLimit": 4,
+                "rpaConcurrency": 3,
+                "postprocessConcurrency": 3,
+                "dateRange": {
+                    "type": "CUSTOM",
+                    "customStartDate": "2026-06-01",
+                    "customEndDate": "2026-06-02",
+                },
+                "materialIds": candidate_ids,
+                "submittedMaterials": selected,
+                "selectedMaterials": selected,
+                "rejectedMaterials": [
+                    {
+                        "rank": 2,
+                        "materialId": "m-2",
+                        "rpaStatus": "rejected",
+                        "postprocessStatus": "pending",
+                        "status": "failed",
+                        "failureReason": "missing_video_url",
+                    }
+                ],
+                "cancelledMaterials": [
+                    {
+                        "rank": 4,
+                        "materialId": "m-4",
+                        "rpaStatus": "cancelled",
+                        "postprocessStatus": "not_started",
+                        "status": "cancelled",
+                        "failureReason": "target_satisfied",
+                    }
+                ],
+                "timingsSec": {"totalSec": 12.0},
+            }
+            (output / "batch-manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            with patch.object(
+                extract_peak_frames, "_process_rpa_material"
+            ) as process_material:
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--verify")
+                )
+            receipt = json.loads(
+                (output / "batch-verification.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        process_material.assert_not_called()
+        self.assertTrue(receipt["valid"])
+        self.assertEqual(receipt["materialCount"], 2)
+        self.assertEqual(receipt["materialIds"], ["m-1", "m-3"])
+        self.assertEqual(receipt["rejectedCount"], 1)
+        self.assertEqual(receipt["cancelledCount"], 1)
+
     def test_rpa_batch_verify_rejects_corrupt_retained_jpeg(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

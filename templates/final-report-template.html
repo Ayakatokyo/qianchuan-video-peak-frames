@@ -1434,6 +1434,8 @@ function renderFrames(material) {
     button.setAttribute("aria-label", `查看大图：${captionText}`);
     image.src = text(frame.framePath);
     image.alt = "高光帧";
+    image.loading = "lazy";
+    image.decoding = "async";
     button.append(image);
     button.addEventListener("click", () => openFrameLightbox(text(frame.framePath), captionText));
     const caption = element("figcaption", "", captionText);
@@ -1886,10 +1888,11 @@ function renderVideoPreview(material) {
   const video = document.createElement("video");
   video.className = "material-video";
   video.controls = true;
-  video.preload = "metadata";
+  video.preload = "none";
   video.src = src;
-  if (videoData.poster) {
-    video.poster = text(videoData.poster);
+  const poster = text(videoData.poster);
+  if (poster) {
+    video.poster = poster;
   }
   return video;
 }

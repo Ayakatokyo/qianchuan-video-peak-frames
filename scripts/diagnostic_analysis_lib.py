@@ -129,6 +129,42 @@ def _selected_materials(top_payload):
     return materials, warnings
 
 
+def _material_video_metadata(records, material_id):
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("recordType") != "material_info":
+            continue
+        record_material_id = _text(record.get("materialId"))
+        if record_material_id and record_material_id != material_id:
+            continue
+        video_url = _text(record.get("videoUrl"))
+        if not video_url:
+            continue
+        duration = _finite_number(record.get("videoDuration"))
+        return {
+            "src": video_url,
+            "poster": _text(record.get("thumbnailUrl")),
+            "durationSec": duration,
+            "materialUri": _text(record.get("materialUri")),
+        }
+    return {}
+
+
+def _materials_with_record_metadata(materials, records_by_material):
+    enriched = []
+    for material in materials:
+        material_id = material["materialId"]
+        enriched_material = dict(material)
+        video = _material_video_metadata(
+            records_by_material.get(material_id, []), material_id
+        )
+        if video:
+            enriched_material["video"] = video
+        enriched.append(enriched_material)
+    return enriched
+
+
 def _nested_dimension_value(record, dimension_key):
     dimensions = record.get("Dimensions")
     if not isinstance(dimensions, dict):
@@ -531,7 +567,7 @@ def build_diagnostic_analysis(top_payload, records_by_material):
     return {
         "schemaVersion": SCHEMA_VERSION,
         "period": _period(top_payload),
-        "materials": materials,
+        "materials": _materials_with_record_metadata(materials, records_by_material),
         "audience": {
             "metrics": {
                 metric: _aggregate_audience_metric(records_by_material, selected_ids, metric)

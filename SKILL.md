@@ -123,10 +123,17 @@ python scripts/render_final_report.py \
   --peak-output-dir "/path/to/run/peak-frames" \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
   --analysis-json "/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json" \
+  --copy-assets \
   --output-dir "/path/to/run/final-report"
 ```
 
-仅在有意生成草稿报告时才省略 `--analysis-json`；草稿不是完成的商业分析报告。将报告视为完成前，请审查 `final-report/final-report-data.json` 的状态为 `complete` 或已解释的 `partial`、`final-report/final-report.html`、批次验证错误和警告。
+除 AI 二次分析内容本身外，不得手工补写报告链路中的数据加工步骤。`prepare_diagnostic_analysis.py` 会从保留的 `material_info` 记录自动抽取 `videoUrl`、`thumbnailUrl`、`videoDuration` 和 `materialUri` 并注入事实包；`render_final_report.py` 会校验 `diagnostic-ai-analysis.json` 的 JSON/schema/evidence refs/素材覆盖，校验不通过必须修正 AI JSON 后重跑，禁止绕过校验直接改 HTML。
+
+最终交付默认使用 `--copy-assets`，由渲染器把高光帧 JPEG 复制到 `final-report/assets/highlight-frames/` 并在 HTML 中写相对路径，避免把 24 张或更多 JPEG base64 内嵌进 JSON 数据岛导致 HTML 过大和打开卡顿。默认不要使用 `--embed-assets`；只有小批次、明确需要单文件临时调试报告时才可显式使用。归档或交付时保留整个 `final-report/` 目录，而不是只复制 `final-report.html`。
+
+巨量千川 `videoUrl` 是平台临时签名地址；最终页面允许用外链播放器展示视频，但必须由模板脚本创建 `<video>` 并设置 `preload="none"`，不得下载后转成 base64 或把视频字节内嵌进 HTML。若签名地址过期，应回到 RPA 诊断记录或重新运行当前批次获取新的签名地址。
+
+仅在有意生成草稿报告时才省略 `--analysis-json`；草稿不是完成的商业分析报告。将报告视为完成前，请审查 `final-report/final-report-data.json` 的状态为 `complete` 或已解释的 `partial`、`final-report/final-report.html` 是否引用 `assets/highlight-frames/`、批次验证错误和警告。
 
 ## 单素材 RPA 调试运行
 
@@ -168,7 +175,7 @@ python scripts/extract_peak_frames.py \
 | 批次状态 | 检查 `batch-manifest.json` 的 submitted、selected、rejected 和 cancelled 素材及失败原因 |
 | 准备诊断事实 | 在流式 RPA 批次完成后运行带 `--peak-output-dir` 的 `prepare_diagnostic_analysis.py` |
 | 真实商业分析 | 当前执行技能的模型读取事实包、实际查看 JPEG、写出 schema v2 结论 JSON |
-| 最终 HTML 报告 | 运行带 `--analysis-json` 的 `render_final_report.py`；草稿不代表完成 |
+| 最终 HTML 报告 | 运行带 `--analysis-json --copy-assets` 的 `render_final_report.py`；草稿不代表完成 |
 | 单素材调试 | 传入 `--source rpa --shop-id ... --material-id ... --date-range-type ...` |
 | 回归检查 | 运行 `python -m unittest tests/test_peak_frames.py -v` |
 
@@ -187,4 +194,7 @@ python scripts/extract_peak_frames.py \
 - `--verify` 返回零前，不要报告批次成功；退出码 `6` 表示保留输出未通过验证。
 - 将 RPA CSV 下载或解析失败视为阻塞问题；诊断时检查保留的 `diagnosis-csv/<materialId>.csv`。
 - 不要期待 `render_final_report.py` 调用模型或外部 API；当前执行技能的模型必须在同一任务中查看 JPEG、生成并修正 `diagnostic-ai-analysis.json`。
+- 不要用临时脚本向 `diagnostic-analysis-data.json` 手工补 `videoUrl`、向 HTML 手工替换图片路径，或手工改 `renderVideoPreview`；这些步骤必须由 `prepare_diagnostic_analysis.py` 和 `render_final_report.py --copy-assets` 完成。
+- 不要在商业交付中默认使用 `--embed-assets`；高光帧 base64 内嵌会放大 HTML 并造成打开卡顿。
+- 不要把巨量千川 `videoUrl` 下载后内嵌到最终报告；它是短时签名 URL，报告只保留外链播放器且必须 `preload="none"`。
 - 不要在最终报告中隐藏失败素材；保留其警告和失败原因。
