@@ -765,16 +765,124 @@
       font-weight: 800;
     }
 
-    .formula-chip {
+    .script-analysis-panel {
+      display: grid;
+      gap: 14px;
+    }
+
+    .script-analysis-section {
+      display: grid;
+      gap: 8px;
+    }
+
+    .script-analysis-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .script-analysis-section-header b {
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .copy-button {
+      flex: 0 0 auto;
+      border: 1px solid rgba(82, 45, 24, .16);
+      border-radius: 8px;
+      padding: 5px 9px;
+      background: #fff8ec;
+      color: #7d4a25;
       cursor: pointer;
       font: inherit;
       font-size: 12px;
+      font-weight: 800;
+      line-height: 1.2;
     }
 
-    .formula-chip[aria-pressed="true"] {
-      background: #2c1810;
-      border-color: #2c1810;
-      color: #fff;
+    .copy-button:hover {
+      border-color: rgba(155, 106, 55, .42);
+      background: #f7ead8;
+    }
+
+    .script-formula-chain {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin: 0;
+      overflow: visible;
+    }
+
+    .script-formula-text {
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.65;
+    }
+
+    .script-formula-item {
+      display: inline;
+      min-width: 0;
+      max-width: none;
+      border: 0;
+      border-radius: 4px;
+      padding: 1px 2px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      line-height: 1.65;
+      text-align: inherit;
+    }
+
+    .script-formula-item[aria-pressed="true"] {
+      background: var(--script-soft, rgba(215, 154, 75, .14));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--script-color, #9b6a37) 22%, transparent);
+    }
+
+    .script-formula-title-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--ink);
+    }
+
+    .script-formula-dot,
+    .script-formula-label {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      margin-right: 4px;
+      border-radius: 2px;
+      background: var(--script-color, #9b6a37);
+    }
+
+    .script-formula-title {
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }
+
+    .script-formula-token {
+      display: inline;
+      color: var(--script-color, #9b6a37);
+      font-weight: 900;
+    }
+
+    .script-formula-connector {
+      align-self: center;
+      color: #a97949;
+      font-size: 14px;
+      font-weight: 900;
+      line-height: 1;
+      margin: 0 1px;
     }
 
     .transcript {
@@ -786,6 +894,35 @@
       font-size: 14px;
       line-height: 1.55;
       word-break: break-word;
+    }
+
+    .script-text-body {
+      overflow: visible;
+      padding: 12px 14px;
+      border: 1px solid rgba(82, 45, 24, .1);
+      border-radius: 8px;
+      background: #fff8ec;
+      color: var(--ink);
+      font-size: 14px;
+      line-height: 1.55;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .script-segment {
+      border-radius: 6px;
+      padding: 1px 2px;
+      background: var(--script-soft, rgba(215, 154, 75, .16));
+      box-shadow: 0 0 0 1px color-mix(in srgb, var(--script-color, #d79a4b) 18%, transparent);
+      color: var(--ink);
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .script-segment.is-active {
+      background: var(--script-active-bg, rgba(215, 154, 75, .32));
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--script-color, #d79a4b) 24%, transparent);
+      font-weight: 900;
     }
 
     .script-highlight {
@@ -1767,15 +1904,139 @@ function scriptFormulaLabel(item) {
   return `${text(item.level1)} / ${text(item.level2)}`;
 }
 
+function formulaKey(item) {
+  if (typeof item === "string") return `formula:${text(item)}`;
+  const level1 = text(item && item.level1);
+  const level2 = text(item && item.level2);
+  const fallback = text(item && item.label, text(item && item.name, "unknown"));
+  return `formula:${level1 || fallback}:${level2 || fallback}`;
+}
+
+function formulaColorKey(item) {
+  if (typeof item === "string") return text(item, "内容公式");
+  return text(item && item.level1, text(item && item.label, text(item && item.name, "内容公式")));
+}
+
+function scriptFormulaColor(index) {
+  const palette = [
+    "#2f8f5b",
+    "#d5543f",
+    "#d98324",
+    "#3478c7",
+    "#169a9a",
+    "#c4477e",
+    "#7157c8",
+    "#6f7f2f",
+    "#b35d24",
+    "#4f7f96",
+    "#a64d79",
+    "#8a6f2a"
+  ];
+  if (index < palette.length) return palette[index];
+  const hue = (index * 47 + 19) % 360;
+  return `hsl(${hue} 64% 42%)`;
+}
+
+function buildFormulaColorMap(formula) {
+  const colorByFormula = new Map();
+  if (!Array.isArray(formula)) return colorByFormula;
+  formula.forEach((item) => {
+    const key = formulaColorKey(item);
+    if (key && !colorByFormula.has(key)) {
+      colorByFormula.set(key, scriptFormulaColor(colorByFormula.size));
+    }
+  });
+  return colorByFormula;
+}
+
+function colorSoftBackground(color, alpha) {
+  if (color.startsWith("#")) {
+    const raw = color.slice(1);
+    const normalized = raw.length === 3 ? raw.split("").map((part) => part + part).join("") : raw;
+    const red = parseInt(normalized.slice(0, 2), 16);
+    const green = parseInt(normalized.slice(2, 4), 16);
+    const blue = parseInt(normalized.slice(4, 6), 16);
+    if ([red, green, blue].every(Number.isFinite)) {
+      return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+    }
+  }
+  return `color-mix(in srgb, ${color} ${Math.round(alpha * 100)}%, transparent)`;
+}
+
+function formulaDisplayParts(item) {
+  if (typeof item === "string") {
+    return { title: "内容公式", content: text(item) };
+  }
+  const title = text(item && item.level1, "内容公式");
+  const content = text(item && item.level2, title);
+  return { title, content };
+}
+
+function formulaCopyText(formula) {
+  if (!Array.isArray(formula)) return "";
+  return formula.map((item) => {
+    if (typeof item === "string") return text(item);
+    const parts = formulaDisplayParts(item);
+    return parts.title === parts.content ? parts.title : `${parts.title}-${parts.content}`;
+  }).filter(Boolean).join(" + ");
+}
+
+function copyTextToClipboard(button, value) {
+  const copyValue = text(value);
+  if (!copyValue) return;
+  const defaultLabel = button.dataset.defaultLabel || button.textContent || "复制";
+  button.dataset.defaultLabel = defaultLabel;
+  function showStatus(label) {
+    button.textContent = label;
+    window.clearTimeout(button._copyStatusTimer);
+    button._copyStatusTimer = window.setTimeout(() => {
+      button.textContent = defaultLabel;
+    }, 1400);
+  }
+  const fallbackCopy = () => {
+    const textarea = document.createElement("textarea");
+    textarea.value = copyValue;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.append(textarea);
+    textarea.select();
+    try {
+      const copied = document.execCommand("copy");
+      showStatus(copied ? "已复制" : "复制失败");
+    } catch (error) {
+      showStatus("复制失败");
+    } finally {
+      textarea.remove();
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(copyValue).then(() => showStatus("已复制")).catch(fallbackCopy);
+    return;
+  }
+  fallbackCopy();
+}
+
+function copyScriptFormula(button, formula) {
+  copyTextToClipboard(button, formulaCopyText(formula));
+}
+
+function copyScriptText(button, scriptText) {
+  copyTextToClipboard(button, scriptText);
+}
+
 function formulaMatchesEvidence(formulaItem, evidenceItem) {
+  return formulaEvidenceMatchScore(formulaItem, evidenceItem) > 0;
+}
+
+function formulaEvidenceMatchScore(formulaItem, evidenceItem) {
   const formulaLevel1 = text(formulaItem.level1);
   const formulaLevel2 = text(formulaItem.level2);
   const evidenceLevel1 = text(evidenceItem.level1);
   const evidenceLevel2 = text(evidenceItem.level2);
-  return Boolean(
-    (formulaLevel2 && (formulaLevel2 === evidenceLevel2 || formulaLevel2 === evidenceLevel1)) ||
-    (formulaLevel1 && (formulaLevel1 === evidenceLevel1 || formulaLevel1 === evidenceLevel2))
-  );
+  if (formulaLevel2 && (formulaLevel2 === evidenceLevel2 || formulaLevel2 === evidenceLevel1)) return 3;
+  if (formulaLevel1 && (formulaLevel1 === evidenceLevel1 || formulaLevel1 === evidenceLevel2)) return 1;
+  return 0;
 }
 
 function matchingEvidenceSentences(formulaItem, evidence) {
@@ -1788,6 +2049,73 @@ function matchingEvidenceSentences(formulaItem, evidence) {
     }
   });
   return sentences;
+}
+
+function evidenceFormulaMeta(evidenceItem, formula, colorByKey) {
+  let matchedIndex = -1;
+  let bestScore = 0;
+  formula.forEach((item, index) => {
+    const score = formulaEvidenceMatchScore(item, evidenceItem);
+    if (score > bestScore) {
+      bestScore = score;
+      matchedIndex = index;
+    }
+  });
+  if (matchedIndex < 0) return null;
+  const item = formula[matchedIndex];
+  const key = formulaKey(item);
+  const colorKey = formulaColorKey(item);
+  return {
+    key,
+    colorKey,
+    color: colorByKey.get(key) || scriptFormulaColor(matchedIndex),
+    title: scriptFormulaLabel(item)
+  };
+}
+
+function collectScriptEvidenceRanges(scriptText, evidence, formula, colorByKey) {
+  const fullText = text(scriptText);
+  if (!fullText || !Array.isArray(evidence) || !Array.isArray(formula)) return [];
+  const ranges = [];
+  evidence.forEach((item) => {
+    const sentence = text(item && item.sentence);
+    const meta = sentence ? evidenceFormulaMeta(item, formula, colorByKey) : null;
+    if (!sentence || !meta) return;
+    let cursor = 0;
+    while (cursor < fullText.length) {
+      const start = fullText.indexOf(sentence, cursor);
+      if (start < 0) break;
+      ranges.push({ start, end: start + sentence.length, ...meta });
+      cursor = start + sentence.length;
+    }
+  });
+  ranges.sort((left, right) => left.start - right.start || right.end - left.end);
+  const merged = [];
+  ranges.forEach((range) => {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.start >= previous.end) {
+      merged.push(range);
+    }
+  });
+  return merged;
+}
+
+function activateScriptFormula(container, activeKey) {
+  if (!container) return;
+  container.querySelectorAll("[data-formula-key]").forEach((node) => {
+    const isActive = Boolean(activeKey && node.dataset.formulaKey === activeKey);
+    if (node.classList.contains("script-formula-token")) {
+      node.setAttribute("aria-pressed", String(isActive));
+    }
+    if (node.classList.contains("script-segment")) {
+      node.classList.toggle("is-active", isActive);
+      node.classList.toggle("script-highlight", isActive);
+    }
+  });
+}
+
+function applyScriptFormulaState(root, activeKey) {
+  activateScriptFormula(root, activeKey);
 }
 
 function appendHighlightedTranscript(root, scriptText, highlightSentences) {
@@ -1826,29 +2154,74 @@ function appendHighlightedTranscript(root, scriptText, highlightSentences) {
   }
 }
 
-function renderScriptTranscript(scriptText, evidence, activeFormula) {
-  const transcript = element("div", "transcript script-transcript");
-  appendHighlightedTranscript(transcript, scriptText, matchingEvidenceSentences(activeFormula, evidence));
+function renderScriptTranscript(scriptText, evidence, formula, activeKey, colorByKey) {
+  const transcript = element("div", "transcript script-text-body script-transcript");
+  const fullText = text(scriptText);
+  const ranges = collectScriptEvidenceRanges(fullText, evidence, formula, colorByKey);
+  if (ranges.length === 0) {
+    transcript.textContent = fullText;
+    return transcript;
+  }
+  let cursor = 0;
+  ranges.forEach((range) => {
+    if (range.start > cursor) {
+      transcript.append(document.createTextNode(fullText.slice(cursor, range.start)));
+    }
+    const segment = element("span", "script-segment", fullText.slice(range.start, range.end));
+    segment.dataset.formulaKey = range.key;
+    segment.setAttribute("data-formula-color-key", range.colorKey);
+    segment.title = range.title;
+    segment.style.setProperty("--script-color", range.color);
+    segment.style.setProperty("--script-soft", colorSoftBackground(range.color, .14));
+    segment.style.setProperty("--script-active-bg", colorSoftBackground(range.color, .28));
+    segment.addEventListener("click", () => {
+      const panel = segment.closest(".script-analysis-panel");
+      activateScriptFormula(panel, segment.dataset.formulaKey);
+    });
+    transcript.append(segment);
+    cursor = range.end;
+  });
+  if (cursor < fullText.length) {
+    transcript.append(document.createTextNode(fullText.slice(cursor)));
+  }
+  applyScriptFormulaState(transcript, activeKey);
   return transcript;
 }
 
-function renderFormulaButtons(formula, evidence, transcriptMount, scriptText) {
-  const list = element("div", "chip-list");
+function renderScriptFormulaChain(formula, evidence, transcriptMount, scriptText, colorByKey) {
+  const list = element("div", "script-formula-chain script-formula-text");
+  const activeKey = formula.length > 0 ? formulaKey(formula[0]) : "";
+  const colorByFormula = buildFormulaColorMap(formula);
   formula.forEach((item, index) => {
+    const key = formulaKey(item);
+    const colorKey = formulaColorKey(item);
+    const color = colorByFormula.get(colorKey) || scriptFormulaColor(index);
+    colorByKey.set(key, color);
+    const parts = formulaDisplayParts(item);
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "chip formula-chip";
-    button.setAttribute("aria-pressed", String(index === 0));
-    button.textContent = scriptFormulaLabel(item);
+    button.className = "script-formula-item script-formula-token";
+    button.dataset.formulaKey = key;
+    button.setAttribute("data-formula-color-key", colorKey);
+    button.setAttribute("aria-pressed", String(key === activeKey));
+    button.style.setProperty("--script-color", color);
+    button.style.setProperty("--script-soft", colorSoftBackground(color, .1));
+    const titleLabel = element("span", "script-formula-title-label");
+    titleLabel.append(element("span", "script-formula-label"), element("span", "script-formula-title", parts.title));
+    button.append(
+      titleLabel,
+      document.createTextNode(" "),
+      element("span", "script-formula-token", parts.content)
+    );
     button.addEventListener("click", () => {
-      list.querySelectorAll("button").forEach((node) => {
-        node.setAttribute("aria-pressed", String(node === button));
-      });
-      if (transcriptMount) {
-        transcriptMount.replaceChildren(renderScriptTranscript(scriptText, evidence, item));
-      }
+      const selectedKey = button.dataset.formulaKey;
+      const panel = button.closest(".script-analysis-panel");
+      activateScriptFormula(panel, selectedKey);
     });
     list.append(button);
+    if (index < formula.length - 1) {
+      list.append(element("span", "script-formula-connector", "+"));
+    }
   });
   return list;
 }
@@ -1866,15 +2239,35 @@ function renderScriptAnalysis(material) {
   }
   const body = element("div", "collapsible-body");
   appendCollapsibleHead(card, "脚本分析数据", body);
+  const panel = element("div", "script-analysis-panel");
+  const colorByKey = new Map();
+  formula.forEach((item, index) => {
+    colorByKey.set(formulaKey(item), scriptFormulaColor(index));
+  });
   const transcriptMount = scriptText ? element("div", "") : null;
   if (formula.length > 0) {
-    body.append(element("p", "muted", "本视频内容公式"), renderFormulaButtons(formula, evidence, transcriptMount, scriptText));
+    const formulaSection = element("div", "script-analysis-section");
+    const formulaHeader = element("div", "script-analysis-section-header");
+    const formulaCopyButton = element("button", "copy-button", "复制内容公式");
+    formulaCopyButton.type = "button";
+    formulaCopyButton.addEventListener("click", () => copyScriptFormula(formulaCopyButton, formula));
+    formulaHeader.append(element("b", "", "本视频内容公式"), formulaCopyButton);
+    formulaSection.append(formulaHeader, renderScriptFormulaChain(formula, evidence, transcriptMount, scriptText, colorByKey));
+    panel.append(formulaSection);
   }
   if (scriptText) {
-    const activeFormula = formula.length > 0 ? formula[0] : null;
-    transcriptMount.append(renderScriptTranscript(scriptText, evidence, activeFormula));
-    body.append(element("p", "muted", "脚本文案"), transcriptMount);
+    const scriptSection = element("div", "script-analysis-section");
+    const scriptHeader = element("div", "script-analysis-section-header");
+    const scriptCopyButton = element("button", "copy-button", "复制脚本");
+    const activeKey = formula.length > 0 ? formulaKey(formula[0]) : "";
+    scriptCopyButton.type = "button";
+    scriptCopyButton.addEventListener("click", () => copyScriptText(scriptCopyButton, scriptText));
+    scriptHeader.append(element("b", "", "本视频脚本"), scriptCopyButton);
+    transcriptMount.append(renderScriptTranscript(scriptText, evidence, formula, activeKey, colorByKey));
+    scriptSection.append(scriptHeader, transcriptMount);
+    panel.append(scriptSection);
   }
+  body.append(panel);
   card.append(body);
   return card;
 }
