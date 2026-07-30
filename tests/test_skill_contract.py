@@ -274,10 +274,10 @@ class BatchSkillContractTests(unittest.TestCase):
             "`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致",
             prompt,
         )
-        self.assertIn("不得只分析 first_peak 和 later_top_1", prompt)
+        self.assertIn("不得只分析 zero_second 和 peak_top_1", prompt)
         self.assertIn("缺失任何一帧都不能视为完成", prompt)
-        self.assertIn("later_top_2", prompt)
-        self.assertIn("later_top_3", prompt)
+        self.assertIn("peak_top_2", prompt)
+        self.assertIn("peak_top_3", prompt)
 
 
 if __name__ == "__main__":

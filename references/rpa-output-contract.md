@@ -52,7 +52,7 @@ Identical duplicate time/value rows are collapsed. Conflicting values at the sam
 ]
 ```
 
-This example selects second 1 first, then seconds 3, 7, and 5 by later click rank.
+This example selects second 0 as the fixed opening frame, then seconds 3, 7, and 5 by global local-peak click rank.
 
 ## Online Video Fields
 

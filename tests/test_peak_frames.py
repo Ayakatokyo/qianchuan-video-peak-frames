@@ -584,11 +584,11 @@ class RpaAdapterTests(unittest.TestCase):
 
 
 class PeakSelectionTests(unittest.TestCase):
-    def test_selects_first_chronological_peak_then_later_top_three(self):
+    def test_selects_zero_second_frame_then_global_top_three_peaks(self):
         values = [1, 5, 1, 9, 1, 7, 1, 8, 1]
         points = [SeriesPoint(i, value) for i, value in enumerate(values)]
 
-        selected = select_peak_frames(find_local_peaks(points))
+        selected = select_peak_frames(points)
 
         self.assertEqual(
             [
@@ -596,10 +596,10 @@ class PeakSelectionTests(unittest.TestCase):
                 for item in selected
             ],
             [
-                ("first_peak", 1.0, 5.0),
-                ("later_top_1", 3.0, 9.0),
-                ("later_top_2", 7.0, 8.0),
-                ("later_top_3", 5.0, 7.0),
+                ("zero_second", 0.0, 1.0),
+                ("peak_top_1", 3.0, 9.0),
+                ("peak_top_2", 7.0, 8.0),
+                ("peak_top_3", 5.0, 7.0),
             ],
         )
 
@@ -670,32 +670,28 @@ class PeakSelectionTests(unittest.TestCase):
         values = [0, 2, 0, 6, 0, 6, 0, 6, 0]
 
         selected = select_peak_frames(
-            find_local_peaks(
-                [SeriesPoint(i, value) for i, value in enumerate(values)]
-            )
+            [SeriesPoint(i, value) for i, value in enumerate(values)]
         )
 
         self.assertEqual(
             [item.duration_sec for item in selected],
-            [1.0, 3.0, 5.0, 7.0],
+            [0.0, 3.0, 5.0, 7.0],
         )
 
     def test_select_rejects_no_peaks(self):
         with self.assertRaisesRegex(InputDataError, "No local peaks"):
             select_peak_frames([])
 
-    def test_returns_only_existing_later_peaks(self):
+    def test_returns_only_existing_top_peaks(self):
         values = [0, 5, 0, 4, 0]
 
         selected = select_peak_frames(
-            find_local_peaks(
-                [SeriesPoint(i, value) for i, value in enumerate(values)]
-            )
+            [SeriesPoint(i, value) for i, value in enumerate(values)]
         )
 
         self.assertEqual(
             [item.rank_type for item in selected],
-            ["first_peak", "later_top_1"],
+            ["zero_second", "peak_top_1", "peak_top_2"],
         )
 
 
@@ -1266,7 +1262,7 @@ class FrameExtractionTests(unittest.TestCase):
             self.assertEqual(generated.returncode, 0, generated.stderr)
             self.assertIsNone(
                 validate_timestamps(
-                    [SelectedPeak("first_peak", 1e-7, 1.0)],
+                    [SelectedPeak("zero_second", 1e-7, 1.0)],
                     1.0,
                 )
             )
@@ -1797,8 +1793,8 @@ class FrameExtractionTests(unittest.TestCase):
 class TimestampValidationTests(unittest.TestCase):
     def test_accepts_zero_and_timestamp_just_under_video_duration(self):
         selected = [
-            SelectedPeak("first_peak", 0.0, 10.0),
-            SelectedPeak("later_top_1", 9.999999, 8.0),
+            SelectedPeak("zero_second", 0.0, 10.0),
+            SelectedPeak("peak_top_1", 9.999999, 8.0),
         ]
 
         self.assertIsNone(validate_timestamps(selected, 10.0))
@@ -1812,7 +1808,7 @@ class TimestampValidationTests(unittest.TestCase):
 
             for index, timestamp in enumerate(timestamps):
                 with self.subTest(timestamp=timestamp):
-                    selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+                    selected = [SelectedPeak("peak_top_1", timestamp, 10.0)]
                     self.assertIsNone(validate_timestamps(selected, 1.0))
                     output_path = temp_path / f"frame-{index}.jpg"
 
@@ -1829,7 +1825,7 @@ class TimestampValidationTests(unittest.TestCase):
     def test_rejects_timestamp_outside_video_bounds(self):
         for timestamp in (-0.1, 10.0, 10.1):
             with self.subTest(timestamp=timestamp):
-                selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+                selected = [SelectedPeak("peak_top_1", timestamp, 10.0)]
 
                 with self.assertRaises(InputDataError) as context:
                     validate_timestamps(selected, 10.0)
@@ -1841,7 +1837,7 @@ class TimestampValidationTests(unittest.TestCase):
     def test_rejects_nonfinite_peak_timestamp(self):
         for timestamp in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(timestamp=timestamp):
-                selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+                selected = [SelectedPeak("peak_top_1", timestamp, 10.0)]
 
                 with self.assertRaises(InputDataError) as context:
                     validate_timestamps(selected, 10.0)
@@ -1859,7 +1855,7 @@ class TimestampValidationTests(unittest.TestCase):
             -1.0,
         ):
             with self.subTest(duration=duration):
-                selected = [SelectedPeak("first_peak", 1.0, 10.0)]
+                selected = [SelectedPeak("peak_top_1", 1.0, 10.0)]
 
                 with self.assertRaises(InputDataError) as context:
                     validate_timestamps(selected, duration)
@@ -1873,7 +1869,7 @@ class SummaryTests(unittest.TestCase):
             "m-123",
             "rpa://connector/m-123",
             "/temporary/download/m-123.mp4",
-            [SelectedPeak("first_peak", 1.0, 5.0)],
+            [SelectedPeak("zero_second", 0.0, 5.0)],
             ["first.jpg"],
             video_source="rpa-temporary-download",
         )
@@ -1886,18 +1882,18 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(format_seconds_token(7.5), "0007p5s")
         self.assertEqual(format_seconds_token(0.0000001), "0000p0000001s")
         self.assertEqual(
-            format_frame_filename("first_peak", 7.0, 18.0),
-            "first_peak_0007s_18.jpg",
+            format_frame_filename("zero_second", 7.0, 18.0),
+            "zero_second_0007s_18.jpg",
         )
         self.assertEqual(
-            format_frame_filename("later_top_1", 7.5, 12.25),
-            "later_top_1_0007p5s_12p25.jpg",
+            format_frame_filename("peak_top_1", 7.5, 12.25),
+            "peak_top_1_0007p5s_12p25.jpg",
         )
 
-    def test_summary_warns_when_later_peaks_are_missing(self):
+    def test_summary_warns_when_top_peaks_are_missing(self):
         selected = [
-            SelectedPeak("first_peak", 1.0, 5.0),
-            SelectedPeak("later_top_1", 3.0, 4.0),
+            SelectedPeak("zero_second", 0.0, 1.0),
+            SelectedPeak("peak_top_1", 3.0, 4.0),
         ]
 
         summary = build_summary(
@@ -1911,15 +1907,15 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(len(summary["frames"]), 2)
         self.assertEqual(
             summary["warnings"],
-            ["2 later peak frame(s) unavailable"],
+            ["2 top peak frame(s) unavailable"],
         )
         self.assertEqual(
             [frame["rankType"] for frame in summary["frames"]],
-            ["first_peak", "later_top_1"],
+            ["zero_second", "peak_top_1"],
         )
 
     def test_summary_rejects_mismatched_peaks_and_paths(self):
-        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        selected = [SelectedPeak("zero_second", 0.0, 5.0)]
 
         with self.assertRaisesRegex(ValueError, "equal length"):
             build_summary(
@@ -1927,7 +1923,7 @@ class SummaryTests(unittest.TestCase):
             )
 
     def test_summary_stores_portable_frame_filenames(self):
-        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        selected = [SelectedPeak("zero_second", 0.0, 5.0)]
         summary = build_summary(
             "m-123",
             "input.json",
@@ -1940,8 +1936,8 @@ class SummaryTests(unittest.TestCase):
 
     def test_writes_json_and_markdown_after_frames_exist(self):
         selected = [
-            SelectedPeak("first_peak", 1.0, 5.0),
-            SelectedPeak("later_top_1", 3.0, 4.0),
+            SelectedPeak("zero_second", 0.0, 1.0),
+            SelectedPeak("peak_top_1", 3.0, 4.0),
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             result_dir = Path(temp_dir) / "m-123"
@@ -1964,22 +1960,22 @@ class SummaryTests(unittest.TestCase):
             self.assertEqual(payload, summary)
             self.assertIn("input.json", markdown)
             self.assertIn("video.mp4", markdown)
-            self.assertIn("earliest_local_peak", markdown)
+            self.assertIn("zero_second_frame", markdown)
             self.assertIn(
-                "top_3_by_metric_desc_then_time_asc_after_first", markdown
+                "top_3_local_peaks_by_metric_desc_then_time_asc", markdown
             )
             self.assertIn("collapse_to_earliest_second", markdown)
             self.assertIn("boundariesExcluded: true", markdown)
             self.assertIn("请求截帧秒数", markdown)
-            self.assertIn("| first_peak | 1 | 5 | 1 | first.jpg |", markdown)
+            self.assertIn("| zero_second | 0 | 1 | 0 | first.jpg |", markdown)
             self.assertLess(
-                markdown.index("first_peak"), markdown.index("later_top_1")
+                markdown.index("zero_second"), markdown.index("peak_top_1")
             )
-            self.assertIn("2 later peak frame(s) unavailable", markdown)
+            self.assertIn("2 top peak frame(s) unavailable", markdown)
             self.assertEqual(list(result_dir.glob("*.tmp*")), [])
 
     def test_refuses_to_write_summaries_for_missing_or_empty_frame(self):
-        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        selected = [SelectedPeak("zero_second", 0.0, 5.0)]
         with tempfile.TemporaryDirectory() as temp_dir:
             result_dir = Path(temp_dir)
             missing = result_dir / "missing.jpg"
@@ -4241,10 +4237,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(
                 [frame["rankType"] for frame in summary["frames"]],
                 [
-                    "first_peak",
-                    "later_top_1",
-                    "later_top_2",
-                    "later_top_3",
+                    "zero_second",
+                    "peak_top_1",
+                    "peak_top_2",
+                    "peak_top_3",
                 ],
             )
             self.assertEqual(summary["warnings"], [])
@@ -4333,6 +4329,9 @@ class CliTests(unittest.TestCase):
             self.assertEqual(first_run.returncode, 0, first_run.stderr)
             stale_owned_frames = set(result_dir.glob("*.jpg"))
             self.assertEqual(len(stale_owned_frames), 4)
+            stale_peak_frames = {
+                path for path in stale_owned_frames if not path.name.startswith("zero_second_")
+            }
             user_frame = result_dir / "user-reference.jpg"
             user_frame.write_bytes(DECODABLE_JPEG)
 
@@ -4343,11 +4342,11 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(second_run.returncode, 0, second_run.stderr)
             self.assertTrue(user_frame.is_file())
-            self.assertTrue(stale_owned_frames.isdisjoint(result_dir.glob("*.jpg")))
+            self.assertTrue(stale_peak_frames.isdisjoint(result_dir.glob("*.jpg")))
             summary = json.loads(
                 (result_dir / "summary.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(len(summary["frames"]), 2)
+            self.assertEqual(len(summary["frames"]), 3)
 
     def test_local_cli_rerun_ignores_non_object_previous_summary(self):
         ffmpeg = resolve_ffmpeg()
@@ -4371,7 +4370,7 @@ class CliTests(unittest.TestCase):
             summary = json.loads(
                 (result_dir / "summary.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(len(summary["frames"]), 2)
+            self.assertEqual(len(summary["frames"]), 3)
 
     def test_local_cli_outputs_available_peaks_with_warning(self):
         ffmpeg = resolve_ffmpeg()
@@ -4393,10 +4392,10 @@ class CliTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(len(summary["frames"]), 2)
+            self.assertEqual(len(summary["frames"]), 3)
             self.assertEqual(
                 summary["warnings"],
-                ["2 later peak frame(s) unavailable"],
+                ["1 top peak frame(s) unavailable"],
             )
 
     def test_rpa_source_auto_resolves_single_shop_id(self):
@@ -4588,10 +4587,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(
                 [frame["rankType"] for frame in summary["frames"]],
                 [
-                    "first_peak",
-                    "later_top_1",
-                    "later_top_2",
-                    "later_top_3",
+                    "zero_second",
+                    "peak_top_1",
+                    "peak_top_2",
+                    "peak_top_3",
                 ],
             )
 

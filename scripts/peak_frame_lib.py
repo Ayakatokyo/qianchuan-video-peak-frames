@@ -464,21 +464,19 @@ def build_summary(
     """Build the JSON-compatible result shared by both summary formats."""
     if len(selected_peaks) != len(frame_paths):
         raise ValueError("selected_peaks and frame_paths must have equal length")
-    later_count = sum(
-        peak.rank_type.startswith("later_top_") for peak in selected_peaks
+    peak_count = sum(
+        peak.rank_type.startswith("peak_top_") for peak in selected_peaks
     )
-    missing_later = max(0, 3 - later_count)
+    missing_peaks = max(0, 3 - peak_count)
     warnings = []
-    if missing_later:
-        warnings.append(
-            f"{missing_later} later peak frame(s) unavailable"
-        )
+    if missing_peaks:
+        warnings.append(f"{missing_peaks} top peak frame(s) unavailable")
     summary = {
         "materialId": str(material_id),
         "inputJsonPath": str(input_json_path),
         "selectionRule": {
-            "first": "earliest_local_peak",
-            "later": "top_3_by_metric_desc_then_time_asc_after_first",
+            "zero": "zero_second_frame",
+            "peaks": "top_3_local_peaks_by_metric_desc_then_time_asc",
             "plateau": "collapse_to_earliest_second",
             "boundariesExcluded": True,
         },
@@ -515,8 +513,8 @@ def _render_summary_markdown(summary):
         "",
         "## 选择规则",
         "",
-        f"- first: {selection_rule['first']}",
-        f"- later: {selection_rule['later']}",
+        f"- zero: {selection_rule['zero']}",
+        f"- peaks: {selection_rule['peaks']}",
         f"- plateau: {selection_rule['plateau']}",
         "- boundariesExcluded: "
         f"{str(selection_rule['boundariesExcluded']).lower()}",
@@ -692,7 +690,7 @@ def process_records(
     if not video.is_file():
         raise InputDataError(f"video does not exist or is not a file: {video}")
     material_id, points = parse_click_series(records)
-    selected_peaks = select_peak_frames(find_local_peaks(points))
+    selected_peaks = select_peak_frames(points)
     timeout_sec, _ = _canonical_seconds(
         ffmpeg_timeout_sec, "FFmpeg timeout", FfmpegError
     )
@@ -824,29 +822,31 @@ def find_local_peaks(points):
     return peaks
 
 
-def select_peak_frames(peaks, later_limit=3):
+def select_peak_frames(points, peak_limit=3):
+    if not points:
+        raise InputDataError("No local peaks found")
+    zero_point = min(points, key=lambda point: point.duration_sec)
+    peaks = find_local_peaks(points)
     if not peaks:
         raise InputDataError("No local peaks found")
 
-    first_peak = min(peaks, key=lambda peak: peak.duration_sec)
-    later_peaks = [
-        peak for peak in peaks if peak.duration_sec > first_peak.duration_sec
-    ]
-    later_peaks.sort(key=lambda peak: (-peak.metric_value, peak.duration_sec))
+    top_peaks = sorted(
+        peaks, key=lambda peak: (-peak.metric_value, peak.duration_sec)
+    )
 
     selected = [
         SelectedPeak(
-            "first_peak",
-            float(first_peak.duration_sec),
-            float(first_peak.metric_value),
+            "zero_second",
+            float(zero_point.duration_sec),
+            float(zero_point.metric_value),
         )
     ]
     selected.extend(
         SelectedPeak(
-            f"later_top_{rank}",
+            f"peak_top_{rank}",
             float(peak.duration_sec),
             float(peak.metric_value),
         )
-        for rank, peak in enumerate(later_peaks[:later_limit], start=1)
+        for rank, peak in enumerate(top_peaks[:peak_limit], start=1)
     )
     return selected
