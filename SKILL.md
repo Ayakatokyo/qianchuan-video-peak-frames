@@ -103,6 +103,8 @@ python scripts/prepare_diagnostic_analysis.py \
   --output-dir "/path/to/run/diagnostic-analysis"
 ```
 
+`--diagnosis-records-dir` 推荐传规范化 JSON 目录 `diagnosis-records`。若排障或旧执行只保留了 RPA 原始 CSV，事实包准备和最终报告渲染也兼容保留的 `diagnosis-csv` 目录，会自动解析同名 `<materialId>.csv`；不得在存在 CSV 的情况下把空事实包当作完成报告继续交付。
+
 当前执行技能的模型必须读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，并实际查看事实包 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一次任务内生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`，必须使用 `schemaVersion: 2`，分开 `SHOW_COUNT`、`CLICK_COUNT` 与 `TRANSACTION_AMOUNT` 人群结论，展示文案使用“展现次数”“点击次数”“成交金额”，并逐字引用事实包已有的 evidence ref。模型不得仅凭帧的秒数或点击值猜测画面；高光帧观察必须基于实际查看 JPEG。
 
 AI 二次分析必须按“真实数据 + 一句总结结论”组织内容，不得只写抽象判断。`overallConclusion` 必须综合人群、脚本、高光帧和投放明细中的主要事实，对本次提取到的所有素材做组合级汇总分析；`batchInsights.topic=integrated` 必须同时引用人群、脚本和高光帧证据；人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开。

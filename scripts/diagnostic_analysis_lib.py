@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import uuid
 
+from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
+
 
 SCHEMA_VERSION = 1
 AUDIENCE_METRICS = ("SHOW_COUNT", "CLICK_COUNT", "TRANSACTION_AMOUNT")
@@ -55,6 +57,29 @@ def _read_text(path, purpose):
         return source.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise DiagnosticAnalysisError(f"unable to read {purpose}: {source}") from exc
+
+
+def load_retained_diagnosis_records(records_dir, material_id):
+    root = Path(records_dir)
+    material_id = _text(material_id)
+    json_path = root / f"{material_id}.json"
+    if json_path.is_file():
+        try:
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return [], f"unable to read diagnosis records for material {material_id}"
+        if not isinstance(payload, list):
+            return [], f"diagnosis records for material {material_id} are not a list"
+        return payload, ""
+
+    csv_path = root / f"{material_id}.csv"
+    if csv_path.is_file():
+        try:
+            return parse_diagnosis_csv(csv_path), ""
+        except RpaCsvError:
+            return [], f"unable to parse diagnosis CSV for material {material_id}"
+
+    return [], f"missing diagnosis records for material {material_id}"
 
 
 def _period(top_payload):
@@ -401,26 +426,13 @@ def _build_delivery(records_by_material, selected_ids):
 
 def _load_selected_records(top_payload, records_dir):
     materials, _warnings = _selected_materials(top_payload)
-    root = Path(records_dir)
     records_by_material = {}
     warnings = []
     for material in materials:
         material_id = material["materialId"]
-        path = root / f"{material_id}.json"
-        if not path.is_file():
-            warnings.append(f"missing diagnosis records for material {material_id}")
-            records_by_material[material_id] = []
-            continue
-        try:
-            records = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            warnings.append(f"unable to read diagnosis records for material {material_id}")
-            records_by_material[material_id] = []
-            continue
-        if not isinstance(records, list):
-            warnings.append(f"diagnosis records for material {material_id} are not a list")
-            records_by_material[material_id] = []
-            continue
+        records, warning = load_retained_diagnosis_records(records_dir, material_id)
+        if warning:
+            warnings.append(warning)
         records_by_material[material_id] = records
     return records_by_material, warnings
 

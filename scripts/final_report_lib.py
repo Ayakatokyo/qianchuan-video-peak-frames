@@ -6,7 +6,10 @@ import os
 from pathlib import Path
 import uuid
 
-from diagnostic_analysis_lib import build_diagnostic_analysis
+from diagnostic_analysis_lib import (
+    build_diagnostic_analysis,
+    load_retained_diagnosis_records,
+)
 
 
 class FinalReportError(RuntimeError):
@@ -571,9 +574,11 @@ def _material_card(material, summary, analysis, records=None, script_analysis=No
     }
 
 
-def _status(conclusion, material_cards, batch_verification):
+def _status(conclusion, material_cards, batch_verification, input_warnings=None):
     if conclusion is None:
         return "draft"
+    if input_warnings:
+        return "partial"
     verification_errors = []
     if isinstance(batch_verification, dict):
         verification_errors = batch_verification.get("errors", [])
@@ -755,6 +760,7 @@ def build_final_report_data(
     conclusion=None,
     batch_verification=None,
     batch_manifest=None,
+    input_warnings=None,
 ):
     materials = _selected_materials(top_payload)
     diagnostic = build_diagnostic_analysis(top_payload, records_by_material)
@@ -782,7 +788,13 @@ def build_final_report_data(
     successful_material_count = sum(
         1 for item in material_cards if item["extractionStatus"] == "succeeded"
     )
-    report_warnings = _warnings(material_cards, conclusion, batch_verification)
+    diagnostic_warnings = diagnostic.get("warnings", [])
+    input_warnings = list(input_warnings or [])
+    report_warnings = (
+        _warnings(material_cards, conclusion, batch_verification)
+        + input_warnings
+        + diagnostic_warnings
+    )
     insights = _batch_insights(conclusion)
     default_material_id = next(
         (
@@ -795,7 +807,12 @@ def build_final_report_data(
     return {
         "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "status": _status(conclusion, material_cards, batch_verification),
+        "status": _status(
+            conclusion,
+            material_cards,
+            batch_verification,
+            input_warnings=input_warnings + diagnostic_warnings,
+        ),
         "period": {
             "actualStartDate": _text(top_payload.get("actualStartDate")),
             "actualEndDate": _text(top_payload.get("actualEndDate")),
@@ -824,7 +841,7 @@ def build_final_report_data(
             "warnings": [],
         },
         "batchVerification": batch_verification or {},
-        "warnings": report_warnings + diagnostic.get("warnings", []),
+        "warnings": report_warnings,
     }
 
 
@@ -839,20 +856,14 @@ def _safe_component(value):
 
 def _load_records_for_materials(top_payload, records_dir):
     result = {}
-    root = Path(records_dir)
+    warnings = []
     for material in _selected_materials(top_payload):
         material_id = material["materialId"]
-        path = root / f"{material_id}.json"
-        if not path.is_file():
-            result[material_id] = []
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            result[material_id] = []
-            continue
-        result[material_id] = payload if isinstance(payload, list) else []
-    return result
+        records, warning = load_retained_diagnosis_records(records_dir, material_id)
+        if warning:
+            warnings.append(warning)
+        result[material_id] = records
+    return result, warnings
 
 
 def _load_summaries_for_materials(top_payload, peak_output_dir):
@@ -1048,7 +1059,7 @@ def generate_final_report(
     analysis_json=None,
 ):
     top_payload = _read_json(top_materials_json, "top materials JSON")
-    records_by_material = _load_records_for_materials(
+    records_by_material, record_warnings = _load_records_for_materials(
         top_payload, diagnosis_records_dir
     )
     summaries_by_material = _load_summaries_for_materials(
@@ -1064,6 +1075,7 @@ def generate_final_report(
         conclusion=conclusion,
         batch_verification=batch_verification,
         batch_manifest=batch_manifest,
+        input_warnings=record_warnings,
     )
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"

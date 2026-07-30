@@ -34,6 +34,33 @@ def crowd_record(material_id, metric, dimension, bucket, value, **overrides):
     return record
 
 
+def write_diagnosis_csv(path, records):
+    headers = [
+        "recordType",
+        "materialId",
+        "displayMetric",
+        "dimensionKey",
+        "dimensionName",
+        "dimensionValue",
+        "metricValue",
+        "Dimensions",
+        "Metrics",
+        "scriptInfo",
+        "materialUri",
+    ]
+    rows = ["\x01".join(headers)]
+    for record in records:
+        values = []
+        for header in headers:
+            value = record.get(header, "")
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            values.append(str(value))
+        rows.append("\x02" + "\x01".join(values))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
 class DiagnosticAnalysisAudienceTests(unittest.TestCase):
     def test_aggregates_each_audience_metric_and_recomputes_percentages(self):
         top_payload = {
@@ -341,6 +368,68 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             )
             self.assertIn("diagnosis records for material m-2 are not a list", analysis["warnings"])
             self.assertIn("missing diagnosis records for material m-3", analysis["warnings"])
+
+    def test_prepare_accepts_retained_diagnosis_csv_dir_without_json_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            csv_dir = root / "diagnosis-csv"
+            output_dir = root / "analysis"
+            self._write_json(
+                top_materials,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-02",
+                    "materials": [{"rank": 1, "materialId": "m-1", "materialName": "素材一"}],
+                },
+            )
+            write_diagnosis_csv(
+                csv_dir / "m-1.csv",
+                [
+                    crowd_record("m-1", "SHOW_COUNT", "age", "24-30", 100),
+                    {
+                        "recordType": "script_analysis",
+                        "materialId": "m-1",
+                        "materialUri": "uri-1",
+                        "scriptInfo": json.dumps(
+                            {
+                                "text": "早餐场景口播",
+                                "data": [
+                                    {
+                                        "level_1_label": {"label": "商品卖点"},
+                                        "level_2_labels": [
+                                            {"value": 11, "label": "适用场景"}
+                                        ],
+                                    }
+                                ],
+                                "detail": {
+                                    "11": {
+                                        "label": "适用场景",
+                                        "list": ["早餐场景口播"],
+                                    }
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+            )
+
+            data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+                top_materials, csv_dir, output_dir
+            )
+
+            age = analysis["audience"]["metrics"]["SHOW_COUNT"]["dimensions"]["age"]
+            self.assertEqual(age["buckets"][0]["bucket"], "24-30")
+            self.assertEqual(
+                analysis["scripts"]["labelSummary"][0]["level2"], "适用场景"
+            )
+            self.assertNotIn(
+                "missing diagnosis records for material m-1", analysis["warnings"]
+            )
+            self.assertEqual(
+                json.loads(data_path.read_text(encoding="utf-8")), analysis
+            )
 
     def test_copies_override_prompt_and_rejects_missing_template_without_output(self):
         with tempfile.TemporaryDirectory() as temp_dir:

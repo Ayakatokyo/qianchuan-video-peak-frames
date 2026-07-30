@@ -185,6 +185,15 @@
       margin-bottom: 12px;
     }
 
+    .collapsible-body-title {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--ink);
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
     .collapsible-toggle {
       width: 100%;
       border: 1px solid var(--line);
@@ -195,10 +204,9 @@
       cursor: pointer;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 14px;
+      justify-content: center;
       font: inherit;
-      text-align: left;
+      text-align: center;
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, .52);
     }
 
@@ -212,23 +220,11 @@
       outline-offset: 2px;
     }
 
-    .collapsible-toggle-label {
-      min-width: 0;
-      color: var(--ink);
+    .collapsible-toggle-action {
+      color: #2c1810;
       font-size: 16px;
       font-weight: 800;
       line-height: 1.35;
-    }
-
-    .collapsible-toggle-action {
-      flex: 0 0 auto;
-      border-radius: 999px;
-      background: #2c1810;
-      color: #fff;
-      padding: 6px 12px;
-      font-size: 13px;
-      font-weight: 800;
-      line-height: 1.2;
       white-space: nowrap;
     }
 
@@ -1003,13 +999,12 @@ function element(tag, className, content) {
   return node;
 }
 
-function createCollapseToggle(target, title, defaultExpanded = true) {
+function createCollapseToggle(target, defaultExpanded = true) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "collapsible-toggle";
-  const label = element("span", "collapsible-toggle-label", title);
   const action = element("span", "collapsible-toggle-action", "");
-  button.append(label, action);
+  button.append(action);
   let expanded = Boolean(defaultExpanded);
   function sync() {
     button.setAttribute("aria-expanded", String(expanded));
@@ -1026,7 +1021,8 @@ function createCollapseToggle(target, title, defaultExpanded = true) {
 
 function appendCollapsibleHead(root, title, target) {
   const head = element("div", "collapsible-head");
-  head.append(createCollapseToggle(target, title));
+  target.prepend(element("b", "collapsible-body-title", title));
+  head.append(createCollapseToggle(target));
   root.append(head);
 }
 

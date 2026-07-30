@@ -23,6 +23,36 @@ def write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def write_diagnosis_csv(path, records):
+    headers = [
+        "recordType",
+        "materialId",
+        "interactionMetric",
+        "durationSec",
+        "metricValue",
+        "displayMetric",
+        "dimensionKey",
+        "dimensionName",
+        "dimensionValue",
+        "scriptInfo",
+        "materialUri",
+        "videoUrl",
+        "thumbnailUrl",
+        "videoDuration",
+    ]
+    rows = ["\x01".join(headers)]
+    for record in records:
+        values = []
+        for header in headers:
+            value = record.get(header, "")
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value, ensure_ascii=False)
+            values.append(str(value))
+        rows.append("\x02" + "\x01".join(values))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
 class FinalReportConclusionTests(unittest.TestCase):
     def test_accepts_valid_conclusion_schema(self):
         payload = {
@@ -235,6 +265,174 @@ class FinalReportDataTests(unittest.TestCase):
                 "durationSec": 46.022,
             },
         )
+
+    def test_generate_report_accepts_retained_diagnosis_csv_dir_for_visual_facts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            csv_dir = root / "diagnosis-csv"
+            peak_dir = root / "peak-frames"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-02",
+                    "materials": [material("m-1")],
+                },
+            )
+            write_diagnosis_csv(
+                csv_dir / "m-1.csv",
+                [
+                    click_record("m-1", 0, 10),
+                    click_record("m-1", 1, 20),
+                    script_record("m-1"),
+                    material_info_record("m-1"),
+                    {
+                        "recordType": "crowd_analysis",
+                        "materialId": "m-1",
+                        "displayMetric": "SHOW_COUNT",
+                        "dimensionKey": "age",
+                        "dimensionName": "年龄",
+                        "dimensionValue": "24-30",
+                        "metricValue": 100,
+                    },
+                ],
+            )
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_3.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "materialId": "m-1",
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 3,
+                            "framePath": frame_path.name,
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            _data_path, _html_path, data = generate_final_report(
+                top_path,
+                peak_dir,
+                csv_dir,
+                output_dir,
+            )
+
+            material_card = data["materials"][0]
+            self.assertEqual(
+                material_card["interactionTimeline"]["metrics"][0]["points"][1],
+                {"second": 1.0, "value": 20.0},
+            )
+            self.assertEqual(
+                material_card["scriptAnalysis"]["formula"][0]["level2"], "适用场景"
+            )
+            self.assertEqual(
+                material_card["video"]["src"],
+                "https://video.example/m-1.mp4?token=signed",
+            )
+            self.assertEqual(
+                data["audience"]["metrics"]["SHOW_COUNT"]["dimensions"]["age"]["buckets"][0]["bucket"],
+                "24-30",
+            )
+
+    def test_complete_report_requires_retained_diagnosis_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            analysis_path = root / "diagnostic-analysis.json"
+            output_dir = root / "final-report"
+            records_dir.mkdir()
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-02",
+                    "materials": [material("m-1")],
+                },
+            )
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_3.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "materialId": "m-1",
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 3,
+                            "framePath": frame_path.name,
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+            write_json(
+                analysis_path,
+                {
+                    "schemaVersion": 2,
+                    "overallConclusion": "产品近景可继续验证。",
+                    "batchInsights": [
+                        {
+                            "topic": "integrated",
+                            "title": "产品近景有效",
+                            "conclusion": "首个峰值高光帧显示产品近景有效。",
+                            "evidenceRefs": ["highlight:m-1:first_peak"],
+                        }
+                    ],
+                    "materialAnalyses": [
+                        {
+                            "materialId": "m-1",
+                            "audienceConclusion": "人群数据不足以判断。",
+                            "scriptConclusion": "脚本数据不足以判断。",
+                            "highlightAnalyses": [
+                                {
+                                    "frameRef": "highlight:m-1:first_peak",
+                                    "visualObservation": "产品近景出现。",
+                                    "commercialInterpretation": "低理解成本画面可保留。",
+                                }
+                            ],
+                            "integratedConclusion": "继续保留产品近景。",
+                            "decision": "hold",
+                            "nextAction": "补充人群和脚本数据后再判断。",
+                            "evidenceRefs": ["highlight:m-1:first_peak"],
+                        }
+                    ],
+                    "nextActions": [
+                        {
+                            "title": "补齐诊断数据",
+                            "body": "重新读取 RPA 诊断记录。",
+                            "priority": "high",
+                        }
+                    ],
+                },
+            )
+
+            _data_path, _html_path, data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                analysis_json=analysis_path,
+            )
+
+            self.assertEqual(data["status"], "partial")
+            self.assertIn(
+                "missing diagnosis records for material m-1",
+                data["warnings"],
+            )
 
     def test_builds_draft_report_without_conclusion_json(self):
         top_payload = {
@@ -613,13 +811,18 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("function createCollapseToggle", html_text)
         self.assertIn("collapsible-toggle", html_text)
         self.assertIn("collapsible-toggle-action", html_text)
+        self.assertIn("collapsible-body-title", html_text)
+        self.assertNotIn("collapsible-toggle-label", html_text)
         self.assertIn("width: 100%;", html_text)
+        self.assertIn("justify-content: center;", html_text)
+        self.assertIn("font-size: 16px;", html_text)
         self.assertIn("collapsible-body", html_text)
         self.assertIn(".collapsible-body[hidden] {", html_text)
         self.assertIn("display: none;", html_text)
         self.assertIn('button.setAttribute("aria-expanded", String(expanded));', html_text)
         self.assertIn('action.textContent = expanded ? "收起数据" : "展开数据";', html_text)
         self.assertIn("target.hidden = !expanded;", html_text)
+        self.assertIn('target.prepend(element("b", "collapsible-body-title", title));', html_text)
         self.assertIn("收起数据", html_text)
         self.assertIn("展开数据", html_text)
         self.assertNotIn("收起真实数据", html_text)

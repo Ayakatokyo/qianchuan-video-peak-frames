@@ -146,6 +146,7 @@ class BatchSkillContractTests(unittest.TestCase):
 
         self.assertIn("diagnosis-csv/<materialId>.csv", skill)
         self.assertIn("CSV 下载或解析失败仍会阻塞流程", skill)
+        self.assertIn("兼容保留的 `diagnosis-csv` 目录", skill)
         self.assertNotIn(
             "result_type=files` CSV-envelope response is blocking", skill
         )
