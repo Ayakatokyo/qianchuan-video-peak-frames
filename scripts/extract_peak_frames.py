@@ -33,6 +33,7 @@ from rpa_adapter import (
     list_accounts,
 )
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
+from batch_runtime import BatchLockError, acquire_run_lock, read_json, stage_counts
 
 
 DATE_RANGE_TYPES = (
@@ -121,6 +122,12 @@ def build_parser():
     parser.add_argument("--candidate-top-n", type=_positive_int)
     parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=600)
+    parser.add_argument(
+        "--rpa-late-artifact-grace-sec",
+        type=_positive_timeout,
+        default=5,
+        help="Seconds to wait for records/CSV after an RPA request timeout",
+    )
     parser.add_argument("--rpa-ready-top-materials-json")
     parser.add_argument("--rpa-preflight-json")
     parser.add_argument("--allow-rpa-refetch", action="store_true")
@@ -496,6 +503,55 @@ def _materialize_preflight_records(args, outcome, material_id, timings=None):
     )
 
 
+def _recover_late_rpa_artifacts(args, material_id, failure, started_at_epoch=None):
+    """Recover a result that was written after the RPA watchdog fired."""
+    if failure.get("failureReason") != "rpa_request_failed":
+        return failure
+    records_dir = _diagnosis_records_dir(args)
+    csv_dir = _diagnosis_csv_dir(args)
+    records_path = records_dir / f"{material_id}.json"
+    csv_path = csv_dir / f"{material_id}.csv"
+    deadline = time.monotonic() + max(0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5)))
+    def fresh(path):
+        if started_at_epoch is None:
+            return True
+        try:
+            return path.stat().st_mtime >= started_at_epoch
+        except OSError:
+            return False
+    while True:
+        try:
+            if records_path.is_file() and fresh(records_path):
+                records = _read_diagnosis_records(records_path, material_id)
+                return {
+                    **failure,
+                    "rpaAvailable": True,
+                    "records": records,
+                    "diagnosisRecordsPath": str(records_path),
+                    "lateArtifactRecovered": True,
+                    "videoUrl": find_material_video_url(records, material_id),
+                }
+            if csv_path.is_file() and fresh(csv_path):
+                records = parse_diagnosis_csv(csv_path)
+                video_url = find_material_video_url(records, material_id)
+                records_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_diagnosis_records(records, records_path.parent, material_id)
+                return {
+                    **failure,
+                    "rpaAvailable": True,
+                    "records": records,
+                    "diagnosisRecordsPath": str(records_path),
+                    "diagnosisCsvPath": str(csv_path),
+                    "lateArtifactRecovered": True,
+                    "videoUrl": video_url,
+                }
+        except (OSError, RpaAdapterError, RpaCsvError, ValueError):
+            pass
+        if time.monotonic() >= deadline:
+            return failure
+        time.sleep(0.25)
+
+
 def _preflight_worker_entry(params, worker, queue):
     try:
         outcome = worker(params)
@@ -723,6 +779,8 @@ def _stream_entry(material, rank):
             "errorMessage": None,
             "diagnosisRecordsPath": None,
             "diagnosisCsvPath": None,
+            "recordsPersisted": False,
+            "postprocessSucceeded": False,
             "summaryJson": None,
             "summaryMd": None,
             "timingsSec": _empty_material_timings(),
@@ -751,6 +809,7 @@ def _new_streaming_batch_manifest(args, candidates, entries, submitted, selected
     return {
         "schemaVersion": STREAMING_BATCH_MANIFEST_VERSION,
         "source": "rpa",
+        "runId": getattr(args, "run_id", None),
         "shopId": args.shop_id,
         "targetTopN": args.target_top_n,
         "candidateCount": len(candidates),
@@ -768,6 +827,7 @@ def _new_streaming_batch_manifest(args, candidates, entries, submitted, selected
         "selectedMaterials": _stream_ordered(selected),
         "rejectedMaterials": _stream_ordered(rejected),
         "cancelledMaterials": _stream_ordered(cancelled),
+        "stageCounts": stage_counts(_stream_ordered(submitted)),
         "timingsSec": {"totalSec": 0.0},
     }
 
@@ -883,6 +943,7 @@ def _existing_stream_summary_entry(args, entry):
             {
                 "status": "succeeded",
                 "postprocessStatus": "succeeded",
+                "postprocessSucceeded": True,
                 "summaryJson": str(json_path),
                 "summaryMd": str(markdown_path),
             }
@@ -920,6 +981,7 @@ def _resume_streaming_state(args, candidates, entries):
                     "errorType": None,
                     "errorMessage": None,
                     "diagnosisRecordsPath": str(records_path),
+                    "recordsPersisted": True,
                     "records": records,
                 }
             )
@@ -951,6 +1013,7 @@ def _resume_streaming_state(args, candidates, entries):
 
 def _attempt_stream_rpa(args, entry):
     started_at = time.perf_counter()
+    started_at_epoch = time.time()
     timings = _empty_material_timings()
     material_id = entry["materialId"]
     try:
@@ -966,6 +1029,10 @@ def _attempt_stream_rpa(args, entry):
 
     updated = dict(entry)
     updated["timingsSec"] = timings
+    if not outcome.get("rpaAvailable"):
+        outcome = _recover_late_rpa_artifacts(
+            args, material_id, outcome, started_at_epoch=started_at_epoch
+        )
     if not outcome.get("rpaAvailable"):
         updated.update(
             {
@@ -1004,6 +1071,8 @@ def _attempt_stream_rpa(args, entry):
                 else None
             ),
             "records": records,
+            "recordsPersisted": True,
+            "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
         }
     )
     timings["totalSec"] = _elapsed_since(started_at)
@@ -1148,6 +1217,7 @@ def _run_streaming_rpa_batch(args, candidate_payload):
                         entry.update(
                             {
                                 "postprocessStatus": "failed",
+                                "postprocessSucceeded": False,
                                 "status": "failed",
                                 "errorType": type(attempt["error"]).__name__,
                                 "errorMessage": str(attempt["error"]),
@@ -1158,6 +1228,7 @@ def _run_streaming_rpa_batch(args, candidate_payload):
                         entry.update(
                             {
                                 "postprocessStatus": "succeeded",
+                                "postprocessSucceeded": True,
                                 "status": "succeeded",
                                 "summaryJson": str(summary_json),
                                 "summaryMd": str(summary_md),
@@ -1211,6 +1282,54 @@ def _batch_manifest_path(args):
     if args.batch_manifest:
         return Path(args.batch_manifest)
     return Path(args.output_dir) / BATCH_MANIFEST_NAME
+
+
+def _streaming_lock_path(args):
+    return Path(args.output_dir) / ".batch-run.lock"
+
+
+def _manifest_has_unfinished_streaming_work(manifest):
+    if not isinstance(manifest, dict):
+        return False
+    for entry in manifest.get("materials", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status") == "running" or entry.get("rpaStatus") == "submitted":
+            return True
+    for key in ("submittedMaterials",):
+        for entry in manifest.get(key, []):
+            if isinstance(entry, dict) and (
+                entry.get("status") == "running"
+                or entry.get("rpaStatus") == "submitted"
+            ):
+                return True
+    return False
+
+
+def _acquire_streaming_lock(args):
+    manifest_path = _batch_manifest_path(args)
+    existing = read_json(manifest_path)
+    requested_run_id = existing.get("runId") if args.resume and isinstance(existing, dict) else None
+    try:
+        lock = acquire_run_lock(
+            _streaming_lock_path(args), manifest_path, run_id=requested_run_id
+        )
+    except BatchLockError as exc:
+        if not exc.stale:
+            raise RpaAdapterError(str(exc)) from exc
+        if _manifest_has_unfinished_streaming_work(existing) and not args.resume:
+            raise RpaAdapterError(
+                "stale streaming batch requires --resume or repair-manifest before retry"
+            ) from exc
+        try:
+            _streaming_lock_path(args).unlink()
+        except FileNotFoundError:
+            pass
+        lock = acquire_run_lock(
+            _streaming_lock_path(args), manifest_path, run_id=requested_run_id
+        )
+    args.run_id = lock.payload["runId"]
+    return lock
 
 
 def _new_batch_manifest(args, material_ids):
@@ -1562,6 +1681,12 @@ def _verify_streaming_rpa_batch(args, material_ids, manifest):
         "selectedCount": len(selected),
         "rejectedCount": len(rejected),
         "cancelledCount": len(cancelled),
+        "stageCounts": manifest.get("stageCounts")
+        if isinstance(manifest.get("stageCounts"), dict)
+        else stage_counts(
+            selected,
+            report_ready=(manifest.get("reportReady") or {}).get("status") == "ready",
+        ),
         "warningCount": len(warnings),
         "warnings": warnings,
         "errors": errors,
@@ -1826,8 +1951,18 @@ def main(argv=None):
                             if receipt["valid"]
                             else BATCH_VERIFICATION_FAILURE_EXIT_CODE
                         )
-                    manifest_path, result, failed = _run_streaming_rpa_batch(
-                        args, top_materials_payload
+                    with _acquire_streaming_lock(args):
+                        manifest_path, result, failed = _run_streaming_rpa_batch(
+                            args, top_materials_payload
+                        )
+                    manifest_snapshot = read_json(manifest_path) or {}
+                    print(
+                        "stage_counts="
+                        + json.dumps(
+                            manifest_snapshot.get("stageCounts", {}),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
                     )
                     if failed:
                         print(f"batch_manifest={manifest_path}", file=sys.stderr)

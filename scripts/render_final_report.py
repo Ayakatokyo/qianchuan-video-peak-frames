@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import sys
+from pathlib import Path
 
+from batch_runtime import mark_report_ready
 from final_report_lib import FinalReportError, generate_final_report
 
 
@@ -45,6 +47,11 @@ def main(argv=None):
         return 2
     print(f"final_report_data={data_path}")
     print(f"final_report_html={html_path}")
+    manifest_path = Path(args.peak_output_dir) / "batch-manifest.json"
+    if mark_report_ready(manifest_path, data_path, html_path):
+        print("report_ready=1")
+    else:
+        print("report_ready=0", file=sys.stderr)
     return 0
 
 

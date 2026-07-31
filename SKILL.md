@@ -82,14 +82,30 @@ python scripts/extract_peak_frames.py \
 ```
 
 RPA 通道最多同时运行 3 个连接器请求，并严格从候选头部补位。每当一个素材获得可解析的诊断数据、目标 `material_info` 和非空 `videoUrl` 后，系统立即写入规范化记录并送入独立的后处理通道；视频下载、抽帧和摘要生成可以和后续 RPA 调用并行。并发只影响完成时间，不改变最终素材和报告顺序。
+单素材 RPA watchdog 默认是 600 秒，可通过 `--rpa-preflight-timeout-sec` 调整。watchdog 触发后，系统会在默认 5 秒的 `--rpa-late-artifact-grace-sec` 窗口内检查本次请求新生成的 records/CSV；产物可解析且包含有效 `material_info.videoUrl` 时，自动转入后处理并在 manifest 标记 `lateArtifactRecovered=true`，只有回收失败才进入补位。
 
 流式运行会写入 `batch-manifest.json`，其中的 `submittedMaterials`、`selectedMaterials`、`rejectedMaterials` 和 `cancelledMaterials` 分别表示已提交、RPA 可用、RPA 不可用与未提交取消的候选。每个条目保留 rank、素材元数据、两个通道状态、失败原因、诊断记录路径、摘要路径和 `timingsSec`；其中包含 `rpaFetchSec`、`diagnosisRecordWriteSec`、`videoDownloadSec`、`frameExtractionSec` 和 `totalSec`。`top_materials_rpa_ready.json` 仍会写出，作为最终报告和下游脚本的兼容输入；其素材只包含 RPA 成功的 Top N，并保持资产表排序。
+
+manifest 顶层同时写出 `stageCounts`：`rpaSelectedCount` 表示拿到 records 和 `videoUrl` 的素材数，`recordsPersistedCount` 表示规范化 JSON 已落盘的素材数，`postprocessSucceededCount` 表示视频下载、抽帧和 summary 均成功的素材数，`reportReadyCount` 是事实包和最终报告均验证通过的批次级 0/1 状态。报告日志必须同时打印这些数量，不得把 RPA selected 当作报告可用。
 
 如果候选池耗尽时仍未选到目标数量，或任一选中素材后处理失败，命令返回非零但保留所有已完成的诊断记录、CSV、摘要和 JPEG。CSV 下载或解析失败仍会阻塞流程，并记录为 RPA 拒绝；不要将它解释为素材删除。后处理失败则保留 RPA selected 状态，不会伪装为 RPA 失败或无条件补充新的低排名素材。
 
 `--preflight-only`、`--rpa-preflight-json` 和 `--allow-rpa-refetch` 仅用于诊断、重放既有预检产物或兼容旧批次，不是新 TOP 素材批量运行的推荐步骤。
 
 兼容旧批次仍支持 `--resume` 与 `--verify`：恢复时后续 TOP 素材仍会继续运行；验证会写入 `batch-verification.json`，保留产物不合格时返回退出码 `6`。流式 Top-N 运行应直接检查其 schemaVersion 2 manifest 的状态数组和错误原因。
+
+每个流式批次在输出目录创建 `.batch-run.lock` 并写入唯一 `runId`。已有活跃锁时不得并发启动同一目录；若锁对应进程已不存在且 manifest 仍有 `running` 或 `submitted`，这是 stale（陈旧）批次，必须先使用 `--resume` 或 `scripts/repair_manifest.py` 进入恢复/修复路径，不得静默覆盖原批次。
+
+半成品修复使用：
+
+```bash
+python scripts/repair_manifest.py \
+  --output-dir "/path/to/run/peak-frames" \
+  --diagnosis-records-dir "/path/to/run/diagnosis-records" \
+  --diagnosis-csv-dir "/path/to/run/diagnosis-csv"
+```
+
+若 `batch-manifest.json` 已丢失，额外传入 `--top-materials-json`，命令会从候选池和已有 summary/JPEG 建立最小 manifest；无法证明 RPA/records 阶段时标记为 `unknown`，不伪造 selected。该命令只读取和修复本地产物，不重新调用 RPA：`CSV -> records`、`records -> 后处理`、有效 summary/JPEG -> manifest。修复结果写入 `repair-manifest.json`，包含动作、错误、阶段计数和 `rpaCalls=0`。
 
 ## 最终 HTML 报告流程
 

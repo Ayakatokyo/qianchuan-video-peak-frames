@@ -73,6 +73,8 @@ RPA success writes normalized records before postprocessing starts. Video downlo
 Failure reasons:
 
 - `rpa_request_failed`: gateway, HTTP, network, or configured RPA request failure.
+
+When the local 600-second preflight watchdog fires, the batch runner performs a short late-artifact recovery check. A newly written, parseable records JSON or diagnosis CSV with a matching `material_info.videoUrl` is treated as RPA-selected and proceeds to postprocess; otherwise the material remains `rpa_request_failed` and normal candidate backfill applies.
 - `rpa_payload_invalid`: gateway payload could not be normalized into usable records.
 - `missing_material_info`: no matching `material_info` record was returned.
 - `missing_video_url`: matching `material_info` exists but has no usable `videoUrl`.
@@ -86,6 +88,17 @@ The stream writes:
 - `top_materials_rpa_ready.json`: compatibility top-materials shape containing rank-ordered selected materials only.
 - `diagnosis-records/<materialId>.json`: normalized records written before a candidate joins selected.
 - `diagnosis-csv/<materialId>.csv`: retained source CSV for a files-envelope response.
+
+The manifest also exposes `stageCounts` with four separate meanings:
+
+- `rpaSelectedCount`: records, matching `material_info`, and non-empty `videoUrl` are available.
+- `recordsPersistedCount`: normalized records JSON is present on disk.
+- `postprocessSucceededCount`: video download, frame extraction, and both summaries succeeded.
+- `reportReadyCount`: batch-level 0/1 flag set only after the complete fact package and final report data/HTML validate.
+
+The streaming output directory is protected by `.batch-run.lock` and a unique `runId`. A stale lock with `running` or `submitted` manifest entries requires explicit recovery; it must not be silently overwritten.
+
+Local repair is available with `python scripts/repair_manifest.py --output-dir <peak-frames-dir>`. It performs `CSV -> records`, `records -> 后处理`, and valid summary/JPEG -> manifest repairs without calling RPA. If the manifest is missing, pass `--top-materials-json`; artifact-only recovery uses `rpaStatus: unknown` until records prove RPA selection. The resulting `repair-manifest.json` records `rpaCalls: 0`, actions, errors, and stage counts.
 
 Counting terms are intentionally separate. `assetSelectedMaterialCount` is the number of rank-ordered material IDs loaded from the asset-table candidate pool for this run, equivalent to `candidateCount` and capped by `candidateLimit`. `rpaSubmittedMaterialCount` is the number of material IDs actually sent to the RPA connector, equivalent to the length of `submittedMaterials`. The scheduler never submits the entire candidate pool up front; it submits from the candidate head until `targetTopN` selected materials exist or the candidate pool is exhausted.
 

@@ -6,6 +6,7 @@ import math
 import mimetypes
 import os
 from pathlib import Path
+from batch_runtime import stage_counts
 import shutil
 import uuid
 
@@ -671,6 +672,11 @@ def _pipeline_summary(batch_manifest, batch_verification):
     ):
         return {}
 
+    manifest_stage_counts = batch_manifest.get("stageCounts", {})
+    report_ready = (
+        isinstance(manifest_stage_counts, dict)
+        and manifest_stage_counts.get("reportReadyCount") == 1
+    ) or (batch_manifest.get("reportReady") or {}).get("status") == "ready"
     return {
         "targetTopN": batch_manifest.get("targetTopN"),
         "candidateCount": batch_manifest.get("candidateCount"),
@@ -680,6 +686,7 @@ def _pipeline_summary(batch_manifest, batch_verification):
         "cancelledCount": cancelled_count,
         "postprocessSucceededCount": postprocess_succeeded_count,
         "postprocessFailedCount": postprocess_failed_count,
+        **stage_counts(submitted_materials, report_ready=report_ready),
         "verificationValid": verification_valid,
         "verificationErrors": verification_errors,
         "verificationWarnings": verification_warnings,

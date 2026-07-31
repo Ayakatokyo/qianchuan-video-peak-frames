@@ -35,6 +35,11 @@ from peak_frame_lib import (  # noqa: E402
 )
 import rpa_adapter  # noqa: E402
 import extract_peak_frames  # noqa: E402
+from batch_runtime import (  # noqa: E402
+    BatchLockError,
+    acquire_run_lock,
+    mark_report_ready,
+)
 
 
 def click_record(second, value, material_id="m-123"):
@@ -2182,6 +2187,59 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.rpa_concurrency, 3)
         self.assertEqual(args.postprocess_concurrency, 3)
 
+    def test_batch_run_lock_rejects_active_lock_and_releases(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = Path(temp_dir) / ".batch-run.lock"
+            manifest_path = Path(temp_dir) / "batch-manifest.json"
+            first = acquire_run_lock(lock_path, manifest_path)
+            try:
+                with self.assertRaises(BatchLockError) as raised:
+                    acquire_run_lock(lock_path, manifest_path)
+                self.assertFalse(raised.exception.stale)
+            finally:
+                first.release()
+            second = acquire_run_lock(lock_path, manifest_path)
+            second.release()
+
+    def test_batch_run_lock_reports_stale_lock_without_overwriting_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = Path(temp_dir) / ".batch-run.lock"
+            manifest_path = Path(temp_dir) / "batch-manifest.json"
+            lock_path.write_text(
+                json.dumps(
+                    {
+                        "runId": "old-run",
+                        "pid": 999999,
+                        "hostname": "test-host",
+                        "startedAt": 1,
+                        "manifestPath": str(manifest_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BatchLockError) as raised:
+                acquire_run_lock(lock_path, manifest_path)
+            self.assertTrue(raised.exception.stale)
+            self.assertIn("old-run", lock_path.read_text(encoding="utf-8"))
+
+    def test_report_ready_is_marked_only_for_complete_report_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "batch-manifest.json"
+            data = root / "final-report-data.json"
+            html = root / "final-report.html"
+            manifest.write_text(
+                json.dumps({"stageCounts": {"reportReadyCount": 0}}),
+                encoding="utf-8",
+            )
+            data.write_text(json.dumps({"status": "partial"}), encoding="utf-8")
+            html.write_text("<html></html>", encoding="utf-8")
+            self.assertFalse(mark_report_ready(manifest, data, html))
+            data.write_text(json.dumps({"status": "complete"}), encoding="utf-8")
+            self.assertTrue(mark_report_ready(manifest, data, html))
+            updated = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(updated["stageCounts"]["reportReadyCount"], 1)
+
     def test_streaming_batch_manifest_records_selected_materials(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -2229,6 +2287,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(manifest["schemaVersion"], 2)
+        self.assertTrue(manifest["runId"])
         self.assertEqual(manifest["targetTopN"], 1)
         self.assertEqual(manifest["candidateLimit"], 1)
         self.assertEqual(manifest["rpaConcurrency"], 3)
@@ -2241,6 +2300,15 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(manifest["rejectedMaterials"], [])
         self.assertEqual(manifest["cancelledMaterials"], [])
+        self.assertEqual(
+            manifest["stageCounts"],
+            {
+                "rpaSelectedCount": 1,
+                "recordsPersistedCount": 1,
+                "postprocessSucceededCount": 1,
+                "reportReadyCount": 0,
+            },
+        )
 
     def _streaming_outcome(self, material_id):
         return {
@@ -4373,6 +4441,62 @@ class CliTests(unittest.TestCase):
         args = extract_peak_frames.build_parser().parse_args([])
 
         self.assertEqual(args.rpa_preflight_timeout_sec, 600)
+
+    def test_streaming_rpa_recovers_failed_request_from_late_csv(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir(parents=True)
+            material_id = "m-late"
+            csv_path = csv_dir / f"{material_id}.csv"
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/{material_id}.mp4\n",
+                encoding="utf-8",
+            )
+            args = type("Args", (), {
+                "output_dir": str(output),
+                "diagnosis_records_dir": str(records_dir),
+            })()
+            args.rpa_late_artifact_grace_sec = 0
+            failed = {
+                "materialId": material_id,
+                "rpaAvailable": False,
+                "failureReason": "rpa_request_failed",
+                "videoUrl": None,
+            }
+
+            recovered = extract_peak_frames._recover_late_rpa_artifacts(
+                args, material_id, failed
+            )
+
+            self.assertTrue(recovered["rpaAvailable"])
+            self.assertTrue(recovered["lateArtifactRecovered"])
+            self.assertEqual(recovered["diagnosisCsvPath"], str(csv_path))
+            self.assertTrue((records_dir / f"{material_id}.json").is_file())
+
+    def test_late_artifact_recovery_keeps_request_failure_when_csv_is_invalid(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir(parents=True)
+            material_id = "m-invalid-late"
+            (csv_dir / f"{material_id}.csv").write_text("not,a,diagnosis,csv\n", encoding="utf-8")
+            args = type("Args", (), {
+                "output_dir": str(output),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+            })()
+            args.rpa_late_artifact_grace_sec = 0
+
+            recovered = extract_peak_frames._recover_late_rpa_artifacts(
+                args, material_id, {"rpaAvailable": False, "failureReason": "rpa_request_failed"}
+            )
+
+            self.assertFalse(recovered["rpaAvailable"])
+            self.assertEqual(recovered["failureReason"], "rpa_request_failed")
 
     def test_local_cli_outputs_four_frames_and_two_summaries(self):
         ffmpeg = resolve_ffmpeg()

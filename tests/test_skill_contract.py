@@ -99,6 +99,11 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("rejectedMaterials", contract)
         self.assertIn("cancelledMaterials", contract)
         self.assertIn("top_n_already_selected", contract)
+        self.assertIn("stageCounts", contract)
+        self.assertIn("rpaSelectedCount", contract)
+        self.assertIn("recordsPersistedCount", contract)
+        self.assertIn("postprocessSucceededCount", contract)
+        self.assertIn("reportReadyCount", contract)
 
     def test_top18_prompt_does_not_stop_at_54_candidate_export(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -165,6 +170,18 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("batch-manifest.json", skill)
         self.assertIn("--resume", skill)
         self.assertIn("后续 TOP 素材仍会继续运行", skill)
+        self.assertIn(".batch-run.lock", skill)
+        self.assertIn("stale", skill)
+        self.assertIn("repair_manifest.py", skill)
+
+    def test_repair_manifest_documents_local_only_recovery(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("repair-manifest", skill)
+        self.assertIn("不重新调用 RPA", skill)
+        self.assertIn("CSV -> records", contract)
+        self.assertIn("records -> 后处理", contract)
 
     def test_batch_verification_documents_receipt_and_failure_exit_code(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
