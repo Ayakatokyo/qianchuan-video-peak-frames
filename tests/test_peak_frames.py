@@ -608,6 +608,18 @@ class PeakSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_selects_video_start_for_cover_when_series_starts_after_zero(self):
+        points = [
+            SeriesPoint(1.0, 5.0),
+            SeriesPoint(2.0, 1.0),
+            SeriesPoint(3.0, 9.0),
+            SeriesPoint(4.0, 1.0),
+        ]
+
+        selected = select_peak_frames(points)
+
+        self.assertEqual(selected[0], SelectedPeak("zero_second", 0.0, None))
+
     def test_collapses_equal_plateau_to_earliest_second(self):
         points = [
             SeriesPoint(i, value)
@@ -1965,7 +1977,7 @@ class SummaryTests(unittest.TestCase):
             self.assertEqual(payload, summary)
             self.assertIn("input.json", markdown)
             self.assertIn("video.mp4", markdown)
-            self.assertIn("zero_second_frame", markdown)
+            self.assertIn("video_timestamp_0_seconds", markdown)
             self.assertIn(
                 "top_3_local_peaks_by_metric_desc_then_time_asc", markdown
             )

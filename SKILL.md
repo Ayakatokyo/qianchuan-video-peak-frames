@@ -173,7 +173,7 @@ python scripts/extract_peak_frames.py \
 - 仅读取指标为 `CLICK_COUNT` 的 `interaction_series` 记录。
 - 排除时序的第一个和最后一个点。
 - 将等值平台合并为一个峰值，并取其最早秒数。
-- 固定提取第 0 秒对应的画面，标记为 `zero_second`。
+- 固定提取视频时间 `0.0` 秒对应的封面画面，标记为 `zero_second`；该帧不依赖互动时序是否包含 `durationSec = 0`。
 - 对全部局部峰值按点击数降序、秒数升序排序，取前三个，标记为 `peak_top_1` 至 `peak_top_3`。
 - 若局部峰值少于三个，返回第 0 秒帧和可用峰值帧并给出警告；绝不伪造峰值。
 

@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from typing import Optional
 
 
 DEFAULT_FFMPEG_TIMEOUT_SEC = 120.0
@@ -41,7 +42,7 @@ class Peak:
 class SelectedPeak:
     rank_type: str
     duration_sec: float
-    metric_value: float
+    metric_value: Optional[float]
 
 
 def resolve_ffmpeg(
@@ -441,12 +442,15 @@ def format_frame_filename(rank_type, duration_sec, metric_value):
         r"[A-Za-z0-9_-]+", rank_type
     ) is None:
         raise InputDataError(f"invalid frame rank type: {rank_type!r}")
-    _, metric_text = _canonical_seconds(
-        metric_value, "metric value", InputDataError
-    )
-    if "." in metric_text:
-        metric_text = metric_text.rstrip("0").rstrip(".")
-    metric_token = metric_text.replace("-", "m").replace(".", "p")
+    if metric_value is None:
+        metric_token = "na"
+    else:
+        _, metric_text = _canonical_seconds(
+            metric_value, "metric value", InputDataError
+        )
+        if "." in metric_text:
+            metric_text = metric_text.rstrip("0").rstrip(".")
+        metric_token = metric_text.replace("-", "m").replace(".", "p")
     return (
         f"{rank_type}_{format_seconds_token(duration_sec)}_"
         f"{metric_token}.jpg"
@@ -475,7 +479,7 @@ def build_summary(
         "materialId": str(material_id),
         "inputJsonPath": str(input_json_path),
         "selectionRule": {
-            "zero": "zero_second_frame",
+            "zero": "video_timestamp_0_seconds",
             "peaks": "top_3_local_peaks_by_metric_desc_then_time_asc",
             "plateau": "collapse_to_earliest_second",
             "boundariesExcluded": True,
@@ -523,9 +527,14 @@ def _render_summary_markdown(summary):
         "| --- | ---: | ---: | ---: | --- |",
     ]
     for frame in summary["frames"]:
+        metric_value = (
+            f"{frame['metricValue']:g}"
+            if frame["metricValue"] is not None
+            else "-"
+        )
         lines.append(
             f"| {frame['rankType']} | {frame['durationSec']:g} | "
-            f"{frame['metricValue']:g} | "
+            f"{metric_value} | "
             f"{frame['requestedTimestampSec']:g} | {frame['framePath']} |"
         )
     if summary["warnings"]:
@@ -825,7 +834,14 @@ def find_local_peaks(points):
 def select_peak_frames(points, peak_limit=3):
     if not points:
         raise InputDataError("No local peaks found")
-    zero_point = min(points, key=lambda point: point.duration_sec)
+    zero_metric = next(
+        (
+            point.metric_value
+            for point in points
+            if point.duration_sec == 0
+        ),
+        None,
+    )
     peaks = find_local_peaks(points)
     if not peaks:
         raise InputDataError("No local peaks found")
@@ -837,8 +853,8 @@ def select_peak_frames(points, peak_limit=3):
     selected = [
         SelectedPeak(
             "zero_second",
-            float(zero_point.duration_sec),
-            float(zero_point.metric_value),
+            0.0,
+            float(zero_metric) if zero_metric is not None else None,
         )
     ]
     selected.extend(
