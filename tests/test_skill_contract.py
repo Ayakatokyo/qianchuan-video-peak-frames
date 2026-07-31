@@ -9,6 +9,14 @@ DIAGNOSTIC_PROMPT_PATH = ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md"
 
 
 class BatchSkillContractTests(unittest.TestCase):
+    def test_legacy_commercial_report_scripts_are_removed(self):
+        self.assertFalse(
+            (ROOT / "scripts" / "commercial_report_lib.py").exists()
+        )
+        self.assertFalse(
+            (ROOT / "scripts" / "generate_commercial_report.py").exists()
+        )
+
     def test_frontmatter_is_chinese(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
