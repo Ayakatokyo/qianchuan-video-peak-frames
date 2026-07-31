@@ -21,7 +21,7 @@ class FinalReportError(RuntimeError):
 
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
-ALLOWED_INSIGHT_TOPICS = {"audience", "script", "integrated"}
+ALLOWED_INSIGHT_TOPICS = {"audience", "script"}
 INTERACTION_METRIC_LABELS = {
     "CLICK_COUNT": "整体点击次数",
     "LOSE_COUNT": "整体流失数",
@@ -405,15 +405,6 @@ def _batch_insights(conclusion):
         for insight in conclusion.get("batchInsights", []):
             result[insight["topic"]].append(insight)
         return result
-    for insight in conclusion.get("keyInsights", []):
-        result["integrated"].append(
-            {
-                "topic": "integrated",
-                "title": insight["title"],
-                "conclusion": insight["body"],
-                "evidenceRefs": insight.get("materialIds", []),
-            }
-        )
     return result
 
 

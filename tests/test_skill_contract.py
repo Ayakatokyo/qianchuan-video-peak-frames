@@ -203,6 +203,7 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("Use `--embed-assets` only for small one-file debug reports", contract)
         self.assertIn("临时签名 URL", prompt)
         self.assertIn("不得在任何分析字段中引用", prompt)
+        self.assertIn("不得输出 `batchInsights.topic=integrated`", skill)
 
     def test_final_report_requires_in_task_visual_analysis_and_v2_output(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -244,7 +245,9 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertNotIn("highlight` 对应 `04", prompt)
         self.assertIn("最终 HTML 页面保留以下 5 个 section", prompt)
         self.assertNotIn("最终 HTML 页面只保留以下 4 个 section", prompt)
-        self.assertIn('"topic": "integrated"', prompt)
+        self.assertNotIn('"topic": "integrated"', prompt)
+        self.assertIn("不得输出 `batchInsights.topic=integrated`", prompt)
+        self.assertIn("只使用 `overallConclusion`", prompt)
         self.assertIn('`nextActions` 对应 `05｜下一轮策略`', prompt)
         self.assertIn('"nextActions":', prompt)
         self.assertIn("策略卡片只展示 title 和 body", prompt)
@@ -256,15 +259,20 @@ class BatchSkillContractTests(unittest.TestCase):
 
     def test_final_report_prompt_requires_data_rich_secondary_summary(self):
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+        skill = SKILL_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("真实数据 + 一句总结结论", prompt)
+        self.assertNotIn("真实数据 + 一句总结结论", prompt)
+        self.assertNotIn("真实数据 + 一句总结结论", skill)
+        self.assertIn("少量关键事实锚点 + 多句分析判断", prompt)
+        self.assertIn("少量关键事实锚点 + 多句分析判断", skill)
         self.assertIn("overallConclusion 必须综合人群、脚本、高光帧", prompt)
+        self.assertIn("整体结论的数据陈述只作为判断依据，不作为段落主体", prompt)
         self.assertIn("展现次数", prompt)
         self.assertIn("点击次数", prompt)
         self.assertIn("成交金额", prompt)
         self.assertIn("人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开", prompt)
-        self.assertIn("不得只写抽象结论", prompt)
-        self.assertIn("每条 batchInsights.conclusion 建议 120-220 个中文字符", prompt)
+        self.assertIn("优先输出组合公式、机会判断、风险边界和下一轮验证方向", prompt)
+        self.assertIn("每条 batchInsights.conclusion 建议 180-280 个中文字符", prompt)
 
     def test_final_report_prompt_requires_every_highlight_frame_analysis(self):
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")

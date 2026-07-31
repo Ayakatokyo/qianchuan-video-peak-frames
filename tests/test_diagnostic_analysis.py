@@ -400,6 +400,35 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             self.assertIn("diagnosis records for material m-2 are not a list", analysis["warnings"])
             self.assertIn("missing diagnosis records for material m-3", analysis["warnings"])
 
+    def test_publishes_compact_fact_package_to_reduce_ai_input_size(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            output_dir = root / "analysis"
+            records_dir.mkdir()
+            self._write_json(
+                top_materials,
+                {"materials": [{"rank": 1, "materialId": "m-1", "materialName": "素材一"}]},
+            )
+            self._write_json(
+                records_dir / "m-1.json",
+                [crowd_record("m-1", "SHOW_COUNT", "age", "24-30", 100)],
+            )
+
+            data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+                top_materials, records_dir, output_dir
+            )
+
+            data_text = data_path.read_text(encoding="utf-8")
+            self.assertEqual(json.loads(data_text), analysis)
+            self.assertTrue(data_text.endswith("\n"))
+            self.assertNotIn('\n  "', data_text)
+            self.assertEqual(
+                data_text,
+                json.dumps(analysis, ensure_ascii=False, separators=(",", ":")) + "\n",
+            )
+
     def test_prepare_accepts_retained_diagnosis_csv_dir_without_json_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

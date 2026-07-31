@@ -510,9 +510,9 @@ class FinalReportDataTests(unittest.TestCase):
                     "overallConclusion": "产品近景可继续验证。",
                     "batchInsights": [
                         {
-                            "topic": "integrated",
-                            "title": "产品近景有效",
-                            "conclusion": "首个峰值高光帧显示产品近景有效。",
+                            "topic": "audience",
+                            "title": "人群数据不足",
+                            "conclusion": "当前素材缺少人群分桶数据，需补充后再判断放量空间。",
                             "evidenceRefs": ["highlight:m-1:first_peak"],
                         }
                     ],
@@ -856,6 +856,20 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
         with self.assertRaisesRegex(FinalReportError, "topic is unsupported"):
             normalize_conclusion_analysis(conclusion)
 
+    def test_rejects_v2_integrated_batch_insight(self):
+        conclusion = self._conclusion()
+        conclusion["batchInsights"].append(
+            {
+                "topic": "integrated",
+                "title": "组合模板稳定",
+                "conclusion": "组合洞察已经由 overallConclusion 承载。",
+                "evidenceRefs": ["highlight:m-1:first_peak"],
+            }
+        )
+
+        with self.assertRaisesRegex(FinalReportError, "topic is unsupported"):
+            normalize_conclusion_analysis(conclusion)
+
     def test_v2_conclusion_drops_page_unused_warnings(self):
         conclusion = self._conclusion()
         conclusion["warnings"] = ["素材 m-1 缺少补充帧，仅作谨慎判断。"]
@@ -878,7 +892,7 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
         conclusion = self._conclusion()
         conclusion["batchInsights"].append(
             {
-                "topic": "integrated",
+                "topic": "audience",
                 "title": "修复后的 fresh rerun 证明 verify 收口已闭合",
                 "conclusion": (
                     "rank 2 素材因 rpa_request_failed 被剔除，"
@@ -929,6 +943,21 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("evidenceRefs.join", html_text)
         self.assertIn('id="audience-dashboard"', html_text)
         self.assertIn('id="script-dashboard"', html_text)
+        self.assertNotIn('id="integrated-insights"', html_text)
+        self.assertIn("function renderInsightList", html_text)
+        self.assertNotIn(
+            'renderInsightList("integrated-insights", reportData.batchInsights?.integrated, "暂无组合洞察");',
+            html_text,
+        )
+        self.assertIn(
+            'renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");',
+            html_text,
+        )
+        self.assertIn(
+            'renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");',
+            html_text,
+        )
+        self.assertNotIn("function renderPrimaryInsight", html_text)
         self.assertNotIn('id="highlight-dashboard"', html_text)
         self.assertIn("function renderAudienceDashboard", html_text)
         self.assertIn("function renderScriptDashboard", html_text)
@@ -1159,6 +1188,17 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("AI 二次总结", prompt_text)
         self.assertIn("不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句", prompt_text)
         self.assertIn("解释这些事实为什么影响素材放量、改写或保留判断", prompt_text)
+        self.assertIn("少量关键事实锚点 + 多句分析判断", prompt_text)
+        self.assertIn("整体结论的数据陈述只作为判断依据，不作为段落主体", prompt_text)
+        self.assertIn("优先输出组合公式、机会判断、风险边界和下一轮验证方向", prompt_text)
+        self.assertIn("每条 batchInsights.conclusion 建议 180-280 个中文字符", prompt_text)
+        self.assertIn(
+            "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 建议 120-220 个中文字符",
+            prompt_text,
+        )
+        self.assertIn("不得输出 `batchInsights.topic=integrated`", prompt_text)
+        self.assertIn("至少输出 3 条 audience、2 条 script 洞察", prompt_text)
+        self.assertIn("至少输出 4 条 nextActions", prompt_text)
 
     def test_generates_html_with_required_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1671,12 +1711,6 @@ class FinalReportRenderTests(unittest.TestCase):
                             "conclusion": "价格优惠标签出现。",
                             "evidenceRefs": ["script:m-1:价格优惠:降价/折扣"],
                         },
-                        {
-                            "topic": "integrated",
-                            "title": "组合模板稳定",
-                            "conclusion": "人群、脚本和画面可组合复用。",
-                            "evidenceRefs": ["highlight:m-1:first_peak"],
-                        },
                     ],
                     "materialAnalyses": [
                         {
@@ -1735,8 +1769,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("font-weight: 800;", html_text)
         self.assertNotIn("renderTopicInsight", html_text)
         self.assertNotIn('id="integrated-insights"', html_text)
-        self.assertNotIn('id="audience-insights"', html_text)
-        self.assertNotIn('id="script-insights"', html_text)
+        self.assertIn('id="audience-primary"', html_text)
+        self.assertIn('id="script-primary"', html_text)
         self.assertNotIn('id="highlight-insights"', html_text)
         self.assertNotIn("renderEvidenceCards", html_text)
         self.assertNotIn("renderEvidenceSummary", html_text)
@@ -1749,7 +1783,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("点击次数", html_text)
         self.assertNotIn("曝光人群", html_text)
         self.assertNotIn("点击人群", html_text)
-        self.assertIn("displayText(first.conclusion)", html_text)
+        self.assertIn("insights.forEach((insight, index) => {", html_text)
+        self.assertIn("displayText(insight.conclusion)", html_text)
         self.assertIn("displayText(paragraph)", html_text)
         self.assertIn("displayStatus(material.extractionStatus)", html_text)
         self.assertIn('succeeded: "已完成"', html_text)

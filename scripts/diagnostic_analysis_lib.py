@@ -542,7 +542,7 @@ def _publish_output_pair(output_dir, analysis, prompt):
     try:
         root.mkdir(parents=True, exist_ok=True)
         data_staging.write_text(
-            json.dumps(analysis, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(analysis, ensure_ascii=False, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
         prompt_staging.write_text(prompt, encoding="utf-8")

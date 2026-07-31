@@ -144,6 +144,33 @@
       color: var(--ink);
     }
 
+    .insight-stack {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .primary-summary > .insight-stack:first-child {
+      margin-top: 0;
+    }
+
+    .insight-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, .72);
+      padding: 15px 16px;
+    }
+
+    .insight-card-primary {
+      background: #fff;
+    }
+
+    .insight-card p {
+      color: var(--ink);
+      font-size: 15px;
+      line-height: 1.74;
+    }
+
     .part-label {
       display: block;
       margin-bottom: 8px;
@@ -1227,14 +1254,26 @@ function humanizeEvidenceRef(reference) {
   return "结构化证据";
 }
 
-function renderPrimaryInsight(targetId, insights, conclusionLabel, emptyTitle) {
+function renderInsightList(targetId, insightItems, emptyTitle) {
   const target = document.getElementById(targetId);
   target.replaceChildren();
-  const first = Array.isArray(insights) && insights.length > 0 ? insights[0] : null;
-  target.append(
-    element("b", "", first ? displayText(first.title) : emptyTitle),
-    element("p", "", first ? displayText(first.conclusion) : "请补充结构化分析后重新渲染。")
-  );
+  const insights = Array.isArray(insightItems) ? insightItems.filter((insight) => {
+    return text(insight && insight.title) || text(insight && insight.conclusion);
+  }) : [];
+  if (insights.length === 0) {
+    const empty = element("article", "insight-card insight-card-primary");
+    empty.append(element("b", "", emptyTitle), element("p", "", "请补充结构化分析后重新渲染。"));
+    target.append(empty);
+    return;
+  }
+  insights.forEach((insight, index) => {
+    const card = element("article", `insight-card${index === 0 ? " insight-card-primary" : ""}`);
+    card.append(
+      element("b", "", displayText(insight.title || `洞察 ${index + 1}`)),
+      element("p", "", displayText(insight.conclusion))
+    );
+    target.append(card);
+  });
 }
 
 function topBuckets(dimension, limit = 8) {
@@ -2454,8 +2493,8 @@ function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。`;
   document.getElementById("overall-conclusion").textContent = displayText(reportData.conclusion?.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。");
-  renderPrimaryInsight("audience-primary", reportData.batchInsights?.audience, "", "暂无人群洞察");
-  renderPrimaryInsight("script-primary", reportData.batchInsights?.script, "", "暂无脚本洞察");
+  renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");
+  renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");
   renderAudienceDashboard();
   renderScriptDashboard();
   renderMaterialTabs();

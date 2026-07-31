@@ -107,11 +107,11 @@ python scripts/prepare_diagnostic_analysis.py \
 
 当前执行技能的模型必须读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，并实际查看事实包 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一次任务内生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`，必须使用 `schemaVersion: 2`，分开 `SHOW_COUNT`、`CLICK_COUNT` 与 `TRANSACTION_AMOUNT` 人群结论，展示文案使用“展现次数”“点击次数”“成交金额”，并逐字引用事实包已有的 evidence ref。模型不得仅凭帧的秒数或点击值猜测画面；高光帧观察必须基于实际查看 JPEG。
 
-AI 二次分析必须按“真实数据 + 一句总结结论”组织内容，不得只写抽象判断。`overallConclusion` 必须综合人群、脚本、高光帧和投放明细中的主要事实，对本次提取到的所有素材做组合级汇总分析；`batchInsights.topic=integrated` 必须同时引用人群、脚本和高光帧证据；人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开。
+AI 二次分析必须按“少量关键事实锚点 + 多句分析判断”组织内容：只选最能支撑判断的事实作为依据，更多篇幅用于说明组合公式、机会判断、风险边界和下一轮验证方向。`overallConclusion` 必须综合人群、脚本、高光帧和投放明细中的主要事实，对本次提取到的所有素材做组合级汇总分析；整体结论的数据陈述只作为判断依据，不作为段落主体；`01｜TOP 素材组合结论` 只使用 `overallConclusion`，不得输出 `batchInsights.topic=integrated`；人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开。
 
 AI 二次分析只分析 RPA 提取到的业务事实，包括人群、脚本、投放明细和高光帧。不得分析执行过程，也不得把运行目录名、代码修复、`verify` 收口、`fresh rerun`、`rpa_request_failed`、候选失败、补位、取消、重跑、批次调度或素材 rank 缺口写入任何输出字段。若当前对话或日志中出现这些流程信息，只能用于排障，不能进入 `diagnostic-ai-analysis.json`。
 
-AI 二次分析输出必须和最终 HTML 的 5 个页面 section 对齐：`overallConclusion` 与 `batchInsights.topic=integrated` 对应 `01｜TOP 素材组合结论`，`audience` 对应 `02｜人群洞察`，`script` 对应 `03｜脚本洞察`，`materialAnalyses` 对应 `04｜单素材深度分析`，`nextActions` 对应 `05｜下一轮策略`。策略卡片只展示 `title` 和 `body`，`priority` 只用于排序，不在页面展示。不得输出 `batchInsights.topic=highlight`，高光帧只作为组合结论和单素材分析的证据来源；不得输出“数据质量与执行口径”“方法说明”“补充说明”等额外页面段落，也不得输出顶层 `warnings` 字段；缺失输入或事实不足时，在对应业务字段中写“数据不足以判断”等边界说明。
+AI 二次分析输出必须和最终 HTML 的 5 个页面 section 对齐：`overallConclusion` 对应 `01｜TOP 素材组合结论`，`audience` 对应 `02｜人群洞察`，`script` 对应 `03｜脚本洞察`，`materialAnalyses` 对应 `04｜单素材深度分析`，`nextActions` 对应 `05｜下一轮策略`。策略卡片只展示 `title` 和 `body`，`priority` 只用于排序，不在页面展示。不得输出 `batchInsights.topic=highlight`，不得输出 `batchInsights.topic=integrated`，高光帧只作为组合结论和单素材分析的证据来源；不得输出“数据质量与执行口径”“方法说明”“补充说明”等额外页面段落，也不得输出顶层 `warnings` 字段；缺失输入或事实不足时，在对应业务字段中写“数据不足以判断”等边界说明。
 
 最终报告渲染器不会调用外部 API，也不会生成业务结论；它只校验并注入当前执行技能的模型写入的本地结构化结论。若渲染器提示 schema 或证据引用错误，模型必须修正 `diagnostic-ai-analysis.json` 后重新渲染。
 
