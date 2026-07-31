@@ -203,6 +203,31 @@
       margin-bottom: 8px;
     }
 
+    .material-link {
+      display: inline;
+      border: 0;
+      border-radius: 4px;
+      padding: 0 2px;
+      background: rgba(215, 154, 75, .14);
+      color: #7d4a25;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 800;
+      line-height: inherit;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .material-link:hover {
+      background: rgba(215, 154, 75, .24);
+      color: #2c1810;
+    }
+
+    .material-link:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
     .data-dashboard {
       display: grid;
       gap: 14px;
@@ -1231,9 +1256,64 @@ function displayText(value) {
     .replace(/\bCLICK_COUNT\b/g, "点击次数")
     .replace(/\bTRANSACTION_AMOUNT\b/g, "成交金额")
     .replace(/\b(?:audience|script|highlight):[^\s，。；、]+/g, "对应数据证据")
-    .replace(/\b\d{15,}\b/g, "对应素材")
-    .replace(/对应素材([、，,]\s*对应素材)+/g, "对应素材")
     .replace(/对应数据证据([ ·、，,]\s*对应数据证据)+/g, "对应数据证据");
+}
+
+function knownMaterialIds() {
+  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
+  return new Set(materials.map((material) => text(material.materialId)).filter(Boolean));
+}
+
+function activateMaterialById(materialId) {
+  const targetId = text(materialId);
+  if (!targetId) return false;
+  const tabs = Array.from(document.querySelectorAll("#material-tab-list [data-material-id]"));
+  const tab = tabs.find((item) => item.dataset.materialId === targetId);
+  if (!tab) return false;
+  activateMaterialTab(tab);
+  const panel = document.getElementById(`panel-${safeId(targetId)}`);
+  if (panel) {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  return true;
+}
+
+function materialLink(materialId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "material-link";
+  button.setAttribute("data-material-link", materialId);
+  button.textContent = materialId;
+  button.title = "跳转到单素材深度分析";
+  button.addEventListener("click", () => activateMaterialById(materialId));
+  return button;
+}
+
+function renderTextWithMaterialLinks(value) {
+  const fragment = document.createDocumentFragment();
+  const content = displayText(value);
+  const ids = knownMaterialIds();
+  const pattern = /\b\d{15,}\b/g;
+  let cursor = 0;
+  let match;
+  while ((match = pattern.exec(content)) !== null) {
+    const materialId = match[0];
+    if (match.index > cursor) {
+      fragment.append(document.createTextNode(content.slice(cursor, match.index)));
+    }
+    fragment.append(ids.has(materialId) ? materialLink(materialId) : document.createTextNode(materialId));
+    cursor = match.index + materialId.length;
+  }
+  if (cursor < content.length) {
+    fragment.append(document.createTextNode(content.slice(cursor)));
+  }
+  return fragment;
+}
+
+function elementWithMaterialLinks(tag, className, value) {
+  const node = element(tag, className);
+  node.append(renderTextWithMaterialLinks(value));
+  return node;
 }
 
 function humanizeEvidenceRef(reference) {
@@ -1269,8 +1349,8 @@ function renderInsightList(targetId, insightItems, emptyTitle) {
   insights.forEach((insight, index) => {
     const card = element("article", `insight-card${index === 0 ? " insight-card-primary" : ""}`);
     card.append(
-      element("b", "", displayText(insight.title || `洞察 ${index + 1}`)),
-      element("p", "", displayText(insight.conclusion))
+      elementWithMaterialLinks("b", "", insight.title || `洞察 ${index + 1}`),
+      elementWithMaterialLinks("p", "", insight.conclusion)
     );
     target.append(card);
   });
@@ -1643,7 +1723,7 @@ function closeFrameLightbox() {
 function renderFormula(title, paragraphs) {
   const card = element("div", "formula");
   card.append(element("b", "", title));
-  paragraphs.forEach((paragraph) => card.append(element("p", "", displayText(paragraph))));
+  paragraphs.forEach((paragraph) => card.append(elementWithMaterialLinks("p", "", paragraph)));
   return card;
 }
 
@@ -2396,9 +2476,9 @@ function renderHighlightFormula(highlights) {
     const paragraph = element("p", "highlight-note");
     paragraph.append(
       element("b", "", `${index + 1}：`),
-      document.createTextNode(displayText(item.visualObservation)),
+      renderTextWithMaterialLinks(item.visualObservation),
       document.createElement("br"),
-      element("small", "", displayText(item.commercialInterpretation))
+      elementWithMaterialLinks("small", "", item.commercialInterpretation)
     );
     card.append(paragraph);
   });
@@ -2472,7 +2552,7 @@ function renderNextActions() {
   }
   actions.forEach((action) => {
     const item = element("li", "rec-card");
-    item.append(element("b", "", displayText(action.title)), element("p", "", displayText(action.body)));
+    item.append(elementWithMaterialLinks("b", "", action.title), elementWithMaterialLinks("p", "", action.body));
     list.append(item);
   });
 }
@@ -2492,7 +2572,9 @@ document.addEventListener("keydown", (event) => {
 function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。`;
-  document.getElementById("overall-conclusion").textContent = displayText(reportData.conclusion?.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。");
+  document.getElementById("overall-conclusion").replaceChildren(
+    renderTextWithMaterialLinks(reportData.conclusion?.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
+  );
   renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");
   renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");
   renderAudienceDashboard();

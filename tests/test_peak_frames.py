@@ -2648,6 +2648,168 @@ class CliTests(unittest.TestCase):
         self.assertEqual(first["errorType"], "InputDataError")
         self.assertEqual(manifest["rejectedMaterials"], [])
 
+    def test_streaming_resume_reuses_existing_records_and_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            records_dir.joinpath("m-1.json").write_text(
+                json.dumps(self._streaming_outcome("m-1")["records"]),
+                encoding="utf-8",
+            )
+            _result_dir, summary_json, summary_md = self._write_batch_result(
+                output, "m-1"
+            )
+            output.mkdir(exist_ok=True)
+            (output / "batch-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "source": "rpa",
+                        "shopId": "shop-1",
+                        "targetTopN": 2,
+                        "candidateCount": 3,
+                        "candidateLimit": 3,
+                        "rpaConcurrency": 3,
+                        "postprocessConcurrency": 3,
+                        "dateRange": {
+                            "type": "CUSTOM",
+                            "customStartDate": "2026-06-01",
+                            "customEndDate": "2026-06-02",
+                        },
+                        "materialIds": material_ids,
+                        "materials": [
+                            {
+                                **extract_peak_frames._stream_entry(
+                                    {"materialId": "m-1"}, 1
+                                ),
+                                "rpaStatus": "submitted",
+                                "status": "running",
+                            },
+                            extract_peak_frames._stream_entry({"materialId": "m-2"}, 2),
+                            extract_peak_frames._stream_entry({"materialId": "m-3"}, 3),
+                        ],
+                        "submittedMaterials": [],
+                        "selectedMaterials": [],
+                        "rejectedMaterials": [],
+                        "cancelledMaterials": [],
+                        "timingsSec": {"totalSec": 1.0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fetched = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                fetched.append(material_id)
+                return self._streaming_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_stream_postprocess",
+                side_effect=lambda args, entry: self._streaming_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "2",
+                        "--candidate-top-n",
+                        "3",
+                        "--diagnosis-records-dir",
+                        str(records_dir),
+                        "--resume",
+                    )
+                )
+
+            resumed = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        self.assertNotIn("m-1", fetched)
+        self.assertEqual(fetched, ["m-2"])
+        self.assertEqual(
+            [item["materialId"] for item in resumed["selectedMaterials"]],
+            ["m-1", "m-2"],
+        )
+        first = resumed["selectedMaterials"][0]
+        self.assertEqual(first["diagnosisRecordsPath"], str(records_dir / "m-1.json"))
+        self.assertEqual(first["summaryJson"], str(summary_json))
+        self.assertEqual(first["summaryMd"], str(summary_md))
+
+    def test_streaming_material_total_timing_includes_rpa_and_postprocess(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1"])), encoding="utf-8"
+            )
+
+            def rpa_attempt(_args, entry):
+                updated = dict(entry)
+                updated.update(
+                    {
+                        "rpaStatus": "selected",
+                        "postprocessStatus": "queued",
+                        "status": "running",
+                        "records": self._streaming_outcome("m-1")["records"],
+                        "timingsSec": {
+                            "rpaFetchSec": 5.0,
+                            "diagnosisRecordWriteSec": 0.0,
+                            "videoDownloadSec": 0.0,
+                            "frameExtractionSec": 0.0,
+                            "totalSec": 5.0,
+                        },
+                    }
+                )
+                return updated
+
+            def postprocess_attempt(_args, entry):
+                timings = dict(entry["timingsSec"])
+                timings["videoDownloadSec"] = 0.75
+                timings["frameExtractionSec"] = 1.25
+                timings["totalSec"] = 2.0
+                return {
+                    "result": self._write_batch_result(output, entry["materialId"]),
+                    "error": None,
+                    "timingsSec": timings,
+                }
+
+            with patch.object(
+                extract_peak_frames, "_attempt_stream_rpa", side_effect=rpa_attempt
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_stream_postprocess",
+                side_effect=postprocess_attempt,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--target-top-n", "1")
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        timings = manifest["selectedMaterials"][0]["timingsSec"]
+        self.assertEqual(timings["postprocessSec"], 2.0)
+        self.assertEqual(timings["endToEndSec"], 7.0)
+        self.assertEqual(timings["totalSec"], 7.0)
+
     def test_rpa_preflight_backfills_after_failed_top_candidate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

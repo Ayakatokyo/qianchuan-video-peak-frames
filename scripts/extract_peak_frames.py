@@ -739,6 +739,13 @@ def _stream_ordered(entries):
     return [_stream_public_entry(entries[index]) for index in sorted(entries)]
 
 
+def _stream_accounted_indices(*entry_maps):
+    accounted = set()
+    for entry_map in entry_maps:
+        accounted.update(entry_map)
+    return accounted
+
+
 def _new_streaming_batch_manifest(args, candidates, entries, submitted, selected, rejected, cancelled):
     ordered_materials = [_stream_public_entry(entries[index]) for index in sorted(entries)]
     return {
@@ -763,6 +770,183 @@ def _new_streaming_batch_manifest(args, candidates, entries, submitted, selected
         "cancelledMaterials": _stream_ordered(cancelled),
         "timingsSec": {"totalSec": 0.0},
     }
+
+
+def _resolve_run_retained_path(args, path):
+    retained_path = Path(path)
+    if retained_path.is_absolute():
+        return retained_path
+    output_parent = Path(args.output_dir).parent
+    run_relative = output_parent / retained_path
+    if run_relative.exists():
+        return run_relative
+    return retained_path
+
+
+def _load_streaming_resume_manifest(args, candidates):
+    manifest_path = _batch_manifest_path(args)
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(
+            f"unable to read streaming batch manifest for resume: {manifest_path}"
+        ) from exc
+    expected_material_ids = [
+        str(material.get("materialId") or "").strip() for material in candidates
+    ]
+    expected = {
+        "schemaVersion": STREAMING_BATCH_MANIFEST_VERSION,
+        "source": "rpa",
+        "shopId": args.shop_id,
+        "targetTopN": args.target_top_n,
+        "dateRange": {
+            "type": args.date_range_type,
+            "customStartDate": args.custom_start_date,
+            "customEndDate": args.custom_end_date,
+        },
+        "materialIds": expected_material_ids,
+    }
+    if not isinstance(manifest, dict) or any(
+        manifest.get(field) != expected[field]
+        for field in (
+            "schemaVersion",
+            "source",
+            "shopId",
+            "targetTopN",
+            "dateRange",
+            "materialIds",
+        )
+    ):
+        raise RpaAdapterError(
+            "streaming batch manifest does not match the requested RPA batch"
+        )
+    return manifest
+
+
+def _stream_entry_from_existing_manifest(manifest):
+    entries = {}
+    if not isinstance(manifest, dict):
+        return entries
+    materials = manifest.get("materials")
+    if not isinstance(materials, list):
+        return entries
+    for index, entry in enumerate(materials):
+        if isinstance(entry, dict):
+            entries[index] = dict(entry)
+    return entries
+
+
+def _existing_stream_records(args, material_id, entry):
+    candidates = []
+    records_path = entry.get("diagnosisRecordsPath") if isinstance(entry, dict) else None
+    if isinstance(records_path, str) and records_path.strip():
+        candidates.append(_resolve_run_retained_path(args, records_path))
+    candidates.append(_diagnosis_records_dir(args) / f"{material_id}.json")
+    seen = set()
+    for candidate in candidates:
+        candidate = Path(candidate)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if not candidate.is_file():
+            continue
+        try:
+            return _read_diagnosis_records(candidate, material_id), candidate
+        except RpaAdapterError:
+            continue
+    return None, None
+
+
+def _existing_stream_summary_entry(args, entry):
+    material_id = entry["materialId"]
+    candidates = []
+    summary_json = entry.get("summaryJson")
+    summary_md = entry.get("summaryMd")
+    if isinstance(summary_json, str) and isinstance(summary_md, str):
+        candidates.append(
+            (
+                _resolve_run_retained_path(args, summary_json),
+                _resolve_run_retained_path(args, summary_md),
+            )
+        )
+    candidates.append(
+        (
+            Path(args.output_dir) / material_id / "summary.json",
+            Path(args.output_dir) / material_id / "summary.md",
+        )
+    )
+    for json_path, markdown_path in candidates:
+        candidate = dict(entry)
+        candidate.update(
+            {
+                "status": "succeeded",
+                "postprocessStatus": "succeeded",
+                "summaryJson": str(json_path),
+                "summaryMd": str(markdown_path),
+            }
+        )
+        if _material_success_is_valid(material_id, candidate):
+            return candidate
+    return None
+
+
+def _resume_streaming_state(args, candidates, entries):
+    if not args.resume:
+        return {}, {}, {}, {}, []
+    manifest = _load_streaming_resume_manifest(args, candidates)
+    if manifest is not None:
+        for index, entry in _stream_entry_from_existing_manifest(manifest).items():
+            if index in entries:
+                entries[index].update(entry)
+
+    submitted = {}
+    selected = {}
+    rejected = {}
+    cancelled = {}
+    postprocess_queue = []
+    for index in sorted(entries):
+        entry = dict(entries[index])
+        material_id = entry["materialId"]
+        records, records_path = _existing_stream_records(args, material_id, entry)
+        if records is not None:
+            entry.update(
+                {
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "queued",
+                    "status": "running",
+                    "failureReason": None,
+                    "errorType": None,
+                    "errorMessage": None,
+                    "diagnosisRecordsPath": str(records_path),
+                    "records": records,
+                }
+            )
+            summary_entry = _existing_stream_summary_entry(args, entry)
+            if summary_entry is not None:
+                entry.update(summary_entry)
+            entries[index] = entry
+            submitted[index] = entry
+            selected[index] = entry
+            if entry["postprocessStatus"] != "succeeded":
+                postprocess_queue.append(index)
+            continue
+
+        if entry.get("rpaStatus") == "rejected":
+            entry.update({"status": "failed", "postprocessStatus": "not_started"})
+            entries[index] = entry
+            submitted[index] = entry
+            rejected[index] = entry
+            continue
+
+        if entry.get("rpaStatus") == "cancelled" or entry.get("status") == "cancelled":
+            entries[index] = entry
+            cancelled[index] = entry
+            continue
+
+        entries[index] = _stream_entry(candidates[index], index + 1)
+    return submitted, selected, rejected, cancelled, postprocess_queue
 
 
 def _attempt_stream_rpa(args, entry):
@@ -855,14 +1039,34 @@ def _attempt_stream_postprocess(args, entry):
     return {"result": result, "error": None, "timingsSec": timings}
 
 
+def _merge_stream_postprocess_timings(entry_timings, attempt_timings):
+    merged = dict(entry_timings)
+    merged.update(attempt_timings)
+    try:
+        rpa_total = float(entry_timings.get("totalSec") or 0.0)
+    except (TypeError, ValueError):
+        rpa_total = 0.0
+    try:
+        postprocess_total = float(
+            attempt_timings.get("postprocessSec", attempt_timings.get("totalSec", 0.0))
+            or 0.0
+        )
+    except (TypeError, ValueError):
+        postprocess_total = 0.0
+    end_to_end = round(rpa_total + postprocess_total, 6)
+    merged["postprocessSec"] = round(postprocess_total, 6)
+    merged["endToEndSec"] = end_to_end
+    merged["totalSec"] = end_to_end
+    return merged
+
+
 def _run_streaming_rpa_batch(args, candidate_payload):
     candidate_limit = args.candidate_top_n or args.target_top_n * 3
     candidates = candidate_payload["materials"][:candidate_limit]
     entries = {index: _stream_entry(material, index + 1) for index, material in enumerate(candidates)}
-    submitted = {}
-    selected = {}
-    rejected = {}
-    cancelled = {}
+    submitted, selected, rejected, cancelled, pending_postprocess = _resume_streaming_state(
+        args, candidates, entries
+    )
     rpa_futures = {}
     postprocess_futures = {}
     next_index = 0
@@ -886,6 +1090,13 @@ def _run_streaming_rpa_batch(args, candidate_payload):
     with ThreadPoolExecutor(max_workers=args.rpa_concurrency) as rpa_executor, ThreadPoolExecutor(
         max_workers=args.postprocess_concurrency
     ) as postprocess_executor:
+        for index in pending_postprocess:
+            postprocess_futures[
+                postprocess_executor.submit(_attempt_stream_postprocess, args, entries[index])
+            ] = index
+        accounted = _stream_accounted_indices(selected, rejected, cancelled)
+        while next_index < len(candidates) and next_index in accounted:
+            next_index += 1
         while (
             next_index < len(candidates)
             and len(selected) + len(rpa_futures) < args.target_top_n
@@ -893,6 +1104,9 @@ def _run_streaming_rpa_batch(args, candidate_payload):
         ):
             submit_rpa(rpa_executor, next_index)
             next_index += 1
+            accounted = _stream_accounted_indices(selected, rejected, cancelled)
+            while next_index < len(candidates) and next_index in accounted:
+                next_index += 1
         persist()
 
         while rpa_futures or postprocess_futures:
@@ -927,7 +1141,9 @@ def _run_streaming_rpa_batch(args, candidate_payload):
                     index = postprocess_futures.pop(future)
                     attempt = future.result()
                     entry = entries[index]
-                    entry["timingsSec"] = attempt["timingsSec"]
+                    entry["timingsSec"] = _merge_stream_postprocess_timings(
+                        entry["timingsSec"], attempt["timingsSec"]
+                    )
                     if attempt["error"] is not None:
                         entry.update(
                             {
@@ -955,10 +1171,15 @@ def _run_streaming_rpa_batch(args, candidate_payload):
             ):
                 submit_rpa(rpa_executor, next_index)
                 next_index += 1
+                accounted = _stream_accounted_indices(selected, rejected, cancelled)
+                while next_index < len(candidates) and next_index in accounted:
+                    next_index += 1
             persist()
 
     if len(selected) >= args.target_top_n:
         for index in range(next_index, len(candidates)):
+            if index in _stream_accounted_indices(selected, rejected, cancelled):
+                continue
             entry = entries[index]
             entry.update(
                 {
