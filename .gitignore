@@ -4,4 +4,5 @@ __pycache__/
 .test-output/
 .DS_Store
 runs/
+docs/
 .superpowers/
