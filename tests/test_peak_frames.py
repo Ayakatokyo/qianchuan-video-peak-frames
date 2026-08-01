@@ -4449,10 +4449,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(process_local.call_args.kwargs["ffmpeg_timeout_sec"], 75.0)
 
-    def test_rpa_preflight_timeout_defaults_to_ten_minute_deadline(self):
+    def test_rpa_preflight_defaults_to_gateway_hard_timeout_and_soft_warning(self):
         args = extract_peak_frames.build_parser().parse_args([])
 
-        self.assertEqual(args.rpa_preflight_timeout_sec, 600)
+        self.assertEqual(args.rpa_preflight_timeout_sec, 3600)
+        self.assertEqual(args.rpa_preflight_soft_timeout_sec, 600)
+        self.assertEqual(args.rpa_late_artifact_grace_sec, 30)
+
+    def test_isolated_rpa_preflight_allows_success_after_soft_timeout(self):
+        def slow_success_worker(_params):
+            time.sleep(0.05)
+            return {
+                "materialId": "m-slow-success",
+                "rpaAvailable": True,
+                "failureReason": None,
+                "videoUrl": "https://video.example/m-slow-success.mp4",
+            }
+
+        result = extract_peak_frames._fetch_material_preflight_isolated(
+            {"material_id": "m-slow-success"},
+            timeout_sec=0.2,
+            soft_timeout_sec=0.01,
+            worker=slow_success_worker,
+        )
+
+        self.assertTrue(result["rpaAvailable"])
+        self.assertTrue(result["softTimeoutExceeded"])
 
     def test_streaming_rpa_recovers_failed_request_from_late_csv(self):
         with tempfile.TemporaryDirectory() as temp_dir:

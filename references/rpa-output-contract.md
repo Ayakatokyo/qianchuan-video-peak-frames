@@ -74,7 +74,7 @@ Failure reasons:
 
 - `rpa_request_failed`: gateway, HTTP, network, or configured RPA request failure.
 
-When the local 600-second preflight watchdog fires, the batch runner performs a short late-artifact recovery check. A newly written, parseable records JSON or diagnosis CSV with a matching `material_info.videoUrl` is treated as RPA-selected and proceeds to postprocess; otherwise the material remains `rpa_request_failed` and normal candidate backfill applies.
+The batch runner uses a 600-second soft threshold and a 3600-second hard request limit by default. Crossing the soft threshold only records `rpaSoftTimeoutExceeded=true`; the isolated request remains alive and may still write its records/CSV, so it is not rejected or backfilled. Only a request that remains unresolved through the hard limit is classified as `rpa_request_failed`. At the hard-timeout boundary the runner waits briefly for the request or a newly written, parseable records JSON/diagnosis CSV with a matching `material_info.videoUrl`; recovered output is treated as RPA-selected and proceeds to postprocess.
 - `rpa_payload_invalid`: gateway payload could not be normalized into usable records.
 - `missing_material_info`: no matching `material_info` record was returned.
 - `missing_video_url`: matching `material_info` exists but has no usable `videoUrl`.

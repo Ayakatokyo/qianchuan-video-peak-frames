@@ -121,12 +121,23 @@ def build_parser():
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
     parser.add_argument("--preflight-only", action="store_true")
-    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=600)
+    parser.add_argument(
+        "--rpa-preflight-timeout-sec",
+        type=_positive_timeout,
+        default=3600,
+        help="Hard wall-clock limit for one RPA request",
+    )
+    parser.add_argument(
+        "--rpa-preflight-soft-timeout-sec",
+        type=_positive_timeout,
+        default=600,
+        help="Warning threshold for a slow RPA request; does not reject it",
+    )
     parser.add_argument(
         "--rpa-late-artifact-grace-sec",
         type=_positive_timeout,
-        default=5,
-        help="Seconds to wait for records/CSV after an RPA request timeout",
+        default=30,
+        help="Seconds to wait for a request or artifact at the hard timeout boundary",
     )
     parser.add_argument("--rpa-ready-top-materials-json")
     parser.add_argument("--rpa-preflight-json")
@@ -363,6 +374,7 @@ def _material_entry_with_preflight(material, outcome, status=None, timings=None)
             "rpaAvailable": bool(outcome.get("rpaAvailable")),
             "failureReason": outcome.get("failureReason"),
             "videoUrl": outcome.get("videoUrl"),
+            "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
             "preflightStatus": status or (
                 "selected" if outcome.get("rpaAvailable") else "rejected"
             ),
@@ -584,7 +596,13 @@ def _fetch_material_preflight_worker(params):
     return fetch_material_preflight(**adapter_params)
 
 
-def _fetch_material_preflight_isolated(params, timeout_sec, worker=None):
+def _fetch_material_preflight_isolated(
+    params,
+    timeout_sec,
+    worker=None,
+    soft_timeout_sec=None,
+    late_artifact_grace_sec=0,
+):
     worker = _fetch_material_preflight_worker if worker is None else worker
     context = multiprocessing.get_context("fork")
     queue = context.Queue()
@@ -593,24 +611,46 @@ def _fetch_material_preflight_isolated(params, timeout_sec, worker=None):
         args=(params, worker, queue),
     )
     process.start()
+    soft_timeout_exceeded = False
     try:
-        process.join(timeout_sec)
+        hard_timeout = float(timeout_sec)
+        soft_timeout = hard_timeout if soft_timeout_sec is None else float(soft_timeout_sec)
+        soft_timeout = min(soft_timeout, hard_timeout)
+        process.join(soft_timeout)
+        if process.is_alive() and soft_timeout < hard_timeout:
+            soft_timeout_exceeded = True
+            process.join(hard_timeout - soft_timeout)
+        if process.is_alive() and late_artifact_grace_sec:
+            process.join(max(0.0, float(late_artifact_grace_sec)))
         if process.is_alive():
             process.terminate()
             process.join(1)
             if process.is_alive() and hasattr(process, "kill"):
                 process.kill()
                 process.join(1)
-            return _preflight_failure(params.get("material_id"), "rpa_request_failed")
+            failure = _preflight_failure(params.get("material_id"), "rpa_request_failed")
+            if soft_timeout_sec is not None:
+                failure["softTimeoutExceeded"] = soft_timeout_exceeded
+            return failure
         try:
-            return queue.get(timeout=1)
+            outcome = queue.get(timeout=1)
+            if soft_timeout_sec is not None and isinstance(outcome, dict):
+                outcome = dict(outcome)
+                outcome["softTimeoutExceeded"] = soft_timeout_exceeded
+            return outcome
         except queue_module.Empty:
             pass
         if process.exitcode == 0:
-            return _preflight_failure(
+            failure = _preflight_failure(
                 params.get("material_id"), "unknown_preflight_failure"
             )
-        return _preflight_failure(params.get("material_id"), "rpa_request_failed")
+            if soft_timeout_sec is not None:
+                failure["softTimeoutExceeded"] = soft_timeout_exceeded
+            return failure
+        failure = _preflight_failure(params.get("material_id"), "rpa_request_failed")
+        if soft_timeout_sec is not None:
+            failure["softTimeoutExceeded"] = soft_timeout_exceeded
+        return failure
     except BaseException:
         if process.is_alive():
             process.terminate()
@@ -636,7 +676,10 @@ def _fetch_material_preflight_for_cli(args, material_id):
         with _rpa_preflight_deadline(args.rpa_preflight_timeout_sec):
             return fetch_material_preflight(**params)
     return _fetch_material_preflight_isolated(
-        params, args.rpa_preflight_timeout_sec
+        params,
+        args.rpa_preflight_timeout_sec,
+        soft_timeout_sec=args.rpa_preflight_soft_timeout_sec,
+        late_artifact_grace_sec=args.rpa_late_artifact_grace_sec,
     )
 
 
@@ -781,6 +824,7 @@ def _stream_entry(material, rank):
             "diagnosisCsvPath": None,
             "recordsPersisted": False,
             "postprocessSucceeded": False,
+            "rpaSoftTimeoutExceeded": False,
             "summaryJson": None,
             "summaryMd": None,
             "timingsSec": _empty_material_timings(),
@@ -1039,6 +1083,7 @@ def _attempt_stream_rpa(args, entry):
                 "rpaStatus": "rejected",
                 "status": "failed",
                 "failureReason": outcome.get("failureReason"),
+                "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
             }
         )
         timings["totalSec"] = _elapsed_since(started_at)
@@ -1073,6 +1118,7 @@ def _attempt_stream_rpa(args, entry):
             "records": records,
             "recordsPersisted": True,
             "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
+            "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
         }
     )
     timings["totalSec"] = _elapsed_since(started_at)

@@ -82,7 +82,7 @@ python scripts/extract_peak_frames.py \
 ```
 
 RPA 通道最多同时运行 3 个连接器请求，并严格从候选头部补位。每当一个素材获得可解析的诊断数据、目标 `material_info` 和非空 `videoUrl` 后，系统立即写入规范化记录并送入独立的后处理通道；视频下载、抽帧和摘要生成可以和后续 RPA 调用并行。并发只影响完成时间，不改变最终素材和报告顺序。
-单素材 RPA watchdog 默认是 600 秒，可通过 `--rpa-preflight-timeout-sec` 调整。watchdog 触发后，系统会在默认 5 秒的 `--rpa-late-artifact-grace-sec` 窗口内检查本次请求新生成的 records/CSV；产物可解析且包含有效 `material_info.videoUrl` 时，自动转入后处理并在 manifest 标记 `lateArtifactRecovered=true`，只有回收失败才进入补位。
+单素材 RPA 请求默认使用 600 秒软超时和 3600 秒硬超时：软超时只记录 `rpaSoftTimeoutExceeded=true`，不会终止请求、判定失败或触发补位；可通过 `--rpa-preflight-soft-timeout-sec` 和 `--rpa-preflight-timeout-sec` 分别调整。只有硬超时仍未返回时才终止隔离进程并记录 `rpa_request_failed`。硬超时边界额外等待默认 30 秒（`--rpa-late-artifact-grace-sec`）以接收请求结果或回收新生成的 records/CSV；产物可解析且包含有效 `material_info.videoUrl` 时，自动转入后处理并在 manifest 标记 `lateArtifactRecovered=true`。
 
 流式运行会写入 `batch-manifest.json`，其中的 `submittedMaterials`、`selectedMaterials`、`rejectedMaterials` 和 `cancelledMaterials` 分别表示已提交、RPA 可用、RPA 不可用与未提交取消的候选。每个条目保留 rank、素材元数据、两个通道状态、失败原因、诊断记录路径、摘要路径和 `timingsSec`；其中包含 `rpaFetchSec`、`diagnosisRecordWriteSec`、`videoDownloadSec`、`frameExtractionSec` 和 `totalSec`。`top_materials_rpa_ready.json` 仍会写出，作为最终报告和下游脚本的兼容输入；其素材只包含 RPA 成功的 Top N，并保持资产表排序。
 
