@@ -13,6 +13,26 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
+def _validate_optional_wave_fields(payload, *, scope):
+    if "waveBarrier" in payload and type(payload["waveBarrier"]) is not bool:
+        raise SchemaError(f"{scope} waveBarrier must be a boolean")
+    if "waveIndex" in payload and (
+        type(payload["waveIndex"]) is not int or payload["waveIndex"] < 0
+    ):
+        raise SchemaError(f"{scope} waveIndex must be a non-negative integer")
+    if "waveSize" in payload and (
+        type(payload["waveSize"]) is not int or payload["waveSize"] <= 0
+    ):
+        raise SchemaError(f"{scope} waveSize must be a positive integer")
+    for field in ("waveStartedAtSec", "waveFinishedAtSec"):
+        if field in payload and (
+            isinstance(payload[field], bool)
+            or not isinstance(payload[field], (int, float))
+            or payload[field] < 0
+        ):
+            raise SchemaError(f"{scope} {field} must be a non-negative number")
+
+
 def normalize_manifest(payload, *, material_ids=None):
     """Normalize legacy v1 and streaming v2 manifests to one list-based shape.
 
@@ -27,6 +47,7 @@ def normalize_manifest(payload, *, material_ids=None):
     normalized = deepcopy(payload)
     normalized["sourceSchemaVersion"] = source_version
     normalized["schemaVersion"] = 2
+    _validate_optional_wave_fields(normalized, scope="batch manifest")
 
     materials = normalized.get("materials")
     if materials is None:
@@ -57,6 +78,8 @@ def normalize_manifest(payload, *, material_ids=None):
         normalized["materials"] = [dict(item) for item in materials if isinstance(item, dict)]
     else:
         raise SchemaError("batch manifest materials must be a list or object")
+    for item in normalized["materials"]:
+        _validate_optional_wave_fields(item, scope="batch manifest material")
 
     normalized.setdefault(
         "materialIds",
@@ -107,6 +130,7 @@ def validate_preflight_receipt(payload, *, args, candidate_payload, material_ids
         raise SchemaError("RPA preflight receipt is not satisfied")
     if payload.get("shopId") != args.shop_id:
         raise SchemaError("RPA preflight receipt shopId does not match")
+    _validate_optional_wave_fields(payload, scope="RPA preflight receipt")
     expected_dates = {
         "type": args.date_range_type,
         "customStartDate": args.custom_start_date,
@@ -122,6 +146,15 @@ def validate_preflight_receipt(payload, *, args, candidate_payload, material_ids
     selected = payload.get("selectedMaterials")
     if not isinstance(selected, list):
         raise SchemaError("RPA preflight receipt selectedMaterials must be a list")
+    for field in ("selectedMaterials", "rejectedMaterials", "cancelledMaterials"):
+        entries = payload.get(field, [])
+        if not isinstance(entries, list):
+            raise SchemaError(f"RPA preflight receipt {field} must be a list")
+        for entry in entries:
+            if isinstance(entry, dict):
+                _validate_optional_wave_fields(
+                    entry, scope="RPA preflight receipt material"
+                )
     selected_ids = {
         _text(item.get("materialId")) for item in selected if isinstance(item, dict)
     }
@@ -181,6 +214,7 @@ def streaming_manifest(
         "candidateLimit": len(candidates),
         "rpaConcurrency": args.rpa_concurrency,
         "postprocessConcurrency": args.postprocess_concurrency,
+        "waveBarrier": getattr(args, "rpa_wave_barrier", True),
         "dateRange": {
             "type": args.date_range_type,
             "customStartDate": args.custom_start_date,

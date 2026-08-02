@@ -131,6 +131,19 @@ def build_parser():
     parser.add_argument("--concurrency", type=_positive_int)
     parser.add_argument("--rpa-concurrency", type=_positive_int, default=3)
     parser.add_argument("--postprocess-concurrency", type=_positive_int, default=3)
+    parser.add_argument(
+        "--rpa-wave-barrier",
+        dest="rpa_wave_barrier",
+        action="store_true",
+        default=True,
+        help="wait for every material in the current RPA wave before submitting the next wave",
+    )
+    parser.add_argument(
+        "--no-rpa-wave-barrier",
+        dest="rpa_wave_barrier",
+        action="store_false",
+        help="temporarily use legacy streaming RPA replenishment",
+    )
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
     parser.add_argument("--custom-end-date")
@@ -382,6 +395,14 @@ def _material_entry_with_preflight(material, outcome, status=None, timings=None)
     )
     if timings is not None:
         enriched["timingsSec"] = timings
+        for field in (
+            "waveIndex",
+            "waveSize",
+            "waveStartedAtSec",
+            "waveFinishedAtSec",
+        ):
+            if field in timings:
+                enriched[field] = timings[field]
     return enriched
 
 
@@ -434,7 +455,8 @@ def _preflight_receipt(
         "requestedTopN": target_top_n,
         "candidateCount": len(materials),
         "candidateLimit": len(materials),
-        "preflightConcurrency": args.concurrency,
+        "preflightConcurrency": args.rpa_concurrency,
+        "waveBarrier": args.rpa_wave_barrier,
         "shopId": args.shop_id,
         "dateRange": {
             "type": args.date_range_type,
@@ -599,7 +621,30 @@ def _fetch_material_preflight_isolated(
     )
 
 
+def _call_mock_preflight_with_timeout(params, timeout_sec):
+    outcome = []
+    error = []
+
+    def invoke():
+        try:
+            outcome.append(fetch_material_preflight(**params))
+        except BaseException as exc:
+            error.append(exc)
+
+    worker = threading.Thread(target=invoke, daemon=True)
+    worker.start()
+    worker.join(timeout_sec)
+    if worker.is_alive():
+        raise RpaPreflightDeadlineExceeded(
+            f"RPA preflight exceeded {timeout_sec} seconds"
+        )
+    if error:
+        raise error[0]
+    return outcome[0]
+
+
 def _fetch_material_preflight_for_cli(args, material_id):
+    started_at_epoch = time.time()
     params = {
         "shop_id": args.shop_id,
         "material_id": material_id,
@@ -611,14 +656,25 @@ def _fetch_material_preflight_for_cli(args, material_id):
         "timeout_sec": args.rpa_preflight_timeout_sec,
     }
     if hasattr(fetch_material_preflight, "mock_calls"):
-        with _rpa_preflight_deadline(args.rpa_preflight_timeout_sec):
-            return fetch_material_preflight(**params)
-    return _fetch_material_preflight_isolated(
-        params,
-        args.rpa_preflight_timeout_sec,
-        soft_timeout_sec=args.rpa_preflight_soft_timeout_sec,
-        late_artifact_grace_sec=args.rpa_late_artifact_grace_sec,
-    )
+        if threading.current_thread() is threading.main_thread():
+            with _rpa_preflight_deadline(args.rpa_preflight_timeout_sec):
+                outcome = fetch_material_preflight(**params)
+        else:
+            outcome = _call_mock_preflight_with_timeout(
+                params, args.rpa_preflight_timeout_sec
+            )
+    else:
+        outcome = _fetch_material_preflight_isolated(
+            params,
+            args.rpa_preflight_timeout_sec,
+            soft_timeout_sec=args.rpa_preflight_soft_timeout_sec,
+            late_artifact_grace_sec=args.rpa_late_artifact_grace_sec,
+        )
+    if not outcome.get("rpaAvailable"):
+        outcome = _recover_late_rpa_artifacts(
+            args, material_id, outcome, started_at_epoch=started_at_epoch
+        )
+    return outcome
 
 
 def _run_rpa_preflight(args, candidate_payload):

@@ -63,11 +63,11 @@ python scripts/export_top_materials.py \
 
 CLI 要求 `top_materials.json` 中包含 `actualStartDate`、`actualEndDate` 与 `materialCount`。对于 `CUSTOM` 批次，其日期必须与 `--custom-start-date` 和 `--custom-end-date` 完全一致；在任何 RPA 调用前会拒绝重复素材 ID 或错误的数量。
 
-正式 TOP 素材批次使用流式 RPA 补位和成功即后处理。候选池按资产表整体消耗降序排列；例如目标 9 个素材时导出 27 个候选。`--candidate-top-n 27` 是候选上限，不是 RPA 调用数量承诺：全部成功时只提交前 9 个；高排名素材 RPA 失败或无数据时才继续按排序补位。
+正式 TOP 素材批次默认使用波次 RPA 补位和成功即后处理。候选池按资产表整体消耗降序排列；例如目标 9 个素材时导出 27 个候选。`--candidate-top-n 27` 是候选上限，不是 RPA 调用数量承诺：全部成功时只提交前 9 个；高排名素材 RPA 失败或无数据时才继续按排序在下一波补位。
 
 数量口径必须拆开记录：资产表获取素材 ID 数量是候选池数量，资产表阶段最多获取 `--candidate-top-n` 个素材 ID，写入 `top_materials.json` 后作为本次候选上限；传给 RPA 执行的素材 ID 数量是实际提交数量，不会一次性把候选池全部提交给 RPA。RPA 实际提交数量以 `submittedMaterials` 为准：查看 `batch-manifest.json` 的该数组长度；全成功时实际提交数量等于 `--target-top-n`；有失败时才继续补位提交后续候选，最多不超过 `--candidate-top-n`。
 
-防错口径：用户要求 Top18 时，资产表导出可以使用 `--top-n 54` 建立候选池，但这只是候选上限。必须继续执行流式 RPA 命令，并明确传入 `--target-top-n 18` 与 `--candidate-top-n 54`；仅完成 `top_materials.json` 导出不代表已经分析 18 个素材。准备诊断事实包、AI 二次分析和最终报告时，必须使用 `peak-frames/top_materials_rpa_ready.json`；不得把 `top_materials.json` 传给诊断事实包或最终报告，也不得把候选池数量写成最终分析素材数量。
+防错口径：用户要求 Top18 时，资产表导出可以使用 `--top-n 54` 建立候选池，但这只是候选上限。必须继续执行波次 RPA 命令，并明确传入 `--target-top-n 18` 与 `--candidate-top-n 54`；仅完成 `top_materials.json` 导出不代表已经分析 18 个素材。准备诊断事实包、AI 二次分析和最终报告时，必须使用 `peak-frames/top_materials_rpa_ready.json`；不得把 `top_materials.json` 传给诊断事实包或最终报告，也不得把候选池数量写成最终分析素材数量。
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -85,10 +85,10 @@ python scripts/extract_peak_frames.py \
   --output-dir "/path/to/run/peak-frames"
 ```
 
-RPA 通道最多同时运行 3 个连接器请求，并严格从候选头部补位。每当一个素材获得可解析的诊断数据、目标 `material_info` 和非空 `videoUrl` 后，系统立即写入规范化记录并送入独立的后处理通道；视频下载、抽帧和摘要生成可以和后续 RPA 调用并行。并发只影响完成时间，不改变最终素材和报告顺序。
+`--rpa-concurrency 3` 表示每波最多提交 3 个连接器请求，而不是任何一个请求完成后立即补入一个素材。只有当前波次全部 RPA 请求完成后，才会按候选排序提交下一波；正常返回、硬超时、异常和成功完成 CSV/JSON late-artifact 回收都计入当前波次完成。每当一个素材获得可解析的诊断数据、目标 `material_info` 和非空 `videoUrl` 后，系统立即写入规范化记录并送入独立的后处理通道；视频下载、抽帧和摘要生成可以与后续 RPA 波次并行，但后处理完成不会触发下一 RPA 波次。并发只影响完成时间，不改变最终素材和报告顺序。
 单素材 RPA 请求默认使用 600 秒软超时和 3600 秒硬超时：软超时只记录 `rpaSoftTimeoutExceeded=true`，不会终止请求、判定失败或触发补位；可通过 `--rpa-preflight-soft-timeout-sec` 和 `--rpa-preflight-timeout-sec` 分别调整。只有硬超时仍未返回时才终止隔离进程并记录 `rpa_request_failed`。硬超时边界额外等待默认 30 秒（`--rpa-late-artifact-grace-sec`）以接收请求结果或回收新生成的 records/CSV；产物可解析且包含有效 `material_info.videoUrl` 时，自动转入后处理并在 manifest 标记 `lateArtifactRecovered=true`。
 
-流式运行会写入 `batch-manifest.json`，其中的 `submittedMaterials`、`selectedMaterials`、`rejectedMaterials` 和 `cancelledMaterials` 分别表示已提交、RPA 可用、RPA 不可用与未提交取消的候选。每个条目保留 rank、素材元数据、两个通道状态、失败原因、诊断记录路径、摘要路径和 `timingsSec`；其中包含 `rpaFetchSec`、`diagnosisRecordWriteSec`、`videoDownloadSec`、`frameExtractionSec` 和 `totalSec`。`top_materials_rpa_ready.json` 仍会写出，作为最终报告和下游脚本的兼容输入；其素材只包含 RPA 成功的 Top N，并保持资产表排序。
+波次运行会写入 `batch-manifest.json`，其中的 `submittedMaterials`、`selectedMaterials`、`rejectedMaterials` 和 `cancelledMaterials` 分别表示已提交、RPA 可用、RPA 不可用与未提交取消的候选。顶层 `waveBarrier=true` 表示默认屏障模式；每个已提交条目保留 `waveIndex`、`waveSize`、`waveStartedAtSec` 和 `waveFinishedAtSec`，以及 rank、素材元数据、两个通道状态、失败原因、诊断记录路径、摘要路径和 `timingsSec`。波次时间只描述 RPA 请求边界，不能与后处理或素材端到端耗时混用；`timingsSec` 包含 `rpaFetchSec`、`diagnosisRecordWriteSec`、`videoDownloadSec`、`frameExtractionSec` 和 `totalSec`。`top_materials_rpa_ready.json` 仍会写出，作为最终报告和下游脚本的兼容输入；其素材只包含 RPA 成功的 Top N，并保持资产表排序。
 
  manifest 顶层同时写出 `stageCounts`：`rpaSelectedCount` 表示拿到 records 和 `videoUrl` 的素材数，`recordsPersistedCount` 表示已验证存在、可解析且包含匹配素材 ID 的规范化 JSON 数量；旧 schema 中无法确认的记录进入 `recordsPersistedUnknownCount`，不得计入已落盘数量。`postprocessSucceededCount` 表示视频下载、抽帧和 summary 均成功的素材数，`reportReadyCount` 是事实包和最终报告均验证通过的批次级 0/1 状态。报告日志必须同时打印这些数量，不得把 RPA selected 当作报告可用。
 
@@ -96,9 +96,9 @@ RPA 通道最多同时运行 3 个连接器请求，并严格从候选头部补�
 
 `--preflight-only`、`--rpa-preflight-json` 和 `--allow-rpa-refetch` 仅用于诊断、重放既有预检产物或兼容旧批次，不是新 TOP 素材批量运行的推荐步骤。
 
-兼容旧批次仍支持 `--resume` 与 `--verify`：恢复时后续 TOP 素材仍会继续运行；验证会写入 `batch-verification.json`，保留产物不合格时返回退出码 `6`。流式 Top-N 运行应直接检查其 schemaVersion 2 manifest 的状态数组和错误原因。
+兼容旧批次仍支持 `--resume` 与 `--verify`：恢复时后续 TOP 素材仍会继续运行；验证会写入 `batch-verification.json`，保留产物不合格时返回退出码 `6`。波次 Top-N 运行应直接检查其 schemaVersion 2 manifest 的状态数组和错误原因。
 
-每个流式批次在输出目录创建 `.batch-run.lock` 并写入唯一 `runId`。已有活跃锁时不得并发启动同一目录；若锁对应进程已不存在且 manifest 仍有 `running` 或 `submitted`，这是 stale（陈旧）批次，必须先使用 `--resume` 或 `scripts/repair_manifest.py` 进入恢复/修复路径，不得静默覆盖原批次。
+每个波次批次在输出目录创建 `.batch-run.lock` 并写入唯一 `runId`。已有活跃锁时不得并发启动同一目录；若锁对应进程已不存在且 manifest 仍有 `running` 或 `submitted`，这是 stale（陈旧）批次，必须先使用 `--resume` 或 `scripts/repair_manifest.py` 进入恢复/修复路径，不得静默覆盖原批次。
 
 半成品修复使用：
 
@@ -190,10 +190,10 @@ python scripts/extract_peak_frames.py \
 | FFmpeg 超时 | 默认 120 秒；通过 `--ffmpeg-timeout-sec <positive-seconds>` 覆盖 |
 | 本地结果 | 检查 `<output>/<material-id>/summary.json` |
 | RPA 账户 | 使用 `scripts/rpa_adapter.py` 助手或预策连接器账户列表查找 `shop_id` |
-| TOP 素材批量任务 | 导出候选池 `top_materials.json`，再用一次流式 RPA 命令传入 target 与 candidate Top N |
-| 加速 TOP 素材批量任务 | 使用 `--rpa-concurrency 3` 和 `--postprocess-concurrency 3` 实现受控并行 |
+| TOP 素材批量任务 | 导出候选池 `top_materials.json`，再用一次波次 RPA 命令传入 target 与 candidate Top N |
+| 加速 TOP 素材批量任务 | 使用 `--rpa-concurrency 3`（每波大小）和 `--postprocess-concurrency 3` 实现受控并行 |
 | 批次状态 | 检查 `batch-manifest.json` 的 submitted、selected、rejected 和 cancelled 素材及失败原因 |
-| 准备诊断事实 | 在流式 RPA 批次完成后运行带 `--peak-output-dir` 的 `prepare_diagnostic_analysis.py` |
+| 准备诊断事实 | 在波次 RPA 批次完成后运行带 `--peak-output-dir` 的 `prepare_diagnostic_analysis.py` |
 | 真实商业分析 | 当前执行技能的模型读取事实包、实际查看 JPEG、写出 schema v2 结论 JSON |
 | 最终 HTML 报告 | 运行带 `--analysis-json --copy-assets` 的 `render_final_report.py`；草稿不代表完成 |
 | 单素材调试 | 传入 `--source rpa --shop-id ... --material-id ... --date-range-type ...` |

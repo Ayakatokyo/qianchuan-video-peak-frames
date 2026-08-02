@@ -1,6 +1,6 @@
 """Bounded RPA candidate preflight and backfill scheduler."""
 
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, ThreadPoolExecutor, wait
 import time
 
 
@@ -23,8 +23,9 @@ def run_preflight(
     next_index = 0
     futures = {}
     stopped = False
+    rpa_concurrency = getattr(args, "rpa_concurrency", args.concurrency)
 
-    def run_one(index):
+    def run_one(index, wave_index=None, wave_size=None, wave_started_at=None):
         material = materials[index]
         material_id = str(material.get("materialId") or "").strip()
         queued_at = elapsed(started_at)
@@ -39,12 +40,21 @@ def run_preflight(
             )
             outcome = failure_entry(material_id, reason)
         finished_at = elapsed(started_at)
-        return outcome, {
+        timings = {
             "queuedAtSec": queued_at,
             "startedAtSec": queued_at,
             "finishedAtSec": finished_at,
             "totalSec": elapsed(request_started),
         }
+        if wave_index is not None:
+            timings.update(
+                {
+                    "waveIndex": wave_index,
+                    "waveSize": wave_size,
+                    "waveStartedAtSec": wave_started_at,
+                }
+            )
+        return outcome, timings
 
     def selected_count():
         return sum(
@@ -80,9 +90,16 @@ def run_preflight(
         ]
         write_artifacts(args, candidate_payload, materials, selected, rejected, [], started_at)
 
-    if args.concurrency == 1:
+    if rpa_concurrency == 1:
         for index in range(len(materials)):
-            outcome, timings = run_one(index)
+            wave_started_at = elapsed(started_at)
+            outcome, timings = run_one(
+                index,
+                wave_index=index,
+                wave_size=1,
+                wave_started_at=wave_started_at,
+            )
+            timings["waveFinishedAtSec"] = elapsed(started_at)
             complete(index, outcome, timings)
             persist()
             if selected_count() >= target_top_n:
@@ -91,31 +108,65 @@ def run_preflight(
         else:
             next_index = len(materials)
     else:
-        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-            while (
-                next_index < len(materials)
-                and selected_count() + len(futures) < target_top_n
-                and len(futures) < args.concurrency
-            ):
-                futures[executor.submit(run_one, next_index)] = next_index
-                next_index += 1
-            while futures:
-                done, _pending = wait(futures, return_when=FIRST_COMPLETED)
-                for future in done:
-                    index = futures.pop(future)
-                    outcome, timings = future.result()
-                    complete(index, outcome, timings)
-                if selected_count() >= target_top_n:
-                    stopped = True
+        with ThreadPoolExecutor(max_workers=rpa_concurrency) as executor:
+            if getattr(args, "rpa_wave_barrier", True):
+                wave_index = 0
+                while next_index < len(materials) and selected_count() < target_top_n:
+                    wave = {}
+                    wave_started_at = elapsed(started_at)
+                    while (
+                        next_index < len(materials)
+                        and len(wave) < rpa_concurrency
+                        and selected_count() + len(wave) < target_top_n
+                    ):
+                        wave[executor.submit(
+                            run_one,
+                            next_index,
+                            wave_index,
+                            None,
+                            wave_started_at,
+                        )] = next_index
+                        next_index += 1
+                    wave_size = len(wave)
+                    wait(set(wave), return_when=ALL_COMPLETED)
+                    wave_finished_at = elapsed(started_at)
+                    for future, index in sorted(wave.items(), key=lambda item: item[1]):
+                        outcome, timings = future.result()
+                        timings.update(
+                            {
+                                "waveSize": wave_size,
+                                "waveStartedAtSec": wave_started_at,
+                                "waveFinishedAtSec": wave_finished_at,
+                            }
+                        )
+                        complete(index, outcome, timings)
+                    persist()
+                    wave_index += 1
+            else:
                 while (
-                    not stopped
-                    and next_index < len(materials)
+                    next_index < len(materials)
                     and selected_count() + len(futures) < target_top_n
-                    and len(futures) < args.concurrency
+                    and len(futures) < rpa_concurrency
                 ):
                     futures[executor.submit(run_one, next_index)] = next_index
                     next_index += 1
-                persist()
+                while futures:
+                    done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        index = futures.pop(future)
+                        outcome, timings = future.result()
+                        complete(index, outcome, timings)
+                    if selected_count() >= target_top_n:
+                        stopped = True
+                    while (
+                        not stopped
+                        and next_index < len(materials)
+                        and selected_count() + len(futures) < target_top_n
+                        and len(futures) < rpa_concurrency
+                    ):
+                        futures[executor.submit(run_one, next_index)] = next_index
+                        next_index += 1
+                    persist()
 
     selected = [
         completed[index]

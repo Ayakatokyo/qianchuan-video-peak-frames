@@ -5,6 +5,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "SKILL.md"
 RPA_CONTRACT_PATH = ROOT / "references" / "rpa-output-contract.md"
+INTERNAL_SKILL_DOCS = [
+    ROOT / "docs" / "_internal-platform.md",
+    ROOT / "docs" / "_dingtalk-internal-fixed.md",
+    ROOT / "docs" / "_dingtalk-internal-fixed-shorter.md",
+]
 DIAGNOSTIC_PROMPT_PATH = ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md"
 OPENAI_CONFIG_PATH = ROOT / "agents" / "openai.yaml"
 
@@ -72,7 +77,7 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("--custom-start-date 2026-06-01", skill)
         self.assertIn("--custom-end-date 2026-06-07", skill)
 
-    def test_batch_workflow_streams_backfill_and_postprocess(self):
+    def test_batch_workflow_uses_wave_backfill_and_decoupled_postprocess(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
         self.assertIn("## TOP 素材批量运行", skill)
@@ -86,6 +91,13 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("候选池", skill)
         self.assertIn("候选上限，不是 RPA 调用数量承诺", skill)
         self.assertIn("成功即后处理", skill)
+        self.assertIn("波次", skill)
+        self.assertIn("当前波次全部 RPA 请求完成后", skill)
+        self.assertIn("后处理完成不会触发下一 RPA 波次", skill)
+        self.assertNotIn("继续执行流式 RPA 命令", skill)
+        self.assertNotIn("流式 Top-N 运行", skill)
+        self.assertNotIn("每个流式批次", skill)
+        self.assertNotIn("在流式 RPA 批次完成后", skill)
         self.assertIn("--target-top-n 9", skill)
         self.assertIn("--candidate-top-n 27", skill)
         self.assertIn("--rpa-concurrency 3", skill)
@@ -113,6 +125,20 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("recordsPersistedCount", contract)
         self.assertIn("postprocessSucceededCount", contract)
         self.assertIn("reportReadyCount", contract)
+        self.assertIn("waveBarrier", contract)
+        self.assertIn("waveIndex", contract)
+        self.assertIn("waveStartedAtSec", contract)
+        self.assertIn("waveFinishedAtSec", contract)
+        self.assertIn("当前波次全部完成", contract)
+        self.assertIn("## Wave RPA Batch", contract)
+        self.assertNotIn("recommended streaming Top-N command", contract)
+
+    def test_internal_skill_guides_describe_wave_rpa(self):
+        for path in INTERNAL_SKILL_DOCS:
+            guide = path.read_text(encoding="utf-8")
+            self.assertIn("波次 RPA", guide, path.name)
+            self.assertNotIn("目标流式提交 RPA", guide, path.name)
+            self.assertNotIn("执行流式 RPA 和后处理", guide, path.name)
 
     def test_top18_prompt_does_not_stop_at_54_candidate_export(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")

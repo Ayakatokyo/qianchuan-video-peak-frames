@@ -2086,6 +2086,15 @@ class ProcessingPipelineTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+
+    def test_rpa_wave_barrier_defaults_enabled_and_can_be_disabled_explicitly(self):
+        parser = extract_peak_frames.build_parser()
+
+        self.assertTrue(parser.parse_args([]).rpa_wave_barrier)
+        self.assertFalse(
+            parser.parse_args(["--no-rpa-wave-barrier"]).rpa_wave_barrier
+        )
+
     def test_rpa_isolation_uses_spawn_on_windows(self):
         with patch.object(extract_peak_frames.os, "name", "nt"):
             self.assertEqual(
@@ -2571,6 +2580,69 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(max_active, 3)
         self.assertLessEqual(max_active, 3)
+
+    def test_streaming_defaults_to_rpa_wave_barrier(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3", "m-4"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            lock = threading.Lock()
+            active = set()
+            starts = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                with lock:
+                    starts.append((material_id, set(active)))
+                    active.add(material_id)
+                time.sleep(0.03 if material_id in {"m-1", "m-3"} else 0.005)
+                with lock:
+                    active.remove(material_id)
+                return self._streaming_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_stream_postprocess",
+                side_effect=lambda args, entry: self._streaming_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "4",
+                        "--candidate-top-n",
+                        "4",
+                        "--rpa-concurrency",
+                        "2",
+                    )
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        first_wave = [item for item in starts if item[0] in {"m-1", "m-2"}]
+        second_wave = [item for item in starts if item[0] in {"m-3", "m-4"}]
+        self.assertEqual({item[0] for item in first_wave}, {"m-1", "m-2"})
+        self.assertEqual({item[0] for item in second_wave}, {"m-3", "m-4"})
+        self.assertTrue(
+            all(not active & {"m-1", "m-2"} for _material_id, active in second_wave)
+        )
+        self.assertTrue(manifest["waveBarrier"])
+        self.assertEqual(
+            [item["waveIndex"] for item in manifest["selectedMaterials"]],
+            [0, 0, 1, 1],
+        )
 
     def test_streaming_starts_postprocess_before_other_rpa_jobs_finish(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3127,6 +3199,10 @@ class CliTests(unittest.TestCase):
                         "--target-top-n",
                         "1",
                         "--preflight-only",
+                        "--rpa-concurrency",
+                        "1",
+                        "--rpa-late-artifact-grace-sec",
+                        "0.001",
                     )
                 )
 
@@ -3513,6 +3589,7 @@ class CliTests(unittest.TestCase):
                 "shopId",
                 "stoppedAfterSatisfied",
                 "timingsSec",
+                "waveBarrier",
             ],
         )
         self.assertEqual(receipt["requestedTopN"], 1)
@@ -3666,7 +3743,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(receipt["schemaVersion"], 2)
-        self.assertEqual(receipt["preflightConcurrency"], 1)
+        self.assertEqual(receipt["preflightConcurrency"], 3)
         selected = receipt["selectedMaterials"][0]
         self.assertEqual(selected["diagnosisRecordsPath"], "diagnosis-records/m-ready.json")
         self.assertEqual(selected["preflightStatus"], "selected")
@@ -3794,7 +3871,8 @@ class CliTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        self.assertEqual(submitted, ["m-1", "m-2"])
+        self.assertEqual(set(submitted), {"m-1", "m-2"})
+        self.assertEqual(len(submitted), 2)
         self.assertEqual(
             [item["materialId"] for item in receipt["selectedMaterials"]],
             ["m-1", "m-2"],
@@ -3803,6 +3881,123 @@ class CliTests(unittest.TestCase):
             [item["materialId"] for item in receipt["cancelledMaterials"]],
             ["m-3", "m-4"],
         )
+
+    def test_rpa_preflight_defaults_to_wave_barrier(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1", "m-2", "m-3", "m-4"])),
+                encoding="utf-8",
+            )
+            lock = threading.Lock()
+            active = set()
+            starts = []
+
+            def preflight_material(**kwargs):
+                material_id = kwargs["material_id"]
+                with lock:
+                    starts.append((material_id, set(active)))
+                    active.add(material_id)
+                time.sleep(0.03 if material_id in {"m-1", "m-3"} else 0.005)
+                with lock:
+                    active.remove(material_id)
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                    "records": [{
+                        "recordType": "material_info",
+                        "materialId": material_id,
+                        "videoUrl": f"https://video.example/{material_id}.mp4",
+                    }],
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                side_effect=preflight_material,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n", "4", "--preflight-only",
+                        "--candidate-top-n", "4",
+                    )
+                )
+                receipt = json.loads(
+                    (output / "rpa-preflight.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(result, 0)
+        first_wave = [item for item in starts if item[0] in {"m-1", "m-2", "m-3"}]
+        second_wave = [item for item in starts if item[0] == "m-4"]
+        self.assertEqual({item[0] for item in first_wave}, {"m-1", "m-2", "m-3"})
+        self.assertEqual(second_wave, [("m-4", set())])
+        self.assertTrue(receipt["waveBarrier"])
+        self.assertEqual(
+            [item["waveIndex"] for item in receipt["selectedMaterials"]], [0, 0, 0, 1]
+        )
+        self.assertEqual(
+            [item["waveSize"] for item in receipt["selectedMaterials"]], [3, 3, 3, 1]
+        )
+
+    def test_rpa_preflight_concurrency_one_records_single_item_waves(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1", "m-2"])),
+                encoding="utf-8",
+            )
+
+            def preflight_material(**kwargs):
+                material_id = kwargs["material_id"]
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                    "records": [{
+                        "recordType": "material_info",
+                        "materialId": material_id,
+                        "videoUrl": f"https://video.example/{material_id}.mp4",
+                    }],
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                side_effect=preflight_material,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n", "2", "--preflight-only",
+                        "--candidate-top-n", "2",
+                        "--rpa-concurrency", "1",
+                    )
+                )
+                receipt = json.loads(
+                    (output / "rpa-preflight.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [item["waveIndex"] for item in receipt["selectedMaterials"]], [0, 1]
+        )
+        self.assertEqual(
+            [item["waveSize"] for item in receipt["selectedMaterials"]], [1, 1]
+        )
+        self.assertTrue(all(
+            item["waveFinishedAtSec"] >= item["waveStartedAtSec"]
+            for item in receipt["selectedMaterials"]
+        ))
 
     def test_rpa_batch_rejects_exported_dates_that_differ_from_custom_range(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4580,6 +4775,54 @@ class CliTests(unittest.TestCase):
             self.assertTrue(recovered["lateArtifactRecovered"])
             self.assertEqual(recovered["diagnosisCsvPath"], str(csv_path))
             self.assertTrue((records_dir / f"{material_id}.json").is_file())
+
+    def test_preflight_path_recovers_failed_request_from_late_csv(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            csv_dir.mkdir(parents=True)
+            material_id = "m-preflight-late"
+            csv_path = csv_dir / f"{material_id}.csv"
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/{material_id}.mp4\n",
+                encoding="utf-8",
+            )
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(records_dir),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            failed = {
+                "materialId": material_id,
+                "rpaAvailable": False,
+                "failureReason": "rpa_request_failed",
+                "videoUrl": None,
+            }
+
+            def isolated_failure(_params, _timeout, **_kwargs):
+                csv_path.touch()
+                return failed
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_isolated",
+                side_effect=isolated_failure,
+            ):
+                args.shop_id = "shop"
+                args.date_range_type = "CUSTOM"
+                args.custom_start_date = "2026-07-25"
+                args.custom_end_date = "2026-07-31"
+                args.rpa_preflight_timeout_sec = 1
+                args.rpa_preflight_soft_timeout_sec = 1
+                recovered = extract_peak_frames._fetch_material_preflight_for_cli(
+                    args, material_id
+                )
+
+        self.assertTrue(recovered["rpaAvailable"])
+        self.assertTrue(recovered["lateArtifactRecovered"])
+        self.assertEqual(recovered["videoUrl"], f"https://video.example/{material_id}.mp4")
 
     def test_late_artifact_recovery_keeps_request_failure_when_csv_is_invalid(self):
         with tempfile.TemporaryDirectory() as temp_dir:
