@@ -8,6 +8,8 @@ import uuid
 from html.parser import HTMLParser
 from pathlib import Path
 
+from schemas import SchemaError, validate_manifest, validate_report_data
+
 
 class BatchLockError(RuntimeError):
     def __init__(self, message, *, stale=False, payload=None):
@@ -56,11 +58,16 @@ def stage_counts(materials, report_ready=False, base_dir=None):
             continue
         if entry.get("rpaStatus") == "selected":
             counts["rpaSelectedCount"] += 1
-        if entry.get("recordsPersisted") is False:
+        records_persisted = entry.get("recordsPersisted")
+        if records_persisted is False:
+            # This is an explicit negative result, not an unverifiable legacy entry.
             pass
-        elif _records_artifact_is_valid(entry, base_dir=base_dir):
+        elif records_persisted is True and _records_artifact_is_valid(
+            entry, base_dir=base_dir
+        ):
             counts["recordsPersistedCount"] += 1
         else:
+            # Missing/invalid legacy fields must not be inferred from a path string.
             counts["recordsPersistedUnknownCount"] = (
                 counts.get("recordsPersistedUnknownCount", 0) + 1
             )
@@ -69,6 +76,8 @@ def stage_counts(materials, report_ready=False, base_dir=None):
             and entry.get("postprocessStatus") == "succeeded"
         ):
             counts["postprocessSucceededCount"] += 1
+    if unknown_count := counts.pop("recordsPersistedUnknownCount", 0):
+        counts["recordsPersistedUnknownCount"] = unknown_count
     counts["reportReadyCount"] = 1 if report_ready else 0
     return counts
 
@@ -77,7 +86,7 @@ def mark_report_ready(manifest_path, report_data_path, report_html_path):
     manifest_file = Path(manifest_path)
     data_file = Path(report_data_path)
     html_file = Path(report_html_path)
-    if not data_file.is_file() or not html_file.is_file():
+    if not manifest_file.is_file() or not data_file.is_file() or not html_file.is_file():
         return False
     try:
         html_text = html_file.read_text(encoding="utf-8")
@@ -85,10 +94,21 @@ def mark_report_ready(manifest_path, report_data_path, report_html_path):
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
-    if not _report_matches_manifest(report_data, manifest):
+    try:
+        normalized_manifest = validate_manifest(manifest, require_run_id=True)
+        validate_report_data(report_data, run_id=normalized_manifest["runId"])
+    except SchemaError:
+        return False
+    if not _report_matches_manifest(report_data, normalized_manifest):
         return False
     embedded_data = _embedded_report_data(html_text)
-    if embedded_data is None or not _report_matches_manifest(embedded_data, manifest):
+    if embedded_data is None:
+        return False
+    try:
+        validate_report_data(embedded_data, run_id=normalized_manifest["runId"])
+    except SchemaError:
+        return False
+    if not _report_matches_manifest(embedded_data, normalized_manifest):
         return False
     if not _embedded_assets_exist(embedded_data, html_file.parent):
         return False
@@ -142,6 +162,9 @@ class _ReportDataParser(HTMLParser):
 def _embedded_report_data(html_text):
     if "__REPORT_DATA_JSON__" in html_text:
         return None
+    lowered = html_text.lower()
+    if 'id="report-data"' not in lowered and "id='report-data'" not in lowered:
+        return None
     parser = _ReportDataParser()
     try:
         parser.feed(html_text)
@@ -155,6 +178,10 @@ def _embedded_report_data(html_text):
 
 
 def _manifest_material_ids(manifest):
+    try:
+        manifest = validate_manifest(manifest)
+    except SchemaError:
+        return set()
     selected = manifest.get("selectedMaterials")
     if isinstance(selected, list):
         return {
@@ -183,15 +210,17 @@ def _manifest_material_ids(manifest):
 def _report_matches_manifest(report_data, manifest):
     if not isinstance(report_data, dict) or not isinstance(manifest, dict):
         return False
-    if report_data.get("schemaVersion") != 1 or report_data.get("status") != "complete":
+    try:
+        validate_report_data(report_data, run_id=manifest.get("runId"))
+    except SchemaError:
         return False
     run_id = str(manifest.get("runId") or "").strip()
-    report_run_id = str(
-        report_data.get("runId")
-        or (report_data.get("pipelineSummary") or {}).get("runId")
-        or ""
-    ).strip()
-    if not run_id or report_run_id != run_id:
+    pipeline_summary = report_data.get("pipelineSummary")
+    if not isinstance(pipeline_summary, dict):
+        return False
+    report_run_id = str(report_data.get("runId") or "").strip()
+    pipeline_run_id = str(pipeline_summary.get("runId") or "").strip()
+    if not run_id or report_run_id != run_id or pipeline_run_id != run_id:
         return False
     materials = report_data.get("materials")
     if not isinstance(materials, list):
@@ -217,7 +246,12 @@ def _embedded_assets_exist(report_data, html_dir):
                 continue
             if "://" in source:
                 return False
-            if not (Path(html_dir) / source).is_file():
+            asset_path = (Path(html_dir) / source).resolve()
+            try:
+                asset_path.relative_to(Path(html_dir).resolve())
+            except ValueError:
+                return False
+            if not asset_path.is_file():
                 return False
     return True
 

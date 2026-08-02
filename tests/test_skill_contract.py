@@ -15,6 +15,7 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("第 0 秒封面帧", prompt)
         self.assertIn("按点击数全局排序的 Top 3 局部峰值帧", prompt)
         self.assertIn("点击数相同按时间较早优先", prompt)
+        self.assertIn("第 0 秒帧不参与局部峰值排序", prompt)
         self.assertNotIn("第一个点击峰值及其后的三个最高峰值帧", prompt)
 
     def test_legacy_commercial_report_scripts_are_removed(self):

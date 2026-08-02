@@ -605,17 +605,6 @@ def _warnings(material_cards, conclusion, batch_verification):
     return warnings
 
 
-def _load_batch_manifest(peak_output_dir):
-    path = Path(peak_output_dir) / "batch-manifest.json"
-    if not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def _pipeline_summary(batch_manifest, batch_verification):
     if not isinstance(batch_manifest, dict):
         batch_manifest = {}
@@ -851,22 +840,22 @@ def _safe_asset_filename(value):
     return safe_asset_filename(value)
 
 
-def _load_records_for_materials(top_payload, records_dir):
-    result = {}
+def load_records_for_materials(materials, records_dir):
+    records_by_material = {}
     warnings = []
-    for material in _selected_materials(top_payload):
+    for material in materials:
         material_id = material["materialId"]
         records, warning = load_retained_diagnosis_records(records_dir, material_id)
         if warning:
             warnings.append(warning)
-        result[material_id] = records
-    return result, warnings
+        records_by_material[material_id] = records
+    return records_by_material, warnings
 
 
-def _load_summaries_for_materials(top_payload, peak_output_dir):
+def load_summaries_for_materials(materials, peak_output_dir):
     result = {}
     root = Path(peak_output_dir)
-    for material in _selected_materials(top_payload):
+    for material in materials:
         material_id = material["materialId"]
         material_dir = root / _safe_component(material_id)
         summary_path = material_dir / "summary.json"
@@ -882,37 +871,41 @@ def _load_summaries_for_materials(top_payload, peak_output_dir):
         for frame in summary.get("frames", []):
             if not isinstance(frame, dict):
                 continue
-            frame_name = _text(frame.get("framePath"))
+            frame_name = str(frame.get("framePath") or "").strip()
             frames.append(
                 {
-                    "rankType": _text(frame.get("rankType")),
+                    "rankType": str(frame.get("rankType") or "").strip(),
                     "durationSec": frame.get("durationSec"),
                     "metricValue": frame.get("metricValue"),
-                    "framePath": str(material_dir / frame_name)
-                    if frame_name
-                    else "",
+                    "framePath": str(material_dir / frame_name) if frame_name else "",
                 }
             )
         summary_warnings = summary.get("warnings", [])
         result[material_id] = {
             "summaryPath": str(summary_path),
             "frames": frames,
-            "warnings": summary_warnings
-            if isinstance(summary_warnings, list)
-            else [],
+            "warnings": summary_warnings if isinstance(summary_warnings, list) else [],
         }
     return result
 
 
-def _load_batch_verification(peak_output_dir):
-    path = Path(peak_output_dir) / "batch-verification.json"
-    if not path.is_file():
+def _load_report_artifact(path):
+    source = Path(path)
+    if not source.is_file():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def load_batch_verification(peak_output_dir):
+    return _load_report_artifact(Path(peak_output_dir) / "batch-verification.json")
+
+
+def load_batch_manifest(peak_output_dir):
+    return _load_report_artifact(Path(peak_output_dir) / "batch-manifest.json")
 
 
 def _atomic_write_text(path, content):
@@ -997,14 +990,13 @@ def generate_final_report(
     copy_assets=False,
 ):
     top_payload = _read_json(top_materials_json, "top materials JSON")
-    records_by_material, record_warnings = _load_records_for_materials(
-        top_payload, diagnosis_records_dir
+    materials = _selected_materials(top_payload)
+    records_by_material, record_warnings = load_records_for_materials(
+        materials, diagnosis_records_dir
     )
-    summaries_by_material = _load_summaries_for_materials(
-        top_payload, peak_output_dir
-    )
-    batch_verification = _load_batch_verification(peak_output_dir)
-    batch_manifest = _load_batch_manifest(peak_output_dir)
+    summaries_by_material = load_summaries_for_materials(materials, peak_output_dir)
+    batch_verification = load_batch_verification(peak_output_dir)
+    batch_manifest = load_batch_manifest(peak_output_dir)
     conclusion = load_conclusion_analysis(analysis_json) if analysis_json else None
     data = build_final_report_data(
         top_payload,

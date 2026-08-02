@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from batch_runtime import stage_counts
+from schemas import SchemaError, validate_manifest
 
 
 def material_output_issues(material_id, entry):
@@ -177,41 +178,15 @@ def verify_batch(
         raise error_type(
             f"unable to read batch manifest for verification: {manifest_path}"
         ) from exc
-    if isinstance(raw_manifest, dict) and raw_manifest.get("schemaVersion") == 2:
-        try:
-            return verify_streaming_batch(
-                args,
-                material_ids,
-                raw_manifest,
-                material_output_issues_fn=material_output_issues_fn,
-                write_json=write_json,
-                verification_name=verification_name,
-            )
-        except RuntimeError as exc:
-            raise error_type(str(exc)) from exc
-    manifest = load_resume_manifest(
-        manifest_path, new_batch_manifest(args, material_ids)
-    )
-    errors = []
-    warnings = []
-    for material_id in material_ids:
-        material_errors, material_warnings = material_output_issues_fn(
-            material_id, manifest["materials"][material_id]
+    try:
+        manifest = validate_manifest(raw_manifest)
+        return verify_streaming_batch(
+            args,
+            material_ids,
+            manifest,
+            material_output_issues_fn=material_output_issues_fn,
+            write_json=write_json,
+            verification_name=verification_name,
         )
-        errors.extend(material_errors)
-        warnings.extend(
-            {"materialId": material_id, "warning": warning}
-            for warning in material_warnings
-        )
-    receipt = {
-        "schemaVersion": 1,
-        "valid": not errors,
-        "materialCount": len(material_ids),
-        "materialIds": material_ids,
-        "warningCount": len(warnings),
-        "warnings": warnings,
-        "errors": errors,
-    }
-    receipt_path = Path(args.output_dir) / verification_name
-    write_json(receipt_path, receipt)
-    return receipt_path, receipt
+    except (SchemaError, RuntimeError) as exc:
+        raise error_type(str(exc)) from exc

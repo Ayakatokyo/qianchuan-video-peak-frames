@@ -5,8 +5,48 @@ postprocess handoff, and manifest checkpoints. External effects are supplied
 as hooks so the CLI remains an adapter rather than the scheduler's dependency.
 """
 
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 import time
+
+
+def stream_entry(material, rank, empty_timings):
+    entry = dict(material)
+    entry.update(
+        {
+            "rank": rank,
+            "materialId": str(material.get("materialId") or "").strip(),
+            "rpaStatus": "pending",
+            "postprocessStatus": "pending",
+            "status": "pending",
+            "failureReason": None,
+            "errorType": None,
+            "errorMessage": None,
+            "diagnosisRecordsPath": None,
+            "diagnosisCsvPath": None,
+            "recordsPersisted": False,
+            "postprocessSucceeded": False,
+            "rpaSoftTimeoutExceeded": False,
+            "summaryJson": None,
+            "summaryMd": None,
+            "timingsSec": empty_timings(),
+        }
+    )
+    return entry
+
+
+def public_entry(entry):
+    return {key: value for key, value in entry.items() if key != "records"}
+
+
+def ordered(entries, public_entry_fn=public_entry):
+    return [public_entry_fn(entries[index]) for index in sorted(entries)]
+
+
+def accounted_indices(*entry_maps):
+    accounted = set()
+    for entry_map in entry_maps:
+        accounted.update(entry_map)
+    return accounted
 
 
 def run_streaming_batch(
@@ -176,3 +216,61 @@ def run_streaming_batch(
             last_result = entry_result(entry)
             break
     return manifest, failures, last_result
+
+
+def run_legacy_batch(
+    args,
+    material_ids,
+    *,
+    manifest_path,
+    new_manifest,
+    load_resume_manifest,
+    iter_pending,
+    start_attempt,
+    attempt_material,
+    apply_attempt,
+    write_json,
+    entry_result,
+    elapsed,
+):
+    started_at = time.perf_counter()
+    expected = new_manifest(args, material_ids)
+    manifest = load_resume_manifest(manifest_path, expected) if args.resume else expected
+    manifest["concurrency"] = args.concurrency
+    manifest.setdefault("timingsSec", {})["totalSec"] = 0.0
+    write_json(manifest_path, manifest)
+
+    pending = list(iter_pending(args, manifest, material_ids))
+    for material_id in pending:
+        start_attempt(manifest["materials"][material_id])
+    write_json(manifest_path, manifest)
+
+    if args.concurrency == 1:
+        for material_id in pending:
+            apply_attempt(manifest, material_id, attempt_material(args, material_id))
+            write_json(manifest_path, manifest)
+    else:
+        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            futures = {
+                executor.submit(attempt_material, args, material_id): material_id
+                for material_id in pending
+            }
+            for future in as_completed(futures):
+                material_id = futures[future]
+                apply_attempt(manifest, material_id, future.result())
+                write_json(manifest_path, manifest)
+
+    manifest["timingsSec"]["totalSec"] = elapsed(started_at)
+    write_json(manifest_path, manifest)
+    failures = [
+        material_id
+        for material_id in material_ids
+        if manifest["materials"][material_id].get("status") == "failed"
+    ]
+    last_result = None
+    for material_id in reversed(material_ids):
+        entry = manifest["materials"][material_id]
+        if entry.get("status") == "succeeded":
+            last_result = entry_result(entry)
+            break
+    return manifest_path, last_result, failures

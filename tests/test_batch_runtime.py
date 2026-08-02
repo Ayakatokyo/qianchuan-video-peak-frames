@@ -27,10 +27,12 @@ class StageCountTests(unittest.TestCase):
                     {
                         "materialId": "m-1",
                         "diagnosisRecordsPath": str(valid),
+                        "recordsPersisted": True,
                     },
                     {
                         "materialId": "m-2",
                         "diagnosisRecordsPath": str(invalid),
+                        "recordsPersisted": True,
                     },
                     {
                         "materialId": "m-3",
@@ -40,6 +42,20 @@ class StageCountTests(unittest.TestCase):
             )
         self.assertEqual(counts["recordsPersistedCount"], 1)
         self.assertEqual(counts["recordsPersistedUnknownCount"], 2)
+
+    def test_legacy_entry_without_boolean_is_explicitly_unknown(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            records = root / "m-1.json"
+            records.write_text(
+                json.dumps([{"recordType": "material_info", "materialId": "m-1"}]),
+                encoding="utf-8",
+            )
+            counts = stage_counts(
+                [{"materialId": "m-1", "diagnosisRecordsPath": str(records)}]
+            )
+        self.assertEqual(counts["recordsPersistedCount"], 0)
+        self.assertEqual(counts["recordsPersistedUnknownCount"], 1)
 
 
 class ReportReadyTests(unittest.TestCase):
