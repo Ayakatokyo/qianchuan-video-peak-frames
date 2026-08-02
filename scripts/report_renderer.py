@@ -193,6 +193,7 @@ def report_data_for_template(
         or (data.get("pipelineSummary") or {}).get("runId"),
         "status": data.get("status"),
         "period": data.get("period", {}),
+        "pipelineSummary": data.get("pipelineSummary", {}),
         "materials": materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
         "batchInsights": data.get("batchInsights", {}),

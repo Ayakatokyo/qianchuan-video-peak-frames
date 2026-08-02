@@ -125,7 +125,7 @@ python scripts/prepare_diagnostic_analysis.py \
 
 `--diagnosis-records-dir` 推荐传规范化 JSON 目录 `diagnosis-records`。若排障或旧执行只保留了 RPA 原始 CSV，事实包准备和最终报告渲染也兼容保留的 `diagnosis-csv` 目录，会自动解析同名 `<materialId>.csv`；不得在存在 CSV 的情况下把空事实包当作完成报告继续交付。
 
-当前执行技能的模型必须读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，并实际查看事实包 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一次任务内生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`，必须使用 `schemaVersion: 2`，分开 `SHOW_COUNT`、`CLICK_COUNT` 与 `TRANSACTION_AMOUNT` 人群结论，展示文案使用“展现次数”“点击次数”“成交金额”，并逐字引用事实包已有的 evidence ref。模型不得仅凭帧的秒数或点击值猜测画面；高光帧观察必须基于实际查看 JPEG。
+当前执行技能的模型必须读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，并实际查看事实包 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一次任务内生成 `/path/to/run/diagnostic-analysis/diagnostic-ai-analysis.json`，必须使用 `schemaVersion: 2`，分开 `SHOW_COUNT`、`CLICK_COUNT` 与 `TRANSACTION_AMOUNT` 人群结论，展示文案使用“展现次数”“点击次数”“成交金额”，并逐字引用事实包已有的 evidence ref。模型不得仅凭帧的秒数或点击值猜测画面；高光帧观察必须基于实际查看 JPEG。`materialAnalyses[*].decision` 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`，不得使用 `rewrite` 等未定义别名。
 
 AI 二次分析必须按“少量关键事实锚点 + 多句分析判断”组织内容：只选最能支撑判断的事实作为依据，更多篇幅用于说明组合公式、机会判断、风险边界和下一轮验证方向。`overallConclusion` 必须综合人群、脚本、高光帧和投放明细中的主要事实，对本次提取到的所有素材做组合级汇总分析；整体结论的数据陈述只作为判断依据，不作为段落主体；`01｜TOP 素材组合结论` 只使用 `overallConclusion`，不得输出 `batchInsights.topic=integrated`；人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开。
 
@@ -147,7 +147,7 @@ python scripts/render_final_report.py \
   --output-dir "/path/to/run/final-report"
 ```
 
-除 AI 二次分析内容本身外，不得手工补写报告链路中的数据加工步骤。`prepare_diagnostic_analysis.py` 会从保留的 `material_info` 记录自动抽取 `videoUrl`、`thumbnailUrl`、`videoDuration` 和 `materialUri` 并注入事实包；`render_final_report.py` 会校验 `diagnostic-ai-analysis.json` 的 JSON/schema/evidence refs/素材覆盖，校验不通过必须修正 AI JSON 后重跑，禁止绕过校验直接改 HTML。
+除 AI 二次分析内容本身外，不得手工补写报告链路中的数据加工步骤。`prepare_diagnostic_analysis.py` 会从保留的 `material_info` 记录自动抽取 `videoUrl`、`thumbnailUrl`、`videoDuration` 和 `materialUri` 并注入事实包；`render_final_report.py` 会校验 `diagnostic-ai-analysis.json` 的 JSON/schema/evidence refs/素材覆盖，校验不通过必须修正 AI JSON 后重跑，禁止绕过校验直接改 HTML。人群摘要优先使用仓库 Python 脚本或 Python 标准库处理，避免依赖不同 jq 版本对 `sort_by(-.value)` 等负号字段表达式的解析差异。
 
 最终交付默认使用 `--copy-assets`，由渲染器把高光帧 JPEG 复制到 `final-report/assets/highlight-frames/` 并在 HTML 中写相对路径，避免把 24 张或更多 JPEG base64 内嵌进 JSON 数据岛导致 HTML 过大和打开卡顿。默认不要使用 `--embed-assets`；只有小批次、明确需要单文件临时调试报告时才可显式使用。归档或交付时保留整个 `final-report/` 目录，而不是只复制 `final-report.html`。
 

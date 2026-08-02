@@ -665,6 +665,7 @@ def _pipeline_summary(batch_manifest, batch_verification):
         and manifest_stage_counts.get("reportReadyCount") == 1
     ) or (batch_manifest.get("reportReady") or {}).get("status") == "ready"
     return {
+        "runId": batch_manifest.get("runId"),
         "targetTopN": batch_manifest.get("targetTopN"),
         "candidateCount": batch_manifest.get("candidateCount"),
         "submittedCount": submitted_count,

@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from batch_runtime import mark_report_ready, stage_counts  # noqa: E402
+from report_renderer import render_html_report  # noqa: E402
 
 
 class StageCountTests(unittest.TestCase):
@@ -100,6 +101,8 @@ class ReportReadyTests(unittest.TestCase):
     def test_report_ready_requires_matching_rendered_report_contract(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manifest, data, html = self._write_report(Path(temp_dir))
+            report_data = json.loads(data.read_text(encoding="utf-8"))
+            html.write_text(render_html_report(report_data), encoding="utf-8")
             self.assertTrue(mark_report_ready(manifest, data, html))
             updated = json.loads(manifest.read_text(encoding="utf-8"))
         self.assertEqual(updated["reportReady"]["runId"], "run-1")

@@ -713,6 +713,7 @@ class FinalReportDataTests(unittest.TestCase):
         self.assertEqual(
             result["pipelineSummary"],
             {
+                "runId": None,
                 "targetTopN": 2,
                 "candidateCount": 6,
                 "submittedCount": 3,
@@ -1383,7 +1384,7 @@ class FinalReportRenderTests(unittest.TestCase):
             html_text = html_path.read_text(encoding="utf-8")
 
         self.assertIn('"materialId":"m-1"', html_text)
-        self.assertNotIn("pipelineSummary", html_text)
+        self.assertIn('"pipelineSummary"', html_text)
         self.assertNotIn("selectedMaterials", html_text)
         self.assertNotIn("top_materials_rpa_ready", html_text)
         self.assertNotIn('"batchVerification":', html_text)
