@@ -5,6 +5,7 @@ import os
 import socket
 import time
 import uuid
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -15,7 +16,34 @@ class BatchLockError(RuntimeError):
         self.payload = payload or {}
 
 
-def stage_counts(materials, report_ready=False):
+def _resolved_artifact_path(raw_path, base_dir=None):
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    path = Path(raw_path)
+    if not path.is_absolute() and base_dir is not None:
+        path = Path(base_dir) / path
+    return path
+
+
+def _records_artifact_is_valid(entry, base_dir=None):
+    material_id = str(entry.get("materialId") or "").strip()
+    records_path = _resolved_artifact_path(entry.get("diagnosisRecordsPath"), base_dir)
+    if not material_id or records_path is None or not records_path.is_file():
+        return False
+    try:
+        payload = json.loads(records_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, list):
+        return False
+    return any(
+        isinstance(record, dict)
+        and str(record.get("materialId") or "").strip() == material_id
+        for record in payload
+    )
+
+
+def stage_counts(materials, report_ready=False, base_dir=None):
     """Return explicit lifecycle counts without collapsing status meanings."""
     counts = {
         "rpaSelectedCount": 0,
@@ -26,16 +54,16 @@ def stage_counts(materials, report_ready=False):
     for entry in materials or ():
         if not isinstance(entry, dict):
             continue
-        material_id = str(entry.get("materialId") or "").strip()
         if entry.get("rpaStatus") == "selected":
             counts["rpaSelectedCount"] += 1
-        records_path = entry.get("diagnosisRecordsPath")
-        if entry.get("recordsPersisted") is True or (
-            "recordsPersisted" not in entry
-            and isinstance(records_path, str)
-            and records_path.strip()
-        ):
+        if entry.get("recordsPersisted") is False:
+            pass
+        elif _records_artifact_is_valid(entry, base_dir=base_dir):
             counts["recordsPersistedCount"] += 1
+        else:
+            counts["recordsPersistedUnknownCount"] = (
+                counts.get("recordsPersistedUnknownCount", 0) + 1
+            )
         if entry.get("postprocessSucceeded") is True or (
             "postprocessSucceeded" not in entry
             and entry.get("postprocessStatus") == "succeeded"
@@ -52,21 +80,28 @@ def mark_report_ready(manifest_path, report_data_path, report_html_path):
     if not data_file.is_file() or not html_file.is_file():
         return False
     try:
+        html_text = html_file.read_text(encoding="utf-8")
         report_data = json.loads(data_file.read_text(encoding="utf-8"))
         manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
-    if not isinstance(report_data, dict) or report_data.get("status") != "complete":
+    if not _report_matches_manifest(report_data, manifest):
         return False
-    if not isinstance(manifest, dict):
+    embedded_data = _embedded_report_data(html_text)
+    if embedded_data is None or not _report_matches_manifest(embedded_data, manifest):
+        return False
+    if not _embedded_assets_exist(embedded_data, html_file.parent):
         return False
     counts = manifest.get("stageCounts")
     if not isinstance(counts, dict):
-        counts = stage_counts(manifest.get("submittedMaterials", []))
+        counts = stage_counts(
+            manifest.get("submittedMaterials", []), base_dir=manifest_file.parent
+        )
     counts["reportReadyCount"] = 1
     manifest["stageCounts"] = counts
     manifest["reportReady"] = {
         "status": "ready",
+        "runId": manifest["runId"],
         "dataPath": str(data_file),
         "htmlPath": str(html_file),
     }
@@ -80,6 +115,110 @@ def mark_report_ready(manifest_path, report_data_path, report_html_path):
         except OSError:
             pass
         return False
+    return True
+
+
+class _ReportDataParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self._in_report_script = False
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        self._in_report_script = (
+            tag.lower() == "script" and attributes.get("id") == "report-data"
+        )
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "script":
+            self._in_report_script = False
+
+    def handle_data(self, data):
+        if self._in_report_script:
+            self.parts.append(data)
+
+
+def _embedded_report_data(html_text):
+    if "__REPORT_DATA_JSON__" in html_text:
+        return None
+    parser = _ReportDataParser()
+    try:
+        parser.feed(html_text)
+        parser.close()
+        if not parser.parts:
+            return None
+        payload = json.loads("".join(parser.parts))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _manifest_material_ids(manifest):
+    selected = manifest.get("selectedMaterials")
+    if isinstance(selected, list):
+        return {
+            str(item.get("materialId") or "").strip()
+            for item in selected
+            if isinstance(item, dict)
+            and item.get("postprocessStatus") == "succeeded"
+            and str(item.get("materialId") or "").strip()
+        }
+    materials = manifest.get("materials")
+    if isinstance(materials, dict):
+        return {
+            str(material_id).strip()
+            for material_id, item in materials.items()
+            if isinstance(item, dict) and item.get("status") == "succeeded"
+        }
+    if isinstance(materials, list):
+        return {
+            str(item.get("materialId") or "").strip()
+            for item in materials
+            if isinstance(item, dict) and item.get("status") == "succeeded"
+        }
+    return set()
+
+
+def _report_matches_manifest(report_data, manifest):
+    if not isinstance(report_data, dict) or not isinstance(manifest, dict):
+        return False
+    if report_data.get("schemaVersion") != 1 or report_data.get("status") != "complete":
+        return False
+    run_id = str(manifest.get("runId") or "").strip()
+    report_run_id = str(
+        report_data.get("runId")
+        or (report_data.get("pipelineSummary") or {}).get("runId")
+        or ""
+    ).strip()
+    if not run_id or report_run_id != run_id:
+        return False
+    materials = report_data.get("materials")
+    if not isinstance(materials, list):
+        return False
+    report_ids = {
+        str(item.get("materialId") or "").strip()
+        for item in materials
+        if isinstance(item, dict) and str(item.get("materialId") or "").strip()
+    }
+    manifest_ids = _manifest_material_ids(manifest)
+    return bool(report_ids) and report_ids == manifest_ids
+
+
+def _embedded_assets_exist(report_data, html_dir):
+    for material in report_data.get("materials", []):
+        for frame in material.get("highlightFrames", []):
+            if not isinstance(frame, dict):
+                return False
+            source = frame.get("framePath")
+            if not isinstance(source, str) or not source.strip():
+                return False
+            if source.startswith("data:"):
+                continue
+            if "://" in source:
+                return False
+            if not (Path(html_dir) / source).is_file():
+                return False
     return True
 
 

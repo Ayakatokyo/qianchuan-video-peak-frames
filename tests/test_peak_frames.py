@@ -2286,13 +2286,38 @@ class CliTests(unittest.TestCase):
             data = root / "final-report-data.json"
             html = root / "final-report.html"
             manifest.write_text(
-                json.dumps({"stageCounts": {"reportReadyCount": 0}}),
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "runId": "run-1",
+                        "selectedMaterials": [
+                            {
+                                "materialId": "m-1",
+                                "postprocessStatus": "succeeded",
+                            }
+                        ],
+                        "stageCounts": {"reportReadyCount": 0},
+                    }
+                ),
                 encoding="utf-8",
             )
             data.write_text(json.dumps({"status": "partial"}), encoding="utf-8")
             html.write_text("<html></html>", encoding="utf-8")
             self.assertFalse(mark_report_ready(manifest, data, html))
-            data.write_text(json.dumps({"status": "complete"}), encoding="utf-8")
+            report_data = {
+                "schemaVersion": 1,
+                "status": "complete",
+                "runId": "run-1",
+                "materials": [{"materialId": "m-1", "highlightFrames": []}],
+                "pipelineSummary": {"runId": "run-1"},
+            }
+            data.write_text(json.dumps(report_data), encoding="utf-8")
+            html.write_text(
+                '<script type="application/json" id="report-data">'
+                + json.dumps(report_data)
+                + "</script>",
+                encoding="utf-8",
+            )
             self.assertTrue(mark_report_ready(manifest, data, html))
             updated = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(updated["stageCounts"]["reportReadyCount"], 1)

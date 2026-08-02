@@ -189,6 +189,8 @@ def report_data_for_template(
     return {
         "schemaVersion": data.get("schemaVersion"),
         "generatedAt": data.get("generatedAt"),
+        "runId": data.get("runId")
+        or (data.get("pipelineSummary") or {}).get("runId"),
         "status": data.get("status"),
         "period": data.get("period", {}),
         "materials": materials,

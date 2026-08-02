@@ -806,6 +806,7 @@ def build_final_report_data(
     return {
         "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
+        "runId": batch_manifest.get("runId") if isinstance(batch_manifest, dict) else None,
         "status": _status(
             conclusion,
             material_cards,

@@ -10,7 +10,7 @@ metadata:
 
 ## 概览
 
-提取每个视频第 0 秒的一帧，以及整体点击次数最高的三个局部峰值帧，并保存对应的 JPEG 帧和 JSON/Markdown 摘要。请使用随附的 Python 流程，确保 macOS 与 Windows 上的峰值和取帧规则一致且确定。
+提取每个视频第 0 秒的一帧，以及按点击数全局排序的三个局部峰值帧（点击数相同按时间较早优先），并保存对应的 JPEG 帧和 JSON/Markdown 摘要。请使用随附的 Python 流程，确保 macOS 与 Windows 上的峰值和取帧规则一致且确定。
 
 ## 工作流程
 
@@ -90,7 +90,7 @@ RPA 通道最多同时运行 3 个连接器请求，并严格从候选头部补�
 
 流式运行会写入 `batch-manifest.json`，其中的 `submittedMaterials`、`selectedMaterials`、`rejectedMaterials` 和 `cancelledMaterials` 分别表示已提交、RPA 可用、RPA 不可用与未提交取消的候选。每个条目保留 rank、素材元数据、两个通道状态、失败原因、诊断记录路径、摘要路径和 `timingsSec`；其中包含 `rpaFetchSec`、`diagnosisRecordWriteSec`、`videoDownloadSec`、`frameExtractionSec` 和 `totalSec`。`top_materials_rpa_ready.json` 仍会写出，作为最终报告和下游脚本的兼容输入；其素材只包含 RPA 成功的 Top N，并保持资产表排序。
 
-manifest 顶层同时写出 `stageCounts`：`rpaSelectedCount` 表示拿到 records 和 `videoUrl` 的素材数，`recordsPersistedCount` 表示规范化 JSON 已落盘的素材数，`postprocessSucceededCount` 表示视频下载、抽帧和 summary 均成功的素材数，`reportReadyCount` 是事实包和最终报告均验证通过的批次级 0/1 状态。报告日志必须同时打印这些数量，不得把 RPA selected 当作报告可用。
+ manifest 顶层同时写出 `stageCounts`：`rpaSelectedCount` 表示拿到 records 和 `videoUrl` 的素材数，`recordsPersistedCount` 表示已验证存在、可解析且包含匹配素材 ID 的规范化 JSON 数量；旧 schema 中无法确认的记录进入 `recordsPersistedUnknownCount`，不得计入已落盘数量。`postprocessSucceededCount` 表示视频下载、抽帧和 summary 均成功的素材数，`reportReadyCount` 是事实包和最终报告均验证通过的批次级 0/1 状态。报告日志必须同时打印这些数量，不得把 RPA selected 当作报告可用。
 
 如果候选池耗尽时仍未选到目标数量，或任一选中素材后处理失败，命令返回非零但保留所有已完成的诊断记录、CSV、摘要和 JPEG。CSV 下载或解析失败仍会阻塞流程，并记录为 RPA 拒绝；不要将它解释为素材删除。后处理失败则保留 RPA selected 状态，不会伪装为 RPA 失败或无条件补充新的低排名素材。
 

@@ -100,9 +100,14 @@ The stream writes:
 The manifest also exposes `stageCounts` with four separate meanings:
 
 - `rpaSelectedCount`: records, matching `material_info`, and non-empty `videoUrl` are available.
-- `recordsPersistedCount`: normalized records JSON is present on disk.
+- `recordsPersistedCount`: normalized records JSON is present on disk, parses as a list, and contains the matching material ID. Legacy entries without `recordsPersisted` are counted only after this validation; unverifiable legacy entries are reported separately as `recordsPersistedUnknownCount`.
 - `postprocessSucceededCount`: video download, frame extraction, and both summaries succeeded.
 - `reportReadyCount`: batch-level 0/1 flag set only after the complete fact package and final report data/HTML validate.
+
+Report readiness additionally requires final-report data schema version 1 with `status=complete`,
+the rendered HTML to contain a parseable `script#report-data` without the template placeholder,
+every referenced copied highlight asset to exist, and the report material IDs and `runId` to
+match the batch manifest. The readiness marker records the same `runId`.
 
 The streaming output directory is protected by `.batch-run.lock` and a unique `runId`. A stale lock with `running` or `submitted` manifest entries requires explicit recovery; it must not be silently overwritten.
 

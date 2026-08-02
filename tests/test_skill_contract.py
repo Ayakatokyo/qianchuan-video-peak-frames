@@ -6,9 +6,17 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "SKILL.md"
 RPA_CONTRACT_PATH = ROOT / "references" / "rpa-output-contract.md"
 DIAGNOSTIC_PROMPT_PATH = ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md"
+OPENAI_CONFIG_PATH = ROOT / "agents" / "openai.yaml"
 
 
 class BatchSkillContractTests(unittest.TestCase):
+    def test_entry_prompt_matches_zero_second_and_global_top_three_contract(self):
+        prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")
+        self.assertIn("第 0 秒封面帧", prompt)
+        self.assertIn("按点击数全局排序的 Top 3 局部峰值帧", prompt)
+        self.assertIn("点击数相同按时间较早优先", prompt)
+        self.assertNotIn("第一个点击峰值及其后的三个最高峰值帧", prompt)
+
     def test_legacy_commercial_report_scripts_are_removed(self):
         self.assertFalse(
             (ROOT / "scripts" / "commercial_report_lib.py").exists()

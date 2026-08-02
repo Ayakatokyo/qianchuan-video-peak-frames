@@ -61,7 +61,7 @@ def _default_postprocess(args, entry):
     return {"summaryJson": str(summary_json), "summaryMd": str(summary_md)}
 
 
-def _rebuild_manifest(manifest, materials):
+def _rebuild_manifest(manifest, materials, base_dir=None):
     ordered = sorted(materials, key=lambda item: int(item.get("rank") or 0))
     submitted = [
         item for item in ordered
@@ -78,6 +78,7 @@ def _rebuild_manifest(manifest, materials):
     manifest["cancelledMaterials"] = cancelled
     manifest["stageCounts"] = stage_counts(
         submitted,
+        base_dir=base_dir,
         report_ready=(manifest.get("reportReady") or {}).get("status") == "ready",
     )
     return manifest
@@ -249,7 +250,7 @@ def repair_batch(
         raw_entry.clear()
         raw_entry.update(entry)
 
-    _rebuild_manifest(manifest, materials)
+    _rebuild_manifest(manifest, materials, base_dir=peak_dir.parent)
     pipeline._write_json_atomically(manifest_path, manifest)
     receipt = {
         "schemaVersion": 1,
