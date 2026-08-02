@@ -11,6 +11,7 @@ import extract_peak_frames as pipeline
 from batch_runtime import stage_counts
 from batch_runtime import new_run_id
 from rpa_csv_parser import parse_diagnosis_csv
+from path_safety import artifact_path, material_dir, validate_material_id
 
 
 REPAIR_RECEIPT_NAME = "repair-manifest.json"
@@ -171,17 +172,22 @@ def repair_batch(
         if not material_id:
             errors.append("manifest material has no materialId")
             continue
+        try:
+            validate_material_id(material_id)
+        except ValueError as exc:
+            errors.append(f"{material_id}: invalid material ID: {exc}")
+            continue
         _normalize_summary_paths(root, entry)
         if not entry.get("summaryJson"):
-            default_summary = peak_dir / material_id / "summary.json"
+            default_summary = material_dir(peak_dir, material_id) / "summary.json"
             if default_summary.is_file():
                 entry["summaryJson"] = str(default_summary)
         if not entry.get("summaryMd"):
-            default_markdown = peak_dir / material_id / "summary.md"
+            default_markdown = material_dir(peak_dir, material_id) / "summary.md"
             if default_markdown.is_file():
                 entry["summaryMd"] = str(default_markdown)
-        records_path = _resolve(root, entry.get("diagnosisRecordsPath"), records_dir / f"{material_id}.json")
-        csv_path = _resolve(root, entry.get("diagnosisCsvPath"), csv_dir / f"{material_id}.csv")
+        records_path = _resolve(root, entry.get("diagnosisRecordsPath"), artifact_path(records_dir, material_id, ".json"))
+        csv_path = _resolve(root, entry.get("diagnosisCsvPath"), artifact_path(csv_dir, material_id, ".csv"))
         records = None
         if records_path.is_file():
             try:

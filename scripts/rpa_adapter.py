@@ -3,9 +3,11 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
+from path_safety import artifact_path, validate_material_id
 
 
 FUNCTION_CODE = "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis"
@@ -34,6 +36,11 @@ class RpaNotConfiguredError(RpaAdapterError):
 @dataclass(frozen=True)
 class GatewayFile:
     file_url: str
+
+
+DEFAULT_CSV_MAX_BYTES = 100 * 1024 * 1024
+DEFAULT_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
+DEFAULT_DOWNLOAD_DEADLINE_SEC = 600
 
 
 def _default_session():
@@ -80,8 +87,10 @@ def build_business_params(
     custom_start_date=None,
     custom_end_date=None,
 ):
-    if not str(material_id or "").strip():
-        raise RpaAdapterError("material_id is required")
+    try:
+        material_id = validate_material_id(material_id)
+    except ValueError as exc:
+        raise RpaAdapterError(f"invalid material_id: {exc}") from exc
     if date_range_type not in DATE_RANGE_TYPES:
         raise RpaAdapterError(
             "date_range_type must be one of: "
@@ -180,29 +189,51 @@ def _files_response_url(result):
     return file_url.strip()
 
 
-def download_diagnosis_csv(file_url, target_path, session=None, timeout=300):
-    session = _default_session() if session is None else session
+def _stream_download(
+    url,
+    target_path,
+    *,
+    session,
+    timeout,
+    max_bytes,
+    deadline_sec,
+    action,
+):
     target = Path(target_path)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise RpaAdapterError(
-            f"unable to create RPA diagnostic CSV directory {target.parent}: {exc}"
+            f"unable to create RPA {action} directory {target.parent}: {exc}"
         ) from exc
 
-    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.csv")
+    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}{target.suffix}")
+    response = None
+    started = time.monotonic()
     try:
-        response = session.get(file_url, stream=True, timeout=timeout)
+        response = session.get(url, stream=True, timeout=timeout)
+        response.raise_for_status()
+        content_length = getattr(response, "headers", {}).get("Content-Length")
         try:
-            response.raise_for_status()
-        except Exception as exc:
-            raise RpaAdapterError("unable to download RPA diagnostic CSV") from exc
-        with staging.open("wb") as csv_file:
+            declared_size = int(content_length) if content_length is not None else None
+        except (TypeError, ValueError):
+            declared_size = None
+        if declared_size is not None and declared_size > max_bytes:
+            raise RpaAdapterError(f"downloaded RPA {action} exceeds maximum size")
+
+        written = 0
+        with staging.open("wb") as output:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    csv_file.write(chunk)
-        if staging.stat().st_size == 0:
-            raise RpaAdapterError("downloaded RPA diagnostic CSV is empty")
+                if time.monotonic() - started >= deadline_sec:
+                    raise RpaAdapterError(f"RPA {action} download exceeded total deadline")
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > max_bytes:
+                    raise RpaAdapterError(f"downloaded RPA {action} exceeds maximum size")
+                output.write(chunk)
+        if written == 0:
+            raise RpaAdapterError(f"downloaded RPA {action} is empty")
         os.replace(staging, target)
     except RpaAdapterError:
         try:
@@ -215,8 +246,33 @@ def download_diagnosis_csv(file_url, target_path, session=None, timeout=300):
             staging.unlink(missing_ok=True)
         except OSError:
             pass
-        raise RpaAdapterError(f"unable to download RPA diagnostic CSV: {exc}") from exc
+        raise RpaAdapterError(f"unable to download RPA {action}") from exc
+    finally:
+        if response is not None:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
     return target
+
+
+def download_diagnosis_csv(
+    file_url,
+    target_path,
+    session=None,
+    timeout=300,
+    max_bytes=DEFAULT_CSV_MAX_BYTES,
+    deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+):
+    session = _default_session() if session is None else session
+    return _stream_download(
+        file_url,
+        target_path,
+        session=session,
+        timeout=timeout,
+        max_bytes=max_bytes,
+        deadline_sec=deadline_sec,
+        action="diagnostic CSV",
+    )
 
 
 def fetch_material_diagnosis(
@@ -272,7 +328,10 @@ def fetch_material_diagnosis(
             raise RpaAdapterError(
                 "diagnosis_csv_dir is required for RPA files responses"
             )
-        target = Path(diagnosis_csv_dir) / f"{business_params['material_id']}.csv"
+        try:
+            target = artifact_path(diagnosis_csv_dir, business_params["material_id"], ".csv")
+        except ValueError as exc:
+            raise RpaAdapterError(f"invalid material_id: {exc}") from exc
         download_diagnosis_csv(gateway_result.file_url, target, session=session)
         try:
             records = parse_diagnosis_csv(target)
@@ -383,41 +442,23 @@ def fetch_material_preflight(
     return result
 
 
-def download_video(video_url, target_path, session=None, timeout=300):
+def download_video(
+    video_url,
+    target_path,
+    session=None,
+    timeout=300,
+    max_bytes=DEFAULT_VIDEO_MAX_BYTES,
+    deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+):
     if not str(video_url or "").strip():
         raise RpaAdapterError("videoUrl is required")
     session = _default_session() if session is None else session
-    target = Path(target_path)
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise RpaAdapterError(
-            f"unable to create RPA video directory {target.parent}: {exc}"
-        ) from exc
-
-    staging = target.with_name(
-        f".{target.stem}.{uuid.uuid4().hex}{target.suffix or '.mp4'}"
+    return _stream_download(
+        video_url,
+        target_path,
+        session=session,
+        timeout=timeout,
+        max_bytes=max_bytes,
+        deadline_sec=deadline_sec,
+        action="video",
     )
-    try:
-        response = session.get(video_url, stream=True, timeout=timeout)
-        _raise_for_status(response, "download RPA video")
-        with staging.open("wb") as video_file:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    video_file.write(chunk)
-        if staging.stat().st_size == 0:
-            raise RpaAdapterError("downloaded RPA video is empty")
-        os.replace(staging, target)
-    except RpaAdapterError:
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    except Exception as exc:
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise RpaAdapterError(f"unable to download RPA video: {exc}") from exc
-    return target

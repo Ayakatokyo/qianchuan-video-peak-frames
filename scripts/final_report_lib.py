@@ -1,23 +1,25 @@
 import ast
-import base64
 import json
 from datetime import datetime, timezone
 import math
-import mimetypes
-import os
 from pathlib import Path
 from batch_runtime import stage_counts
-import shutil
-import uuid
 
 from diagnostic_analysis_lib import (
     build_diagnostic_analysis,
     load_retained_diagnosis_records,
 )
+from report_renderer import (
+    ReportRenderingError,
+    atomic_write_text,
+    render_html_report,
+    safe_component,
+)
+
+_safe_component = safe_component
 
 
-class FinalReportError(RuntimeError):
-    """Raised when final report inputs cannot produce a valid report."""
+FinalReportError = ReportRenderingError
 
 
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
@@ -53,10 +55,6 @@ EXECUTION_PROCESS_TERMS = (
     "流程修复",
     "修复后的",
 )
-REPORT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "final-report-template.html"
-REPORT_DATA_PLACEHOLDER = "__REPORT_DATA_JSON__"
-
-
 def _text(value):
     return str(value).strip() if value is not None else ""
 
@@ -846,22 +844,10 @@ def build_final_report_data(
     }
 
 
-def _safe_component(value):
-    text = str(value)
-    cleaned = "".join(
-        character if character.isalnum() or character in "-_" else "_"
-        for character in text
-    )
-    return cleaned.strip("_") or "unknown-material"
-
-
 def _safe_asset_filename(value):
-    name = Path(_text(value)).name
-    cleaned = "".join(
-        character if character.isalnum() or character in "-_." else "_"
-        for character in name
-    ).strip("._")
-    return cleaned or "asset.jpg"
+    from report_renderer import safe_asset_filename
+
+    return safe_asset_filename(value)
 
 
 def _load_records_for_materials(top_payload, records_dir):
@@ -929,45 +915,13 @@ def _load_batch_verification(peak_output_dir):
 
 
 def _atomic_write_text(path, content):
-    target = Path(path)
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise FinalReportError(
-            f"unable to create output directory {target.parent}: {exc}"
-        ) from exc
-    staging = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        staging.write_text(content, encoding="utf-8")
-        os.replace(staging, target)
-    except OSError as exc:
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise FinalReportError(f"unable to write report output {target}: {exc}") from exc
+    return atomic_write_text(path, content)
 
 
 def _copy_html_asset(source_path, asset_base_dir, material_id):
-    target_dir = (
-        Path(asset_base_dir)
-        / "assets"
-        / "highlight-frames"
-        / _safe_component(material_id)
-    )
-    target_path = target_dir / _safe_asset_filename(source_path.name)
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        resolved_source = source_path.resolve()
-        resolved_target = target_path.resolve()
-        resolved_base = Path(asset_base_dir).resolve()
-        if resolved_source != resolved_target:
-            shutil.copy2(resolved_source, resolved_target)
-        return os.path.relpath(resolved_target, resolved_base)
-    except OSError as exc:
-        raise FinalReportError(
-            f"unable to copy report image asset: {source_path}"
-        ) from exc
+    from report_renderer import copy_html_asset
+
+    return copy_html_asset(source_path, asset_base_dir, material_id)
 
 
 def _html_asset_src(
@@ -977,59 +931,27 @@ def _html_asset_src(
     copy_assets=False,
     material_id="",
 ):
-    source = _text(path)
-    if not source or asset_base_dir is None:
-        return source
-    if embed_assets and copy_assets:
-        raise FinalReportError("--embed-assets and --copy-assets are mutually exclusive")
-    try:
-        source_path = Path(source)
-        if not source_path.is_absolute():
-            source_path = Path.cwd() / source_path
-        source_path = source_path.resolve()
-        if embed_assets:
-            try:
-                payload = source_path.read_bytes()
-            except OSError as exc:
-                raise FinalReportError(
-                    f"unable to embed report image asset: {source_path}"
-                ) from exc
-            mime_type, _encoding = mimetypes.guess_type(str(source_path))
-            if not mime_type or not mime_type.startswith("image/"):
-                mime_type = "image/jpeg"
-            encoded = base64.b64encode(payload).decode("ascii")
-            return f"data:{mime_type};base64,{encoded}"
-        if copy_assets:
-            return Path(
-                _copy_html_asset(source_path, asset_base_dir, material_id)
-            ).as_posix()
-        relative = os.path.relpath(source_path, Path(asset_base_dir).resolve())
-    except (OSError, ValueError):
-        return source
-    return Path(relative).as_posix()
+    from report_renderer import html_asset_src
+
+    return html_asset_src(
+        path,
+        asset_base_dir,
+        embed_assets=embed_assets,
+        copy_assets=copy_assets,
+        material_id=material_id,
+    )
 
 
 def _load_report_template():
-    try:
-        template = REPORT_TEMPLATE_PATH.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise FinalReportError(f"unable to read report template: {REPORT_TEMPLATE_PATH}") from exc
-    if REPORT_DATA_PLACEHOLDER not in template:
-        raise FinalReportError(
-            f"report template is missing {REPORT_DATA_PLACEHOLDER}"
-        )
-    return template
+    from report_renderer import _load_report_template
+
+    return _load_report_template()
 
 
 def _json_for_html_script(data):
-    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    return (
-        payload.replace("&", "\\u0026")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
+    from report_renderer import json_for_html_script
+
+    return json_for_html_script(data)
 
 
 def _report_data_for_template(
@@ -1038,75 +960,15 @@ def _report_data_for_template(
     embed_assets=False,
     copy_assets=False,
 ):
-    materials = []
-    for material in data.get("materials", []):
-        material_id = material.get("materialId")
-        highlight_frames = []
-        for frame in material.get("highlightFrames", []):
-            highlight_frames.append(
-                {
-                    "rankType": frame.get("rankType"),
-                    "durationSec": frame.get("durationSec"),
-                    "metricValue": frame.get("metricValue"),
-                    "framePath": _html_asset_src(
-                        frame.get("framePath", ""),
-                        asset_base_dir,
-                        embed_assets,
-                        copy_assets,
-                        material_id,
-                    ),
-                }
-            )
-        materials.append(
-            {
-                "rank": material.get("rank"),
-                "materialId": material_id,
-                "materialName": material.get("materialName"),
-                "extractionStatus": material.get("extractionStatus"),
-                "highlightFrameCount": material.get("highlightFrameCount"),
-                "highlightFrames": highlight_frames,
-                "interactionTimeline": material.get(
-                    "interactionTimeline", {"metrics": []}
-                ),
-                "scriptAnalysis": material.get(
-                    "scriptAnalysis",
-                    {
-                        "materialUri": "",
-                        "formula": [],
-                        "labels": [],
-                        "evidence": [],
-                        "text": "",
-                    },
-                ),
-                "video": material.get(
-                    "video",
-                    {"src": "", "poster": "", "durationSec": None},
-                ),
-                "analysis": material.get("analysis") or {},
-            }
-        )
-    conclusion = data.get("conclusion", {})
-    warnings = [
-        _text(warning)
-        for warning in data.get("warnings", [])
-        if _text(warning) and not _contains_execution_process_term(warning)
-    ]
-    return {
-        "schemaVersion": data.get("schemaVersion"),
-        "generatedAt": data.get("generatedAt"),
-        "status": data.get("status"),
-        "period": data.get("period", {}),
-        "materials": materials,
-        "defaultMaterialId": data.get("defaultMaterialId"),
-        "batchInsights": data.get("batchInsights", {}),
-        "audience": data.get("audience", {}),
-        "scripts": data.get("scripts", {}),
-        "conclusion": {
-            "overallConclusion": conclusion.get("overallConclusion", ""),
-            "nextActions": conclusion.get("nextActions", []),
-        },
-        "warnings": warnings,
-    }
+    from report_renderer import report_data_for_template
+
+    return report_data_for_template(
+        data,
+        asset_base_dir,
+        embed_assets=embed_assets,
+        copy_assets=copy_assets,
+        contains_execution_process_term=_contains_execution_process_term,
+    )
 
 
 def _render_html_report(
@@ -1115,15 +977,12 @@ def _render_html_report(
     embed_assets=False,
     copy_assets=False,
 ):
-    template = _load_report_template()
-    template_data = _report_data_for_template(
+    return render_html_report(
         data,
         asset_base_dir,
-        embed_assets,
-        copy_assets,
-    )
-    return template.replace(
-        REPORT_DATA_PLACEHOLDER, _json_for_html_script(template_data)
+        embed_assets=embed_assets,
+        copy_assets=copy_assets,
+        contains_execution_process_term=_contains_execution_process_term,
     )
 
 

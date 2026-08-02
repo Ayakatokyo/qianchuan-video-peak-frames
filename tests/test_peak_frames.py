@@ -110,6 +110,8 @@ class FakeResponse:
         self._payload = payload
         self._status_error = status_error
         self.content = content
+        self.headers = {}
+        self.closed = False
 
     def raise_for_status(self):
         if self._status_error is not None:
@@ -121,6 +123,9 @@ class FakeResponse:
     def iter_content(self, chunk_size=8192):
         for index in range(0, len(self.content), chunk_size):
             yield self.content[index : index + chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 class RecordingSession:
@@ -156,6 +161,34 @@ class RpaAdapterTests(unittest.TestCase):
             "YUCE_AUTHORIZATION": "auth-token",
             "YUCE_SESSION_ID": "session-123",
         }
+
+    def test_video_download_rejects_maximum_size_and_closes_response(self):
+        response = FakeResponse(None, content=b"12345")
+        session = RecordingSession(FakeResponse(None), response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "video.mp4"
+            with self.assertRaises(rpa_adapter.RpaAdapterError):
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    target,
+                    session=session,
+                    max_bytes=4,
+                )
+            self.assertFalse(target.exists())
+        self.assertTrue(response.closed)
+
+    def test_video_download_enforces_total_deadline_and_closes_response(self):
+        response = FakeResponse(None, content=b"1")
+        session = RecordingSession(FakeResponse(None), response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(rpa_adapter.RpaAdapterError):
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    Path(temp_dir) / "video.mp4",
+                    session=session,
+                    deadline_sec=0,
+                )
+        self.assertTrue(response.closed)
 
     def _files_envelope(
         self,
@@ -2053,6 +2086,18 @@ class ProcessingPipelineTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+    def test_rpa_isolation_uses_spawn_on_windows(self):
+        with patch.object(extract_peak_frames.os, "name", "nt"):
+            self.assertEqual(
+                extract_peak_frames._rpa_multiprocessing_context_name(), "spawn"
+            )
+
+    def test_rpa_isolation_keeps_fork_on_unix(self):
+        with patch.object(extract_peak_frames.os, "name", "posix"):
+            self.assertEqual(
+                extract_peak_frames._rpa_multiprocessing_context_name(), "fork"
+            )
+
     def _make_video(self, ffmpeg, video, duration=9):
         completed = subprocess.run(
             [

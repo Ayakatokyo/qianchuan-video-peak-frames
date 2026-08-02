@@ -58,6 +58,14 @@ This example selects second 0 as the fixed opening frame, then seconds 3, 7, and
 
 Online mode reads the `material_info` record field `videoUrl`, downloads it to a temporary local video file, and then reuses the same local processing pipeline. `videoDuration` may be present in the connector output, but FFmpeg remains the source of truth for frame timestamp bounds.
 
+Downloads are bounded before and during transfer. Diagnostic CSV files default to a 100 MiB
+maximum, videos default to a 1 GiB maximum, and each download has a 600 second wall-clock
+deadline. A declared or observed size over the limit, or a deadline overrun, is classified as
+the current material's download failure; the staging file is removed and the HTTP response is
+closed before the error is returned.
+
+The isolated online-RPA preflight uses `spawn` on Windows and `fork` on Unix-like systems.
+
 Downstream report preparation keeps `material_info` as structured facts: `prepare_diagnostic_analysis.py` injects `videoUrl`, `thumbnailUrl`, `videoDuration`, and `materialUri` into each selected material when present. Final HTML rendering may expose `videoUrl` through an external `<video>` preview with `preload="none"`, because 巨量千川 URLs are transient signed addresses and should not auto-download during report open. Use `render_final_report.py --copy-assets` for commercial delivery: retained JPEG high-light frames are copied into `final-report/assets/highlight-frames/` and referenced by relative paths, so the HTML avoids a large base64 data island. Use `--embed-assets` only for small one-file debug reports. video bytes must never be embedded into the HTML.
 
 ## Streaming RPA Batch

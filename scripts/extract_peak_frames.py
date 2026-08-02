@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-import multiprocessing
 import json
 import math
 import os
-import queue as queue_module
 import signal
 import sys
 import tempfile
@@ -13,7 +11,6 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-import uuid
 
 from peak_frame_lib import (
     DEFAULT_FFMPEG_TIMEOUT_SEC,
@@ -34,6 +31,13 @@ from rpa_adapter import (
 )
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from batch_runtime import BatchLockError, acquire_run_lock, read_json, stage_counts
+import batch_artifacts
+from batch_verification import material_output_issues
+import rpa_streaming
+from path_safety import artifact_path, validate_material_id
+from rpa_runtime import multiprocessing_context_name, run_isolated_preflight
+
+_material_output_issues = material_output_issues
 
 
 DATE_RANGE_TYPES = (
@@ -249,6 +253,10 @@ def _load_top_materials(path, date_range_type, custom_start_date, custom_end_dat
         material_id = str(material.get("materialId") or "").strip()
         if not material_id:
             raise RpaAdapterError("top materials entries require materialId")
+        try:
+            validate_material_id(material_id)
+        except ValueError as exc:
+            raise RpaAdapterError(f"invalid top materials materialId {material_id!r}") from exc
         if material_id in material_ids:
             raise RpaAdapterError("top materials entries must not repeat materialId")
         material_ids.append(material_id)
@@ -267,31 +275,14 @@ def _top_material_ids(path, date_range_type, custom_start_date, custom_end_date)
 
 
 def _write_diagnosis_records(records, records_dir, material_id):
-    target_dir = Path(records_dir)
-    target = target_dir / f"{material_id}.json"
     try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise RpaAdapterError(
-            f"unable to create diagnosis records directory {target_dir}: {exc}"
-        ) from exc
-
-    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.json.tmp")
-    try:
-        staging.write_text(
-            json.dumps(records, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(staging, target)
-    except (OSError, TypeError, ValueError) as exc:
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
+        return batch_artifacts.write_diagnosis_records(records, records_dir, material_id)
+    except ValueError as exc:
+        raise RpaAdapterError(f"invalid material ID {material_id!r}: {exc}") from exc
+    except (OSError, TypeError) as exc:
         raise RpaAdapterError(
             f"unable to write diagnosis records for material {material_id}: {exc}"
         ) from exc
-    return target
 
 
 def _read_diagnosis_records(path, material_id):
@@ -327,30 +318,12 @@ def _run_relative_path(args, path):
 
 
 def _write_json_atomically(path, payload):
-    target = Path(path)
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise RpaAdapterError(
-            f"unable to create batch manifest directory {target.parent}: {exc}"
-        ) from exc
-
-    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.json.tmp")
-    try:
-        staging.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(staging, target)
+        return batch_artifacts.write_json_atomically(path, payload)
     except (OSError, TypeError, ValueError) as exc:
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
         raise RpaAdapterError(
-            f"unable to write batch manifest {target}: {exc}"
+            f"unable to write batch manifest {path}: {exc}"
         ) from exc
-    return target
 
 
 def _preflight_path(args):
@@ -521,8 +494,11 @@ def _recover_late_rpa_artifacts(args, material_id, failure, started_at_epoch=Non
         return failure
     records_dir = _diagnosis_records_dir(args)
     csv_dir = _diagnosis_csv_dir(args)
-    records_path = records_dir / f"{material_id}.json"
-    csv_path = csv_dir / f"{material_id}.csv"
+    try:
+        records_path = artifact_path(records_dir, material_id, ".json")
+        csv_path = artifact_path(csv_dir, material_id, ".csv")
+    except ValueError:
+        return failure
     deadline = time.monotonic() + max(0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5)))
     def fresh(path):
         if started_at_epoch is None:
@@ -564,27 +540,8 @@ def _recover_late_rpa_artifacts(args, material_id, failure, started_at_epoch=Non
         time.sleep(0.25)
 
 
-def _preflight_worker_entry(params, worker, queue):
-    try:
-        outcome = worker(params)
-        if not isinstance(outcome, dict):
-            queue.put(
-                _preflight_failure(
-                    params.get("material_id"), "unknown_preflight_failure"
-                )
-            )
-            return
-        records = outcome.get("records")
-        records_dir = params.get("diagnosis_records_dir")
-        material_id = params.get("material_id")
-        if outcome.get("rpaAvailable") and isinstance(records, list) and records_dir:
-            records_path = _write_diagnosis_records(records, records_dir, material_id)
-            outcome = dict(outcome)
-            outcome.pop("records", None)
-            outcome["diagnosisRecordsPath"] = str(records_path)
-        queue.put(outcome)
-    except Exception:
-        queue.put(_preflight_failure(params.get("material_id"), "unknown_preflight_failure"))
+def _rpa_multiprocessing_context_name():
+    return multiprocessing_context_name()
 
 
 def _fetch_material_preflight_worker(params):
@@ -604,61 +561,15 @@ def _fetch_material_preflight_isolated(
     late_artifact_grace_sec=0,
 ):
     worker = _fetch_material_preflight_worker if worker is None else worker
-    context = multiprocessing.get_context("fork")
-    queue = context.Queue()
-    process = context.Process(
-        target=_preflight_worker_entry,
-        args=(params, worker, queue),
+    return run_isolated_preflight(
+        params,
+        timeout_sec,
+        worker,
+        _preflight_failure,
+        persist_records=_write_diagnosis_records,
+        soft_timeout_sec=soft_timeout_sec,
+        late_artifact_grace_sec=late_artifact_grace_sec,
     )
-    process.start()
-    soft_timeout_exceeded = False
-    try:
-        hard_timeout = float(timeout_sec)
-        soft_timeout = hard_timeout if soft_timeout_sec is None else float(soft_timeout_sec)
-        soft_timeout = min(soft_timeout, hard_timeout)
-        process.join(soft_timeout)
-        if process.is_alive() and soft_timeout < hard_timeout:
-            soft_timeout_exceeded = True
-            process.join(hard_timeout - soft_timeout)
-        if process.is_alive() and late_artifact_grace_sec:
-            process.join(max(0.0, float(late_artifact_grace_sec)))
-        if process.is_alive():
-            process.terminate()
-            process.join(1)
-            if process.is_alive() and hasattr(process, "kill"):
-                process.kill()
-                process.join(1)
-            failure = _preflight_failure(params.get("material_id"), "rpa_request_failed")
-            if soft_timeout_sec is not None:
-                failure["softTimeoutExceeded"] = soft_timeout_exceeded
-            return failure
-        try:
-            outcome = queue.get(timeout=1)
-            if soft_timeout_sec is not None and isinstance(outcome, dict):
-                outcome = dict(outcome)
-                outcome["softTimeoutExceeded"] = soft_timeout_exceeded
-            return outcome
-        except queue_module.Empty:
-            pass
-        if process.exitcode == 0:
-            failure = _preflight_failure(
-                params.get("material_id"), "unknown_preflight_failure"
-            )
-            if soft_timeout_sec is not None:
-                failure["softTimeoutExceeded"] = soft_timeout_exceeded
-            return failure
-        failure = _preflight_failure(params.get("material_id"), "rpa_request_failed")
-        if soft_timeout_sec is not None:
-            failure["softTimeoutExceeded"] = soft_timeout_exceeded
-        return failure
-    except BaseException:
-        if process.is_alive():
-            process.terminate()
-            process.join(1)
-            if process.is_alive() and hasattr(process, "kill"):
-                process.kill()
-                process.join(1)
-        raise
 
 
 def _fetch_material_preflight_for_cli(args, material_id):
@@ -809,43 +720,19 @@ def _run_rpa_preflight(args, candidate_payload):
 
 
 def _stream_entry(material, rank):
-    entry = dict(material)
-    entry.update(
-        {
-            "rank": rank,
-            "materialId": str(material.get("materialId") or "").strip(),
-            "rpaStatus": "pending",
-            "postprocessStatus": "pending",
-            "status": "pending",
-            "failureReason": None,
-            "errorType": None,
-            "errorMessage": None,
-            "diagnosisRecordsPath": None,
-            "diagnosisCsvPath": None,
-            "recordsPersisted": False,
-            "postprocessSucceeded": False,
-            "rpaSoftTimeoutExceeded": False,
-            "summaryJson": None,
-            "summaryMd": None,
-            "timingsSec": _empty_material_timings(),
-        }
-    )
-    return entry
+    return rpa_streaming.stream_entry(material, rank, _empty_material_timings)
 
 
 def _stream_public_entry(entry):
-    return {key: value for key, value in entry.items() if key != "records"}
+    return rpa_streaming.public_entry(entry)
 
 
 def _stream_ordered(entries):
-    return [_stream_public_entry(entries[index]) for index in sorted(entries)]
+    return rpa_streaming.ordered(entries, _stream_public_entry)
 
 
 def _stream_accounted_indices(*entry_maps):
-    accounted = set()
-    for entry_map in entry_maps:
-        accounted.update(entry_map)
-    return accounted
+    return rpa_streaming.accounted_indices(*entry_maps)
 
 
 def _new_streaming_batch_manifest(args, candidates, entries, submitted, selected, rejected, cancelled):
@@ -1133,7 +1020,7 @@ def _attempt_stream_postprocess(args, entry):
         records = entry["records"]
         video_url = find_material_video_url(records, material_id)
         with tempfile.TemporaryDirectory() as temp_dir:
-            video_path = Path(temp_dir) / f"{material_id}.mp4"
+            video_path = artifact_path(temp_dir, material_id, ".mp4")
             _time_call(timings, "videoDownloadSec", download_video, video_url, video_path)
             result = _time_call(
                 timings,
@@ -1435,62 +1322,6 @@ def _load_resume_manifest(path, expected_manifest):
 def _material_success_is_valid(material_id, entry):
     errors, _warnings = _material_output_issues(material_id, entry)
     return not errors
-
-
-def _material_output_issues(material_id, entry):
-    errors = []
-    warnings = []
-    if entry.get("status") != "succeeded":
-        return [f"material {material_id} is not succeeded"], warnings
-    summary_json = entry.get("summaryJson")
-    summary_md = entry.get("summaryMd")
-    if not isinstance(summary_json, str) or not isinstance(summary_md, str):
-        return [f"material {material_id} is missing retained summary paths"], warnings
-    json_path = Path(summary_json)
-    markdown_path = Path(summary_md)
-    try:
-        if not json_path.is_file() or not markdown_path.is_file():
-            return [f"material {material_id} retained summary is missing"], warnings
-        summary = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return [f"material {material_id} retained summary JSON is unreadable"], warnings
-    if not isinstance(summary, dict) or summary.get("materialId") != material_id:
-        return [f"material {material_id} retained summary has the wrong materialId"], warnings
-    frames = summary.get("frames")
-    if not isinstance(frames, list) or not frames:
-        return [f"material {material_id} retained summary has no frames"], warnings
-    summary_warnings = summary.get("warnings")
-    if not isinstance(summary_warnings, list) or not all(
-        isinstance(warning, str) for warning in summary_warnings
-    ):
-        return [f"material {material_id} retained summary has invalid warnings"], warnings
-    warnings.extend(summary_warnings)
-    for frame in frames:
-        if not isinstance(frame, dict):
-            return [f"material {material_id} retained summary has an invalid frame"], warnings
-        frame_name = frame.get("framePath")
-        if not isinstance(frame_name, str) or Path(frame_name).name != frame_name:
-            return [f"material {material_id} retained frame path is unsafe"], warnings
-        try:
-            frame_path = json_path.parent / frame_name
-            if frame_path.stat().st_size <= 0:
-                return [f"material {material_id} retained frame is empty"], warnings
-            with frame_path.open("rb") as frame_file:
-                start_marker = frame_file.read(2)
-                frame_file.seek(-2, os.SEEK_END)
-                end_marker = frame_file.read(2)
-                if start_marker != b"\xff\xd8" or end_marker != b"\xff\xd9":
-                    return [
-                        f"material {material_id} retained frame is not a structurally valid JPEG"
-                    ], warnings
-        except OSError:
-            return [f"material {material_id} retained frame is missing"], warnings
-    try:
-        if markdown_path.stat().st_size <= 0:
-            return [f"material {material_id} retained Markdown summary is empty"], warnings
-    except OSError:
-        return [f"material {material_id} retained Markdown summary is missing"], warnings
-    return errors, warnings
 
 
 def _entry_result(entry):
@@ -1859,7 +1690,7 @@ def _process_rpa_material(args, material_id):
             )
         video_url = find_material_video_url(records, material_id)
         with tempfile.TemporaryDirectory() as temp_dir:
-            video_path = Path(temp_dir) / f"{material_id}.mp4"
+            video_path = artifact_path(temp_dir, material_id, ".mp4")
             _time_call(timings, "videoDownloadSec", download_video, video_url, video_path)
             return _time_call(
                 timings,

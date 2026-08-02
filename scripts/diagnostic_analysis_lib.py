@@ -6,6 +6,7 @@ from pathlib import Path
 import uuid
 
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
+from path_safety import artifact_path, validate_material_id
 
 
 SCHEMA_VERSION = 1
@@ -62,7 +63,12 @@ def _read_text(path, purpose):
 def load_retained_diagnosis_records(records_dir, material_id):
     root = Path(records_dir)
     material_id = _text(material_id)
-    json_path = root / f"{material_id}.json"
+    try:
+        validate_material_id(material_id)
+        json_path = artifact_path(root, material_id, ".json")
+        csv_path = artifact_path(root, material_id, ".csv")
+    except ValueError:
+        return [], f"invalid material ID {material_id}"
     if json_path.is_file():
         try:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -72,7 +78,6 @@ def load_retained_diagnosis_records(records_dir, material_id):
             return [], f"diagnosis records for material {material_id} are not a list"
         return payload, ""
 
-    csv_path = root / f"{material_id}.csv"
     if csv_path.is_file():
         try:
             return parse_diagnosis_csv(csv_path), ""
