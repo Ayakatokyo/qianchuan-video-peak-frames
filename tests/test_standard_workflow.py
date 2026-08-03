@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import standard_workflow  # noqa: E402
+import run_standard_analysis  # noqa: E402
 
 
 class StandardWorkflowTests(unittest.TestCase):
@@ -140,6 +141,30 @@ class StandardWorkflowTests(unittest.TestCase):
 
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["artifacts"]["report"], "final-report/final-report.html")
+
+
+class StandardWorkflowCliTests(unittest.TestCase):
+    def test_prepare_parser_accepts_only_business_inputs(self):
+        parser = run_standard_analysis.build_parser()
+        args = parser.parse_args([
+            "prepare",
+            "--start-date", "2026-07-19",
+            "--end-date", "2026-07-25",
+            "--top-n", "9",
+            "--advertiser-id", "1770096415226951",
+            "--output-dir", "run",
+        ])
+
+        self.assertEqual(args.command, "prepare")
+        self.assertFalse(hasattr(args, "rpa_concurrency"))
+        self.assertFalse(hasattr(args, "resume"))
+
+    def test_finalize_parser_requires_analysis_json(self):
+        parser = run_standard_analysis.build_parser()
+        with self.assertRaises(SystemExit) as error:
+            parser.parse_args(["finalize", "--output-dir", "run"])
+
+        self.assertEqual(error.exception.code, 2)
 
 
 if __name__ == "__main__":
