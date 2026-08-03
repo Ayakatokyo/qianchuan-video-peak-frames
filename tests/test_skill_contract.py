@@ -351,7 +351,7 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("优先输出组合公式、机会判断、风险边界和下一轮验证方向", prompt)
         self.assertIn("每条 batchInsights.conclusion 建议 180-280 个中文字符", prompt)
 
-    def test_final_report_prompt_requires_every_highlight_frame_analysis(self):
+    def test_final_report_prompt_requires_every_available_highlight_frame_analysis(self):
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
 
         self.assertIn("每一张高光帧都必须对应一条 `highlightAnalyses`", prompt)
@@ -360,7 +360,9 @@ class BatchSkillContractTests(unittest.TestCase):
             prompt,
         )
         self.assertIn("不得只分析 zero_second 和 peak_top_1", prompt)
-        self.assertIn("缺失任何一帧都不能视为完成", prompt)
+        self.assertIn("成功生成的 JPEG", prompt)
+        self.assertIn("missingFrames", prompt)
+        self.assertNotIn("缺失任何一帧都不能视为完成", prompt)
         self.assertIn("peak_top_2", prompt)
         self.assertIn("peak_top_3", prompt)
 
