@@ -363,6 +363,10 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("成功生成的 JPEG", prompt)
         self.assertIn("missingFrames", prompt)
         self.assertNotIn("缺失任何一帧都不能视为完成", prompt)
+        self.assertIn("frameCoverageNote", prompt)
+        self.assertIn("必须说明哪个预期帧不可用", prompt)
+        self.assertIn("明确视觉结论基于其余成功帧", prompt)
+        self.assertIn("`missingFrames` 为空时该字段必须是空字符串", prompt)
         self.assertIn("peak_top_2", prompt)
         self.assertIn("peak_top_3", prompt)
 
