@@ -71,6 +71,7 @@ def run_isolated_preflight(
                 process.kill()
                 process.join(1)
             failure = failure_factory(params.get("material_id"), "rpa_request_failed")
+            failure["hardTimeoutExceeded"] = True
             if soft_timeout_sec is not None:
                 failure["softTimeoutExceeded"] = soft_timeout_exceeded
             return failure

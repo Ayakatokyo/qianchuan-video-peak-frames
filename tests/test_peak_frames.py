@@ -3299,6 +3299,7 @@ class CliTests(unittest.TestCase):
                 "rpaAvailable": False,
                 "failureReason": "rpa_request_failed",
                 "videoUrl": None,
+                "hardTimeoutExceeded": True,
             },
         )
 
@@ -4714,11 +4715,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(process_local.call_args.kwargs["ffmpeg_timeout_sec"], 75.0)
 
-    def test_rpa_preflight_defaults_to_gateway_hard_timeout_and_soft_warning(self):
+    def test_rpa_preflight_defaults_allow_five_minute_requests(self):
         args = extract_peak_frames.build_parser().parse_args([])
 
-        self.assertEqual(args.rpa_preflight_timeout_sec, 3600)
-        self.assertEqual(args.rpa_preflight_soft_timeout_sec, 600)
+        self.assertEqual(args.rpa_preflight_timeout_sec, 600)
+        self.assertEqual(args.rpa_preflight_soft_timeout_sec, 480)
         self.assertEqual(args.rpa_late_artifact_grace_sec, 30)
 
     def test_isolated_rpa_preflight_allows_success_after_soft_timeout(self):

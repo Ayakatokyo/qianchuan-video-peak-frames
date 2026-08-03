@@ -81,6 +81,40 @@ class SchemaNormalizationTests(unittest.TestCase):
                 }
             )
 
+    def test_manifest_accepts_lifecycle_progress_fields(self):
+        manifest = validate_manifest(
+            {
+                "schemaVersion": 2,
+                "materials": [
+                    {
+                        "materialId": "m-1",
+                        "rpaSoftTimeoutExceeded": True,
+                        "rpaHardTimeoutExceeded": False,
+                        "rpaStartedAtSec": 0.0,
+                        "postprocessAttemptCount": 1,
+                        "lastStateChangedAtSec": 2.0,
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(manifest["materials"][0]["postprocessAttemptCount"], 1)
+
+    def test_manifest_rejects_invalid_lifecycle_progress_fields(self):
+        with self.assertRaises(SchemaError):
+            validate_manifest(
+                {
+                    "schemaVersion": 2,
+                    "materials": [
+                        {
+                            "materialId": "m-1",
+                            "rpaHardTimeoutExceeded": "false",
+                            "postprocessAttemptCount": -1,
+                        }
+                    ],
+                }
+            )
+
     def test_legacy_manifest_without_wave_fields_remains_valid(self):
         normalized = validate_manifest(
             {

@@ -120,8 +120,8 @@ def build_parser():
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
     parser.add_argument("--preflight-only", action="store_true")
-    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=3600)
-    parser.add_argument("--rpa-preflight-soft-timeout-sec", type=_positive_timeout, default=600)
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=600)
+    parser.add_argument("--rpa-preflight-soft-timeout-sec", type=_positive_timeout, default=480)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
     parser.add_argument("--rpa-ready-top-materials-json")
     parser.add_argument("--rpa-preflight-json")
@@ -388,6 +388,7 @@ def _material_entry_with_preflight(material, outcome, status=None, timings=None)
             "failureReason": outcome.get("failureReason"),
             "videoUrl": outcome.get("videoUrl"),
             "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
+            "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
             "preflightStatus": status or (
                 "selected" if outcome.get("rpaAvailable") else "rejected"
             ),
@@ -904,6 +905,7 @@ def _attempt_stream_rpa(args, entry):
                 "status": "failed",
                 "failureReason": outcome.get("failureReason"),
                 "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
+                "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
             }
         )
         timings["totalSec"] = _elapsed_since(started_at)
@@ -939,6 +941,7 @@ def _attempt_stream_rpa(args, entry):
             "recordsPersisted": True,
             "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
             "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
+            "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
         }
     )
     timings["totalSec"] = _elapsed_since(started_at)

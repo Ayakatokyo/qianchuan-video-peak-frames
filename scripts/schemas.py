@@ -33,6 +33,32 @@ def _validate_optional_wave_fields(payload, *, scope):
             raise SchemaError(f"{scope} {field} must be a non-negative number")
 
 
+def _validate_optional_lifecycle_fields(payload, *, scope):
+    for field in ("rpaSoftTimeoutExceeded", "rpaHardTimeoutExceeded"):
+        if field in payload and type(payload[field]) is not bool:
+            raise SchemaError(f"{scope} {field} must be a boolean")
+    for field in (
+        "rpaStartedAtSec",
+        "rpaSoftTimeoutAtSec",
+        "rpaFinishedAtSec",
+        "postprocessStartedAtSec",
+        "postprocessFinishedAtSec",
+        "lastStateChangedAtSec",
+        "lastProgressAtSec",
+    ):
+        if field in payload and (
+            isinstance(payload[field], bool)
+            or not isinstance(payload[field], (int, float))
+            or payload[field] < 0
+        ):
+            raise SchemaError(f"{scope} {field} must be a non-negative number")
+    if "postprocessAttemptCount" in payload and (
+        type(payload["postprocessAttemptCount"]) is not int
+        or payload["postprocessAttemptCount"] < 0
+    ):
+        raise SchemaError(f"{scope} postprocessAttemptCount must be a non-negative integer")
+
+
 def normalize_manifest(payload, *, material_ids=None):
     """Normalize legacy v1 and streaming v2 manifests to one list-based shape.
 
@@ -48,6 +74,7 @@ def normalize_manifest(payload, *, material_ids=None):
     normalized["sourceSchemaVersion"] = source_version
     normalized["schemaVersion"] = 2
     _validate_optional_wave_fields(normalized, scope="batch manifest")
+    _validate_optional_lifecycle_fields(normalized, scope="batch manifest")
 
     materials = normalized.get("materials")
     if materials is None:
@@ -80,6 +107,7 @@ def normalize_manifest(payload, *, material_ids=None):
         raise SchemaError("batch manifest materials must be a list or object")
     for item in normalized["materials"]:
         _validate_optional_wave_fields(item, scope="batch manifest material")
+        _validate_optional_lifecycle_fields(item, scope="batch manifest material")
 
     normalized.setdefault(
         "materialIds",
@@ -131,6 +159,7 @@ def validate_preflight_receipt(payload, *, args, candidate_payload, material_ids
     if payload.get("shopId") != args.shop_id:
         raise SchemaError("RPA preflight receipt shopId does not match")
     _validate_optional_wave_fields(payload, scope="RPA preflight receipt")
+    _validate_optional_lifecycle_fields(payload, scope="RPA preflight receipt")
     expected_dates = {
         "type": args.date_range_type,
         "customStartDate": args.custom_start_date,
@@ -153,6 +182,9 @@ def validate_preflight_receipt(payload, *, args, candidate_payload, material_ids
         for entry in entries:
             if isinstance(entry, dict):
                 _validate_optional_wave_fields(
+                    entry, scope="RPA preflight receipt material"
+                )
+                _validate_optional_lifecycle_fields(
                     entry, scope="RPA preflight receipt material"
                 )
     selected_ids = {
