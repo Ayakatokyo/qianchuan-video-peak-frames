@@ -59,6 +59,41 @@ def _validate_optional_lifecycle_fields(payload, *, scope):
         raise SchemaError(f"{scope} postprocessAttemptCount must be a non-negative integer")
 
 
+def _normalize_postprocess_telemetry(payload, *, scope):
+    payload.setdefault("postprocessPhase", None)
+    payload.setdefault("postprocessAttempts", [])
+    payload.setdefault("compensationStatus", "not_needed")
+
+    if payload["postprocessPhase"] not in (
+        None,
+        "parallel",
+        "serial_compensation",
+    ):
+        raise SchemaError(f"{scope} postprocessPhase is invalid")
+    if payload["compensationStatus"] not in (
+        "not_needed",
+        "queued",
+        "succeeded",
+        "failed",
+    ):
+        raise SchemaError(f"{scope} compensationStatus is invalid")
+    attempts = payload["postprocessAttempts"]
+    if not isinstance(attempts, list):
+        raise SchemaError(f"{scope} postprocessAttempts must be a list")
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            raise SchemaError(f"{scope} postprocess attempt must be an object")
+        if attempt.get("phase") not in ("parallel", "serial_compensation"):
+            raise SchemaError(f"{scope} postprocess attempt phase is invalid")
+        for field in ("startedAtSec", "finishedAtSec", "durationSec"):
+            if field in attempt and (
+                isinstance(attempt[field], bool)
+                or not isinstance(attempt[field], (int, float))
+                or attempt[field] < 0
+            ):
+                raise SchemaError(f"{scope} postprocess attempt {field} is invalid")
+
+
 def normalize_manifest(payload, *, material_ids=None):
     """Normalize legacy v1 and streaming v2 manifests to one list-based shape.
 
@@ -108,6 +143,7 @@ def normalize_manifest(payload, *, material_ids=None):
     for item in normalized["materials"]:
         _validate_optional_wave_fields(item, scope="batch manifest material")
         _validate_optional_lifecycle_fields(item, scope="batch manifest material")
+        _normalize_postprocess_telemetry(item, scope="batch manifest material")
 
     normalized.setdefault(
         "materialIds",

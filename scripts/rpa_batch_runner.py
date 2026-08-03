@@ -28,6 +28,9 @@ def stream_entry(material, rank, empty_timings):
             "rpaSoftTimeoutExceeded": False,
             "rpaHardTimeoutExceeded": False,
             "postprocessAttemptCount": 0,
+            "postprocessPhase": None,
+            "postprocessAttempts": [],
+            "compensationStatus": "not_needed",
             "summaryJson": None,
             "summaryMd": None,
             "timingsSec": empty_timings(),
@@ -148,18 +151,23 @@ def run_streaming_batch(
         else:
             rejected[index] = entry
 
-    def submit_postprocess(executor, index, *, retrying=False):
+    def submit_postprocess(executor, index, *, phase="parallel", retrying=False):
         entry = entries[index]
         state_changed_at = elapsed(batch_started_at)
+        entry.setdefault("postprocessAttempts", [])
         entry.update(
             {
                 "postprocessAttemptCount": entry.get("postprocessAttemptCount", 0) + 1,
+                "postprocessPhase": phase,
                 "postprocessStatus": "retrying" if retrying else "running",
                 "status": "running",
                 "postprocessStartedAtSec": state_changed_at,
                 "lastStateChangedAtSec": state_changed_at,
                 "lastProgressAtSec": state_changed_at,
             }
+        )
+        entry["postprocessAttempts"].append(
+            {"phase": phase, "startedAtSec": state_changed_at, "status": "running"}
         )
         future = executor.submit(attempt_postprocess, args, dict(entry))
         postprocess_futures[future] = index
@@ -173,11 +181,31 @@ def run_streaming_batch(
         entry["timingsSec"] = merge_timings(
             entry["timingsSec"], attempt.get("timingsSec", {})
         )
+        state_changed_at = elapsed(batch_started_at)
+        attempt_entry = entry.setdefault("postprocessAttempts", [])[-1]
+        attempt_entry.update(
+            {
+                "finishedAtSec": state_changed_at,
+                "durationSec": max(
+                    0.0, state_changed_at - attempt_entry.get("startedAtSec", state_changed_at)
+                ),
+                "substage": attempt.get("substage", "postprocess"),
+            }
+        )
         if attempt["error"] is not None:
-            if entry.get("postprocessAttemptCount", 0) < 2:
-                submit_postprocess(postprocess_executor, index, retrying=True)
+            attempt_entry.update(
+                {
+                    "status": "failed",
+                    "errorType": type(attempt["error"]).__name__,
+                    "errorMessage": str(attempt["error"]),
+                }
+            )
+            if (
+                entry.get("postprocessPhase") == "parallel"
+                and entry.get("postprocessAttemptCount", 0) < 2
+            ):
+                submit_postprocess(postprocess_executor, index, phase="parallel", retrying=True)
                 return
-            state_changed_at = elapsed(batch_started_at)
             entry.update(
                 {
                     "postprocessStatus": "failed",
@@ -190,9 +218,11 @@ def run_streaming_batch(
                     "lastProgressAtSec": state_changed_at,
                 }
             )
+            if entry.get("postprocessPhase") == "serial_compensation":
+                entry["compensationStatus"] = "failed"
         else:
             _result_dir, summary_json, summary_md = attempt["result"]
-            state_changed_at = elapsed(batch_started_at)
+            attempt_entry["status"] = "succeeded"
             entry.update(
                 {
                     "postprocessStatus": "succeeded",
@@ -205,6 +235,8 @@ def run_streaming_batch(
                     "lastProgressAtSec": state_changed_at,
                 }
             )
+            if entry.get("postprocessPhase") == "serial_compensation":
+                entry["compensationStatus"] = "succeeded"
 
     def next_unaccounted_index(index):
         accounted = accounted_indices(selected, rejected, cancelled)
@@ -342,6 +374,32 @@ def run_streaming_batch(
                 if changed:
                     persist()
 
+    compensation_queue = sorted(
+        (
+            index
+            for index, entry in selected.items()
+            if entry.get("recordsPersisted")
+            and entry.get("postprocessStatus") == "failed"
+        ),
+        key=lambda index: entries[index].get("rank", index),
+    )
+    if compensation_queue:
+        with ThreadPoolExecutor(max_workers=1) as serial_executor:
+            for index in compensation_queue:
+                entries[index]["compensationStatus"] = "queued"
+                persist()
+                submit_postprocess(
+                    serial_executor, index, phase="serial_compensation"
+                )
+                future = next(
+                    future
+                    for future, future_index in postprocess_futures.items()
+                    if future_index == index
+                )
+                postprocess_futures.pop(future)
+                complete_postprocess(future, index, serial_executor)
+                persist()
+
     final_successes = successful_entries()
     if len(final_successes) >= args.target_top_n:
         for index in range(next_index, len(candidates)):
@@ -358,7 +416,9 @@ def run_streaming_batch(
             )
             cancelled[index] = entry
     manifest = persist()
-    ready = ready_payload(candidate_payload, ordered(final_successes))
+    ready = ready_payload(
+        candidate_payload, ordered(final_successes)[: args.target_top_n]
+    )
     write_json(ready_path, ready)
     failures = len(final_successes) < args.target_top_n
     last_result = None

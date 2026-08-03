@@ -215,6 +215,67 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         self.assertEqual(postprocess_calls.count(("m-3", 2)), 1)
         self.assertEqual(self.ready_materials, ["m-1", "m-2"])
 
+    def test_parallel_failure_is_compensated_serially(self):
+        phases = []
+
+        def attempt_rpa(_args, entry):
+            return dict(
+                entry,
+                rpaStatus="selected",
+                postprocessStatus="queued",
+                recordsPersisted=True,
+            )
+
+        def attempt_postprocess(_args, entry):
+            phases.append((entry["materialId"], entry["postprocessPhase"]))
+            if (
+                entry["materialId"] == "m-1"
+                and entry["postprocessPhase"] == "parallel"
+            ):
+                return {"result": None, "error": RuntimeError("download"), "timingsSec": {}}
+            return self._success_postprocess(_args, entry)
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1", "m-2", "m-3"], attempt_rpa, attempt_postprocess
+        )
+
+        first = next(item for item in manifest["materials"] if item["materialId"] == "m-1")
+        self.assertFalse(failures)
+        self.assertEqual(first["rpaStatus"], "selected")
+        self.assertEqual(first["postprocessStatus"], "succeeded")
+        self.assertEqual(first["compensationStatus"], "succeeded")
+        self.assertEqual(first["postprocessAttemptCount"], 3)
+        self.assertEqual(phases.count(("m-1", "parallel")), 2)
+        self.assertEqual(phases.count(("m-1", "serial_compensation")), 1)
+
+    def test_failed_compensation_preserves_parallel_error_chain(self):
+        def attempt_rpa(_args, entry):
+            return dict(
+                entry,
+                rpaStatus="selected",
+                postprocessStatus="queued",
+                recordsPersisted=True,
+            )
+
+        def attempt_postprocess(_args, entry):
+            message = "parallel download" if entry["postprocessPhase"] == "parallel" else "serial download"
+            return {"result": None, "error": RuntimeError(message), "timingsSec": {}}
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1", "m-2", "m-3"], attempt_rpa, attempt_postprocess
+        )
+
+        first = next(item for item in manifest["materials"] if item["materialId"] == "m-1")
+        self.assertTrue(failures)
+        self.assertEqual(first["rpaStatus"], "selected")
+        self.assertEqual(first["compensationStatus"], "failed")
+        self.assertEqual(first["postprocessAttemptCount"], 3)
+        self.assertEqual(
+            [attempt["errorMessage"] for attempt in first["postprocessAttempts"]],
+            ["parallel download", "parallel download", "serial download"],
+        )
+        self.assertEqual(self.ready_materials, [])
+
 
 if __name__ == "__main__":
     unittest.main()

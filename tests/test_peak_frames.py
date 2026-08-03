@@ -191,6 +191,39 @@ class RpaAdapterTests(unittest.TestCase):
                 )
         self.assertTrue(response.closed)
 
+    def test_video_download_retries_transient_failure_and_cleans_staging_files(self):
+        success = FakeResponse(None, content=b"video")
+
+        class SequentialSession:
+            def __init__(self):
+                self.gets = []
+                self.responses = [ConnectionError("connection reset"), success]
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                response = self.responses.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+        session = SequentialSession()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "video.mp4"
+            with patch("rpa_adapter.time.sleep") as sleep:
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    target,
+                    session=session,
+                    retry_attempts=2,
+                    retry_backoff_sec=0.01,
+                )
+
+            self.assertEqual(len(session.gets), 2)
+            self.assertEqual(sleep.call_args.args[0], 0.01)
+            self.assertEqual(target.read_bytes(), b"video")
+            self.assertFalse(list(Path(temp_dir).glob(".*.mp4")))
+        self.assertTrue(success.closed)
+
     def _files_envelope(
         self,
         *,

@@ -126,6 +126,46 @@ class SchemaNormalizationTests(unittest.TestCase):
         self.assertNotIn("waveBarrier", normalized)
         self.assertNotIn("waveIndex", normalized["materials"][0])
 
+    def test_manifest_accepts_postprocess_attempt_telemetry(self):
+        normalized = validate_manifest(
+            {
+                "schemaVersion": 2,
+                "materials": [
+                    {
+                        "materialId": "m-1",
+                        "postprocessAttemptCount": 3,
+                        "postprocessPhase": "serial_compensation",
+                        "compensationStatus": "succeeded",
+                        "postprocessAttempts": [
+                            {
+                                "phase": "parallel",
+                                "substage": "download",
+                                "errorType": "RpaAdapterError",
+                                "errorMessage": "unable to download RPA video",
+                                "startedAtSec": 1.0,
+                                "finishedAtSec": 2.0,
+                                "durationSec": 1.0,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            normalized["materials"][0]["compensationStatus"], "succeeded"
+        )
+
+    def test_legacy_manifest_defaults_postprocess_compensation_fields(self):
+        normalized = validate_manifest(
+            {"schemaVersion": 2, "materials": [{"materialId": "m-1"}]}
+        )
+
+        self.assertEqual(
+            normalized["materials"][0]["compensationStatus"], "not_needed"
+        )
+        self.assertEqual(normalized["materials"][0]["postprocessAttempts"], [])
+
     def test_preflight_receipt_rejects_invalid_wave_fields(self):
         args = SimpleNamespace(
             shop_id="shop-1",

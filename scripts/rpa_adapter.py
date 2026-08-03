@@ -449,16 +449,43 @@ def download_video(
     timeout=300,
     max_bytes=DEFAULT_VIDEO_MAX_BYTES,
     deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+    retry_attempts=3,
+    retry_backoff_sec=1.0,
 ):
     if not str(video_url or "").strip():
         raise RpaAdapterError("videoUrl is required")
+    if type(retry_attempts) is not int or retry_attempts <= 0:
+        raise ValueError("retry_attempts must be a positive integer")
+    if retry_backoff_sec < 0:
+        raise ValueError("retry_backoff_sec must be non-negative")
     session = _default_session() if session is None else session
-    return _stream_download(
-        video_url,
-        target_path,
-        session=session,
-        timeout=timeout,
-        max_bytes=max_bytes,
-        deadline_sec=deadline_sec,
-        action="video",
+    for attempt_index in range(retry_attempts):
+        try:
+            return _stream_download(
+                video_url,
+                target_path,
+                session=session,
+                timeout=timeout,
+                max_bytes=max_bytes,
+                deadline_sec=deadline_sec,
+                action="video",
+            )
+        except RpaAdapterError as exc:
+            if (
+                attempt_index + 1 == retry_attempts
+                or not _retryable_video_download_error(exc)
+            ):
+                raise
+            time.sleep(retry_backoff_sec * (2**attempt_index))
+
+
+def _retryable_video_download_error(error):
+    message = str(error)
+    return not any(
+        fragment in message
+        for fragment in (
+            "exceeds maximum size",
+            "exceeded total deadline",
+            "videoUrl is required",
+        )
     )

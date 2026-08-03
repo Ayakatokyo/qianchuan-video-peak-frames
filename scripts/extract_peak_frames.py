@@ -961,12 +961,19 @@ def _attempt_stream_postprocess(args, entry):
     started_at = time.perf_counter()
     timings = dict(entry["timingsSec"])
     material_id = entry["materialId"]
+    substage = "records"
     try:
-        records = entry["records"]
+        records = entry.get("records")
+        if records is None:
+            records, _records_path = _existing_stream_records(args, material_id, entry)
+        if records is None:
+            raise RpaAdapterError("persisted RPA diagnosis records are unavailable")
         video_url = find_material_video_url(records, material_id)
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = artifact_path(temp_dir, material_id, ".mp4")
+            substage = "download"
             _time_call(timings, "videoDownloadSec", download_video, video_url, video_path)
+            substage = "frame_extraction"
             result = _time_call(
                 timings,
                 "frameExtractionSec",
@@ -981,9 +988,19 @@ def _attempt_stream_postprocess(args, entry):
             )
     except HANDLED_MATERIAL_ERRORS as exc:
         timings["totalSec"] = _elapsed_since(started_at)
-        return {"result": None, "error": exc, "timingsSec": timings}
+        return {
+            "result": None,
+            "error": exc,
+            "timingsSec": timings,
+            "substage": substage,
+        }
     timings["totalSec"] = _elapsed_since(started_at)
-    return {"result": result, "error": None, "timingsSec": timings}
+    return {
+        "result": result,
+        "error": None,
+        "timingsSec": timings,
+        "substage": "completed",
+    }
 
 
 def _merge_stream_postprocess_timings(entry_timings, attempt_timings):
