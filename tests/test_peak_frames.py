@@ -2821,7 +2821,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(manifest["rejectedMaterials"]), 4)
         self.assertEqual(manifest["cancelledMaterials"], [])
 
-    def test_streaming_postprocess_failure_is_not_rpa_rejection(self):
+    def test_streaming_postprocess_failure_is_retried_and_backfilled(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -2861,14 +2861,22 @@ class CliTests(unittest.TestCase):
                 (output / "batch-manifest.json").read_text(encoding="utf-8")
             )
 
-        self.assertEqual(result, 5)
-        self.assertEqual(set(submitted), {"m-1", "m-2"})
+        self.assertEqual(result, 0)
+        self.assertEqual(set(submitted), {"m-1", "m-2", "m-3"})
         first = manifest["selectedMaterials"][0]
         self.assertEqual(first["materialId"], "m-1")
         self.assertEqual(first["rpaStatus"], "selected")
         self.assertEqual(first["postprocessStatus"], "failed")
         self.assertEqual(first["errorType"], "InputDataError")
         self.assertEqual(manifest["rejectedMaterials"], [])
+        self.assertEqual(
+            [
+                item["materialId"]
+                for item in manifest["materials"]
+                if item["postprocessStatus"] == "succeeded"
+            ],
+            ["m-2", "m-3"],
+        )
 
     def test_streaming_resume_reuses_existing_records_and_summary(self):
         with tempfile.TemporaryDirectory() as temp_dir:

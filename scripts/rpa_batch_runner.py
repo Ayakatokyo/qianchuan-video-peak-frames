@@ -26,6 +26,8 @@ def stream_entry(material, rank, empty_timings):
             "recordsPersisted": False,
             "postprocessSucceeded": False,
             "rpaSoftTimeoutExceeded": False,
+            "rpaHardTimeoutExceeded": False,
+            "postprocessAttemptCount": 0,
             "summaryJson": None,
             "summaryMd": None,
             "timingsSec": empty_timings(),
@@ -67,6 +69,8 @@ def run_streaming_batch(
     elapsed,
     accounted_indices,
     ordered,
+    clock=time.perf_counter,
+    poll_interval_sec=0.1,
 ):
     candidate_limit = args.candidate_top_n or args.target_top_n * 3
     candidates = candidate_payload["materials"][:candidate_limit]
@@ -80,7 +84,8 @@ def run_streaming_batch(
     rpa_futures = {}
     postprocess_futures = {}
     next_index = 0
-    batch_started_at = time.perf_counter()
+    batch_started_at = clock()
+    rpa_started_at = {}
 
     def persist():
         manifest = new_manifest(
@@ -92,7 +97,16 @@ def run_streaming_batch(
 
     def submit_rpa(executor, index, wave_index=None, wave_size=None, wave_started_at=None):
         entry = entries[index]
-        entry.update({"rpaStatus": "submitted", "status": "running"})
+        state_changed_at = elapsed(batch_started_at)
+        entry.update(
+            {
+                "rpaStatus": "submitted",
+                "status": "running",
+                "rpaStartedAtSec": state_changed_at,
+                "lastStateChangedAtSec": state_changed_at,
+                "lastProgressAtSec": state_changed_at,
+            }
+        )
         if wave_index is not None:
             entry.update(
                 {
@@ -103,39 +117,67 @@ def run_streaming_batch(
                 }
             )
         submitted[index] = entry
-        future = executor.submit(attempt_rpa, args, entry)
+        future = executor.submit(attempt_rpa, args, dict(entry))
         rpa_futures[future] = index
+        rpa_started_at[future] = clock()
         return future
 
     def complete_rpa(future, index, postprocess_executor):
-        entry = future.result()
-        entries[index] = entry
-        submitted[index] = entry
-        if entry["rpaStatus"] == "selected" and len(selected) < args.target_top_n:
-            selected[index] = entry
-            postprocess_futures[
-                postprocess_executor.submit(attempt_postprocess, args, entry)
-            ] = index
-        elif entry["rpaStatus"] == "selected":
+        try:
+            entry = future.result()
+        except Exception as exc:
+            entry = dict(entries[index])
             entry.update(
                 {
                     "rpaStatus": "rejected",
-                    "postprocessStatus": "not_started",
                     "status": "failed",
-                    "failureReason": "top_n_already_selected",
+                    "failureReason": "rpa_request_failed",
+                    "errorType": type(exc).__name__,
+                    "errorMessage": str(exc),
                 }
             )
-            rejected[index] = entry
+        state_changed_at = elapsed(batch_started_at)
+        entry["rpaFinishedAtSec"] = state_changed_at
+        entry["lastStateChangedAtSec"] = state_changed_at
+        entry["lastProgressAtSec"] = state_changed_at
+        entries[index] = entry
+        submitted[index] = entry
+        if entry["rpaStatus"] == "selected":
+            selected[index] = entry
+            submit_postprocess(postprocess_executor, index)
         else:
             rejected[index] = entry
 
-    def complete_postprocess(future, index):
-        attempt = future.result()
+    def submit_postprocess(executor, index, *, retrying=False):
+        entry = entries[index]
+        state_changed_at = elapsed(batch_started_at)
+        entry.update(
+            {
+                "postprocessAttemptCount": entry.get("postprocessAttemptCount", 0) + 1,
+                "postprocessStatus": "retrying" if retrying else "running",
+                "status": "running",
+                "postprocessStartedAtSec": state_changed_at,
+                "lastStateChangedAtSec": state_changed_at,
+                "lastProgressAtSec": state_changed_at,
+            }
+        )
+        future = executor.submit(attempt_postprocess, args, dict(entry))
+        postprocess_futures[future] = index
+
+    def complete_postprocess(future, index, postprocess_executor):
+        try:
+            attempt = future.result()
+        except Exception as exc:
+            attempt = {"result": None, "error": exc, "timingsSec": {}}
         entry = entries[index]
         entry["timingsSec"] = merge_timings(
-            entry["timingsSec"], attempt["timingsSec"]
+            entry["timingsSec"], attempt.get("timingsSec", {})
         )
         if attempt["error"] is not None:
+            if entry.get("postprocessAttemptCount", 0) < 2:
+                submit_postprocess(postprocess_executor, index, retrying=True)
+                return
+            state_changed_at = elapsed(batch_started_at)
             entry.update(
                 {
                     "postprocessStatus": "failed",
@@ -143,10 +185,14 @@ def run_streaming_batch(
                     "status": "failed",
                     "errorType": type(attempt["error"]).__name__,
                     "errorMessage": str(attempt["error"]),
+                    "postprocessFinishedAtSec": state_changed_at,
+                    "lastStateChangedAtSec": state_changed_at,
+                    "lastProgressAtSec": state_changed_at,
                 }
             )
         else:
             _result_dir, summary_json, summary_md = attempt["result"]
+            state_changed_at = elapsed(batch_started_at)
             entry.update(
                 {
                     "postprocessStatus": "succeeded",
@@ -154,6 +200,9 @@ def run_streaming_batch(
                     "status": "succeeded",
                     "summaryJson": str(summary_json),
                     "summaryMd": str(summary_md),
+                    "postprocessFinishedAtSec": state_changed_at,
+                    "lastStateChangedAtSec": state_changed_at,
+                    "lastProgressAtSec": state_changed_at,
                 }
             )
 
@@ -163,89 +212,138 @@ def run_streaming_batch(
             index += 1
         return index
 
+    def successful_entries():
+        return {
+            index: entry
+            for index, entry in selected.items()
+            if entry.get("postprocessStatus") == "succeeded"
+        }
+
+    def remaining_success_slots(include_rpa=0):
+        return max(
+            0,
+            args.target_top_n
+            - len(successful_entries())
+            - len(postprocess_futures)
+            - include_rpa,
+        )
+
+    def mark_soft_timeouts(futures):
+        now = clock()
+        changed = False
+        threshold = getattr(args, "rpa_preflight_soft_timeout_sec", None)
+        if threshold is None:
+            return changed
+        for future in futures:
+            index = rpa_futures[future]
+            entry = entries[index]
+            if (
+                not entry.get("rpaSoftTimeoutExceeded")
+                and now - rpa_started_at[future] >= threshold
+            ):
+                state_changed_at = elapsed(batch_started_at)
+                entry.update(
+                    {
+                        "rpaSoftTimeoutExceeded": True,
+                        "rpaSoftTimeoutAtSec": state_changed_at,
+                        "lastStateChangedAtSec": state_changed_at,
+                        "lastProgressAtSec": state_changed_at,
+                    }
+                )
+                changed = True
+        return changed
+
+    def collect_done(done, postprocess_executor):
+        changed = False
+        for future in sorted(done & set(rpa_futures), key=lambda item: rpa_futures[item]):
+            index = rpa_futures.pop(future)
+            rpa_started_at.pop(future, None)
+            complete_rpa(future, index, postprocess_executor)
+            changed = True
+        for future in sorted(done & set(postprocess_futures), key=lambda item: postprocess_futures[item]):
+            index = postprocess_futures.pop(future)
+            complete_postprocess(future, index, postprocess_executor)
+            changed = True
+        return changed
+
     with ThreadPoolExecutor(
         max_workers=args.rpa_concurrency
     ) as rpa_executor, ThreadPoolExecutor(
         max_workers=args.postprocess_concurrency
     ) as postprocess_executor:
         for index in pending_postprocess:
-            postprocess_futures[
-                postprocess_executor.submit(attempt_postprocess, args, entries[index])
-            ] = index
+            submit_postprocess(postprocess_executor, index)
         next_index = next_unaccounted_index(next_index)
         if getattr(args, "rpa_wave_barrier", True):
             wave_index = 0
-            while next_index < len(candidates) and len(selected) < args.target_top_n:
-                wave_started_at = elapsed(batch_started_at)
-                wave = {}
-                remaining = args.target_top_n - len(selected)
-                while (
-                    next_index < len(candidates)
-                    and len(wave) < args.rpa_concurrency
-                    and len(wave) < remaining
-                ):
-                    future = submit_rpa(
-                        rpa_executor,
-                        next_index,
-                        wave_index,
-                        None,
-                        wave_started_at,
-                    )
-                    wave[future] = next_index
-                    next_index = next_unaccounted_index(next_index + 1)
-                wave_size = len(wave)
-                for future in wave:
-                    entries[wave[future]]["waveSize"] = wave_size
-                persist()
-                pending_wave = set(wave)
-                while pending_wave:
-                    done_wave, pending_wave = wait(
-                        pending_wave, return_when=FIRST_COMPLETED
-                    )
-                    for future in sorted(done_wave, key=lambda item: wave[item]):
-                        index = wave[future]
-                        rpa_futures.pop(future)
-                        complete_rpa(future, index, postprocess_executor)
-                wave_finished_at = elapsed(batch_started_at)
-                for index in wave.values():
-                    entries[index]["waveFinishedAtSec"] = wave_finished_at
-                done_postprocess, _pending = wait(
-                    set(postprocess_futures), timeout=0
-                ) if postprocess_futures else (set(), set())
-                for future in done_postprocess:
-                    index = postprocess_futures.pop(future)
-                    complete_postprocess(future, index)
-                persist()
-                wave_index += 1
+            pending_wave = set()
+            wave = {}
+            while True:
+                if len(successful_entries()) >= args.target_top_n:
+                    break
+                if not pending_wave:
+                    capacity = min(args.rpa_concurrency, remaining_success_slots())
+                    if capacity and next_index < len(candidates):
+                        wave_started_at = elapsed(batch_started_at)
+                        wave = {}
+                        while next_index < len(candidates) and len(wave) < capacity:
+                            future = submit_rpa(
+                                rpa_executor,
+                                next_index,
+                                wave_index,
+                                None,
+                                wave_started_at,
+                            )
+                            wave[future] = next_index
+                            next_index = next_unaccounted_index(next_index + 1)
+                        wave_size = len(wave)
+                        for future in wave:
+                            entries[wave[future]]["waveSize"] = wave_size
+                        pending_wave = set(wave)
+                        persist()
+                    elif not postprocess_futures:
+                        break
+                wait_for = pending_wave | set(postprocess_futures)
+                done, _pending = wait(
+                    wait_for, timeout=poll_interval_sec, return_when=FIRST_COMPLETED
+                )
+                changed = collect_done(done, postprocess_executor)
+                if pending_wave:
+                    pending_wave -= done
+                    changed = mark_soft_timeouts(pending_wave) or changed
+                if not pending_wave and wave:
+                    wave_finished_at = elapsed(batch_started_at)
+                    for index in wave.values():
+                        entries[index]["waveFinishedAtSec"] = wave_finished_at
+                    wave = {}
+                    wave_index += 1
+                    changed = True
+                if changed:
+                    persist()
         else:
-            while (
-                next_index < len(candidates)
-                and len(selected) + len(rpa_futures) < args.target_top_n
-                and len(rpa_futures) < args.rpa_concurrency
-            ):
-                submit_rpa(rpa_executor, next_index)
-                next_index = next_unaccounted_index(next_index + 1)
-            persist()
-            while rpa_futures:
-                done, _pending = wait(rpa_futures, return_when=FIRST_COMPLETED)
-                for future in done:
-                    index = rpa_futures.pop(future)
-                    complete_rpa(future, index, postprocess_executor)
+            while True:
+                if len(successful_entries()) >= args.target_top_n:
+                    break
                 while (
                     next_index < len(candidates)
-                    and len(selected) + len(rpa_futures) < args.target_top_n
                     and len(rpa_futures) < args.rpa_concurrency
+                    and remaining_success_slots(len(rpa_futures))
                 ):
                     submit_rpa(rpa_executor, next_index)
                     next_index = next_unaccounted_index(next_index + 1)
-                persist()
+                wait_for = set(rpa_futures) | set(postprocess_futures)
+                if not wait_for:
+                    break
+                done, _pending = wait(
+                    wait_for, timeout=poll_interval_sec, return_when=FIRST_COMPLETED
+                )
+                changed = collect_done(done, postprocess_executor)
+                changed = mark_soft_timeouts(set(rpa_futures)) or changed
+                if changed:
+                    persist()
 
-        for future in as_completed(postprocess_futures):
-            index = postprocess_futures[future]
-            complete_postprocess(future, index)
-            persist()
-
-    if len(selected) >= args.target_top_n:
+    final_successes = successful_entries()
+    if len(final_successes) >= args.target_top_n:
         for index in range(next_index, len(candidates)):
             if index in accounted_indices(selected, rejected, cancelled):
                 continue
@@ -260,17 +358,13 @@ def run_streaming_batch(
             )
             cancelled[index] = entry
     manifest = persist()
-    ready = ready_payload(candidate_payload, ordered(selected))
+    ready = ready_payload(candidate_payload, ordered(final_successes))
     write_json(ready_path, ready)
-    failures = len(selected) < args.target_top_n or any(
-        entry["postprocessStatus"] != "succeeded" for entry in selected.values()
-    )
+    failures = len(final_successes) < args.target_top_n
     last_result = None
-    for index in sorted(selected, reverse=True):
-        entry = selected[index]
-        if entry["postprocessStatus"] == "succeeded":
-            last_result = entry_result(entry)
-            break
+    for index in sorted(final_successes, reverse=True):
+        last_result = entry_result(final_successes[index])
+        break
     return manifest, failures, last_result
 
 
