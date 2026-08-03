@@ -207,6 +207,47 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["artifacts"]["report"], "final-report/final-report.html")
 
+    def test_finalize_requires_dense_ai_analysis(self):
+        render_calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text('{"schemaVersion": 2}', encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 1,
+                    "status": "analysis_pending",
+                    "request": {
+                        "startDate": "2026-07-19",
+                        "endDate": "2026-07-25",
+                        "topN": 2,
+                        "advertiserId": "1770096415226951",
+                    },
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            def render_report(**kwargs):
+                render_calls.append(kwargs)
+                return (
+                    root / "final-report" / "final-report-data.json",
+                    root / "final-report" / "final-report.html",
+                    {},
+                )
+
+            standard_workflow.finalize_standard_run(
+                root,
+                analysis_json,
+                render_report=render_report,
+                mark_ready=lambda *_paths: True,
+            )
+
+        self.assertEqual(len(render_calls), 1)
+        self.assertTrue(render_calls[0]["copy_assets"])
+        self.assertTrue(render_calls[0]["require_ai_quality"])
+
     def test_finalize_retries_pending_run_after_report_failure(self):
         render_calls = []
         with tempfile.TemporaryDirectory() as temp_dir:

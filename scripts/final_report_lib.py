@@ -25,6 +25,15 @@ FinalReportError = ReportRenderingError
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script"}
+AI_QUALITY_MINIMUMS = {
+    "overallConclusion": 420,
+    "batchInsight": 180,
+    "nextAction": 140,
+    "materialConclusion": 120,
+    "materialNextAction": 100,
+    "visualObservation": 40,
+    "commercialInterpretation": 80,
+}
 INTERACTION_METRIC_LABELS = {
     "CLICK_COUNT": "整体点击次数",
     "LOSE_COUNT": "整体流失数",
@@ -757,6 +766,130 @@ def _validate_v2_evidence(conclusion, diagnostic, summaries_by_material, materia
         )
 
 
+def _repeated_values(items, field_name):
+    values = {}
+    for item in items:
+        value = _text(item.get(field_name))
+        if value:
+            values.setdefault(value, []).append(_text(item.get("materialId")))
+    return [material_ids for material_ids in values.values() if len(material_ids) > 1]
+
+
+def _validate_v2_analysis_quality(conclusion, material_cards):
+    if not conclusion or conclusion.get("schemaVersion") != 2:
+        return
+
+    failures = []
+    minimums = AI_QUALITY_MINIMUMS
+    if len(conclusion["overallConclusion"]) < minimums["overallConclusion"]:
+        failures.append(
+            "overallConclusion must contain at least "
+            f"{minimums['overallConclusion']} characters"
+        )
+
+    insights_by_topic = {topic: [] for topic in ALLOWED_INSIGHT_TOPICS}
+    for index, insight in enumerate(conclusion["batchInsights"]):
+        insights_by_topic[insight["topic"]].append(insight)
+        if len(insight["conclusion"]) < minimums["batchInsight"]:
+            failures.append(
+                f"batchInsights[{index}].conclusion must contain at least "
+                f"{minimums['batchInsight']} characters"
+            )
+        if not insight["evidenceRefs"]:
+            failures.append(f"batchInsights[{index}].evidenceRefs must not be empty")
+    for topic, required_count in (("audience", 3), ("script", 2)):
+        if len(insights_by_topic[topic]) < required_count:
+            failures.append(
+                f"batchInsights requires at least {required_count} {topic} insights"
+            )
+
+    if len(conclusion["nextActions"]) < 4:
+        failures.append("nextActions requires at least 4 actions")
+    for index, action in enumerate(conclusion["nextActions"]):
+        if len(action["body"]) < minimums["nextAction"]:
+            failures.append(
+                f"nextActions[{index}].body must contain at least "
+                f"{minimums['nextAction']} characters"
+            )
+
+    analyses = {
+        analysis["materialId"]: analysis
+        for analysis in conclusion["materialAnalyses"]
+    }
+    successful_cards = [
+        card for card in material_cards if card["extractionStatus"] == "succeeded"
+    ]
+    successful_analyses = []
+    for card in successful_cards:
+        material_id = card["materialId"]
+        analysis = analyses.get(material_id)
+        if analysis is None:
+            continue
+        successful_analyses.append(analysis)
+        for field_name in (
+            "audienceConclusion",
+            "scriptConclusion",
+            "integratedConclusion",
+        ):
+            if len(analysis[field_name]) < minimums["materialConclusion"]:
+                failures.append(
+                    f"materialAnalyses[{material_id}].{field_name} must contain at least "
+                    f"{minimums['materialConclusion']} characters"
+                )
+        if len(analysis["nextAction"]) < minimums["materialNextAction"]:
+            failures.append(
+                f"materialAnalyses[{material_id}].nextAction must contain at least "
+                f"{minimums['materialNextAction']} characters"
+            )
+        if not analysis["evidenceRefs"]:
+            failures.append(
+                f"materialAnalyses[{material_id}].evidenceRefs must not be empty"
+            )
+
+        expected_frame_refs = {
+            f"highlight:{material_id}:{frame['rankType']}"
+            for frame in card["highlightFrames"]
+        }
+        actual_frame_refs = {
+            highlight["frameRef"] for highlight in analysis["highlightAnalyses"]
+        }
+        if actual_frame_refs != expected_frame_refs:
+            failures.append(
+                f"materialAnalyses[{material_id}].highlightAnalyses must cover every "
+                "available highlight frame"
+            )
+        for index, highlight in enumerate(analysis["highlightAnalyses"]):
+            if len(highlight["visualObservation"]) < minimums["visualObservation"]:
+                failures.append(
+                    f"materialAnalyses[{material_id}].highlightAnalyses[{index}]."
+                    "visualObservation must contain concrete visual detail"
+                )
+            if len(highlight["commercialInterpretation"]) < minimums[
+                "commercialInterpretation"
+            ]:
+                failures.append(
+                    f"materialAnalyses[{material_id}].highlightAnalyses[{index}]."
+                    "commercialInterpretation must contain at least "
+                    f"{minimums['commercialInterpretation']} characters"
+                )
+
+    for field_name in (
+        "audienceConclusion",
+        "scriptConclusion",
+        "integratedConclusion",
+        "nextAction",
+    ):
+        repeated = _repeated_values(successful_analyses, field_name)
+        if repeated:
+            failures.append(
+                f"materialAnalyses.{field_name} has repeated values for "
+                + ", ".join("/".join(ids) for ids in repeated)
+            )
+
+    if failures:
+        raise FinalReportError("AI quality gate: " + "; ".join(failures))
+
+
 def build_final_report_data(
     top_payload,
     records_by_material,
@@ -1006,6 +1139,7 @@ def generate_final_report(
     analysis_json=None,
     embed_assets=False,
     copy_assets=False,
+    require_ai_quality=False,
 ):
     top_payload = _read_json(top_materials_json, "top materials JSON")
     materials = _selected_materials(top_payload)
@@ -1025,6 +1159,8 @@ def generate_final_report(
         batch_manifest=batch_manifest,
         input_warnings=record_warnings,
     )
+    if require_ai_quality:
+        _validate_v2_analysis_quality(conclusion, data["materials"])
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"
     html_path = output_root / "final-report.html"

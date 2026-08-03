@@ -24,15 +24,15 @@
 - `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。
 
-## 内容长度与信息密度
+## 内容长度与信息密度（标准入口 finalize 的硬性门禁）
 
-- `overallConclusion` 建议 420-680 个中文字符，最多用前 1/3 篇幅交代关键事实，其余篇幅用于解释组合表现、可复用机制、创意风险和下一轮策略判断。
-- 每条 batchInsights.conclusion 建议 180-280 个中文字符，必须包含具体指标名称和至少 2 个可核验事实点，但事实点之后必须给出分析含义、投放判断和可验证假设。
-- 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 建议 120-220 个中文字符。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，不要只复述页面已展示的秒级互动、脚本标签或证据句。
-- `highlightAnalyses[*].commercialInterpretation` 建议 80-140 个中文字符，必须把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
-- `nextActions[*].body` 建议 140-220 个中文字符，必须说明行动依据来自哪类数据、要验证的假设、执行方向和成功/失败后的判断口径；`priority` 只用于排序，最终页面策略卡片不展示 priority。
-- 至少输出 3 条 audience、2 条 script 洞察。`audience` 洞察需覆盖展现次数、点击次数、成交金额三个角度；事实不足时可用“数据不足以判断”说明边界，但仍要给出下一步补充或验证方向。不得为了填充 TOP 组合结论而输出 `batchInsights.topic=integrated`。
-- 至少输出 4 条 nextActions，覆盖放量、改写、验证、风险控制或素材复用中的不同动作，不要输出同义重复策略。
+- `overallConclusion` 必须为 420-680 个中文字符，最多用前 1/3 篇幅交代关键事实，其余篇幅用于解释组合表现、可复用机制、创意风险和下一轮策略判断。
+- 每条 `batchInsights.conclusion` 必须为 180-280 个中文字符，包含具体指标名称和至少 2 个可核验事实点；事实点之后必须给出分析含义、投放判断和可验证假设，并填写至少一个合法 `evidenceRefs`。
+- 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
+- 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
+- 每条 `nextActions[*].body` 必须为 140-220 个中文字符，说明行动依据来自哪类数据、要验证的假设、执行方向和成功/失败后的判断口径；`priority` 只用于排序，最终页面策略卡片不展示 priority。
+- 必须输出至少 3 条 audience、2 条 script 洞察；`audience` 洞察需覆盖展现次数、点击次数、成交金额三个角度，事实不足时仍需给出下一步补充或验证方向。不得为了填充 TOP 组合结论而输出 `batchInsights.topic=integrated`。
+- 必须输出至少 4 条 nextActions，覆盖放量、改写、验证、风险控制或素材复用中的不同动作，不要输出同义重复策略。
 
 ## 页面结构映射
 

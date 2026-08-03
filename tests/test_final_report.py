@@ -969,6 +969,284 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
             self._build_data(conclusion)
 
 
+class FinalReportQualityGateTests(unittest.TestCase):
+    def test_standard_quality_gate_rejects_short_unanchored_v2_analysis(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            analysis_path = root / "diagnostic-ai-analysis.json"
+            output_dir = root / "final-report"
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-30",
+                    "materials": [material("m-1", 1, 100)],
+                },
+            )
+            write_json(
+                records_dir / "m-1.json",
+                [
+                    {
+                        "recordType": "crowd_analysis",
+                        "materialId": "m-1",
+                        "displayMetric": "CLICK_COUNT",
+                        "dimensionKey": "age",
+                        "dimensionName": "年龄",
+                        "dimensionValue": "24-30",
+                        "metricValue": 30,
+                    },
+                    script_record("m-1"),
+                ],
+            )
+            material_dir = peak_dir / "m-1"
+            material_dir.mkdir(parents=True)
+            frame_path = material_dir / "first_peak_0001s_3.jpg"
+            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+            write_json(
+                material_dir / "summary.json",
+                {
+                    "frames": [
+                        {
+                            "rankType": "first_peak",
+                            "durationSec": 1,
+                            "metricValue": 3,
+                            "framePath": frame_path.name,
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+            write_json(
+                analysis_path,
+                {
+                    "schemaVersion": 2,
+                    "overallConclusion": "当前素材值得继续测试。",
+                    "batchInsights": [
+                        {
+                            "topic": "audience",
+                            "title": "人群表现",
+                            "conclusion": "24-30 岁点击更高。",
+                            "evidenceRefs": [],
+                        },
+                        {
+                            "topic": "script",
+                            "title": "脚本表现",
+                            "conclusion": "优惠表达可用。",
+                            "evidenceRefs": [],
+                        },
+                    ],
+                    "materialAnalyses": [
+                        {
+                            "materialId": "m-1",
+                            "audienceConclusion": "24-30 岁点击更高。",
+                            "scriptConclusion": "优惠表达可用。",
+                            "highlightAnalyses": [
+                                {
+                                    "frameRef": "highlight:m-1:first_peak",
+                                    "visualObservation": "产品近景出现。",
+                                    "commercialInterpretation": "画面与点击峰值同时出现。",
+                                }
+                            ],
+                            "integratedConclusion": "保留产品近景。",
+                            "decision": "scale",
+                            "nextAction": "继续测试。",
+                            "evidenceRefs": [],
+                        }
+                    ],
+                    "nextActions": [
+                        {
+                            "title": "扩展开场",
+                            "body": "测试变体。",
+                            "priority": "high",
+                        }
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            data_path, html_path, data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                analysis_json=analysis_path,
+            )
+            self.assertEqual(data["status"], "complete")
+            self.assertTrue(data_path.is_file())
+            self.assertTrue(html_path.is_file())
+
+            with self.assertRaises(FinalReportError) as error:
+                generate_final_report(
+                    top_path,
+                    peak_dir,
+                    records_dir,
+                    output_dir,
+                    analysis_json=analysis_path,
+                    require_ai_quality=True,
+                )
+
+        message = str(error.exception)
+        self.assertIn("AI quality gate", message)
+        for field_name in (
+            "overallConclusion",
+            "batchInsights",
+            "evidenceRefs",
+            "visualObservation",
+            "materialAnalyses",
+        ):
+            self.assertIn(field_name, message)
+
+    def test_standard_quality_gate_rejects_repeated_material_conclusions(self):
+        repeated_audience = "24-30 岁用户对产品利益点的关注更集中，下一轮应保留利益点前置并继续验证不同开场的点击差异。" * 3
+        repeated_script = "脚本以日常滋补场景承接产品利益点，表达路径可保留，同时需要测试更直接的利益点呈现方式。" * 3
+        repeated_integrated = "素材应继续保留产品近景与滋补场景的组合，并通过不同开场节奏验证其对点击与理解成本的影响。" * 3
+        repeated_action = "保留当前产品近景和滋补场景，分别测试利益点前置、人物口播与产品特写的三种开场变体。" * 3
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            peak_dir = root / "peak-frames"
+            analysis_path = root / "diagnostic-ai-analysis.json"
+            output_dir = root / "final-report"
+            material_ids = ("m-1", "m-2")
+            write_json(
+                top_path,
+                {
+                    "actualStartDate": "2026-06-01",
+                    "actualEndDate": "2026-06-30",
+                    "materials": [
+                        material(material_id, index + 1, 100 - index * 10)
+                        for index, material_id in enumerate(material_ids)
+                    ],
+                },
+            )
+            for material_id in material_ids:
+                write_json(
+                    records_dir / f"{material_id}.json",
+                    [
+                        {
+                            "recordType": "crowd_analysis",
+                            "materialId": material_id,
+                            "displayMetric": "CLICK_COUNT",
+                            "dimensionKey": "age",
+                            "dimensionName": "年龄",
+                            "dimensionValue": "24-30",
+                            "metricValue": 30,
+                        },
+                        script_record(material_id),
+                    ],
+                )
+                material_dir = peak_dir / material_id
+                material_dir.mkdir(parents=True)
+                frame_path = material_dir / "first_peak_0001s_3.jpg"
+                frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
+                write_json(
+                    material_dir / "summary.json",
+                    {
+                        "frames": [
+                            {
+                                "rankType": "first_peak",
+                                "durationSec": 1,
+                                "metricValue": 3,
+                                "framePath": frame_path.name,
+                            }
+                        ],
+                        "warnings": [],
+                    },
+                )
+            write_json(
+                analysis_path,
+                {
+                    "schemaVersion": 2,
+                    "overallConclusion": "两条素材均在 24-30 岁点击分桶和日常滋补脚本中呈现可继续验证的信号。组合判断不是直接放量，而是保留产品利益点与场景承接，分别测试开场节奏、人物口播和产品特写，观察点击、理解成本与后续互动是否同步改善。素材之间存在相似表现时，仍需区分真实创意机制与描述重复，避免把同一结论复制到每一条素材。" * 2,
+                    "batchInsights": [
+                        {
+                            "topic": "audience",
+                            "title": "核心年龄分桶有点击信号",
+                            "conclusion": "24-30 岁分桶在两条素材中均有点击记录，说明日常滋补场景对该人群有继续验证的价值。下一轮应保持人群口径一致，比较利益点前置和场景前置的开场，确认点击信号是否来自创意表达而非单次样本波动。" * 2,
+                            "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
+                        },
+                        {
+                            "topic": "script",
+                            "title": "滋补场景脚本可作为对照",
+                            "conclusion": "两条素材都包含日常滋补相关脚本标签，可作为后续创意迭代的共同对照条件。应在保留场景信息的同时更换利益点位置和口播方式，识别是场景代入还是利益点表达在推动点击。" * 2,
+                            "evidenceRefs": ["script:m-1:商品卖点:适用场景"],
+                        },
+                    ],
+                    "materialAnalyses": [
+                        {
+                            "materialId": material_id,
+                            "audienceConclusion": repeated_audience,
+                            "scriptConclusion": repeated_script,
+                            "highlightAnalyses": [
+                                {
+                                    "frameRef": f"highlight:{material_id}:first_peak",
+                                    "visualObservation": f"素材 {material_id} 的首个峰值帧中，人物将燕窝产品置于画面中央，产品包装、勺取动作与口播人物同时可见，画面信息完整且焦点明确。",
+                                    "commercialInterpretation": "产品、使用动作和人物口播在同一画面中出现，可能降低用户理解产品利益点的成本。该画面与点击峰值同时出现，只能作为下一轮验证产品特写与人物口播组合的假设，不能直接视为因果结论。" * 2,
+                                }
+                            ],
+                            "integratedConclusion": repeated_integrated,
+                            "decision": "scale",
+                            "nextAction": repeated_action,
+                            "evidenceRefs": [
+                                "audience:CLICK_COUNT:age:24-30",
+                                f"script:{material_id}:商品卖点:适用场景",
+                                f"highlight:{material_id}:first_peak",
+                            ],
+                        }
+                        for material_id in material_ids
+                    ],
+                    "nextActions": [
+                        {
+                            "title": "测试利益点前置",
+                            "body": "将产品利益点放在前两秒，并与现有场景开场比较点击表现和理解成本。",
+                            "priority": "high",
+                        },
+                        {
+                            "title": "测试产品特写时长",
+                            "body": "保持滋补场景不变，分别测试短产品特写和长产品特写对首段互动的影响。",
+                            "priority": "high",
+                        },
+                        {
+                            "title": "测试人物口播版本",
+                            "body": "保留产品与使用动作，替换人物口播的利益点顺序并观察人群点击变化。",
+                            "priority": "medium",
+                        },
+                        {
+                            "title": "复盘人群分桶差异",
+                            "body": "按年龄分桶比较各开场变体的点击信号，确认创意机制是否具有可复用性。",
+                            "priority": "medium",
+                        },
+                    ],
+                    "warnings": [],
+                },
+            )
+
+            with self.assertRaises(FinalReportError) as error:
+                generate_final_report(
+                    top_path,
+                    peak_dir,
+                    records_dir,
+                    output_dir,
+                    analysis_json=analysis_path,
+                    require_ai_quality=True,
+                )
+
+        message = str(error.exception)
+        self.assertIn("AI quality gate", message)
+        self.assertIn("repeated", message)
+        for field_name in (
+            "audienceConclusion",
+            "scriptConclusion",
+            "integratedConclusion",
+            "nextAction",
+        ):
+            self.assertIn(field_name, message)
+
+
 class FinalReportRenderTests(unittest.TestCase):
     def test_template_keeps_current_structure_with_livecheck_visual_style(self):
         template_path = ROOT / "templates" / "final-report-template.html"
@@ -1259,14 +1537,14 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("少量关键事实锚点 + 多句分析判断", prompt_text)
         self.assertIn("整体结论的数据陈述只作为判断依据，不作为段落主体", prompt_text)
         self.assertIn("优先输出组合公式、机会判断、风险边界和下一轮验证方向", prompt_text)
-        self.assertIn("每条 batchInsights.conclusion 建议 180-280 个中文字符", prompt_text)
+        self.assertIn("每条 `batchInsights.conclusion` 必须为 180-280 个中文字符", prompt_text)
         self.assertIn(
-            "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 建议 120-220 个中文字符",
+            "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符",
             prompt_text,
         )
         self.assertIn("不得输出 `batchInsights.topic=integrated`", prompt_text)
-        self.assertIn("至少输出 3 条 audience、2 条 script 洞察", prompt_text)
-        self.assertIn("至少输出 4 条 nextActions", prompt_text)
+        self.assertIn("必须输出至少 3 条 audience、2 条 script 洞察", prompt_text)
+        self.assertIn("必须输出至少 4 条 nextActions", prompt_text)
 
     def test_generates_html_with_required_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
