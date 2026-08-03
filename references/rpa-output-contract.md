@@ -76,24 +76,23 @@ Top-N batch mode treats asset-table `top_materials.json` as a rank-ordered candi
 - the record list contains the target material's `material_info`;
 - `material_info.videoUrl` is a non-empty string.
 
-RPA success writes normalized records before postprocessing starts. Video download, FFmpeg extraction, and summary generation immediately follow selection on a separate bounded channel. Postprocess completion never opens the next RPA wave. A wave completes only after every submitted request returns normally, reaches its hard timeout, raises an exception, or is successfully recovered from a matching late CSV/JSON artifact. RPA failure means "RPA currently unavailable for this material"; it is not a deletion verdict.
+RPA success writes normalized records before postprocessing starts. Video download, FFmpeg extraction, and summary generation immediately follow selection on a separate bounded channel. The coordinator collects and checkpoints completed postprocess futures while RPA waits, but postprocess completion never opens the next RPA wave. A wave completes only after every submitted request returns normally, reaches its hard timeout, raises an exception, or is successfully recovered from a matching late CSV/JSON artifact. RPA failure means "RPA currently unavailable for this material"; it is not a deletion verdict.
 
 Failure reasons:
 
 - `rpa_request_failed`: gateway, HTTP, network, or configured RPA request failure.
 
-The batch runner uses a 600-second soft threshold and a 3600-second hard request limit by default. Crossing the soft threshold only records `rpaSoftTimeoutExceeded=true`; the isolated request remains alive and may still write its records/CSV, so it is not rejected or backfilled. Only a request that remains unresolved through the hard limit is classified as `rpa_request_failed`. At the hard-timeout boundary the runner waits briefly for the request or a newly written, parseable records JSON/diagnosis CSV with a matching `material_info.videoUrl`; recovered output is treated as RPA-selected and proceeds to postprocess.
+The batch runner records a slow request after 8 分钟 (480 seconds) and uses a 10 分钟 (600 seconds) hard request limit by default. Crossing the soft threshold only records `rpaSoftTimeoutExceeded=true`; the isolated request remains alive and may still write its records/CSV, so it is not rejected or backfilled. Only a request that remains unresolved through the hard limit is terminated, marked `rpaHardTimeoutExceeded=true`, and classified as `rpa_request_failed`. At the hard-timeout boundary the runner waits 30 seconds for the request or a newly written, parseable records JSON/diagnosis CSV with a matching `material_info.videoUrl`; recovered output is treated as RPA-selected and proceeds to postprocess.
 - `rpa_payload_invalid`: gateway payload could not be normalized into usable records.
 - `missing_material_info`: no matching `material_info` record was returned.
 - `missing_video_url`: matching `material_info` exists but has no usable `videoUrl`.
 - `unknown_preflight_failure`: unexpected failure outside the known classes.
-- `top_n_already_selected`: an already-submitted RPA success completed after targetTopN was selected; it is not postprocessed.
-- `target_satisfied`: a candidate was never submitted because targetTopN was already selected.
+- `target_satisfied`: a candidate was never submitted because `postprocessSucceededCount >= targetTopN`.
 
 The wave scheduler writes:
 
 - `batch-manifest.json`: schemaVersion 2 record with `targetTopN`, `candidateCount`, `candidateLimit`, `rpaConcurrency`, `postprocessConcurrency`, `waveBarrier`, `submittedMaterials`, `selectedMaterials`, `rejectedMaterials`, and `cancelledMaterials`. Every submitted candidate records rank, material metadata, RPA state, postprocess state, failure reason, paths, timings, `waveIndex`, `waveSize`, `waveStartedAtSec`, and `waveFinishedAtSec`.
-- `top_materials_rpa_ready.json`: compatibility top-materials shape containing rank-ordered selected materials only.
+- `top_materials_rpa_ready.json`: compatibility top-materials shape containing only the rank-ordered final postprocess-success materials.
 - `diagnosis-records/<materialId>.json`: normalized records written before a candidate joins selected.
 - `diagnosis-csv/<materialId>.csv`: retained source CSV for a files-envelope response.
 
@@ -113,9 +112,9 @@ The wave output directory is protected by `.batch-run.lock` and a unique `runId`
 
 Local repair is available with `python scripts/repair_manifest.py --output-dir <peak-frames-dir>`. It performs `CSV -> records`, `records -> 后处理`, and valid summary/JPEG -> manifest repairs without calling RPA. If the manifest is missing, pass `--top-materials-json`; artifact-only recovery uses `rpaStatus: unknown` until records prove RPA selection. The resulting `repair-manifest.json` records `rpaCalls: 0`, actions, errors, and stage counts.
 
-Counting terms are intentionally separate. `assetSelectedMaterialCount` is the number of rank-ordered material IDs loaded from the asset-table candidate pool for this run, equivalent to `candidateCount` and capped by `candidateLimit`. `rpaSubmittedMaterialCount` is the number of material IDs actually sent to the RPA connector, equivalent to the length of `submittedMaterials`. The scheduler never submits the entire candidate pool up front; it submits from the candidate head by waves until `targetTopN` selected materials exist or the candidate pool is exhausted. Wave timing measures RPA boundaries only and must not be used as an end-to-end or postprocess timing.
+Counting terms are intentionally separate. `assetSelectedMaterialCount` is the number of rank-ordered material IDs loaded from the asset-table candidate pool for this run, equivalent to `candidateCount` and capped by `candidateLimit`. `rpaSubmittedMaterialCount` is the number of material IDs actually sent to the RPA connector, equivalent to the length of `submittedMaterials`. Batch completion requires `postprocessSucceededCount >= targetTopN`; the scheduler never submits the entire candidate pool up front, and submits from the candidate head by waves until that final-success condition is met or the candidate pool is exhausted. Wave timing measures RPA boundaries only and must not be used as an end-to-end or postprocess timing.
 
-Selected and ready-list ordering always follows source candidate rank, even when lower-ranked RPA jobs finish first. Once Top N is selected the scheduler stops submitting new RPA work; unsubmitted candidates are cancelled and successful already-submitted extras are rejected. A postprocess failure remains selected with `postprocessStatus: failed`, makes the batch nonzero, and does not become an RPA rejection or trigger replacement.
+Selected and ready-list ordering always follows source candidate rank, even when lower-ranked RPA jobs finish first. Once the final-success condition is met the scheduler stops submitting new RPA work and unsubmitted candidates are cancelled. 后处理失败 remains selected with `postprocessStatus: failed`, does not become an RPA rejection, receives one local retry using retained records, and then triggers rank-ordered 补位 after its second failure. A batch is nonzero only when the candidate pool is exhausted before `postprocessSucceededCount >= targetTopN`.
 
 `--preflight-only`, `--rpa-preflight-json`, and `--allow-rpa-refetch` remain compatibility and diagnostic tools for old runs. They are not part of the recommended wave Top-N command.
 

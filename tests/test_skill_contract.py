@@ -107,9 +107,9 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("资产表阶段最多获取 `--candidate-top-n` 个素材 ID", skill)
         self.assertIn("不会一次性把候选池全部提交给 RPA", skill)
         self.assertIn("RPA 实际提交数量以 `submittedMaterials` 为准", skill)
-        self.assertIn("全成功时实际提交数量等于 `--target-top-n`", skill)
+        self.assertIn("后处理全部成功时实际提交数量等于 `--target-top-n`", skill)
         self.assertIn(
-            "有失败时才继续补位提交后续候选，最多不超过 `--candidate-top-n`",
+            "RPA 或后处理失败时才继续补位提交后续候选，最多不超过 `--candidate-top-n`",
             skill,
         )
         self.assertIn("assetSelectedMaterialCount", contract)
@@ -119,7 +119,6 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("selectedMaterials", contract)
         self.assertIn("rejectedMaterials", contract)
         self.assertIn("cancelledMaterials", contract)
-        self.assertIn("top_n_already_selected", contract)
         self.assertIn("stageCounts", contract)
         self.assertIn("rpaSelectedCount", contract)
         self.assertIn("recordsPersistedCount", contract)
@@ -132,6 +131,15 @@ class BatchSkillContractTests(unittest.TestCase):
         self.assertIn("当前波次全部完成", contract)
         self.assertIn("## Wave RPA Batch", contract)
         self.assertNotIn("recommended streaming Top-N command", contract)
+
+    def test_batch_guides_define_final_success_and_ten_minute_deadline(self):
+        for path in (SKILL_PATH, RPA_CONTRACT_PATH):
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("postprocessSucceededCount >= targetTopN", content)
+            self.assertIn("8 分钟", content)
+            self.assertIn("10 分钟", content)
+            self.assertIn("后处理失败", content)
+            self.assertIn("补位", content)
 
     def test_internal_skill_guides_describe_wave_rpa(self):
         for path in INTERNAL_SKILL_DOCS:
@@ -204,7 +212,7 @@ class BatchSkillContractTests(unittest.TestCase):
 
         self.assertIn("batch-manifest.json", skill)
         self.assertIn("--resume", skill)
-        self.assertIn("后续 TOP 素材仍会继续运行", skill)
+        self.assertIn("已两次失败的素材保留失败状态并由后续 rank 补位", skill)
         self.assertIn(".batch-run.lock", skill)
         self.assertIn("stale", skill)
         self.assertIn("repair_manifest.py", skill)
