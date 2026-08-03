@@ -18,7 +18,8 @@
 - 换言之，overallConclusion 必须综合人群、脚本、高光帧，不得和人群洞察、脚本洞察或单素材分析重复或冲突。
 - `01｜TOP 素材组合结论` 只使用 `overallConclusion`，不得再生成下方组合洞察卡片；不得输出 `batchInsights.topic=integrated`。
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
-- 每一张高光帧都必须对应一条 `highlightAnalyses`；`highlightAnalyses` 数量必须等于该素材 `highlights.materials[*].frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 或 peak_top_3，也必须分别输出对应分析。缺失任何一帧都不能视为完成。
+- 每一张成功高光帧都必须对应一条 `highlightAnalyses`；`highlightAnalyses` 数量必须等于该素材 `highlights.materials[*].frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 或 peak_top_3，也必须分别输出对应分析。
+- 若该素材 `highlights.materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 3 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
 - 高光帧的 `visualObservation` 必须来自实际查看 JPEG 的画面观察；`commercialInterpretation` 使用“与点击峰值同时出现”“待验证假设”等谨慎表述。
 - `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。
@@ -75,6 +76,7 @@
           "commercialInterpretation": "谨慎的商业解释"
         }
       ],
+      "frameCoverageNote": "仅当 missingFrames 非空时填写对应素材的缺失帧说明，否则为空字符串",
       "integratedConclusion": "三类证据整合后的判断",
       "decision": "scale",
       "nextAction": "具体行动",

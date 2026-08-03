@@ -551,7 +551,17 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
                             "metricValue": 2,
                             "framePath": "later_top_1_0005s_2.jpg",
                         },
-                    ]
+                    ],
+                    "missingFrames": [
+                        {
+                            "rankType": "later_top_1",
+                            "durationSec": 5,
+                            "metricValue": 2,
+                            "requestedTimestampSec": 5,
+                            "errorType": "FfmpegError",
+                            "errorMessage": "decoder killed",
+                        }
+                    ],
                 },
             )
 
@@ -571,6 +581,19 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             self.assertIn(
                 "missing high-light JPEG for material m-1: later_top_1",
                 analysis["warnings"],
+            )
+            self.assertEqual(
+                analysis["highlights"]["materials"][0]["missingFrames"],
+                [
+                    {
+                        "rankType": "later_top_1",
+                        "durationSec": 5,
+                        "metricValue": 2,
+                        "requestedTimestampSec": 5,
+                        "errorType": "FfmpegError",
+                        "errorMessage": "decoder killed",
+                    }
+                ],
             )
             self.assertEqual(
                 json.loads(data_path.read_text(encoding="utf-8")), analysis

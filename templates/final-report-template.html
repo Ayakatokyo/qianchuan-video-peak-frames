@@ -667,6 +667,19 @@
       border-radius: 18px;
     }
 
+    .frame-coverage-note {
+      border-left: 3px solid #d79a4b;
+      padding: 10px 12px;
+      background: #fff8ec;
+      color: var(--ink);
+    }
+
+    .frame-coverage-note b {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
     .raw-fact-card {
       border: 1px solid var(--line);
       border-radius: 18px;
@@ -2455,6 +2468,7 @@ function renderMaterialPanel(material, selected) {
     renderInteractionTimeline(material),
     renderFormula("人群与脚本证据", [analysis.audienceConclusion, analysis.scriptConclusion]),
     renderScriptAnalysis(material),
+    renderFrameCoverageNote(analysis.frameCoverageNote),
     renderFormula("综合判断与下一步", [analysis.integratedConclusion, `下一步：${text(analysis.nextAction)}`])
   );
 
@@ -2463,6 +2477,14 @@ function renderMaterialPanel(material, selected) {
     hydrateMaterialPanel(panel);
   }
   return panel;
+}
+
+function renderFrameCoverageNote(note) {
+  const coverageNote = text(note);
+  if (!coverageNote) return document.createDocumentFragment();
+  const card = element("div", "frame-coverage-note");
+  card.append(element("b", "", "高光帧说明"), element("p", "", coverageNote));
+  return card;
 }
 
 function renderHighlightFormula(highlights) {

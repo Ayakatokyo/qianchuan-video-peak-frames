@@ -493,6 +493,7 @@ def _load_highlights(top_payload, peak_output_dir):
         material_dir = root / _safe_component(material_id)
         summary_path = material_dir / "summary.json"
         frames = []
+        summary = {}
         if not summary_path.is_file():
             warnings.append(f"missing high-light summary for material {material_id}")
         else:
@@ -533,7 +534,42 @@ def _load_highlights(top_payload, peak_output_dir):
                         "evidenceRef": _highlight_evidence_ref(material_id, rank_type),
                     }
                 )
-        result["materials"].append({"materialId": material_id, "frames": frames})
+        raw_missing_frames = (
+            summary.get("missingFrames", []) if isinstance(summary, dict) else []
+        )
+        missing_frames = []
+        if isinstance(raw_missing_frames, list):
+            for raw_frame in raw_missing_frames:
+                if not isinstance(raw_frame, dict):
+                    continue
+                rank_type = _text(raw_frame.get("rankType"))
+                if not rank_type:
+                    continue
+                missing_frames.append(
+                    {
+                        "rankType": rank_type,
+                        "durationSec": raw_frame.get("durationSec"),
+                        "metricValue": raw_frame.get("metricValue"),
+                        "requestedTimestampSec": raw_frame.get(
+                            "requestedTimestampSec"
+                        ),
+                        "errorType": _text(raw_frame.get("errorType")),
+                        "errorMessage": _text(raw_frame.get("errorMessage")),
+                    }
+                )
+        frame_coverage = (
+            summary.get("frameCoverage", {}) if isinstance(summary, dict) else {}
+        )
+        result["materials"].append(
+            {
+                "materialId": material_id,
+                "frames": frames,
+                "missingFrames": missing_frames,
+                "frameCoverage": frame_coverage
+                if isinstance(frame_coverage, dict)
+                else {},
+            }
+        )
 
     return result, warnings
 

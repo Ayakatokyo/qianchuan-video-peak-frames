@@ -239,6 +239,7 @@ def _validate_v2_material_analysis(raw, index):
     integrated_conclusion = _text(raw.get("integratedConclusion"))
     decision = _text(raw.get("decision")) or "unknown"
     next_action = _text(raw.get("nextAction"))
+    frame_coverage_note = _text(raw.get("frameCoverageNote"))
     highlights = raw.get("highlightAnalyses", [])
     if not material_id:
         raise FinalReportError(f"materialAnalyses[{index}] requires materialId")
@@ -264,6 +265,7 @@ def _validate_v2_material_analysis(raw, index):
         "integratedConclusion": integrated_conclusion,
         "decision": decision,
         "nextAction": next_action,
+        "frameCoverageNote": frame_coverage_note,
         "evidenceRefs": _string_list(
             raw.get("evidenceRefs", []), f"materialAnalyses[{index}].evidenceRefs"
         ),
@@ -373,6 +375,7 @@ def _empty_material_analysis(material_id):
         "integratedConclusion": "暂无综合判断。",
         "decision": "unknown",
         "nextAction": "补充结构化分析后复盘。",
+        "frameCoverageNote": "",
         "evidenceRefs": [],
     }
 
@@ -550,6 +553,9 @@ def _material_card(material, summary, analysis, records=None, script_analysis=No
     material_records = records or []
     frames = summary.get("frames", []) if isinstance(summary, dict) else []
     warnings = summary.get("warnings", []) if isinstance(summary, dict) else []
+    missing_frames = (
+        summary.get("missingFrames", []) if isinstance(summary, dict) else []
+    )
     extraction_status = "succeeded" if frames else "missing_summary"
     return {
         **material,
@@ -560,6 +566,7 @@ def _material_card(material, summary, analysis, records=None, script_analysis=No
         "highlightFrameCount": len(frames),
         "highlightFrames": frames,
         "warnings": warnings,
+        "missingFrames": missing_frames if isinstance(missing_frames, list) else [],
         "analysis": analysis or _empty_material_analysis(material["materialId"]),
         "interactionTimeline": _material_interaction_timeline(material_records),
         "scriptAnalysis": script_analysis or _empty_script_analysis(),
@@ -734,6 +741,14 @@ def _validate_v2_evidence(conclusion, diagnostic, summaries_by_material, materia
             require_known(reference)
         for highlight in material_analysis["highlightAnalyses"]:
             require_known(highlight["frameRef"])
+        material_card = next(
+            item for item in material_cards if item["materialId"] == material_id
+        )
+        if material_card["missingFrames"] and not material_analysis["frameCoverageNote"]:
+            raise FinalReportError(
+                f"material analysis for {material_id} requires frameCoverageNote "
+                "because expected frames are missing"
+            )
     missing_ids = sorted(successful_ids - analysis_ids)
     if missing_ids:
         raise FinalReportError(
@@ -882,10 +897,12 @@ def load_summaries_for_materials(materials, peak_output_dir):
                 }
             )
         summary_warnings = summary.get("warnings", [])
+        missing_frames = summary.get("missingFrames", [])
         result[material_id] = {
             "summaryPath": str(summary_path),
             "frames": frames,
             "warnings": summary_warnings if isinstance(summary_warnings, list) else [],
+            "missingFrames": missing_frames if isinstance(missing_frames, list) else [],
         }
     return result
 

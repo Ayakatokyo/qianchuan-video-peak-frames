@@ -54,6 +54,43 @@ def write_diagnosis_csv(path, records):
 
 
 class FinalReportConclusionTests(unittest.TestCase):
+    def test_v2_conclusion_requires_frame_coverage_note_for_missing_frames(self):
+        top_payload = {"materials": [material("m-1")]}
+        summaries = {
+            "m-1": {
+                "frames": [{"rankType": "zero_second", "framePath": "cover.jpg"}],
+                "missingFrames": [{"rankType": "peak_top_1"}],
+            }
+        }
+        raw_conclusion = {
+            "schemaVersion": 2,
+            "overallConclusion": "结论。",
+            "batchInsights": [],
+            "materialAnalyses": [
+                {
+                    "materialId": "m-1",
+                    "audienceConclusion": "人群结论。",
+                    "scriptConclusion": "脚本结论。",
+                    "highlightAnalyses": [],
+                    "integratedConclusion": "综合结论。",
+                    "decision": "scale",
+                    "nextAction": "继续验证。",
+                    "evidenceRefs": [],
+                }
+            ],
+            "nextActions": [],
+        }
+        conclusion = normalize_conclusion_analysis(raw_conclusion)
+
+        with self.assertRaisesRegex(FinalReportError, "frameCoverageNote"):
+            build_final_report_data(
+                top_payload,
+                {"m-1": []},
+                summaries,
+                conclusion=conclusion,
+            )
+
+
     def test_accepts_valid_conclusion_schema(self):
         payload = {
             "schemaVersion": 1,
@@ -92,6 +129,17 @@ class FinalReportConclusionTests(unittest.TestCase):
                 FinalReportError, "batchInsights is required for schemaVersion 2"
             ):
                 load_conclusion_analysis(path)
+
+
+class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
+    def test_template_renders_frame_coverage_note_inside_material_panel(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("function renderFrameCoverageNote", template)
+        self.assertIn("renderFrameCoverageNote(analysis.frameCoverageNote)", template)
+        self.assertIn("高光帧说明", template)
 
 
 def material(material_id, rank=1, cost=100.0):
