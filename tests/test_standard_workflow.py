@@ -1,3 +1,4 @@
+import io
 import json
 import os
 from pathlib import Path
@@ -5,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import redirect_stderr
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,8 +163,9 @@ class StandardWorkflowCliTests(unittest.TestCase):
 
     def test_finalize_parser_requires_analysis_json(self):
         parser = run_standard_analysis.build_parser()
-        with self.assertRaises(SystemExit) as error:
-            parser.parse_args(["finalize", "--output-dir", "run"])
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as error:
+                parser.parse_args(["finalize", "--output-dir", "run"])
 
         self.assertEqual(error.exception.code, 2)
 
