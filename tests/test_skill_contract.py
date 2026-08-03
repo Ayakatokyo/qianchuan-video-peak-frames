@@ -141,6 +141,15 @@ class BatchSkillContractTests(unittest.TestCase):
             self.assertIn("后处理失败", content)
             self.assertIn("补位", content)
 
+    def test_batch_guides_define_resilient_peak_frame_coverage(self):
+        for path in (SKILL_PATH, RPA_CONTRACT_PATH):
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("zero_second", content)
+            self.assertIn("至少一张峰值帧", content)
+            self.assertIn("少于 3 个局部峰值", content)
+            self.assertIn("单素材深度分析", content)
+            self.assertIn("低资源重试", content)
+
     def test_internal_skill_guides_describe_wave_rpa(self):
         for path in INTERNAL_SKILL_DOCS:
             guide = path.read_text(encoding="utf-8")

@@ -56,7 +56,7 @@ This example selects second 0 as the fixed opening frame, then seconds 3, 7, and
 
 ## Online Video Fields
 
-Online mode reads the `material_info` record field `videoUrl`, downloads it to a temporary local video file, and then reuses the same local processing pipeline. `videoDuration` may be present in the connector output, but FFmpeg remains the source of truth for frame timestamp bounds.
+Online mode reads the `material_info` record field `videoUrl`, downloads it to a temporary local video file, and then reuses the same local processing pipeline. `videoDuration` may be present in the connector output, but FFmpeg remains the source of truth for frame timestamp bounds. The target is `zero_second` plus up to three local peaks. 少于 3 个局部峰值 is a curve characteristic, not a technical failure. Postprocessing succeeds when `zero_second` exists and, if peaks were expected, at least one peak frame exists (至少一张峰值帧). A failed expected frame is retained in `summary.json.missingFrames` and must be disclosed in that material's 单素材深度分析. Signal-terminated FFmpeg extraction receives one local 低资源重试 and never triggers an RPA refetch.
 
 Downloads are bounded before and during transfer. Diagnostic CSV files default to a 100 MiB
 maximum, videos default to a 1 GiB maximum, and each download has a 600 second wall-clock
