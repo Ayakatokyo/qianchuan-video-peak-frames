@@ -857,7 +857,16 @@ def _resume_streaming_state(args, candidates, entries):
             submitted[index] = entry
             selected[index] = entry
             if entry["postprocessStatus"] != "succeeded":
-                postprocess_queue.append(index)
+                if entry.get("postprocessAttemptCount", 0) < 2:
+                    postprocess_queue.append(index)
+                else:
+                    entry.update(
+                        {
+                            "postprocessStatus": "failed",
+                            "postprocessSucceeded": False,
+                            "status": "failed",
+                        }
+                    )
             continue
 
         if entry.get("rpaStatus") == "rejected":

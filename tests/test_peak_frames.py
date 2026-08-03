@@ -2980,6 +2980,123 @@ class CliTests(unittest.TestCase):
         self.assertEqual(first["summaryJson"], str(summary_json))
         self.assertEqual(first["summaryMd"], str(summary_md))
 
+    def test_streaming_resume_does_not_requeue_second_postprocess_failure(self):
+        args = type("Args", (), {"resume": True, "output_dir": "/tmp"})()
+        candidates = [
+            {"materialId": "m-1"},
+            {"materialId": "m-2"},
+            {"materialId": "m-3"},
+        ]
+        entries = {
+            index: extract_peak_frames._stream_entry(candidate, index + 1)
+            for index, candidate in enumerate(candidates)
+        }
+        manifest = {
+            "materials": [
+                {
+                    **entries[0],
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "succeeded",
+                    "postprocessSucceeded": True,
+                },
+                {
+                    **entries[1],
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "failed",
+                    "postprocessAttemptCount": 2,
+                    "status": "failed",
+                },
+                {
+                    **entries[2],
+                    "rpaStatus": "submitted",
+                    "status": "running",
+                },
+            ]
+        }
+
+        records = [{"recordType": "material_info", "materialId": "m-1"}]
+        with patch.object(
+            extract_peak_frames, "_load_streaming_resume_manifest", return_value=manifest
+        ), patch.object(
+            extract_peak_frames,
+            "_existing_stream_records",
+            side_effect=lambda _args, material_id, _entry: (
+                (records, Path(f"/tmp/{material_id}.json"))
+                if material_id in {"m-1", "m-2"}
+                else (None, None)
+            ),
+        ), patch.object(
+            extract_peak_frames,
+            "_existing_stream_summary_entry",
+            side_effect=lambda _args, entry: (
+                dict(
+                    entry,
+                    status="succeeded",
+                    postprocessStatus="succeeded",
+                    postprocessSucceeded=True,
+                )
+                if entry["materialId"] == "m-1"
+                else None
+            ),
+        ):
+            submitted, selected, _rejected, _cancelled, postprocess_queue = (
+                extract_peak_frames._resume_streaming_state(args, candidates, entries)
+            )
+
+        self.assertEqual(postprocess_queue, [])
+        self.assertEqual(selected[1]["postprocessStatus"], "failed")
+        self.assertEqual(selected[1]["postprocessAttemptCount"], 2)
+        self.assertEqual(entries[2]["rpaStatus"], "pending")
+        self.assertEqual(set(submitted), {0, 1})
+
+    def test_streaming_verification_accepts_historical_postprocess_failure_after_backfill(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            args = extract_peak_frames.build_parser().parse_args(
+                self._batch_args(
+                    root / "top_materials.json", output, "--target-top-n", "3"
+                )
+            )
+            selected = [
+                {
+                    "rank": 1,
+                    "materialId": "m-1",
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "failed",
+                    "status": "failed",
+                }
+            ]
+            for rank, material_id in enumerate(["m-2", "m-3", "m-4"], start=2):
+                _result_dir, summary_json, summary_md = self._write_batch_result(
+                    output, material_id
+                )
+                selected.append(
+                    {
+                        "rank": rank,
+                        "materialId": material_id,
+                        "rpaStatus": "selected",
+                        "postprocessStatus": "succeeded",
+                        "status": "succeeded",
+                        "summaryJson": str(summary_json),
+                        "summaryMd": str(summary_md),
+                    }
+                )
+            manifest = {
+                "targetTopN": 3,
+                "materialIds": ["m-1", "m-2", "m-3", "m-4"],
+                "selectedMaterials": selected,
+                "rejectedMaterials": [],
+                "cancelledMaterials": [],
+            }
+
+            _path, receipt = extract_peak_frames._verify_streaming_rpa_batch(
+                args, manifest["materialIds"], manifest
+            )
+
+        self.assertTrue(receipt["valid"])
+        self.assertEqual(receipt["materialIds"], ["m-2", "m-3", "m-4"])
+
     def test_streaming_material_total_timing_includes_rpa_and_postprocess(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

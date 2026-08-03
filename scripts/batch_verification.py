@@ -86,6 +86,7 @@ def verify_streaming_batch(
         raise RuntimeError("streaming batch manifest has invalid cancelledMaterials")
 
     selected_by_id = {}
+    successful_selected = []
     for entry in selected:
         if not isinstance(entry, dict):
             errors.append("streaming selected material entry is invalid")
@@ -93,6 +94,14 @@ def verify_streaming_batch(
         material_id = str(entry.get("materialId") or "").strip()
         if material_id:
             selected_by_id[material_id] = entry
+            if entry.get("postprocessStatus") == "succeeded":
+                successful_selected.append(entry)
+
+    def rank_key(entry):
+        rank = entry.get("rank")
+        return (rank if type(rank) is int and rank >= 0 else float("inf"), entry["materialId"])
+
+    successful_selected.sort(key=rank_key)
 
     manifest_material_ids = manifest.get("materialIds")
     try:
@@ -107,13 +116,24 @@ def verify_streaming_batch(
         and isinstance(manifest_material_ids, list)
         and set(material_ids) == set(manifest_material_ids)
     ):
-        if len(selected) < target_top_n:
-            errors.append("streaming batch selectedMaterials does not satisfy targetTopN")
+        if len(successful_selected) < target_top_n:
+            errors.append(
+                "streaming batch postprocessSucceededCount does not satisfy targetTopN"
+            )
         material_ids_to_verify = [
             str(entry.get("materialId") or "").strip()
-            for entry in selected
-            if isinstance(entry, dict) and str(entry.get("materialId") or "").strip()
+            for entry in successful_selected[:target_top_n]
         ]
+        warnings.extend(
+            {
+                "materialId": str(entry.get("materialId") or "").strip(),
+                "warning": "historical RPA selection did not complete postprocessing",
+            }
+            for entry in selected
+            if isinstance(entry, dict)
+            and entry.get("postprocessStatus") != "succeeded"
+            and str(entry.get("materialId") or "").strip()
+        )
     else:
         material_ids_to_verify = material_ids
 
