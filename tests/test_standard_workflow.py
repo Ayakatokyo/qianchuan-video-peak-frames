@@ -1,0 +1,146 @@
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import standard_workflow  # noqa: E402
+
+
+class StandardWorkflowTests(unittest.TestCase):
+    def request(self):
+        return standard_workflow.WorkflowRequest(
+            start_date="2026-07-19",
+            end_date="2026-07-25",
+            top_n=2,
+            advertiser_id="1770096415226951",
+        )
+
+    def test_prepare_runs_selection_batch_verification_and_fact_package(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def export_main(argv):
+                calls.append(("selection", argv))
+                return 0
+
+            def extract_main(argv):
+                calls.append(("verification" if "--verify" in argv else "batch", argv))
+                return 0
+
+            def prepare_facts(**kwargs):
+                calls.append(("facts", kwargs))
+                return (
+                    root / "diagnostic-analysis" / "diagnostic-analysis-data.json",
+                    root / "diagnostic-analysis" / "diagnostic-analysis-prompt.md",
+                    {},
+                )
+
+            summary = standard_workflow.prepare_standard_run(
+                self.request(), root,
+                export_main=export_main,
+                extract_main=extract_main,
+                prepare_facts=prepare_facts,
+            )
+
+            self.assertEqual(summary["status"], "analysis_pending")
+            self.assertEqual([name for name, _value in calls], [
+                "selection", "batch", "verification", "facts",
+            ])
+            self.assertEqual(calls[0][1][calls[0][1].index("--top-n") + 1], "6")
+            self.assertEqual(
+                calls[0][1][calls[0][1].index("--advertiser-id") + 1],
+                "1770096415226951",
+            )
+            self.assertIn("--target-top-n", calls[1][1])
+            self.assertIn("--verify", calls[2][1])
+            self.assertEqual(
+                calls[3][1]["top_materials_json"],
+                root / "peak-frames" / "top_materials_rpa_ready.json",
+            )
+            persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted, summary)
+
+    def test_prepare_uses_configured_shop_id_without_exposing_it_in_request(self):
+        batch_argv = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def extract_main(argv):
+                if "--verify" not in argv:
+                    batch_argv.extend(argv)
+                return 0
+
+            with patch.dict(os.environ, {"QIANCHUAN_RPA_SHOP_ID": "shop-1"}):
+                standard_workflow.prepare_standard_run(
+                    self.request(), root,
+                    export_main=lambda _argv: 0,
+                    extract_main=extract_main,
+                    prepare_facts=lambda **_kwargs: (
+                        root / "data.json", root / "prompt.md", {}
+                    ),
+                )
+
+        self.assertEqual(batch_argv[batch_argv.index("--shop-id") + 1], "shop-1")
+
+    def test_prepare_marks_run_failed_without_preparing_facts_when_batch_fails(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with self.assertRaises(standard_workflow.StandardWorkflowError) as error:
+                standard_workflow.prepare_standard_run(
+                    self.request(), root,
+                    export_main=lambda _argv: 0,
+                    extract_main=lambda argv: 5 if "--verify" not in argv else 0,
+                    prepare_facts=lambda **_kwargs: calls.append("facts"),
+                )
+
+            self.assertEqual(error.exception.stage, "diagnosis_batch")
+            self.assertEqual(calls, [])
+            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["status"], "failed")
+            self.assertEqual(summary["failure"]["stage"], "diagnosis_batch")
+
+    def test_finalize_marks_run_complete_only_after_manifest_validation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text("{}", encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 1,
+                    "status": "analysis_pending",
+                    "request": {
+                        "startDate": "2026-07-19",
+                        "endDate": "2026-07-25",
+                        "topN": 2,
+                        "advertiserId": "1770096415226951",
+                    },
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+            summary = standard_workflow.finalize_standard_run(
+                root, analysis_json,
+                render_report=lambda **_kwargs: (
+                    root / "final-report" / "final-report-data.json",
+                    root / "final-report" / "final-report.html",
+                    {},
+                ),
+                mark_ready=lambda *_paths: True,
+            )
+
+        self.assertEqual(summary["status"], "complete")
+        self.assertEqual(summary["artifacts"]["report"], "final-report/final-report.html")
+
+
+if __name__ == "__main__":
+    unittest.main()
