@@ -93,6 +93,23 @@ class StandardWorkflowTests(unittest.TestCase):
 
         self.assertEqual(batch_argv[batch_argv.index("--shop-id") + 1], "shop-1")
 
+    def test_prepare_omits_shop_id_when_not_configured(self):
+        batch_argv = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.dict(os.environ, {}, clear=True):
+                standard_workflow.prepare_standard_run(
+                    self.request(), root,
+                    export_main=lambda _argv: 0,
+                    extract_main=lambda argv: batch_argv.append(argv) or 0,
+                    prepare_facts=lambda **_kwargs: (
+                        root / "data.json", root / "prompt.md", {}
+                    ),
+                )
+
+        self.assertEqual(len(batch_argv), 2)
+        self.assertTrue(all("--shop-id" not in argv for argv in batch_argv))
+
     def test_prepare_records_request_failure_for_non_request_input(self):
         export_calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -190,6 +207,64 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["artifacts"]["report"], "final-report/final-report.html")
 
+    def test_finalize_retries_pending_run_after_report_failure(self):
+        render_calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text('{"schemaVersion": 2}', encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 1,
+                    "status": "analysis_pending",
+                    "request": {
+                        "startDate": "2026-07-19",
+                        "endDate": "2026-07-25",
+                        "topN": 2,
+                        "advertiserId": "1770096415226951",
+                    },
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            def render_report(**_kwargs):
+                render_calls.append("rendered")
+                if len(render_calls) == 1:
+                    raise ValueError("AI JSON needs correction")
+                return (
+                    root / "final-report" / "final-report-data.json",
+                    root / "final-report" / "final-report.html",
+                    {},
+                )
+
+            with self.assertRaises(standard_workflow.StandardWorkflowError) as error:
+                standard_workflow.finalize_standard_run(
+                    root, analysis_json, render_report=render_report,
+                    mark_ready=lambda *_paths: True,
+                )
+
+            retryable = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+            analysis_json.write_text('{"schemaVersion": 2, "corrected": true}', encoding="utf-8")
+            completed = standard_workflow.finalize_standard_run(
+                root, analysis_json, render_report=render_report,
+                mark_ready=lambda *_paths: True,
+            )
+            persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(error.exception.stage, "report")
+        self.assertEqual(str(error.exception), "AI JSON needs correction")
+        self.assertEqual(retryable["status"], "analysis_pending")
+        self.assertEqual(retryable["failure"], {
+            "stage": "report",
+            "message": "AI JSON needs correction",
+        })
+        self.assertEqual(render_calls, ["rendered", "rendered"])
+        self.assertEqual(completed["status"], "complete")
+        self.assertIsNone(completed["failure"])
+        self.assertEqual(persisted, completed)
+
 
 class StandardWorkflowCliTests(unittest.TestCase):
     def test_prepare_parser_accepts_only_business_inputs(self):
@@ -214,6 +289,14 @@ class StandardWorkflowCliTests(unittest.TestCase):
                 parser.parse_args(["finalize", "--output-dir", "run"])
 
         self.assertEqual(error.exception.code, 2)
+
+    def test_finalize_missing_analysis_json_returns_cli_error_code(self):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            result = run_standard_analysis.main(["finalize", "--output-dir", "run"])
+
+        self.assertEqual(result, 2)
+        self.assertIn("usage:", stderr.getvalue())
 
 
 if __name__ == "__main__":

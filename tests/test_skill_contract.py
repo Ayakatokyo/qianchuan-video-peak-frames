@@ -59,6 +59,12 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("final-report/", skill)
         self.assertIn("不得交付草稿报告", skill)
 
+    def test_skill_documents_finalize_retry_after_correcting_ai_json(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("修正 AI JSON 后，直接重新执行 finalize", skill)
+        self.assertIn("无需重新执行 prepare 或任何运行命令", skill)
+
     def test_runbook_owns_legacy_recovery_and_debug_commands(self):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
@@ -83,9 +89,14 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
             self.assertIn(section, prompt)
         self.assertIn("不得分析执行过程", prompt)
         self.assertIn("每一张高光帧都必须对应一条 `highlightAnalyses`", prompt)
+        self.assertIn("成功生成的 JPEG", prompt)
         self.assertIn("frameCoverageNote", prompt)
+        self.assertIn("missingFrames", prompt)
         self.assertIn("必须说明哪个预期帧不可用", prompt)
         self.assertIn("明确视觉结论基于其余成功帧", prompt)
+        self.assertIn("不得只分析 zero_second 和 peak_top_1", prompt)
+        self.assertIn("peak_top_2", prompt)
+        self.assertIn("peak_top_3", prompt)
         self.assertNotIn("缺失任何一帧都不能视为完成", prompt)
 
     def test_rpa_contract_remains_the_source_of_operational_details(self):

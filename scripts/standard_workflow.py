@@ -116,11 +116,11 @@ def _run_stage(stage, entrypoint, arguments):
         raise StandardWorkflowError(stage, f"{stage} command exited with status {status}")
 
 
-def _write_failure(request, paths, stage, message):
+def _write_failure(request, paths, stage, message, *, status="failed"):
     summary = _summary(
         request,
         paths,
-        status="failed",
+        status=status,
         failure={"stage": stage, "message": message},
     )
     write_run_summary(paths["summary"], summary)
@@ -207,14 +207,17 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
         analysis_path = Path(analysis_json)
         if not analysis_path.is_file():
             raise StandardWorkflowError("report", "analysis JSON is missing")
-        data_path, html_path, _data = render_report(
-            top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
-            peak_output_dir=paths["peak_frames"],
-            diagnosis_records_dir=paths["records"],
-            output_dir=paths["report"],
-            analysis_json=analysis_path,
-            copy_assets=True,
-        )
+        try:
+            data_path, html_path, _data = render_report(
+                top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
+                peak_output_dir=paths["peak_frames"],
+                diagnosis_records_dir=paths["records"],
+                output_dir=paths["report"],
+                analysis_json=analysis_path,
+                copy_assets=True,
+            )
+        except Exception as exc:
+            raise StandardWorkflowError("report", str(exc)) from exc
         if not mark_ready(paths["peak_frames"] / "batch-manifest.json", data_path, html_path):
             raise StandardWorkflowError("report", "final report failed manifest validation")
         completed = _summary(
@@ -228,8 +231,11 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
         write_run_summary(paths["summary"], completed)
         return completed
     except StandardWorkflowError as exc:
-        _write_failure(request, paths, exc.stage, str(exc))
+        status = "analysis_pending" if (
+            summary.get("status") == "analysis_pending" and exc.stage == "report"
+        ) else "failed"
+        _write_failure(request, paths, exc.stage, str(exc), status=status)
         raise
     except Exception as exc:
-        _write_failure(request, paths, "report", str(exc))
+        _write_failure(request, paths, "report", str(exc), status="analysis_pending")
         raise StandardWorkflowError("report", str(exc)) from exc

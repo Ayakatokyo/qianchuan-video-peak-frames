@@ -47,7 +47,10 @@ def _artifact_path(output_dir, relative_path):
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    try:
+        args = build_parser().parse_args(argv)
+    except SystemExit as exc:
+        return exc.code
     try:
         if args.command == "prepare":
             summary = prepare_standard_run(

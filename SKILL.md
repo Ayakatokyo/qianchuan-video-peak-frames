@@ -53,4 +53,4 @@ python scripts/run_standard_analysis.py finalize \
 
 ## 失败处理
 
-标准入口失败时，查看对应运行目录中的 `run-summary.json`，其中包含失败阶段和审计产物位置。常规报告流程不得切换到旧命令；只有排障时才使用 [运维手册](references/qianchuan-operations-runbook.md)。连接器字段与运行时边界见 [RPA 输出契约](references/rpa-output-contract.md)。
+标准入口失败时，查看对应运行目录中的 `run-summary.json`，其中包含失败阶段和审计产物位置。若状态仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令。常规报告流程不得切换到旧命令；只有排障时才使用 [运维手册](references/qianchuan-operations-runbook.md)。连接器字段与运行时边界见 [RPA 输出契约](references/rpa-output-contract.md)。
