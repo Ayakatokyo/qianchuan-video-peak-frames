@@ -18,6 +18,7 @@ from peak_frame_lib import (  # noqa: E402
     DEFAULT_FFMPEG_TIMEOUT_SEC,
     FfmpegError,
     InputDataError,
+    Peak,
     SelectedPeak,
     SeriesPoint,
     build_summary,
@@ -1116,6 +1117,40 @@ class FfmpegResolutionTests(unittest.TestCase):
 
 
 class FrameExtractionTests(unittest.TestCase):
+
+    def test_signal_killed_frame_retries_once_with_single_thread_ffmpeg(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+
+            def signal_then_succeed(command, **_kwargs):
+                commands.append(command)
+                if command[-1] == "-":
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stdout="", stderr=""
+                    )
+                if len(commands) == 1:
+                    return subprocess.CompletedProcess(
+                        command, returncode=-9, stdout="", stderr="killed"
+                    )
+                Path(command[-1]).write_bytes(DECODABLE_JPEG)
+                return subprocess.CompletedProcess(
+                    command, returncode=0, stdout="", stderr=""
+                )
+
+            with patch(
+                "peak_frame_lib.subprocess.run", side_effect=signal_then_succeed
+            ):
+                extract_frame("ffmpeg", video_path, 3.5, output_path)
+
+        self.assertEqual(len(commands), 3)
+        self.assertIn("-threads", commands[1])
+        self.assertEqual(commands[1][commands[1].index("-threads") + 1], "1")
+        self.assertIn("-filter_threads", commands[1])
+        self.assertEqual(output_path.exists(), False)
     def test_extracts_center_pixel_color_from_each_target_second(self):
         ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
         with tempfile.TemporaryDirectory(prefix="peak color proof ") as temp_dir:
@@ -1940,7 +1975,7 @@ class SummaryTests(unittest.TestCase):
             "peak_top_1_0007p5s_12p25.jpg",
         )
 
-    def test_summary_warns_when_top_peaks_are_missing(self):
+    def test_summary_explains_curve_with_fewer_than_three_peaks(self):
         selected = [
             SelectedPeak("zero_second", 0.0, 1.0),
             SelectedPeak("peak_top_1", 3.0, 4.0),
@@ -1957,7 +1992,7 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(len(summary["frames"]), 2)
         self.assertEqual(
             summary["warnings"],
-            ["2 top peak frame(s) unavailable"],
+            ["click curve has 1 local peak(s); up to 3 are targeted"],
         )
         self.assertEqual(
             [frame["rankType"] for frame in summary["frames"]],
@@ -2021,7 +2056,7 @@ class SummaryTests(unittest.TestCase):
             self.assertLess(
                 markdown.index("zero_second"), markdown.index("peak_top_1")
             )
-            self.assertIn("2 top peak frame(s) unavailable", markdown)
+            self.assertIn("click curve has 1 local peak(s); up to 3 are targeted", markdown)
             self.assertEqual(list(result_dir.glob("*.tmp*")), [])
 
     def test_refuses_to_write_summaries_for_missing_or_empty_frame(self):
@@ -2049,6 +2084,55 @@ class SummaryTests(unittest.TestCase):
 
 
 class ProcessingPipelineTests(unittest.TestCase):
+    def test_select_peak_frames_accepts_monotonic_curve_with_only_cover_frame(self):
+        selected = select_peak_frames(
+            [
+                Peak(0.0, 9.0),
+                Peak(1.0, 6.0),
+                Peak(2.0, 2.0),
+            ]
+        )
+
+        self.assertEqual([peak.rank_type for peak in selected], ["zero_second"])
+
+    def test_process_records_keeps_later_frames_after_expected_peak_failure(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def extract_one_frame(_ffmpeg, _video, timestamp, output, **_kwargs):
+                if timestamp == 2.0:
+                    raise FfmpegError("peak decoder killed")
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=6.0
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=extract_one_frame
+            ) as extract:
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records, "records.json", video, root / "output"
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(extract.call_count, 3)
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["zero_second", "peak_top_2"],
+        )
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["missingFrames"]],
+            ["peak_top_1"],
+        )
+
     def test_process_records_passes_configured_timeout_to_probe_and_frames(self):
         records = [
             click_record(second, value)
@@ -5154,7 +5238,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(summary["frames"]), 3)
             self.assertEqual(
                 summary["warnings"],
-                ["1 top peak frame(s) unavailable"],
+                ["click curve has 2 local peak(s); up to 3 are targeted"],
             )
 
     def test_rpa_source_auto_resolves_single_shop_id(self):
@@ -5591,12 +5675,12 @@ class CliTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2)
             self.assertIn("video does not exist", completed.stderr)
 
-    def test_local_cli_rejects_no_peaks(self):
+    def test_local_cli_accepts_no_peaks_with_cover_frame(self):
         ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             video = root / "video.mp4"
-            video.touch()
+            self._make_video(ffmpeg, video, duration=3)
             input_json = root / "input.json"
             self._write_series(
                 input_json, list(enumerate([1, 2, 3]))
@@ -5606,8 +5690,17 @@ class CliTests(unittest.TestCase):
                 input_json, video, root / "out", ffmpeg
             )
 
-            self.assertEqual(completed.returncode, 2)
-            self.assertIn("No local peaks", completed.stderr)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(
+                (root / "out" / "m-123" / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                [frame["rankType"] for frame in summary["frames"]],
+                ["zero_second"],
+            )
+            self.assertEqual(summary["missingFrames"], [])
 
     def test_local_cli_rejects_peak_at_video_duration(self):
         ffmpeg = resolve_ffmpeg()
