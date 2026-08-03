@@ -86,15 +86,16 @@ def _relative(root, path):
 def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=None,
              report=None, failure=None):
     root = paths["root"]
+    request_summary = {
+        "startDate": request.start_date,
+        "endDate": request.end_date,
+        "topN": request.top_n,
+        "advertiserId": request.advertiser_id,
+    } if isinstance(request, WorkflowRequest) else None
     return {
         "schemaVersion": 1,
         "status": status,
-        "request": {
-            "startDate": request.start_date,
-            "endDate": request.end_date,
-            "topN": request.top_n,
-            "advertiserId": request.advertiser_id,
-        },
+        "request": request_summary,
         "artifacts": {
             "topMaterials": _relative(root, paths["top_materials"]),
             "readyMaterials": _relative(root, paths["peak_frames"] / READY_MATERIALS_NAME),

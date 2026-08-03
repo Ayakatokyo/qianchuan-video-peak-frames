@@ -93,6 +93,52 @@ class StandardWorkflowTests(unittest.TestCase):
 
         self.assertEqual(batch_argv[batch_argv.index("--shop-id") + 1], "shop-1")
 
+    def test_prepare_records_request_failure_for_non_request_input(self):
+        export_calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with self.assertRaises(standard_workflow.StandardWorkflowError) as error:
+                standard_workflow.prepare_standard_run(
+                    object(), root,
+                    export_main=lambda argv: export_calls.append(argv),
+                )
+
+            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(error.exception.stage, "request")
+        self.assertEqual(str(error.exception), "request must be a WorkflowRequest")
+        self.assertEqual(export_calls, [])
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["failure"]["stage"], "request")
+        self.assertEqual(summary["failure"]["message"], str(error.exception))
+        self.assertIn("request", summary)
+
+    def test_prepare_records_request_failure_for_invalid_request_field_types(self):
+        export_calls = []
+        request = standard_workflow.WorkflowRequest(
+            start_date="2026-07-19",
+            end_date="2026-07-25",
+            top_n="2",
+            advertiser_id="1770096415226951",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with self.assertRaises(standard_workflow.StandardWorkflowError) as error:
+                standard_workflow.prepare_standard_run(
+                    request, root,
+                    export_main=lambda argv: export_calls.append(argv),
+                )
+
+            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(error.exception.stage, "request")
+        self.assertEqual(str(error.exception), "top_n must be a positive integer")
+        self.assertEqual(export_calls, [])
+        self.assertEqual(summary["status"], "failed")
+        self.assertEqual(summary["failure"]["stage"], "request")
+        self.assertEqual(summary["failure"]["message"], str(error.exception))
+        self.assertEqual(summary["request"]["topN"], "2")
+
     def test_prepare_marks_run_failed_without_preparing_facts_when_batch_fails(self):
         calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
