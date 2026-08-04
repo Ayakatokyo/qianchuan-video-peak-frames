@@ -24,17 +24,33 @@ def _validate_optional_wave_fields(payload, *, scope):
         type(payload["waveSize"]) is not int or payload["waveSize"] <= 0
     ):
         raise SchemaError(f"{scope} waveSize must be a positive integer")
-    for field in ("waveStartedAtSec", "waveFinishedAtSec"):
+    for field in (
+        "waveStartedAtSec",
+        "waveFinishedAtSec",
+        "waveCsvArtifactFinishedAtSec",
+    ):
         if field in payload and (
             isinstance(payload[field], bool)
             or not isinstance(payload[field], (int, float))
             or payload[field] < 0
         ):
             raise SchemaError(f"{scope} {field} must be a non-negative number")
+    if (
+        "waveStartedAtSec" in payload
+        and "waveCsvArtifactFinishedAtSec" in payload
+        and payload["waveCsvArtifactFinishedAtSec"] < payload["waveStartedAtSec"]
+    ):
+        raise SchemaError(
+            f"{scope} waveCsvArtifactFinishedAtSec cannot precede waveStartedAtSec"
+        )
 
 
 def _validate_optional_lifecycle_fields(payload, *, scope):
-    for field in ("rpaSoftTimeoutExceeded", "rpaHardTimeoutExceeded"):
+    for field in (
+        "rpaSoftTimeoutExceeded",
+        "rpaHardTimeoutExceeded",
+        "rpaCsvVerified",
+    ):
         if field in payload and type(payload[field]) is not bool:
             raise SchemaError(f"{scope} {field} must be a boolean")
     for field in (

@@ -50,6 +50,20 @@ class StreamingBatchRunnerTests(unittest.TestCase):
             "timingsSec": {},
         }
 
+    @staticmethod
+    def _verified_rpa_success(entry):
+        material_id = entry["materialId"]
+        return {
+            **entry,
+            "rpaStatus": "selected",
+            "rpaResultStatus": "available",
+            "rpaCsvVerified": True,
+            "diagnosisCsvPath": f"diagnosis-csv/{material_id}.csv",
+            "recordsPersisted": True,
+            "diagnosisRecordsPath": f"diagnosis-records/{material_id}.json",
+            "postprocessStatus": "queued",
+        }
+
     def _new_manifest(self, _args, _candidates, entries, submitted, selected, rejected, cancelled):
         materials = rpa_batch_runner.ordered(entries)
         return {
@@ -101,7 +115,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
 
         def attempt_rpa(_args, entry):
             rpa_calls.append(entry["materialId"])
-            return dict(entry, rpaStatus="selected", postprocessStatus="queued")
+            return self._verified_rpa_success(entry)
 
         def attempt_postprocess(_args, entry):
             postprocess_calls.append((entry["materialId"], entry["postprocessAttemptCount"]))
@@ -126,13 +140,126 @@ class StreamingBatchRunnerTests(unittest.TestCase):
             ["m-1", "m-3", "m-4"],
         )
 
+    def test_unverified_csv_result_is_finalized_without_postprocess(self):
+        postprocess_calls = []
+
+        def attempt_rpa(_args, entry):
+            return {
+                **entry,
+                "rpaStatus": "selected",
+                "rpaResultStatus": "available",
+                "rpaCsvVerified": False,
+                "diagnosisCsvPath": None,
+                "postprocessStatus": "queued",
+            }
+
+        def attempt_postprocess(_args, entry):
+            postprocess_calls.append(entry["materialId"])
+            return self._success_postprocess(_args, entry)
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1"], attempt_rpa, attempt_postprocess, args={"target_top_n": 1}
+        )
+
+        self.assertTrue(failures)
+        self.assertEqual(postprocess_calls, [])
+        self.assertEqual(
+            [
+                (
+                    item["rpaStatus"],
+                    item["rpaResultStatus"],
+                    item["failureReason"],
+                )
+                for item in manifest["rejectedMaterials"]
+            ],
+            [("rejected", "final_failed", "rpa_csv_artifact_unavailable")],
+        )
+
+    def test_final_rpa_failure_releases_next_wave(self):
+        starts = []
+
+        def attempt_rpa(_args, entry):
+            starts.append(entry["materialId"])
+            if entry["materialId"] == "m-2":
+                return {
+                    **entry,
+                    "rpaStatus": "rejected",
+                    "rpaResultStatus": "final_failed",
+                    "postprocessStatus": "not_started",
+                }
+            return self._verified_rpa_success(entry)
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1", "m-2", "m-3"],
+            attempt_rpa,
+            self._success_postprocess,
+            args={"target_top_n": 2, "rpa_concurrency": 2},
+        )
+
+        self.assertFalse(failures)
+        self.assertEqual(starts, ["m-1", "m-2", "m-3"])
+        self.assertEqual(
+            [item["materialId"] for item in manifest["selectedMaterials"]],
+            ["m-1", "m-3"],
+        )
+
+    def test_nonterminal_rpa_result_is_finalized_before_next_wave(self):
+        starts = []
+
+        def attempt_rpa(_args, entry):
+            starts.append(entry["materialId"])
+            if entry["materialId"] == "m-2":
+                return {
+                    **entry,
+                    "rpaStatus": "rejected",
+                    "rpaResultStatus": "pending",
+                    "postprocessStatus": "not_started",
+                }
+            return self._verified_rpa_success(entry)
+
+        manifest, _failures, _ = self.run_batch(
+            ["m-1", "m-2", "m-3"],
+            attempt_rpa,
+            self._success_postprocess,
+            args={"target_top_n": 2, "rpa_concurrency": 2},
+        )
+
+        self.assertEqual(starts, ["m-1", "m-2", "m-3"])
+        rejected = manifest["rejectedMaterials"][0]
+        self.assertEqual(rejected["materialId"], "m-2")
+        self.assertEqual(rejected["rpaResultStatus"], "final_failed")
+        self.assertEqual(rejected["failureReason"], "rpa_csv_artifact_unavailable")
+
+    def test_selected_final_failure_does_not_enter_postprocess(self):
+        postprocess_calls = []
+
+        def attempt_rpa(_args, entry):
+            return {
+                **entry,
+                "rpaStatus": "selected",
+                "rpaResultStatus": "final_failed",
+                "postprocessStatus": "queued",
+            }
+
+        def attempt_postprocess(_args, entry):
+            postprocess_calls.append(entry["materialId"])
+            return self._success_postprocess(_args, entry)
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1"], attempt_rpa, attempt_postprocess, args={"target_top_n": 1}
+        )
+
+        self.assertTrue(failures)
+        self.assertEqual(postprocess_calls, [])
+        self.assertEqual(manifest["rejectedMaterials"][0]["rpaStatus"], "rejected")
+
     def test_completed_postprocess_is_persisted_while_rpa_wave_waits(self):
         persisted_success = threading.Event()
 
         def attempt_rpa(_args, entry):
             if entry["materialId"] == "m-3":
                 self.assertTrue(persisted_success.wait(timeout=0.5))
-            return dict(entry, rpaStatus="selected", postprocessStatus="queued")
+            return self._verified_rpa_success(entry)
 
         def write_json(path, manifest):
             if path == "manifest" and any(
@@ -154,7 +281,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
 
     def test_streaming_manifest_preserves_wave_size_after_rpa_completion(self):
         def attempt_rpa(_args, entry):
-            return dict(entry, rpaStatus="selected", postprocessStatus="queued")
+            return self._verified_rpa_success(entry)
 
         manifest, failures, _ = self.run_batch(
             ["m-1", "m-2", "m-3", "m-4"],
@@ -169,6 +296,13 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         self.assertEqual(
             [entry["waveSize"] for entry in manifest["selectedMaterials"]],
             [3, 3, 3, 1],
+        )
+        self.assertTrue(
+            all(
+                entry["waveCsvArtifactFinishedAtSec"] >= entry["waveStartedAtSec"]
+                and entry["waveCsvArtifactFinishedAtSec"] >= entry["rpaFinishedAtSec"]
+                for entry in manifest["selectedMaterials"]
+            )
         )
 
     def test_rpa_soft_timeout_is_checkpointed_without_starting_next_wave(self):
@@ -188,7 +322,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         def attempt_rpa(_args, entry):
             submitted.append(entry["materialId"])
             release_first_wave.wait(timeout=1)
-            return dict(entry, rpaStatus="selected", postprocessStatus="queued")
+            return self._verified_rpa_success(entry)
 
         def write_json(path, manifest):
             if path == "manifest" and any(
@@ -234,7 +368,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         postprocess_calls = []
 
         def attempt_rpa(_args, entry):
-            return dict(entry, rpaStatus="selected", postprocessStatus="queued")
+            return self._verified_rpa_success(entry)
 
         def attempt_postprocess(_args, entry):
             postprocess_calls.append((entry["materialId"], entry["postprocessAttemptCount"]))
@@ -255,12 +389,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         phases = []
 
         def attempt_rpa(_args, entry):
-            return dict(
-                entry,
-                rpaStatus="selected",
-                postprocessStatus="queued",
-                recordsPersisted=True,
-            )
+            return self._verified_rpa_success(entry)
 
         def attempt_postprocess(_args, entry):
             phases.append((entry["materialId"], entry["postprocessPhase"]))
@@ -286,12 +415,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
 
     def test_failed_compensation_preserves_parallel_error_chain(self):
         def attempt_rpa(_args, entry):
-            return dict(
-                entry,
-                rpaStatus="selected",
-                postprocessStatus="queued",
-                recordsPersisted=True,
-            )
+            return self._verified_rpa_success(entry)
 
         def attempt_postprocess(_args, entry):
             message = "parallel download" if entry["postprocessPhase"] == "parallel" else "serial download"

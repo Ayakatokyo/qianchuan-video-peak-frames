@@ -56,6 +56,7 @@ class SchemaNormalizationTests(unittest.TestCase):
                         "waveSize": 3,
                         "waveStartedAtSec": 0.0,
                         "waveFinishedAtSec": 12.5,
+                        "waveCsvArtifactFinishedAtSec": 12.5,
                     },
                     {
                         "materialId": "m-2",
@@ -70,6 +71,23 @@ class SchemaNormalizationTests(unittest.TestCase):
 
         self.assertTrue(normalized["waveBarrier"])
         self.assertEqual(normalized["materials"][1]["waveIndex"], 1)
+
+    def test_manifest_rejects_csv_wave_completion_before_wave_start(self):
+        with self.assertRaisesRegex(
+            SchemaError, "waveCsvArtifactFinishedAtSec cannot precede waveStartedAtSec"
+        ):
+            validate_manifest(
+                {
+                    "schemaVersion": 2,
+                    "materials": [
+                        {
+                            "materialId": "m-1",
+                            "waveStartedAtSec": 2.0,
+                            "waveCsvArtifactFinishedAtSec": 1.0,
+                        }
+                    ],
+                }
+            )
 
     def test_manifest_rejects_invalid_wave_field_types(self):
         with self.assertRaises(SchemaError):
@@ -111,6 +129,17 @@ class SchemaNormalizationTests(unittest.TestCase):
                             "rpaHardTimeoutExceeded": "false",
                             "postprocessAttemptCount": -1,
                         }
+                    ],
+                }
+            )
+
+    def test_manifest_rejects_non_boolean_csv_verification_flag(self):
+        with self.assertRaisesRegex(SchemaError, "rpaCsvVerified must be a boolean"):
+            validate_manifest(
+                {
+                    "schemaVersion": 2,
+                    "materials": [
+                        {"materialId": "m-1", "rpaCsvVerified": "true"}
                     ],
                 }
             )

@@ -812,6 +812,22 @@ def _recover_stream_rpa_result(
 
 
 def _run_rpa_preflight(args, candidate_payload):
+    def fetch_material(args_, material_id):
+        started_at_epoch = time.time()
+
+        def fetch_once():
+            return _fetch_material_preflight_for_cli(
+                args_, material_id, recover_late_artifacts=False
+            )
+
+        return _recover_stream_rpa_result(
+            args_,
+            material_id,
+            fetch_once(),
+            started_at_epoch=started_at_epoch,
+            fetch_once=fetch_once,
+        )
+
     def materialize(args_, outcome, material_id):
         records, path = _materialize_preflight_records(args_, outcome, material_id)
         if outcome.get("diagnosisCsvPath"):
@@ -832,7 +848,7 @@ def _run_rpa_preflight(args, candidate_payload):
     return rpa_preflight.run_preflight(
         args,
         candidate_payload,
-        fetch_material=_fetch_material_preflight_for_cli,
+        fetch_material=fetch_material,
         materialize_records=materialize,
         material_entry=entry,
         failure_entry=_preflight_failure,

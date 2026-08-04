@@ -54,6 +54,20 @@ def accounted_indices(*entry_maps):
     return accounted
 
 
+def has_verified_rpa_csv(entry):
+    return bool(
+        entry.get("rpaResultStatus") == "available"
+        and entry.get("rpaCsvVerified") is True
+        and str(entry.get("diagnosisCsvPath") or "").strip()
+    )
+
+
+def has_terminal_rpa_csv(entry):
+    return entry.get("rpaResultStatus") == "final_failed" or has_verified_rpa_csv(
+        entry
+    )
+
+
 def run_streaming_batch(
     args,
     candidate_payload,
@@ -158,6 +172,23 @@ def run_streaming_batch(
         entry["lastProgressAtSec"] = state_changed_at
         entries[index] = entry
         submitted[index] = entry
+        if not has_terminal_rpa_csv(entry) or (
+            entry.get("rpaStatus") == "selected" and not has_verified_rpa_csv(entry)
+        ):
+            entry.update(
+                {
+                    "rpaStatus": "rejected",
+                    "status": "failed",
+                    "failureReason": "rpa_csv_artifact_unavailable",
+                    "rpaResultStatus": "final_failed",
+                    "errorType": "RpaCsvArtifactContractError",
+                    "errorMessage": (
+                        "RPA completed without a verified current CSV artifact"
+                    ),
+                }
+            )
+            entries[index] = entry
+            submitted[index] = entry
         if entry["rpaStatus"] == "selected":
             selected[index] = entry
             submit_postprocess(postprocess_executor, index)
@@ -361,6 +392,9 @@ def run_streaming_batch(
                     wave_finished_at = elapsed(batch_started_at)
                     for index in wave.values():
                         entries[index]["waveFinishedAtSec"] = wave_finished_at
+                        entries[index]["waveCsvArtifactFinishedAtSec"] = (
+                            wave_finished_at
+                        )
                     wave = {}
                     wave_index += 1
                     changed = True

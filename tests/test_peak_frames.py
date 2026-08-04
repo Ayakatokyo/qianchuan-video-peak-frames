@@ -2870,6 +2870,76 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(saw_postprocess_before_release, [True])
 
+    def test_streaming_starts_next_wave_after_csv_before_prior_postprocess_finishes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            starts = []
+            lock = threading.Lock()
+            second_csv_release = threading.Event()
+            first_postprocess_started = threading.Event()
+            first_postprocess_release = threading.Event()
+            result = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                with lock:
+                    starts.append(material_id)
+                if material_id == "m-2":
+                    second_csv_release.wait(timeout=1)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._streaming_outcome(material_id)
+
+            def postprocess(args, entry):
+                if entry["materialId"] == "m-1":
+                    first_postprocess_started.set()
+                    first_postprocess_release.wait(timeout=1)
+                return self._streaming_postprocess(output, args, entry)
+
+            def run_batch():
+                with patch.object(
+                    extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+                ), patch.object(
+                    extract_peak_frames,
+                    "_attempt_stream_postprocess",
+                    side_effect=postprocess,
+                ):
+                    result.append(
+                        extract_peak_frames.main(
+                            self._batch_args(
+                                top_materials,
+                                output,
+                                "--target-top-n",
+                                "3",
+                                "--candidate-top-n",
+                                "3",
+                                "--rpa-concurrency",
+                                "2",
+                            )
+                        )
+                    )
+
+            runner = threading.Thread(target=run_batch)
+            runner.start()
+            self.assertTrue(first_postprocess_started.wait(timeout=1))
+            self.assertEqual(set(starts), {"m-1", "m-2"})
+            second_csv_release.set()
+            deadline = time.monotonic() + 1
+            while "m-3" not in starts and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertIn("m-3", starts)
+            self.assertFalse(first_postprocess_release.is_set())
+            first_postprocess_release.set()
+            runner.join(timeout=2)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(result, [0])
+
     def test_streaming_rebuilds_selected_order_after_out_of_order_rpa(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -3289,6 +3359,9 @@ class CliTests(unittest.TestCase):
                 updated.update(
                     {
                         "rpaStatus": "selected",
+                        "rpaResultStatus": "available",
+                        "rpaCsvVerified": True,
+                        "diagnosisCsvPath": "diagnosis-csv/m-1.csv",
                         "postprocessStatus": "queued",
                         "status": "running",
                         "records": self._streaming_outcome("m-1")["records"],
@@ -3428,6 +3501,10 @@ class CliTests(unittest.TestCase):
 
             def preflight_material(**kwargs):
                 material_id = kwargs["material_id"]
+                if material_id == "m-1":
+                    self._write_streaming_csv(
+                        kwargs["diagnosis_csv_dir"], material_id
+                    )
                 return {
                     "materialId": material_id,
                     "rpaAvailable": material_id == "m-1",
@@ -3521,7 +3598,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(receipt["selectedMaterials"], [])
         self.assertEqual(
             [(item["materialId"], item["failureReason"]) for item in receipt["rejectedMaterials"]],
-            [("m-bad", "rpa_request_failed")],
+            [("m-bad", "rpa_csv_artifact_unavailable")],
         )
 
     def test_rpa_preflight_deadline_rejects_hanging_material_and_continues(self):
@@ -3538,6 +3615,10 @@ class CliTests(unittest.TestCase):
                 material_id = kwargs["material_id"]
                 if material_id == "m-hangs":
                     time.sleep(1)
+                else:
+                    self._write_streaming_csv(
+                        kwargs["diagnosis_csv_dir"], material_id
+                    )
                 return {
                     "materialId": material_id,
                     "rpaAvailable": material_id == "m-ready",
@@ -3855,6 +3936,10 @@ class CliTests(unittest.TestCase):
             def preflight_material(**kwargs):
                 material_id = kwargs["material_id"]
                 available = material_id == "m-ready"
+                if available:
+                    self._write_streaming_csv(
+                        kwargs["diagnosis_csv_dir"], material_id
+                    )
                 return {
                     "materialId": material_id,
                     "rpaAvailable": available,
@@ -3956,6 +4041,10 @@ class CliTests(unittest.TestCase):
             def preflight_material(**kwargs):
                 material_id = kwargs["material_id"]
                 available = material_id != "m-bad"
+                if available:
+                    self._write_streaming_csv(
+                        kwargs["diagnosis_csv_dir"], material_id
+                    )
                 return {
                     "materialId": material_id,
                     "rpaAvailable": available,
@@ -4024,17 +4113,23 @@ class CliTests(unittest.TestCase):
                 "videoUrl": "https://video.example/m-ready.mp4",
             }]
 
-            with patch.object(
-                extract_peak_frames,
-                "fetch_material_preflight",
-                return_value={
+            def preflight_material(**kwargs):
+                self._write_streaming_csv(
+                    kwargs["diagnosis_csv_dir"], kwargs["material_id"]
+                )
+                return {
                     "materialId": "m-ready",
                     "rpaAvailable": True,
                     "failureReason": None,
                     "videoUrl": "https://video.example/m-ready.mp4",
                     "records": records,
                     "diagnosisCsvPath": None,
-                },
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                side_effect=preflight_material,
             ), patch.object(
                 extract_peak_frames, "_process_rpa_material"
             ) as process_material, patch.object(
@@ -4070,6 +4165,50 @@ class CliTests(unittest.TestCase):
         download.assert_not_called()
         process_records.assert_not_called()
 
+    def test_rpa_preflight_rejects_success_without_verified_csv(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-no-csv"])), encoding="utf-8"
+            )
+
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                return_value={
+                    "materialId": "m-no-csv",
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": "https://video.example/m-no-csv.mp4",
+                },
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "1",
+                        "--preflight-only",
+                        "--rpa-late-artifact-grace-sec",
+                        "0.01",
+                        "--rpa-result-recovery-attempts",
+                        "1",
+                    )
+                )
+
+            receipt = json.loads(
+                (output / "rpa-preflight.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 4)
+        self.assertEqual(receipt["selectedMaterials"], [])
+        self.assertEqual(
+            receipt["rejectedMaterials"][0]["failureReason"],
+            "rpa_csv_artifact_unavailable",
+        )
+
     def test_rpa_preflight_parallelism_keeps_candidate_order(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4092,6 +4231,7 @@ class CliTests(unittest.TestCase):
                 time.sleep(0.03 if material_id == "m-a" else 0.01)
                 with lock:
                     active -= 1
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return {
                     "materialId": material_id,
                     "rpaAvailable": True,
@@ -4155,6 +4295,7 @@ class CliTests(unittest.TestCase):
             def preflight_material(**kwargs):
                 material_id = kwargs["material_id"]
                 submitted.append(material_id)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return {
                     "materialId": material_id,
                     "rpaAvailable": True,
@@ -4220,6 +4361,7 @@ class CliTests(unittest.TestCase):
                 time.sleep(0.03 if material_id in {"m-1", "m-3"} else 0.005)
                 with lock:
                     active.remove(material_id)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return {
                     "materialId": material_id,
                     "rpaAvailable": True,
@@ -4274,6 +4416,7 @@ class CliTests(unittest.TestCase):
 
             def preflight_material(**kwargs):
                 material_id = kwargs["material_id"]
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return {
                     "materialId": material_id,
                     "rpaAvailable": True,
