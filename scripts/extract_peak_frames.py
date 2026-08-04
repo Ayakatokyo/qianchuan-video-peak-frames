@@ -123,6 +123,7 @@ def build_parser():
     parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=600)
     parser.add_argument("--rpa-preflight-soft-timeout-sec", type=_positive_timeout, default=480)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
+    parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
     parser.add_argument("--rpa-ready-top-materials-json")
     parser.add_argument("--rpa-preflight-json")
     parser.add_argument("--allow-rpa-refetch", action="store_true")
@@ -488,13 +489,24 @@ def _write_preflight_artifacts(
     return receipt, ready_path, ready_payload
 
 
-def _preflight_failure(material_id, reason):
-    return {
+def _preflight_failure(material_id, reason, error=None):
+    result = {
         "materialId": str(material_id or "").strip(),
         "rpaAvailable": False,
         "failureReason": reason,
         "videoUrl": None,
     }
+    result.update(
+        {
+            "rpaResultStatus": (
+                "pending" if reason == "rpa_request_failed" else "final_failed"
+            ),
+            "retryable": reason == "rpa_request_failed",
+            "errorType": type(error).__name__ if error is not None else None,
+            "errorMessage": str(error) if error is not None else None,
+        }
+    )
+    return result
 
 
 def _materialize_preflight_records(args, outcome, material_id, timings=None):
@@ -538,7 +550,9 @@ def _materialize_preflight_records(args, outcome, material_id, timings=None):
     )
 
 
-def _recover_late_rpa_artifacts(args, material_id, failure, started_at_epoch=None):
+def _recover_late_rpa_artifacts(
+    args, material_id, failure, started_at_epoch=None, deadline=None
+):
     """Recover a result that was written after the RPA watchdog fired."""
     if failure.get("failureReason") != "rpa_request_failed":
         return failure
@@ -549,7 +563,10 @@ def _recover_late_rpa_artifacts(args, material_id, failure, started_at_epoch=Non
         csv_path = artifact_path(csv_dir, material_id, ".csv")
     except ValueError:
         return failure
-    deadline = time.monotonic() + max(0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5)))
+    if deadline is None:
+        deadline = time.monotonic() + max(
+            0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5))
+        )
     def fresh(path):
         if started_at_epoch is None:
             return True
@@ -644,7 +661,7 @@ def _call_mock_preflight_with_timeout(params, timeout_sec):
     return outcome[0]
 
 
-def _fetch_material_preflight_for_cli(args, material_id):
+def _fetch_material_preflight_for_cli(args, material_id, *, recover_late_artifacts=True):
     started_at_epoch = time.time()
     params = {
         "shop_id": args.shop_id,
@@ -669,12 +686,95 @@ def _fetch_material_preflight_for_cli(args, material_id):
             params,
             args.rpa_preflight_timeout_sec,
             soft_timeout_sec=args.rpa_preflight_soft_timeout_sec,
-            late_artifact_grace_sec=args.rpa_late_artifact_grace_sec,
+            late_artifact_grace_sec=(
+                args.rpa_late_artifact_grace_sec if recover_late_artifacts else 0
+            ),
         )
-    if not outcome.get("rpaAvailable"):
+    if recover_late_artifacts and not outcome.get("rpaAvailable"):
         outcome = _recover_late_rpa_artifacts(
             args, material_id, outcome, started_at_epoch=started_at_epoch
         )
+    return outcome
+
+
+def _rpa_recovery_attempt(number, outcome, source="request"):
+    return {
+        "attempt": number,
+        "source": source,
+        "rpaResultStatus": outcome.get("rpaResultStatus"),
+        "failureReason": outcome.get("failureReason"),
+        "errorType": outcome.get("errorType"),
+        "errorMessage": outcome.get("errorMessage"),
+    }
+
+
+def _resolved_rpa_outcome(outcome, attempts):
+    result = dict(outcome)
+    result.update(
+        {
+            "rpaResultStatus": "available",
+            "retryable": False,
+            "errorType": None,
+            "errorMessage": None,
+            "rpaRecoveryAttempts": attempts,
+        }
+    )
+    return result
+
+
+def _recover_stream_rpa_result(
+    args, material_id, outcome, *, started_at_epoch, fetch_once
+):
+    """Resolve a pending request using one artifact grace budget and bounded retries."""
+    try:
+        max_attempts = max(1, int(getattr(args, "rpa_result_recovery_attempts", 2)))
+    except (TypeError, ValueError):
+        max_attempts = 2
+    deadline = time.monotonic() + max(
+        0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5))
+    )
+    attempts = []
+
+    for attempt_number in range(1, max_attempts + 1):
+        outcome = dict(outcome)
+        if outcome.get("rpaAvailable"):
+            attempts.append(_rpa_recovery_attempt(attempt_number, outcome))
+            return _resolved_rpa_outcome(outcome, attempts)
+
+        outcome.setdefault(
+            "rpaResultStatus",
+            "pending"
+            if outcome.get("failureReason") == "rpa_request_failed"
+            else "final_failed",
+        )
+        outcome.setdefault(
+            "retryable", outcome.get("failureReason") == "rpa_request_failed"
+        )
+        attempts.append(_rpa_recovery_attempt(attempt_number, outcome))
+        recovered = _recover_late_rpa_artifacts(
+            args,
+            material_id,
+            outcome,
+            started_at_epoch=started_at_epoch,
+            deadline=deadline,
+        )
+        if recovered.get("rpaAvailable"):
+            attempts.append(
+                _rpa_recovery_attempt(attempt_number, recovered, "late_artifact")
+            )
+            return _resolved_rpa_outcome(recovered, attempts)
+        if not outcome["retryable"] or attempt_number == max_attempts:
+            break
+        outcome = fetch_once()
+
+    outcome = dict(outcome)
+    outcome.update(
+        {
+            "rpaResultStatus": "final_failed",
+            "retryable": False,
+            "rpaRecoveryAttempts": attempts,
+        }
+    )
     return outcome
 
 
@@ -890,16 +990,30 @@ def _attempt_stream_rpa(args, entry):
     started_at_epoch = time.time()
     timings = _empty_material_timings()
     material_id = entry["materialId"]
-    try:
-        outcome = _time_call(
-            timings, "rpaFetchSec", _fetch_material_preflight_for_cli, args, material_id
-        )
-    except RpaPreflightDeadlineExceeded:
-        outcome = _preflight_failure(material_id, "rpa_request_failed")
-    except RpaAdapterError:
-        outcome = _preflight_failure(material_id, "rpa_request_failed")
-    except Exception:
-        outcome = _preflight_failure(material_id, "unknown_preflight_failure")
+    def fetch_once():
+        request_started_at = time.perf_counter()
+        try:
+            return _fetch_material_preflight_for_cli(
+                args, material_id, recover_late_artifacts=False
+            )
+        except RpaPreflightDeadlineExceeded as exc:
+            return _preflight_failure(material_id, "rpa_request_failed", exc)
+        except RpaAdapterError as exc:
+            return _preflight_failure(material_id, "rpa_request_failed", exc)
+        except Exception as exc:
+            return _preflight_failure(material_id, "unknown_preflight_failure", exc)
+        finally:
+            timings["rpaFetchSec"] = round(
+                timings["rpaFetchSec"] + _elapsed_since(request_started_at), 6
+            )
+
+    outcome = _recover_stream_rpa_result(
+        args,
+        material_id,
+        fetch_once(),
+        started_at_epoch=started_at_epoch,
+        fetch_once=fetch_once,
+    )
 
     updated = dict(entry)
     updated["timingsSec"] = timings
@@ -913,6 +1027,10 @@ def _attempt_stream_rpa(args, entry):
                 "rpaStatus": "rejected",
                 "status": "failed",
                 "failureReason": outcome.get("failureReason"),
+                "rpaResultStatus": outcome.get("rpaResultStatus"),
+                "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
+                "errorType": outcome.get("errorType"),
+                "errorMessage": outcome.get("errorMessage"),
                 "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
                 "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
             }
@@ -924,12 +1042,16 @@ def _attempt_stream_rpa(args, entry):
         records, records_path = _materialize_preflight_records(
             args, outcome, material_id, timings
         )
-    except RpaAdapterError:
+    except RpaAdapterError as exc:
         updated.update(
             {
                 "rpaStatus": "rejected",
                 "status": "failed",
-                "failureReason": "rpa_request_failed",
+                "failureReason": "rpa_payload_invalid",
+                "rpaResultStatus": "final_failed",
+                "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
+                "errorType": type(exc).__name__,
+                "errorMessage": str(exc),
             }
         )
         timings["totalSec"] = _elapsed_since(started_at)
@@ -949,6 +1071,10 @@ def _attempt_stream_rpa(args, entry):
             "records": records,
             "recordsPersisted": True,
             "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
+            "rpaResultStatus": outcome.get("rpaResultStatus"),
+            "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
+            "errorType": outcome.get("errorType"),
+            "errorMessage": outcome.get("errorMessage"),
             "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
             "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
         }

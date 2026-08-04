@@ -214,6 +214,22 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertFalse(thread.is_alive())
 
+    def test_rpa_future_exception_records_final_recovery_diagnostics(self):
+        def attempt_rpa(_args, _entry):
+            raise RuntimeError("worker process exited")
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1"], attempt_rpa, self._success_postprocess, args={"target_top_n": 1}
+        )
+
+        rejected = manifest["rejectedMaterials"][0]
+        self.assertTrue(failures)
+        self.assertEqual(rejected["rpaStatus"], "rejected")
+        self.assertEqual(rejected.get("rpaResultStatus"), "final_failed")
+        self.assertEqual(rejected.get("rpaRecoveryAttempts"), [])
+        self.assertEqual(rejected["errorType"], "RuntimeError")
+        self.assertEqual(rejected["errorMessage"], "worker process exited")
+
     def test_candidate_pool_exhaustion_returns_partial_after_final_success_count(self):
         postprocess_calls = []
 

@@ -583,6 +583,41 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertFalse(result["rpaAvailable"])
         self.assertEqual(result["failureReason"], "rpa_request_failed")
 
+    def test_fetch_material_preflight_preserves_retryable_gateway_failure_details(self):
+        session = RaisingPostSession(TimeoutError("timed out"))
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-timeout-details",
+            date_range_type="LAST_7_DAYS",
+            environ=self._env(),
+            session=session,
+            timeout_sec=1,
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result.get("rpaResultStatus"), "pending")
+        self.assertTrue(result.get("retryable"))
+        self.assertEqual(result.get("errorType"), "RpaAdapterError")
+        self.assertIn("timed out", result.get("errorMessage") or "")
+
+    def test_fetch_material_preflight_marks_invalid_payload_final(self):
+        session = RecordingSession(FakeResponse({"payload": {"not": "a-list"}}))
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-invalid-final",
+            date_range_type="LAST_7_DAYS",
+            environ=self._env(),
+            session=session,
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result["failureReason"], "rpa_payload_invalid")
+        self.assertEqual(result.get("rpaResultStatus"), "final_failed")
+        self.assertFalse(result.get("retryable"))
+        self.assertEqual(result.get("errorType"), "RpaAdapterError")
+
     def test_fetch_rejects_invalid_files_envelopes_without_url_leakage(self):
         invalid_envelopes = [
             self._files_envelope(success=False),
@@ -3543,6 +3578,10 @@ class CliTests(unittest.TestCase):
                 "failureReason": "rpa_request_failed",
                 "videoUrl": None,
                 "hardTimeoutExceeded": True,
+                "rpaResultStatus": "pending",
+                "retryable": True,
+                "errorType": None,
+                "errorMessage": None,
             },
         )
 
@@ -5154,8 +5193,94 @@ class CliTests(unittest.TestCase):
                 args, material_id, {"rpaAvailable": False, "failureReason": "rpa_request_failed"}
             )
 
-            self.assertFalse(recovered["rpaAvailable"])
-            self.assertEqual(recovered["failureReason"], "rpa_request_failed")
+        self.assertFalse(recovered["rpaAvailable"])
+        self.assertEqual(recovered["failureReason"], "rpa_request_failed")
+
+    def test_streaming_attempt_recovers_pending_result_with_one_retry(self):
+        material_id = "m-retryable"
+        records = [
+            {
+                "recordType": "material_info",
+                "materialId": material_id,
+                "videoUrl": f"https://video.example/{material_id}.mp4",
+            }
+        ]
+        first_attempt = {
+            "materialId": material_id,
+            "rpaAvailable": False,
+            "failureReason": "rpa_request_failed",
+            "videoUrl": None,
+            "rpaResultStatus": "pending",
+            "retryable": True,
+            "errorType": "RpaAdapterError",
+            "errorMessage": "gateway timed out",
+        }
+        second_attempt = {
+            "materialId": material_id,
+            "rpaAvailable": True,
+            "failureReason": None,
+            "videoUrl": f"https://video.example/{material_id}.mp4",
+            "records": records,
+            "diagnosisCsvPath": None,
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 2,
+            })()
+            entry = extract_peak_frames._stream_entry({"materialId": material_id}, 1)
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=[first_attempt, second_attempt],
+            ) as fetch:
+                result = extract_peak_frames._attempt_stream_rpa(args, entry)
+
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(result.get("rpaStatus"), "selected")
+        self.assertEqual(result.get("rpaResultStatus"), "available")
+        self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
+        self.assertTrue(result["recordsPersisted"])
+
+    def test_streaming_attempt_finalizes_pending_failure_with_diagnostics(self):
+        material_id = "m-retry-exhausted"
+        failure = {
+            "materialId": material_id,
+            "rpaAvailable": False,
+            "failureReason": "rpa_request_failed",
+            "videoUrl": None,
+            "rpaResultStatus": "pending",
+            "retryable": True,
+            "errorType": "RpaAdapterError",
+            "errorMessage": "gateway timed out",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 2,
+            })()
+            entry = extract_peak_frames._stream_entry({"materialId": material_id}, 1)
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=failure,
+            ) as fetch:
+                result = extract_peak_frames._attempt_stream_rpa(args, entry)
+
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(result.get("rpaStatus"), "rejected")
+        self.assertEqual(result.get("rpaResultStatus"), "final_failed")
+        self.assertEqual(result.get("errorType"), "RpaAdapterError")
+        self.assertEqual(result.get("errorMessage"), "gateway timed out")
+        self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
 
     def test_local_cli_outputs_four_frames_and_two_summaries(self):
         ffmpeg = resolve_ffmpeg()

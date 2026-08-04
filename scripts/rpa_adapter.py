@@ -401,6 +401,21 @@ def _preflight_failure_reason(error):
     return "rpa_request_failed"
 
 
+def _preflight_failure_result(material_id, reason, error=None):
+    result = _preflight_result(material_id, False, reason)
+    result.update(
+        {
+            "rpaResultStatus": (
+                "pending" if reason == "rpa_request_failed" else "final_failed"
+            ),
+            "retryable": reason == "rpa_request_failed",
+            "errorType": type(error).__name__ if error is not None else None,
+            "errorMessage": str(error) if error is not None else None,
+        }
+    )
+    return result
+
+
 def fetch_material_preflight(
     *,
     shop_id,
@@ -427,15 +442,17 @@ def fetch_material_preflight(
             return_metadata=True,
         )
     except RpaAdapterError as exc:
-        return _preflight_result(
-            material_id, False, _preflight_failure_reason(exc)
+        return _preflight_failure_result(
+            material_id, _preflight_failure_reason(exc), exc
         )
-    except Exception:
-        return _preflight_result(material_id, False, "unknown_preflight_failure")
+    except Exception as exc:
+        return _preflight_failure_result(
+            material_id, "unknown_preflight_failure", exc
+        )
     try:
         result = preflight_material_availability(records, material_id)
-    except Exception:
-        return _preflight_result(material_id, False, "rpa_payload_invalid")
+    except Exception as exc:
+        return _preflight_failure_result(material_id, "rpa_payload_invalid", exc)
     if result["rpaAvailable"]:
         result["records"] = records
         result["diagnosisCsvPath"] = diagnosis_csv_path
