@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import rpa_batch_runner  # noqa: E402
+from schemas import validate_manifest  # noqa: E402
 
 
 class StreamingBatchRunnerTests(unittest.TestCase):
@@ -150,6 +151,25 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         )
 
         self.assertTrue(persisted_success.is_set())
+
+    def test_streaming_manifest_preserves_wave_size_after_rpa_completion(self):
+        def attempt_rpa(_args, entry):
+            return dict(entry, rpaStatus="selected", postprocessStatus="queued")
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1", "m-2", "m-3", "m-4"],
+            attempt_rpa,
+            self._success_postprocess,
+            args={"target_top_n": 4},
+        )
+        manifest.update({"schemaVersion": 2, "materialIds": ["m-1", "m-2", "m-3", "m-4"]})
+
+        self.assertFalse(failures)
+        validate_manifest(manifest)
+        self.assertEqual(
+            [entry["waveSize"] for entry in manifest["selectedMaterials"]],
+            [3, 3, 3, 1],
+        )
 
     def test_rpa_soft_timeout_is_checkpointed_without_starting_next_wave(self):
         release_first_wave = threading.Event()

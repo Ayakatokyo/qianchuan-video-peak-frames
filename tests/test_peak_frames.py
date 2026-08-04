@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 
@@ -4381,6 +4382,74 @@ class CliTests(unittest.TestCase):
         self.assertEqual(receipt["manifestSchemaVersion"], 2)
         self.assertEqual(receipt["materialCount"], 2)
         self.assertEqual(receipt["rejectedCount"], 1)
+
+    def test_streaming_verify_reports_invalid_manifest_instead_of_running(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1"])),
+                encoding="utf-8",
+            )
+            output.mkdir()
+            manifest = {
+                "schemaVersion": 2,
+                "targetTopN": 1,
+                "materialIds": ["m-1"],
+                "selectedMaterials": [{
+                    "rank": 1,
+                    "materialId": "m-1",
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "succeeded",
+                    "status": "succeeded",
+                    "waveSize": None,
+                }],
+                "rejectedMaterials": [],
+                "cancelledMaterials": [],
+            }
+            (output / "batch-manifest.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "1",
+                        "--verify",
+                    )
+                )
+
+        self.assertEqual(result, 4)
+        self.assertIn("waveSize must be a positive integer", stderr.getvalue())
+        self.assertNotIn("running streaming batch", stderr.getvalue())
+
+    def test_streaming_batch_status_marks_unaccounted_candidate_as_running(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            output.mkdir()
+            (output / "batch-manifest.json").write_text(
+                json.dumps({
+                    "schemaVersion": 2,
+                    "materialIds": ["m-1", "m-2"],
+                    "selectedMaterials": [{"materialId": "m-1"}],
+                    "rejectedMaterials": [],
+                    "cancelledMaterials": [],
+                }),
+                encoding="utf-8",
+            )
+            args = extract_peak_frames.build_parser().parse_args([
+                "--output-dir", str(output),
+            ])
+
+            status, error = extract_peak_frames._streaming_batch_status(args)
+
+        self.assertEqual(status, extract_peak_frames.STREAMING_BATCH_RUNNING)
+        self.assertIsNone(error)
 
     def test_streaming_batch_verify_allows_completed_manifest_with_target_top_n(self):
         with tempfile.TemporaryDirectory() as temp_dir:

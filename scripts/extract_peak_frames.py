@@ -1259,16 +1259,26 @@ def _verify_streaming_rpa_batch(args, material_ids, manifest):
     )
 
 
-def _streaming_batch_is_complete(args):
+STREAMING_BATCH_RUNNING = "RUNNING"
+STREAMING_BATCH_COMPLETED = "COMPLETED"
+STREAMING_BATCH_INVALID_MANIFEST = "INVALID_MANIFEST"
+STREAMING_BATCH_NOT_FOUND = "NOT_FOUND"
+
+
+def _streaming_batch_status(args):
     manifest_path = _batch_manifest_path(args)
     try:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return False
+    except FileNotFoundError:
+        return STREAMING_BATCH_NOT_FOUND, f"streaming batch manifest is missing: {manifest_path}"
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return STREAMING_BATCH_INVALID_MANIFEST, (
+            f"streaming batch manifest is unreadable: {manifest_path}: {exc}"
+        )
     try:
         manifest = validate_manifest(manifest)
-    except SchemaError:
-        return False
+    except SchemaError as exc:
+        return STREAMING_BATCH_INVALID_MANIFEST, str(exc)
     material_ids = manifest["materialIds"]
     accounted_ids = {
         str(entry.get("materialId") or "").strip()
@@ -1276,7 +1286,9 @@ def _streaming_batch_is_complete(args):
         for entry in manifest[field]
         if isinstance(entry, dict) and str(entry.get("materialId") or "").strip()
     }
-    return accounted_ids >= set(material_ids)
+    if accounted_ids >= set(material_ids):
+        return STREAMING_BATCH_COMPLETED, None
+    return STREAMING_BATCH_RUNNING, None
 
 
 def _run_rpa_batch(args, material_ids):
@@ -1457,8 +1469,11 @@ def main(argv=None):
                             "--rpa-preflight-json is incompatible with streaming --target-top-n"
                         )
                     if args.verify:
-                        if not _streaming_batch_is_complete(args):
+                        streaming_status, streaming_error = _streaming_batch_status(args)
+                        if streaming_status == STREAMING_BATCH_RUNNING:
                             parser.error("--verify is not available for a running streaming batch")
+                        if streaming_status != STREAMING_BATCH_COMPLETED:
+                            raise RpaAdapterError(streaming_error)
                         verification_path, receipt = _verify_rpa_batch(
                             args, material_ids
                         )

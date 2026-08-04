@@ -126,10 +126,11 @@ def run_streaming_batch(
         return future
 
     def complete_rpa(future, index, postprocess_executor):
+        scheduled_entry = entries[index]
         try:
             entry = future.result()
         except Exception as exc:
-            entry = dict(entries[index])
+            entry = dict(scheduled_entry)
             entry.update(
                 {
                     "rpaStatus": "rejected",
@@ -139,6 +140,16 @@ def run_streaming_batch(
                     "errorMessage": str(exc),
                 }
             )
+        else:
+            entry = dict(entry)
+            for field in (
+                "waveIndex",
+                "waveSize",
+                "waveStartedAtSec",
+                "waveFinishedAtSec",
+            ):
+                if field in scheduled_entry:
+                    entry[field] = scheduled_entry[field]
         state_changed_at = elapsed(batch_started_at)
         entry["rpaFinishedAtSec"] = state_changed_at
         entry["lastStateChangedAtSec"] = state_changed_at
@@ -318,19 +329,20 @@ def run_streaming_batch(
                     if capacity and next_index < len(candidates):
                         wave_started_at = elapsed(batch_started_at)
                         wave = {}
-                        while next_index < len(candidates) and len(wave) < capacity:
+                        wave_indices = []
+                        while next_index < len(candidates) and len(wave_indices) < capacity:
+                            wave_indices.append(next_index)
+                            next_index = next_unaccounted_index(next_index + 1)
+                        wave_size = len(wave_indices)
+                        for index in wave_indices:
                             future = submit_rpa(
                                 rpa_executor,
-                                next_index,
+                                index,
                                 wave_index,
-                                None,
+                                wave_size,
                                 wave_started_at,
                             )
-                            wave[future] = next_index
-                            next_index = next_unaccounted_index(next_index + 1)
-                        wave_size = len(wave)
-                        for future in wave:
-                            entries[wave[future]]["waveSize"] = wave_size
+                            wave[future] = index
                         pending_wave = set(wave)
                         persist()
                     elif not postprocess_futures:

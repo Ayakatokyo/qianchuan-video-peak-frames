@@ -174,6 +174,37 @@ class StandardWorkflowTests(unittest.TestCase):
             self.assertEqual(summary["status"], "failed")
             self.assertEqual(summary["failure"]["stage"], "diagnosis_batch")
 
+    def test_prepare_surfaces_verification_schema_error_in_run_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def extract_main(argv):
+                if "--verify" in argv:
+                    raise RuntimeError(
+                        "batch manifest material waveSize must be a positive integer"
+                    )
+                return 0
+
+            with self.assertRaises(standard_workflow.StandardWorkflowError) as error:
+                standard_workflow.prepare_standard_run(
+                    self.request(),
+                    root,
+                    export_main=lambda _argv: 0,
+                    extract_main=extract_main,
+                    prepare_facts=lambda **_kwargs: self.fail("facts must not run"),
+                )
+            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(error.exception.stage, "verification")
+        self.assertEqual(
+            str(error.exception),
+            "batch manifest material waveSize must be a positive integer",
+        )
+        self.assertEqual(summary["failure"], {
+            "stage": "verification",
+            "message": "batch manifest material waveSize must be a positive integer",
+        })
+
     def test_finalize_marks_run_complete_only_after_manifest_validation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
