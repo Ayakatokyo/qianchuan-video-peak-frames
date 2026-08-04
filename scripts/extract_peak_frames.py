@@ -4,6 +4,7 @@ import json
 import math
 import os
 import signal
+import stat
 import sys
 import tempfile
 import threading
@@ -28,6 +29,7 @@ from rpa_adapter import (
     fetch_material_preflight,
     find_material_video_url,
     list_accounts,
+    preflight_material_availability,
 )
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from batch_runtime import BatchLockError, acquire_run_lock, read_json, stage_counts
@@ -550,6 +552,34 @@ def _materialize_preflight_records(args, outcome, material_id, timings=None):
     )
 
 
+def _verify_current_rpa_csv_artifact(args, material_id, started_at_epoch):
+    """Return parsed data only for this attempt's expected RPA CSV artifact."""
+    try:
+        csv_path = artifact_path(_diagnosis_csv_dir(args), material_id, ".csv")
+        metadata = csv_path.stat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size <= 0
+            or (
+                started_at_epoch is not None
+                and metadata.st_mtime < started_at_epoch
+            )
+        ):
+            return None
+        records = parse_diagnosis_csv(csv_path)
+        availability = preflight_material_availability(records, material_id)
+        if not availability.get("rpaAvailable"):
+            return None
+        return {
+            "records": records,
+            "diagnosisCsvPath": str(csv_path),
+            "videoUrl": availability.get("videoUrl"),
+            "rpaCsvVerified": True,
+        }
+    except (OSError, RpaAdapterError, RpaCsvError, ValueError):
+        return None
+
+
 def _recover_late_rpa_artifacts(
     args, material_id, failure, started_at_epoch=None, deadline=None
 ):
@@ -557,48 +587,29 @@ def _recover_late_rpa_artifacts(
     if failure.get("failureReason") != "rpa_request_failed":
         return failure
     records_dir = _diagnosis_records_dir(args)
-    csv_dir = _diagnosis_csv_dir(args)
     try:
         records_path = artifact_path(records_dir, material_id, ".json")
-        csv_path = artifact_path(csv_dir, material_id, ".csv")
     except ValueError:
         return failure
     if deadline is None:
         deadline = time.monotonic() + max(
             0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5))
         )
-    def fresh(path):
-        if started_at_epoch is None:
-            return True
-        try:
-            return path.stat().st_mtime >= started_at_epoch
-        except OSError:
-            return False
     while True:
         try:
-            if records_path.is_file() and fresh(records_path):
-                records = _read_diagnosis_records(records_path, material_id)
-                return {
-                    **failure,
-                    "rpaAvailable": True,
-                    "records": records,
-                    "diagnosisRecordsPath": str(records_path),
-                    "lateArtifactRecovered": True,
-                    "videoUrl": find_material_video_url(records, material_id),
-                }
-            if csv_path.is_file() and fresh(csv_path):
-                records = parse_diagnosis_csv(csv_path)
-                video_url = find_material_video_url(records, material_id)
+            verified_csv = _verify_current_rpa_csv_artifact(
+                args, material_id, started_at_epoch
+            )
+            if verified_csv is not None:
+                records = verified_csv["records"]
                 records_path.parent.mkdir(parents=True, exist_ok=True)
                 _write_diagnosis_records(records, records_path.parent, material_id)
                 return {
                     **failure,
                     "rpaAvailable": True,
-                    "records": records,
+                    **verified_csv,
                     "diagnosisRecordsPath": str(records_path),
-                    "diagnosisCsvPath": str(csv_path),
                     "lateArtifactRecovered": True,
-                    "videoUrl": video_url,
                 }
         except (OSError, RpaAdapterError, RpaCsvError, ValueError):
             pass
@@ -775,6 +786,8 @@ def _recover_stream_rpa_result(
             "rpaRecoveryAttempts": attempts,
         }
     )
+    if outcome.get("failureReason") == "rpa_request_failed":
+        outcome["failureReason"] = "rpa_csv_artifact_unavailable"
     return outcome
 
 
@@ -1021,6 +1034,18 @@ def _attempt_stream_rpa(args, entry):
         outcome = _recover_late_rpa_artifacts(
             args, material_id, outcome, started_at_epoch=started_at_epoch
         )
+    if outcome.get("rpaAvailable"):
+        verified_csv = _verify_current_rpa_csv_artifact(
+            args, material_id, started_at_epoch
+        )
+        if verified_csv is None:
+            recovery_attempts = outcome.get("rpaRecoveryAttempts", [])
+            outcome = _preflight_failure(
+                material_id, "rpa_csv_artifact_unavailable"
+            )
+            outcome["rpaRecoveryAttempts"] = recovery_attempts
+        else:
+            outcome = {**outcome, **verified_csv}
     if not outcome.get("rpaAvailable"):
         updated.update(
             {
@@ -1070,6 +1095,7 @@ def _attempt_stream_rpa(args, entry):
             ),
             "records": records,
             "recordsPersisted": True,
+            "rpaCsvVerified": bool(outcome.get("rpaCsvVerified")),
             "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
             "rpaResultStatus": outcome.get("rpaResultStatus"),
             "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),

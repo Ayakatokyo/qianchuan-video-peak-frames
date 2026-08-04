@@ -2501,17 +2501,22 @@ class CliTests(unittest.TestCase):
                 }
             ]
 
+            def preflight_material(**kwargs):
+                material_id = kwargs["material_id"]
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                    "records": records,
+                    "diagnosisCsvPath": None,
+                }
+
             with patch.object(
                 extract_peak_frames,
                 "fetch_material_preflight",
-                return_value={
-                    "materialId": "m-1",
-                    "rpaAvailable": True,
-                    "failureReason": None,
-                    "videoUrl": "https://video.example/m-1.mp4",
-                    "records": records,
-                    "diagnosisCsvPath": None,
-                },
+                side_effect=preflight_material,
             ), patch.object(
                 extract_peak_frames,
                 "_attempt_stream_postprocess",
@@ -2570,6 +2575,17 @@ class CliTests(unittest.TestCase):
             "diagnosisCsvPath": None,
         }
 
+    def _write_streaming_csv(self, diagnosis_csv_dir, material_id):
+        csv_path = Path(diagnosis_csv_dir) / f"{material_id}.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(
+            "recordType\x01materialId\x01videoUrl\n"
+            f"material_info\x01{material_id}\x01"
+            f"https://video.example/{material_id}.mp4\n",
+            encoding="utf-8",
+        )
+        return csv_path
+
     def _streaming_postprocess(self, output, _args, entry):
         return {
             "result": self._write_batch_result(output, entry["materialId"]),
@@ -2600,6 +2616,7 @@ class CliTests(unittest.TestCase):
             def fetch(**kwargs):
                 material_id = kwargs["material_id"]
                 submitted.append(material_id)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             with patch.object(
@@ -2659,6 +2676,7 @@ class CliTests(unittest.TestCase):
                         "failureReason": "missing_video_url",
                         "videoUrl": None,
                     }
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             with patch.object(
@@ -2708,6 +2726,7 @@ class CliTests(unittest.TestCase):
                 time.sleep(0.02)
                 with lock:
                     active -= 1
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             with patch.object(
@@ -2755,6 +2774,7 @@ class CliTests(unittest.TestCase):
                 time.sleep(0.03 if material_id in {"m-1", "m-3"} else 0.005)
                 with lock:
                     active.remove(material_id)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             with patch.object(
@@ -2814,6 +2834,7 @@ class CliTests(unittest.TestCase):
                 material_id = kwargs["material_id"]
                 if material_id != "m-1":
                     release_rpa.wait(timeout=1)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             def postprocess(_args, entry):
@@ -2871,6 +2892,7 @@ class CliTests(unittest.TestCase):
                         "failureReason": "missing_material_info",
                         "videoUrl": None,
                     }
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             with patch.object(
@@ -2929,6 +2951,7 @@ class CliTests(unittest.TestCase):
             def fetch(**kwargs):
                 material_id = kwargs["material_id"]
                 if material_id in {"m-1", "m-3"}:
+                    self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                     return self._streaming_outcome(material_id)
                 return {
                     "materialId": material_id,
@@ -2988,6 +3011,7 @@ class CliTests(unittest.TestCase):
             def fetch(**kwargs):
                 material_id = kwargs["material_id"]
                 submitted.append(material_id)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             def postprocess(args, entry):
@@ -3092,6 +3116,7 @@ class CliTests(unittest.TestCase):
             def fetch(**kwargs):
                 material_id = kwargs["material_id"]
                 fetched.append(material_id)
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             with patch.object(
@@ -3329,6 +3354,10 @@ class CliTests(unittest.TestCase):
             def preflight_material(**kwargs):
                 material_id = kwargs["material_id"]
                 preflighted.append(material_id)
+                if material_id != "m-bad":
+                    self._write_streaming_csv(
+                        kwargs["diagnosis_csv_dir"], material_id
+                    )
                 return {
                     "materialId": material_id,
                     "rpaAvailable": material_id != "m-bad",
@@ -3703,6 +3732,7 @@ class CliTests(unittest.TestCase):
                     and set(submitted) >= set(material_ids[:6])
                 ):
                     all_target_submitted_while_postprocessing.set()
+                self._write_streaming_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._streaming_outcome(material_id)
 
             def postprocess(args, entry):
@@ -3754,6 +3784,10 @@ class CliTests(unittest.TestCase):
             def preflight_material(**kwargs):
                 material_id = kwargs["material_id"]
                 available = material_id != "m-bad"
+                if available:
+                    self._write_streaming_csv(
+                        kwargs["diagnosis_csv_dir"], material_id
+                    )
                 return {
                     "materialId": material_id,
                     "rpaAvailable": available,
@@ -5233,10 +5267,27 @@ class CliTests(unittest.TestCase):
                 "rpa_result_recovery_attempts": 2,
             })()
             entry = extract_peak_frames._stream_entry({"materialId": material_id}, 1)
+
+            fetch_attempts = 0
+
+            def fetch(*_args, **_kwargs):
+                nonlocal fetch_attempts
+                fetch_attempts += 1
+                if fetch_attempts == 2:
+                    csv_dir = root / "diagnosis-csv"
+                    csv_dir.mkdir(parents=True, exist_ok=True)
+                    (csv_dir / f"{material_id}.csv").write_text(
+                        "recordType\x01materialId\x01videoUrl\n"
+                        f"material_info\x01{material_id}\x01"
+                        f"https://video.example/{material_id}.mp4\n",
+                        encoding="utf-8",
+                    )
+                return [first_attempt, second_attempt][fetch_attempts - 1]
+
             with patch.object(
                 extract_peak_frames,
                 "_fetch_material_preflight_for_cli",
-                side_effect=[first_attempt, second_attempt],
+                side_effect=fetch,
             ) as fetch:
                 result = extract_peak_frames._attempt_stream_rpa(args, entry)
 
@@ -5281,6 +5332,145 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.get("errorType"), "RpaAdapterError")
         self.assertEqual(result.get("errorMessage"), "gateway timed out")
         self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
+
+    def test_streaming_attempt_selects_only_after_fresh_expected_csv_is_verified(self):
+        material_id = "m-csv-fresh"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 1,
+            })()
+            entry = extract_peak_frames._stream_entry({"materialId": material_id}, 1)
+
+            def fetch(_args, requested_material_id, **_kwargs):
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                (csv_dir / f"{requested_material_id}.csv").write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{requested_material_id}\x01"
+                    f"https://video.example/{requested_material_id}.mp4\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "materialId": requested_material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{requested_material_id}.mp4",
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ), patch.object(
+                extract_peak_frames,
+                "preflight_material_availability",
+                return_value={
+                    "rpaAvailable": True,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                },
+            ) as preflight:
+                result = extract_peak_frames._attempt_stream_rpa(args, entry)
+
+        self.assertEqual(result["rpaStatus"], "selected")
+        self.assertEqual(result["rpaResultStatus"], "available")
+        self.assertTrue(result.get("rpaCsvVerified"))
+        preflight.assert_called_once()
+
+    def test_streaming_attempt_rejects_stale_expected_csv(self):
+        material_id = "m-csv-stale"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir(parents=True)
+            csv_path = csv_dir / f"{material_id}.csv"
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/{material_id}.mp4\n",
+                encoding="utf-8",
+            )
+            stale_at = time.time() - 60
+            os.utime(csv_path, (stale_at, stale_at))
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 1,
+            })()
+            entry = extract_peak_frames._stream_entry({"materialId": material_id}, 1)
+            outcome = {
+                "materialId": material_id,
+                "rpaAvailable": True,
+                "failureReason": None,
+                "videoUrl": f"https://video.example/{material_id}.mp4",
+            }
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=outcome,
+            ), patch.object(
+                extract_peak_frames,
+                "preflight_material_availability",
+            ) as preflight:
+                result = extract_peak_frames._attempt_stream_rpa(args, entry)
+
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        preflight.assert_not_called()
+
+    def test_streaming_attempt_rejects_expected_csv_for_another_material(self):
+        material_id = "m-csv-expected"
+        other_material_id = "m-csv-other"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 1,
+            })()
+            entry = extract_peak_frames._stream_entry({"materialId": material_id}, 1)
+
+            def fetch(_args, requested_material_id, **_kwargs):
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                (csv_dir / f"{requested_material_id}.csv").write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{other_material_id}\x01"
+                    f"https://video.example/{other_material_id}.mp4\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "materialId": requested_material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{requested_material_id}.mp4",
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ), patch.object(
+                extract_peak_frames,
+                "preflight_material_availability",
+                return_value={
+                    "rpaAvailable": False,
+                    "failureReason": "missing_material_info",
+                    "videoUrl": None,
+                },
+            ) as preflight:
+                result = extract_peak_frames._attempt_stream_rpa(args, entry)
+
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        preflight.assert_called_once()
 
     def test_local_cli_outputs_four_frames_and_two_summaries(self):
         ffmpeg = resolve_ffmpeg()
