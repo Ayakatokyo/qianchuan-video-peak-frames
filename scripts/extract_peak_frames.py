@@ -556,7 +556,7 @@ def _verify_current_rpa_csv_artifact(args, material_id, started_at_epoch):
     """Return parsed data only for this attempt's expected RPA CSV artifact."""
     try:
         csv_path = artifact_path(_diagnosis_csv_dir(args), material_id, ".csv")
-        metadata = csv_path.stat()
+        metadata = csv_path.lstat()
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_size <= 0
@@ -584,7 +584,10 @@ def _recover_late_rpa_artifacts(
     args, material_id, failure, started_at_epoch=None, deadline=None
 ):
     """Recover a result that was written after the RPA watchdog fired."""
-    if failure.get("failureReason") != "rpa_request_failed":
+    if failure.get("failureReason") not in (
+        "rpa_request_failed",
+        "rpa_csv_artifact_unavailable",
+    ):
         return failure
     records_dir = _diagnosis_records_dir(args)
     try:
@@ -749,8 +752,25 @@ def _recover_stream_rpa_result(
     for attempt_number in range(1, max_attempts + 1):
         outcome = dict(outcome)
         if outcome.get("rpaAvailable"):
-            attempts.append(_rpa_recovery_attempt(attempt_number, outcome))
-            return _resolved_rpa_outcome(outcome, attempts)
+            verified_csv = _verify_current_rpa_csv_artifact(
+                args, material_id, started_at_epoch
+            )
+            if verified_csv is not None:
+                outcome.update(verified_csv)
+                attempts.append(_rpa_recovery_attempt(attempt_number, outcome))
+                return _resolved_rpa_outcome(outcome, attempts)
+            outcome.update(
+                {
+                    "rpaAvailable": False,
+                    "failureReason": "rpa_csv_artifact_unavailable",
+                    "rpaResultStatus": "pending",
+                    "retryable": True,
+                    "errorType": "RpaCsvArtifactUnavailable",
+                    "errorMessage": (
+                        "RPA response did not produce a verified current CSV artifact"
+                    ),
+                }
+            )
 
         outcome.setdefault(
             "rpaResultStatus",
@@ -1030,22 +1050,6 @@ def _attempt_stream_rpa(args, entry):
 
     updated = dict(entry)
     updated["timingsSec"] = timings
-    if not outcome.get("rpaAvailable"):
-        outcome = _recover_late_rpa_artifacts(
-            args, material_id, outcome, started_at_epoch=started_at_epoch
-        )
-    if outcome.get("rpaAvailable"):
-        verified_csv = _verify_current_rpa_csv_artifact(
-            args, material_id, started_at_epoch
-        )
-        if verified_csv is None:
-            recovery_attempts = outcome.get("rpaRecoveryAttempts", [])
-            outcome = _preflight_failure(
-                material_id, "rpa_csv_artifact_unavailable"
-            )
-            outcome["rpaRecoveryAttempts"] = recovery_attempts
-        else:
-            outcome = {**outcome, **verified_csv}
     if not outcome.get("rpaAvailable"):
         updated.update(
             {
