@@ -108,6 +108,23 @@ def run_streaming_batch(
         manifest = new_manifest(
             args, candidates, entries, submitted, selected, rejected, cancelled
         )
+        # Diagnosis records are retained in per-material JSON files and may be
+        # hundreds of KB per material.  Keep them in worker memory for
+        # post-processing, but never duplicate them across manifest lists:
+        # serializing the growing manifest otherwise blocks real-time progress
+        # updates after an RPA result has already arrived.
+        for collection_name in (
+            "materials",
+            "submittedMaterials",
+            "selectedMaterials",
+            "rejectedMaterials",
+            "cancelledMaterials",
+        ):
+            collection = manifest.get(collection_name)
+            if isinstance(collection, list):
+                for item in collection:
+                    if isinstance(item, dict):
+                        item.pop("records", None)
         manifest["timingsSec"]["totalSec"] = elapsed(batch_started_at)
         write_json(manifest_path, manifest)
         return manifest
