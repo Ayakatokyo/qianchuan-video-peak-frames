@@ -6,6 +6,8 @@ as hooks so the CLI remains an adapter rather than the scheduler's dependency.
 """
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+import json
+from pathlib import Path
 import time
 
 
@@ -31,6 +33,7 @@ def stream_entry(material, rank, empty_timings):
             "postprocessPhase": None,
             "postprocessAttempts": [],
             "compensationStatus": "not_needed",
+            "backfillReason": None,
             "summaryJson": None,
             "summaryMd": None,
             "timingsSec": empty_timings(),
@@ -65,6 +68,36 @@ def has_verified_rpa_csv(entry):
 def has_terminal_rpa_csv(entry):
     return entry.get("rpaResultStatus") == "final_failed" or has_verified_rpa_csv(
         entry
+    )
+
+
+def has_accepted_record(entry, *, records_base_dir=None):
+    if not (
+        entry.get("rpaStatus") == "selected"
+        and entry.get("rpaCsvVerified") is True
+        and entry.get("recordsPersisted") is True
+    ):
+        return False
+    material_id = str(entry.get("materialId") or "").strip()
+    records = entry.get("records")
+    if isinstance(records, list):
+        return any(
+            isinstance(record, dict) and record.get("materialId") == material_id
+            for record in records
+        )
+    records_path = entry.get("diagnosisRecordsPath")
+    if not isinstance(records_path, str) or not records_path.strip():
+        return False
+    path = Path(records_path)
+    if not path.is_absolute() and records_base_dir is not None:
+        path = Path(records_base_dir) / path
+    try:
+        retained_records = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return isinstance(retained_records, list) and any(
+        isinstance(record, dict) and record.get("materialId") == material_id
+        for record in retained_records
     )
 
 
@@ -103,6 +136,7 @@ def run_streaming_batch(
     next_index = 0
     batch_started_at = clock()
     rpa_started_at = {}
+    records_base_dir = Path(getattr(args, "output_dir", ".")).parent
 
     def persist():
         manifest = new_manifest(
@@ -126,10 +160,30 @@ def run_streaming_batch(
                     if isinstance(item, dict):
                         item.pop("records", None)
         manifest["timingsSec"]["totalSec"] = elapsed(batch_started_at)
+        accepted_count = len(accepted_entries())
+        manifest["rpaCollection"] = {
+            "status": (
+                "complete" if accepted_count >= args.target_top_n
+                else "backfilling" if any(
+                    entry.get("backfillReason") == "rpa_collection_failure"
+                    for entry in entries.values()
+                )
+                else "collecting"
+            ),
+            "targetCount": args.target_top_n,
+            "acceptedCount": accepted_count,
+        }
         write_json(manifest_path, manifest)
         return manifest
 
-    def submit_rpa(executor, index, wave_index=None, wave_size=None, wave_started_at=None):
+    def submit_rpa(
+        executor,
+        index,
+        wave_index=None,
+        wave_size=None,
+        wave_started_at=None,
+        backfill_reason=None,
+    ):
         entry = entries[index]
         state_changed_at = elapsed(batch_started_at)
         entry.update(
@@ -141,6 +195,8 @@ def run_streaming_batch(
                 "lastProgressAtSec": state_changed_at,
             }
         )
+        if backfill_reason is not None:
+            entry["backfillReason"] = backfill_reason
         if wave_index is not None:
             entry.update(
                 {
@@ -206,10 +262,23 @@ def run_streaming_batch(
             )
             entries[index] = entry
             submitted[index] = entry
-        if entry["rpaStatus"] == "selected":
+        if entry["rpaStatus"] == "selected" and has_accepted_record(
+            entry, records_base_dir=records_base_dir
+        ):
             selected[index] = entry
             submit_postprocess(postprocess_executor, index)
         else:
+            if entry["rpaStatus"] == "selected":
+                entry.update(
+                    {
+                        "rpaStatus": "rejected",
+                        "status": "failed",
+                        "failureReason": "rpa_records_artifact_unavailable",
+                        "rpaResultStatus": "final_failed",
+                        "errorType": "RpaRecordsArtifactContractError",
+                        "errorMessage": "RPA completed without retained diagnosis records",
+                    }
+                )
             rejected[index] = entry
 
     def submit_postprocess(executor, index, *, phase="parallel", retrying=False):
@@ -312,12 +381,18 @@ def run_streaming_batch(
             if entry.get("postprocessStatus") == "succeeded"
         }
 
-    def remaining_success_slots(include_rpa=0):
+    def accepted_entries():
+        return {
+            index: entry
+            for index, entry in selected.items()
+            if has_accepted_record(entry, records_base_dir=records_base_dir)
+        }
+
+    def primary_collection_slots(include_rpa=0):
         return max(
             0,
             args.target_top_n
-            - len(successful_entries())
-            - len(postprocess_futures)
+            - len(accepted_entries())
             - include_rpa,
         )
 
@@ -372,10 +447,8 @@ def run_streaming_batch(
             pending_wave = set()
             wave = {}
             while True:
-                if len(successful_entries()) >= args.target_top_n:
-                    break
                 if not pending_wave:
-                    capacity = min(args.rpa_concurrency, remaining_success_slots())
+                    capacity = min(args.rpa_concurrency, primary_collection_slots())
                     if capacity and next_index < len(candidates):
                         wave_started_at = elapsed(batch_started_at)
                         wave = {}
@@ -391,6 +464,10 @@ def run_streaming_batch(
                                 wave_index,
                                 wave_size,
                                 wave_started_at,
+                                backfill_reason=(
+                                    "rpa_collection_failure"
+                                    if index >= args.target_top_n else None
+                                ),
                             )
                             wave[future] = index
                         pending_wave = set(wave)
@@ -419,14 +496,19 @@ def run_streaming_batch(
                     persist()
         else:
             while True:
-                if len(successful_entries()) >= args.target_top_n:
-                    break
                 while (
                     next_index < len(candidates)
                     and len(rpa_futures) < args.rpa_concurrency
-                    and remaining_success_slots(len(rpa_futures))
+                    and primary_collection_slots(len(rpa_futures))
                 ):
-                    submit_rpa(rpa_executor, next_index)
+                    submit_rpa(
+                        rpa_executor,
+                        next_index,
+                        backfill_reason=(
+                            "rpa_collection_failure"
+                            if next_index >= args.target_top_n else None
+                        ),
+                    )
                     next_index = next_unaccounted_index(next_index + 1)
                 wait_for = set(rpa_futures) | set(postprocess_futures)
                 if not wait_for:
@@ -439,16 +521,21 @@ def run_streaming_batch(
                 if changed:
                     persist()
 
-    compensation_queue = sorted(
-        (
-            index
-            for index, entry in selected.items()
-            if entry.get("recordsPersisted")
-            and entry.get("postprocessStatus") == "failed"
-        ),
-        key=lambda index: entries[index].get("rank", index),
-    )
-    if compensation_queue:
+    def compensate_terminal_failures():
+        compensation_queue = sorted(
+            (
+                index
+                for index, entry in selected.items()
+                if (
+                    has_accepted_record(entry, records_base_dir=records_base_dir)
+                    and entry.get("postprocessStatus") == "failed"
+                    and entry.get("compensationStatus") not in {"succeeded", "failed"}
+                )
+            ),
+            key=lambda index: entries[index].get("rank", index),
+        )
+        if not compensation_queue:
+            return
         with ThreadPoolExecutor(max_workers=1) as serial_executor:
             for index in compensation_queue:
                 entries[index]["compensationStatus"] = "queued"
@@ -464,6 +551,53 @@ def run_streaming_batch(
                 postprocess_futures.pop(future)
                 complete_postprocess(future, index, serial_executor)
                 persist()
+
+    def terminal_backfill_indices(deficit):
+        nonlocal next_index
+        indices = []
+        while next_index < len(candidates) and len(indices) < deficit:
+            next_index = next_unaccounted_index(next_index)
+            if next_index >= len(candidates):
+                break
+            indices.append(next_index)
+            next_index += 1
+        return indices
+
+    def run_terminal_backfill_wave(indices):
+        with ThreadPoolExecutor(
+            max_workers=min(args.rpa_concurrency, len(indices))
+        ) as rpa_executor, ThreadPoolExecutor(
+            max_workers=args.postprocess_concurrency
+        ) as postprocess_executor:
+            for index in indices:
+                submit_rpa(
+                    rpa_executor,
+                    index,
+                    backfill_reason="postprocess_failed_after_retries",
+                )
+            persist()
+            while rpa_futures or postprocess_futures:
+                done, _pending = wait(
+                    set(rpa_futures) | set(postprocess_futures),
+                    timeout=poll_interval_sec,
+                    return_when=FIRST_COMPLETED,
+                )
+                changed = collect_done(done, postprocess_executor)
+                changed = mark_soft_timeouts(set(rpa_futures)) or changed
+                if changed:
+                    persist()
+
+    compensate_terminal_failures()
+    while True:
+        final_successes = successful_entries()
+        deficit = args.target_top_n - len(final_successes)
+        if deficit <= 0:
+            break
+        indices = terminal_backfill_indices(deficit)
+        if not indices:
+            break
+        run_terminal_backfill_wave(indices)
+        compensate_terminal_failures()
 
     final_successes = successful_entries()
     if len(final_successes) >= args.target_top_n:
@@ -481,11 +615,17 @@ def run_streaming_batch(
             )
             cancelled[index] = entry
     manifest = persist()
-    ready = ready_payload(
-        candidate_payload, ordered(final_successes)[: args.target_top_n]
-    )
-    write_json(ready_path, ready)
     failures = len(final_successes) < args.target_top_n
+    if not failures:
+        ready = ready_payload(
+            candidate_payload, ordered(final_successes)[: args.target_top_n]
+        )
+        write_json(ready_path, ready)
+    else:
+        try:
+            Path(ready_path).unlink(missing_ok=True)
+        except OSError:
+            pass
     last_result = None
     for index in sorted(final_successes, reverse=True):
         last_result = entry_result(final_successes[index])

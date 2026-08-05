@@ -61,6 +61,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
             "diagnosisCsvPath": f"diagnosis-csv/{material_id}.csv",
             "recordsPersisted": True,
             "diagnosisRecordsPath": f"diagnosis-records/{material_id}.json",
+            "records": [{"materialId": material_id}],
             "postprocessStatus": "queued",
         }
 
@@ -279,6 +280,61 @@ class StreamingBatchRunnerTests(unittest.TestCase):
 
         self.assertTrue(persisted_success.is_set())
 
+    def test_streaming_never_submits_m3_while_m1_m2_are_postprocessing(self):
+        rpa_starts = []
+        postprocess_started = threading.Event()
+        release_postprocess = threading.Event()
+
+        def attempt_rpa(_args, entry):
+            rpa_starts.append(entry["materialId"])
+            return self._verified_rpa_success(entry)
+
+        def attempt_postprocess(_args, entry):
+            if entry["materialId"] == "m-1":
+                postprocess_started.set()
+                release_postprocess.wait(timeout=1)
+            return self._success_postprocess(_args, entry)
+
+        runner = threading.Thread(
+            target=self.run_batch,
+            args=(["m-1", "m-2", "m-3"], attempt_rpa, attempt_postprocess),
+            kwargs={"args": {"target_top_n": 2, "rpa_concurrency": 2}},
+        )
+        runner.start()
+        self.assertTrue(postprocess_started.wait(timeout=1))
+        deadline = time.monotonic() + 1
+        while len(rpa_starts) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(rpa_starts, ["m-1", "m-2"])
+        release_postprocess.set()
+        runner.join(timeout=2)
+
+        self.assertFalse(runner.is_alive())
+
+    def test_streaming_backfills_only_after_terminal_postprocess_failure(self):
+        rpa_starts = []
+
+        def attempt_rpa(_args, entry):
+            rpa_starts.append(entry["materialId"])
+            return self._verified_rpa_success(entry)
+
+        def attempt_postprocess(_args, entry):
+            if entry["materialId"] == "m-1":
+                return {"result": None, "error": RuntimeError("ffmpeg"), "timingsSec": {}}
+            return self._success_postprocess(_args, entry)
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1", "m-2", "m-3"],
+            attempt_rpa,
+            attempt_postprocess,
+            args={"target_top_n": 2, "rpa_concurrency": 2},
+        )
+
+        by_id = {entry["materialId"]: entry for entry in manifest["materials"]}
+        self.assertFalse(failures)
+        self.assertEqual(rpa_starts, ["m-1", "m-2", "m-3"])
+        self.assertEqual(by_id["m-3"]["backfillReason"], "postprocess_failed_after_retries")
+
     def test_streaming_manifest_preserves_wave_size_after_rpa_completion(self):
         def attempt_rpa(_args, entry):
             return self._verified_rpa_success(entry)
@@ -383,7 +439,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         self.assertTrue(failures)
         self.assertEqual(manifest["stageCounts"]["postprocessSucceededCount"], 2)
         self.assertEqual(postprocess_calls.count(("m-3", 2)), 1)
-        self.assertEqual(self.ready_materials, ["m-1", "m-2"])
+        self.assertEqual(self.ready_materials, [])
 
     def test_parallel_failure_is_compensated_serially(self):
         phases = []

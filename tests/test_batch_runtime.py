@@ -13,6 +13,32 @@ from report_renderer import render_html_report  # noqa: E402
 
 
 class StageCountTests(unittest.TestCase):
+    def test_stage_counts_separates_accepted_records_from_postprocess(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            records_path = root / "m-1.json"
+            records_path.write_text(json.dumps([{"materialId": "m-1"}]), encoding="utf-8")
+            counts = stage_counts([
+                {
+                    "materialId": "m-1",
+                    "rpaStatus": "selected",
+                    "rpaCsvVerified": True,
+                    "recordsPersisted": True,
+                    "diagnosisRecordsPath": str(records_path),
+                    "postprocessStatus": "running",
+                },
+                {
+                    "materialId": "m-2",
+                    "rpaStatus": "submitted",
+                    "recordsPersisted": False,
+                    "postprocessStatus": "pending",
+                },
+            ])
+
+        self.assertEqual(counts["rpaRequestCount"], 2)
+        self.assertEqual(counts["rpaAcceptedCount"], 1)
+        self.assertEqual(counts["postprocessSucceededCount"], 0)
+
     def test_records_persisted_count_requires_valid_matching_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
