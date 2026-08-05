@@ -2240,6 +2240,24 @@ class ProcessingPipelineTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
 
+    def test_rpa_cli_rejects_removed_compatibility_flags(self):
+        parser = extract_peak_frames.build_parser()
+        for flag in (
+            "--preflight-only",
+            "--rpa-preflight-json",
+            "--allow-rpa-refetch",
+            "--no-rpa-wave-barrier",
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                parser.parse_args([flag])
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_rpa_cli_rejects_single_material_mode(self):
+        parser = extract_peak_frames.build_parser()
+        with self.assertRaises(SystemExit) as raised:
+            parser.parse_args(["--material-id", "m-1"])
+        self.assertEqual(raised.exception.code, 2)
+
     def test_rpa_wave_barrier_defaults_enabled_and_can_be_disabled_explicitly(self):
         parser = extract_peak_frames.build_parser()
 

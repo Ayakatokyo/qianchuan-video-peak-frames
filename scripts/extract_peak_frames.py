@@ -115,37 +115,26 @@ def build_parser():
     parser.add_argument("--ffmpeg-bin")
     parser.add_argument("--ffmpeg-timeout-sec", type=_positive_timeout, default=DEFAULT_FFMPEG_TIMEOUT_SEC)
     parser.add_argument("--shop-id")
-    parser.add_argument("--material-id")
     parser.add_argument("--top-materials-json")
     parser.add_argument("--diagnosis-records-dir")
     parser.add_argument("--batch-manifest")
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
-    parser.add_argument("--preflight-only", action="store_true")
     parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=600)
     parser.add_argument("--rpa-preflight-soft-timeout-sec", type=_positive_timeout, default=480)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
     parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
     parser.add_argument("--rpa-ready-top-materials-json")
-    parser.add_argument("--rpa-preflight-json")
-    parser.add_argument("--allow-rpa-refetch", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--concurrency", type=_positive_int)
     parser.add_argument("--rpa-concurrency", type=_positive_int, default=3)
     parser.add_argument("--postprocess-concurrency", type=_positive_int, default=3)
-    parser.add_argument(
-        "--rpa-wave-barrier",
-        dest="rpa_wave_barrier",
-        action="store_true",
-        default=True,
-        help="wait for every material in the current RPA wave before submitting the next wave",
-    )
-    parser.add_argument(
-        "--no-rpa-wave-barrier",
-        dest="rpa_wave_barrier",
-        action="store_false",
-        help="temporarily use legacy streaming RPA replenishment",
+    parser.set_defaults(
+        allow_rpa_refetch=False,
+        preflight_only=False,
+        rpa_preflight_json=None,
+        rpa_wave_barrier=True,
     )
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
     parser.add_argument("--custom-start-date")
