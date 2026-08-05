@@ -206,6 +206,59 @@ def standard_run_status(output_dir):
     }
 
 
+def validate_ready_materials(paths, top_n):
+    ready = read_json(paths["peak_frames"] / READY_MATERIALS_NAME)
+    materials = ready.get("materials") if isinstance(ready, dict) else None
+    if not isinstance(materials, list):
+        raise StandardWorkflowError("facts", "ready materials are missing or invalid")
+    ready_ids = [
+        str(material.get("materialId") or "").strip()
+        for material in materials if isinstance(material, dict)
+    ]
+    if (
+        len(ready_ids) != top_n
+        or any(not material_id for material_id in ready_ids)
+        or len(set(ready_ids)) != top_n
+    ):
+        raise StandardWorkflowError("facts", "ready materials must contain exactly Top N unique IDs")
+
+    manifest = read_json(paths["peak_frames"] / "batch-manifest.json")
+    selected = manifest.get("selectedMaterials") if isinstance(manifest, dict) else None
+    if not isinstance(selected, list):
+        raise StandardWorkflowError("facts", "ready materials manifest is missing selected materials")
+
+    successful = [
+        entry for entry in selected
+        if isinstance(entry, dict)
+        and entry.get("rpaStatus") == "selected"
+        and entry.get("postprocessStatus") == "succeeded"
+        and str(entry.get("materialId") or "").strip()
+    ]
+    successful.sort(key=lambda entry: (
+        entry.get("rank") if type(entry.get("rank")) is int else float("inf"),
+        str(entry.get("materialId")),
+    ))
+    expected_ids = [str(entry["materialId"]).strip() for entry in successful[:top_n]]
+    if len(expected_ids) != top_n or set(ready_ids) != set(expected_ids):
+        raise StandardWorkflowError(
+            "facts", "ready materials do not match the Top N successful manifest entries"
+        )
+
+    receipt = read_json(paths["peak_frames"] / "batch-verification.json")
+    receipt_ids = receipt.get("materialIds") if isinstance(receipt, dict) else None
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("valid") is not True
+        or not isinstance(receipt_ids, list)
+        or len(receipt_ids) != top_n
+        or set(str(material_id).strip() for material_id in receipt_ids) != set(expected_ids)
+    ):
+        raise StandardWorkflowError(
+            "facts", "ready materials verification receipt does not match Top N"
+        )
+    return ready
+
+
 def prepare_standard_run(request, output_dir, *, export_main=export_top_materials.main,
                          extract_main=extract_peak_frames.main,
                          prepare_facts=prepare_diagnostic_analysis):
@@ -241,6 +294,7 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
             _write_running(request, paths, "verification")
             _run_stage("verification", extract_main, [*batch_arguments, "--verify"])
             _write_running(request, paths, "facts")
+            validate_ready_materials(paths, request.top_n)
             data_path, prompt_path, _analysis = prepare_facts(
                 top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
                 diagnosis_records_dir=paths["records"],

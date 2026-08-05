@@ -31,7 +31,14 @@ python scripts/run_standard_analysis.py prepare \
   --output-dir "/path/to/new-run"
 ```
 
-成功后读取 `run-summary.json`。其状态为 `analysis_pending` 时，`diagnostic-analysis/diagnostic-analysis-data.json` 和 `diagnostic-analysis/diagnostic-analysis-prompt.md` 已准备完成。最终素材清单只包含后处理成功的素材；候选池、RPA 波次、失败重试、串行补偿和验证均由标准入口自动处理。
+成功后使用只读状态入口确认结果：
+
+```bash
+python scripts/run_standard_analysis.py status \
+  --output-dir "/path/to/new-run"
+```
+
+只有 `prepare` 成功且状态为 `analysis_pending` 时，才可进入 AI 分析；此时必须同时使用 `diagnostic-analysis/diagnostic-analysis-data.json` 和 `diagnostic-analysis/diagnostic-analysis-prompt.md`。不得从 `top_materials.json`、`top_materials_rpa_ready.json` 或其他候选清单自行构造事实，也不得手写 `missingRanks`。最终素材清单只包含后处理成功的素材；候选池、RPA 波次、失败重试、串行补偿和验证均由标准入口自动处理。
 
 ### 运行可观测性与中断
 

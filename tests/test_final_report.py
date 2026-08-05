@@ -770,6 +770,8 @@ class FinalReportDataTests(unittest.TestCase):
                 "cancelledCount": 1,
                 "postprocessSucceededCount": 1,
                 "postprocessFailedCount": 1,
+                "rpaRequestCount": 3,
+                "rpaAcceptedCount": 0,
                 "rpaSelectedCount": 2,
                 "recordsPersistedCount": 0,
                 "recordsPersistedUnknownCount": 4,
