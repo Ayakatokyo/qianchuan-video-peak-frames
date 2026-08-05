@@ -2,6 +2,7 @@
 """CLI adapter for the standard Qianchuan analysis workflow."""
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -10,6 +11,7 @@ from standard_workflow import (
     WorkflowRequest,
     finalize_standard_run,
     prepare_standard_run,
+    standard_run_status,
 )
 
 
@@ -39,6 +41,9 @@ def build_parser():
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--output-dir", required=True)
     finalize.add_argument("--analysis-json", required=True)
+
+    status = commands.add_parser("status")
+    status.add_argument("--output-dir", required=True)
     return parser
 
 
@@ -66,13 +71,15 @@ def main(argv=None):
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"diagnostic_analysis_data={_artifact_path(args.output_dir, artifacts['diagnosticData'])}")
             print(f"diagnostic_analysis_prompt={_artifact_path(args.output_dir, artifacts['diagnosticPrompt'])}")
-        else:
+        elif args.command == "finalize":
             summary = finalize_standard_run(args.output_dir, args.analysis_json)
             artifacts = summary["artifacts"]
             report_dir = Path(args.output_dir) / "final-report"
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"final_report_data={report_dir / 'final-report-data.json'}")
             print(f"final_report_html={_artifact_path(args.output_dir, artifacts['report'])}")
+        else:
+            print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
     except StandardWorkflowError as exc:
         print(f"{exc.stage}: {exc}", file=sys.stderr)
         return 2

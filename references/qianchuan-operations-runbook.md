@@ -2,6 +2,14 @@
 
 仅在标准工作流失败且需要排障时使用；不要把这些命令作为常规报告流程。常规报告始终从 `scripts/run_standard_analysis.py prepare` 开始，并以 `finalize` 收口。
 
+在启动 AI 分析前，先运行：
+
+```bash
+python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
+```
+
+仅当状态为 `analysis_pending`，并且 `diagnostic-analysis-data.json` 与 `diagnostic-analysis-prompt.md` 都由成功的 `prepare` 生成时，才可继续。不得从 `top_materials.json` 或手写 `missingRanks` 组装事实包。
+
 ## 运行中断或陈旧批次
 
 先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。恢复已有批次时使用：

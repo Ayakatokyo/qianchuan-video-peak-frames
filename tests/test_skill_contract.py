@@ -65,6 +65,18 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("修正 AI JSON 后，直接重新执行 finalize", skill)
         self.assertIn("无需重新执行 prepare 或任何运行命令", skill)
 
+    def test_skill_requires_complete_ready_data_before_ai(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("run_standard_analysis.py status", skill)
+        self.assertIn("analysis_pending", skill)
+        self.assertIn("diagnostic-analysis-data.json", skill)
+        self.assertIn("diagnostic-analysis-prompt.md", skill)
+        self.assertIn("不得从 `top_materials.json`", skill)
+        self.assertIn("不得手写 `missingRanks`", skill)
+        self.assertIn("run_standard_analysis.py status", runbook)
+
     def test_skill_distinguishes_missing_live_progress_from_missing_rpa_data(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

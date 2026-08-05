@@ -73,6 +73,25 @@ def _validate_optional_lifecycle_fields(payload, *, scope):
         or payload["postprocessAttemptCount"] < 0
     ):
         raise SchemaError(f"{scope} postprocessAttemptCount must be a non-negative integer")
+    if "backfillReason" in payload and payload["backfillReason"] not in (
+        None,
+        "rpa_collection_failure",
+        "postprocess_failed_after_retries",
+    ):
+        raise SchemaError(f"{scope} backfillReason is invalid")
+
+
+def _validate_rpa_collection(payload):
+    collection = payload.get("rpaCollection")
+    if collection is None:
+        return
+    if not isinstance(collection, dict):
+        raise SchemaError("batch manifest rpaCollection must be an object")
+    if collection.get("status") not in ("collecting", "complete", "backfilling"):
+        raise SchemaError("batch manifest rpaCollection status is invalid")
+    for field in ("targetCount", "acceptedCount"):
+        if type(collection.get(field)) is not int or collection[field] < 0:
+            raise SchemaError(f"batch manifest rpaCollection {field} must be a non-negative integer")
 
 
 def _normalize_postprocess_telemetry(payload, *, scope):
@@ -126,6 +145,7 @@ def normalize_manifest(payload, *, material_ids=None):
     normalized["schemaVersion"] = 2
     _validate_optional_wave_fields(normalized, scope="batch manifest")
     _validate_optional_lifecycle_fields(normalized, scope="batch manifest")
+    _validate_rpa_collection(normalized)
 
     materials = normalized.get("materials")
     if materials is None:
@@ -288,6 +308,9 @@ def streaming_manifest(
     stage_counts,
 ):
     ordered_materials = [public_entry(entries[index]) for index in sorted(entries)]
+    counts = stage_counts(
+        ordered(submitted), base_dir=Path(args.output_dir).parent
+    )
     return {
         "schemaVersion": 2,
         "source": "rpa",
@@ -310,9 +333,12 @@ def streaming_manifest(
         "selectedMaterials": ordered(selected),
         "rejectedMaterials": ordered(rejected),
         "cancelledMaterials": ordered(cancelled),
-        "stageCounts": stage_counts(
-            ordered(submitted), base_dir=Path(args.output_dir).parent
-        ),
+        "stageCounts": counts,
+        "rpaCollection": {
+            "status": "complete" if counts["rpaAcceptedCount"] >= args.target_top_n else "collecting",
+            "targetCount": args.target_top_n,
+            "acceptedCount": counts["rpaAcceptedCount"],
+        },
         "timingsSec": {"totalSec": 0.0},
     }
 

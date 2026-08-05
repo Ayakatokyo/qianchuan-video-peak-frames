@@ -25,6 +25,52 @@ class StandardWorkflowTests(unittest.TestCase):
             advertiser_id="1770096415226951",
         )
 
+    def request_payload(self):
+        return {
+            "startDate": "2026-07-19",
+            "endDate": "2026-07-25",
+            "topN": 2,
+            "advertiserId": "1770096415226951",
+        }
+
+    def write_ready_materials(self, root, material_ids):
+        ready_path = root / "peak-frames" / "top_materials_rpa_ready.json"
+        ready_path.parent.mkdir(parents=True, exist_ok=True)
+        ready_path.write_text(json.dumps({
+            "materials": [{"materialId": material_id} for material_id in material_ids]
+        }), encoding="utf-8")
+
+    def write_success_manifest(self, root, material_ids, *, target_top_n):
+        peak_frames = root / "peak-frames"
+        peak_frames.mkdir(parents=True, exist_ok=True)
+        selected = [
+            {
+                "rank": rank,
+                "materialId": material_id,
+                "rpaStatus": "selected",
+                "postprocessStatus": "succeeded",
+            }
+            for rank, material_id in enumerate(material_ids, start=1)
+        ]
+        (peak_frames / "batch-manifest.json").write_text(json.dumps({
+            "schemaVersion": 2,
+            "targetTopN": target_top_n,
+            "materials": selected,
+            "selectedMaterials": selected,
+            "rejectedMaterials": [],
+            "cancelledMaterials": [],
+        }), encoding="utf-8")
+        (peak_frames / "batch-verification.json").write_text(json.dumps({
+            "valid": True,
+            "materialCount": len(material_ids),
+            "materialIds": material_ids,
+        }), encoding="utf-8")
+
+    def write_complete_ready_data(self, root):
+        material_ids = ["m-1", "m-2"]
+        self.write_ready_materials(root, material_ids)
+        self.write_success_manifest(root, material_ids, target_top_n=2)
+
     def test_prepare_runs_selection_batch_verification_and_fact_package(self):
         calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -36,6 +82,8 @@ class StandardWorkflowTests(unittest.TestCase):
 
             def extract_main(argv):
                 calls.append(("verification" if "--verify" in argv else "batch", argv))
+                if "--verify" in argv:
+                    self.write_complete_ready_data(root)
                 return 0
 
             def prepare_facts(**kwargs):
@@ -75,6 +123,7 @@ class StandardWorkflowTests(unittest.TestCase):
         batch_argv = []
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_complete_ready_data(root)
 
             def extract_main(argv):
                 if "--verify" not in argv:
@@ -97,6 +146,7 @@ class StandardWorkflowTests(unittest.TestCase):
         batch_argv = []
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
+            self.write_complete_ready_data(root)
             with patch.dict(os.environ, {}, clear=True):
                 standard_workflow.prepare_standard_run(
                     self.request(), root,
@@ -109,6 +159,100 @@ class StandardWorkflowTests(unittest.TestCase):
 
         self.assertEqual(len(batch_argv), 2)
         self.assertTrue(all("--shop-id" not in argv for argv in batch_argv))
+
+    def test_prepare_does_not_build_facts_from_partial_ready_materials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.write_ready_materials(root, ["m-1"])
+            self.write_success_manifest(root, ["m-1"], target_top_n=2)
+
+            with self.assertRaisesRegex(
+                standard_workflow.StandardWorkflowError, "ready materials"
+            ):
+                standard_workflow.prepare_standard_run(
+                    self.request(),
+                    root,
+                    export_main=lambda _argv: 0,
+                    extract_main=lambda _argv: 0,
+                    prepare_facts=lambda **_kwargs: self.fail("facts must not run"),
+                )
+
+    def test_prepare_rejects_v2_while_same_request_is_running(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = root / "qianchuan-run"
+            versioned = root / "qianchuan-run-v2"
+            lock = standard_workflow.acquire_workflow_lock(self.request(), original)
+            try:
+                with self.assertRaisesRegex(
+                    standard_workflow.StandardWorkflowError, "already running"
+                ):
+                    standard_workflow.prepare_standard_run(
+                        self.request(),
+                        versioned,
+                        export_main=lambda _argv: self.fail("selection must not run"),
+                        extract_main=lambda _argv: self.fail("RPA must not run"),
+                    )
+            finally:
+                lock.release()
+
+            self.assertFalse((versioned / "run-summary.json").exists())
+
+    def test_prepare_lock_conflict_preserves_existing_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = root / "qianchuan-run"
+            versioned = root / "qianchuan-run-v2"
+            summary_path = versioned / "run-summary.json"
+            original_summary = b'{"status":"existing"}\n'
+            summary_path.parent.mkdir(parents=True)
+            summary_path.write_bytes(original_summary)
+            lock = standard_workflow.acquire_workflow_lock(self.request(), original)
+            try:
+                with self.assertRaisesRegex(
+                    standard_workflow.StandardWorkflowError, "already running"
+                ):
+                    standard_workflow.prepare_standard_run(
+                        self.request(),
+                        versioned,
+                        export_main=lambda _argv: self.fail("selection must not run"),
+                        extract_main=lambda _argv: self.fail("RPA must not run"),
+                    )
+            finally:
+                lock.release()
+
+            self.assertEqual(summary_path.read_bytes(), original_summary)
+
+    def test_status_is_read_only_and_reports_manifest_counts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            summary_path = root / "run-summary.json"
+            manifest_path = root / "peak-frames" / "batch-manifest.json"
+            standard_workflow.write_run_summary(summary_path, {
+                "schemaVersion": 1,
+                "status": "running",
+                "activeStage": "diagnosis_batch",
+                "request": self.request_payload(),
+                "artifacts": {},
+                "failure": None,
+            })
+            manifest_path.parent.mkdir()
+            manifest_path.write_text(json.dumps({"stageCounts": {
+                "rpaAcceptedCount": 2,
+                "postprocessSucceededCount": 1,
+                "reportReadyCount": 0,
+            }}), encoding="utf-8")
+            before = (summary_path.read_bytes(), manifest_path.read_bytes())
+
+            status = standard_workflow.standard_run_status(root)
+
+            self.assertEqual(status["workflowStatus"], "running")
+            self.assertEqual(status["activeStage"], "diagnosis_batch")
+            self.assertEqual(status["rpaAcceptedCount"], 2)
+            self.assertEqual(status["postprocessSucceededCount"], 1)
+            self.assertEqual(status["reportReadyCount"], 0)
+            self.assertIsNone(status["lock"])
+            self.assertEqual(before, (summary_path.read_bytes(), manifest_path.read_bytes()))
 
     def test_prepare_records_request_failure_for_non_request_input(self):
         export_calls = []
@@ -361,6 +505,12 @@ class StandardWorkflowCliTests(unittest.TestCase):
                 parser.parse_args(["finalize", "--output-dir", "run"])
 
         self.assertEqual(error.exception.code, 2)
+
+    def test_status_parser_requires_output_dir(self):
+        parser = run_standard_analysis.build_parser()
+        args = parser.parse_args(["status", "--output-dir", "run"])
+
+        self.assertEqual(args.command, "status")
 
     def test_finalize_missing_analysis_json_returns_cli_error_code(self):
         stderr = io.StringIO()

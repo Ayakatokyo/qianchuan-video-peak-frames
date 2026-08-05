@@ -2552,6 +2552,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             manifest["stageCounts"],
             {
+                "rpaRequestCount": 1,
+                "rpaAcceptedCount": 1,
                 "rpaSelectedCount": 1,
                 "recordsPersistedCount": 1,
                 "postprocessSucceededCount": 1,
@@ -3169,6 +3171,7 @@ class CliTests(unittest.TestCase):
                                     {"materialId": "m-1"}, 1
                                 ),
                                 "rpaStatus": "submitted",
+                                "rpaCsvVerified": True,
                                 "status": "running",
                             },
                             extract_peak_frames._stream_entry({"materialId": "m-2"}, 2),
@@ -3364,6 +3367,8 @@ class CliTests(unittest.TestCase):
                         "rpaResultStatus": "available",
                         "rpaCsvVerified": True,
                         "diagnosisCsvPath": "diagnosis-csv/m-1.csv",
+                        "recordsPersisted": True,
+                        "diagnosisRecordsPath": "diagnosis-records/m-1.json",
                         "postprocessStatus": "queued",
                         "status": "running",
                         "records": self._streaming_outcome("m-1")["records"],

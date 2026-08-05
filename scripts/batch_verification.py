@@ -137,6 +137,26 @@ def verify_streaming_batch(
     else:
         material_ids_to_verify = material_ids
 
+    ready_path = Path(args.output_dir) / "top_materials_rpa_ready.json"
+    if ready_path.is_file():
+        try:
+            ready_payload = json.loads(ready_path.read_text(encoding="utf-8"))
+            ready_materials = ready_payload.get("materials")
+            ready_ids = [
+                str(item.get("materialId") or "").strip()
+                for item in ready_materials
+                if isinstance(item, dict)
+            ] if isinstance(ready_materials, list) else None
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            ready_ids = None
+        if (
+            not isinstance(ready_ids, list)
+            or len(ready_ids) != len(material_ids_to_verify)
+            or len(set(ready_ids)) != len(ready_ids)
+            or set(ready_ids) != set(material_ids_to_verify)
+        ):
+            errors.append("ready materials do not match verified streaming materials")
+
     for material_id in material_ids_to_verify:
         entry = selected_by_id.get(material_id)
         if entry is None:

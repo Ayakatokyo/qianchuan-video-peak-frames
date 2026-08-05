@@ -48,6 +48,8 @@ def _records_artifact_is_valid(entry, base_dir=None):
 def stage_counts(materials, report_ready=False, base_dir=None):
     """Return explicit lifecycle counts without collapsing status meanings."""
     counts = {
+        "rpaRequestCount": 0,
+        "rpaAcceptedCount": 0,
         "rpaSelectedCount": 0,
         "recordsPersistedCount": 0,
         "postprocessSucceededCount": 0,
@@ -58,6 +60,8 @@ def stage_counts(materials, report_ready=False, base_dir=None):
             continue
         if entry.get("rpaStatus") == "selected":
             counts["rpaSelectedCount"] += 1
+        if entry.get("rpaStatus") in {"submitted", "selected", "rejected"}:
+            counts["rpaRequestCount"] += 1
         records_persisted = entry.get("recordsPersisted")
         if records_persisted is False:
             # This is an explicit negative result, not an unverifiable legacy entry.
@@ -71,6 +75,13 @@ def stage_counts(materials, report_ready=False, base_dir=None):
             counts["recordsPersistedUnknownCount"] = (
                 counts.get("recordsPersistedUnknownCount", 0) + 1
             )
+        if (
+            entry.get("rpaStatus") == "selected"
+            and entry.get("rpaCsvVerified") is True
+            and entry.get("recordsPersisted") is True
+            and _records_artifact_is_valid(entry, base_dir=base_dir)
+        ):
+            counts["rpaAcceptedCount"] += 1
         if entry.get("postprocessSucceeded") is True or (
             "postprocessSucceeded" not in entry
             and entry.get("postprocessStatus") == "succeeded"
