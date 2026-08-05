@@ -2655,7 +2655,7 @@ class CliTests(unittest.TestCase):
             material_ids[:9],
         )
 
-    def test_streaming_top9_two_rejections_submit_only_rank10_and_rank11(self):
+    def test_streaming_top9_retries_missing_video_url_before_using_rank10_and_rank11(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -2700,8 +2700,10 @@ class CliTests(unittest.TestCase):
                 )
 
         self.assertEqual(result, 0)
-        self.assertEqual(len(submitted), 11)
+        self.assertEqual(len(submitted), 13)
         self.assertEqual(set(submitted), set(material_ids[:11]))
+        self.assertEqual(submitted.count("m-8"), 2)
+        self.assertEqual(submitted.count("m-9"), 2)
         self.assertNotIn(material_ids[11], submitted)
 
     def test_streaming_rpa_channel_never_exceeds_three_in_flight(self):
@@ -5439,6 +5441,62 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.get("rpaResultStatus"), "available")
         self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
         self.assertTrue(result["recordsPersisted"])
+
+    def test_streaming_attempt_retries_missing_video_url_before_rejecting(self):
+        material_id = "m-video-url-eventual"
+        first_attempt = {
+            "materialId": material_id,
+            "rpaAvailable": False,
+            "failureReason": "missing_video_url",
+            "videoUrl": None,
+            "rpaResultStatus": "available",
+            "retryable": True,
+        }
+        second_attempt = {
+            "materialId": material_id,
+            "rpaAvailable": True,
+            "failureReason": None,
+            "videoUrl": f"https://video.example/{material_id}.mp4",
+            "records": [{
+                "recordType": "material_info",
+                "materialId": material_id,
+                "videoUrl": f"https://video.example/{material_id}.mp4",
+            }],
+            "diagnosisCsvPath": None,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 2,
+            })()
+            entry = extract_peak_frames._stream_entry({"materialId": material_id}, 1)
+            def fetch_once(*_args, **_kwargs):
+                if fetch.call_count == 2:
+                    csv_dir = root / "diagnosis-csv"
+                    csv_dir.mkdir(parents=True, exist_ok=True)
+                    (csv_dir / f"{material_id}.csv").write_text(
+                        "recordType\x01materialId\x01videoUrl\n"
+                        f"material_info\x01{material_id}\x01"
+                        f"https://video.example/{material_id}.mp4\n",
+                        encoding="utf-8",
+                    )
+                    return second_attempt
+                return first_attempt
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch_once,
+            ) as fetch:
+                result = extract_peak_frames._attempt_stream_rpa(args, entry)
+
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(result.get("rpaStatus"), "selected")
+        self.assertTrue(result["rpaCsvVerified"])
+        self.assertEqual(result["records"][0]["videoUrl"], second_attempt["videoUrl"])
 
     def test_streaming_attempt_finalizes_pending_failure_with_diagnostics(self):
         material_id = "m-retry-exhausted"

@@ -775,11 +775,18 @@ def _recover_stream_rpa_result(
         outcome.setdefault(
             "rpaResultStatus",
             "pending"
-            if outcome.get("failureReason") == "rpa_request_failed"
+            if outcome.get("failureReason") in (
+                "rpa_request_failed",
+                "missing_video_url",
+            )
             else "final_failed",
         )
         outcome.setdefault(
-            "retryable", outcome.get("failureReason") == "rpa_request_failed"
+            "retryable",
+            outcome.get("failureReason") in (
+                "rpa_request_failed",
+                "missing_video_url",
+            ),
         )
         attempts.append(_rpa_recovery_attempt(attempt_number, outcome))
         recovered = _recover_late_rpa_artifacts(

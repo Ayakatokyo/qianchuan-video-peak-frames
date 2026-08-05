@@ -65,6 +65,15 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("修正 AI JSON 后，直接重新执行 finalize", skill)
         self.assertIn("无需重新执行 prepare 或任何运行命令", skill)
 
+    def test_skill_distinguishes_missing_live_progress_from_missing_rpa_data(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("未看到实时进度不等于 RPA 未产出数据", skill)
+        self.assertIn("recordsPersistedUnknownCount", skill)
+        self.assertIn("不得据此覆盖运行目录、重新发起标准入口或判定数据丢失", skill)
+        self.assertIn("running` 或 `submitted", skill)
+        self.assertIn("诊断 CSV -> records -> 后处理", skill)
+
     def test_runbook_owns_legacy_recovery_and_debug_commands(self):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
