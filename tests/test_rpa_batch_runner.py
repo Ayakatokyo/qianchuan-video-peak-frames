@@ -14,7 +14,7 @@ import rpa_batch_runner  # noqa: E402
 from schemas import validate_manifest  # noqa: E402
 
 
-class StreamingBatchRunnerTests(unittest.TestCase):
+class WaveBatchRunnerTests(unittest.TestCase):
     def setUp(self):
         self.manifests = []
         self.ready_materials = []
@@ -32,8 +32,8 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         return SimpleNamespace(**values)
 
     @staticmethod
-    def _stream_entry(material, rank):
-        return rpa_batch_runner.stream_entry(material, rank, lambda: {})
+    def _wave_entry(material, rank):
+        return rpa_batch_runner.wave_entry(material, rank, lambda: {})
 
     @staticmethod
     def _merge_timings(previous, attempt):
@@ -90,10 +90,10 @@ class StreamingBatchRunnerTests(unittest.TestCase):
     def run_batch(self, material_ids, attempt_rpa, attempt_postprocess, **overrides):
         args = self._args(**overrides.pop("args", {}))
         candidate_payload = {"materials": [{"materialId": item} for item in material_ids]}
-        return rpa_batch_runner.run_streaming_batch(
+        return rpa_batch_runner.run_wave_batch(
             args,
             candidate_payload,
-            stream_entry=self._stream_entry,
+            wave_entry=self._wave_entry,
             resume_state=lambda *_args: ({}, {}, {}, {}, []),
             attempt_rpa=attempt_rpa,
             attempt_postprocess=attempt_postprocess,
@@ -280,7 +280,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
 
         self.assertTrue(persisted_success.is_set())
 
-    def test_streaming_never_submits_m3_while_m1_m2_are_postprocessing(self):
+    def test_wave_does_not_submit_next_candidate_until_current_wave_finishes(self):
         rpa_starts = []
         postprocess_started = threading.Event()
         release_postprocess = threading.Event()
@@ -311,7 +311,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
 
         self.assertFalse(runner.is_alive())
 
-    def test_streaming_backfills_only_after_terminal_postprocess_failure(self):
+    def test_wave_backfills_only_after_terminal_postprocess_failure(self):
         rpa_starts = []
 
         def attempt_rpa(_args, entry):
@@ -335,7 +335,7 @@ class StreamingBatchRunnerTests(unittest.TestCase):
         self.assertEqual(rpa_starts, ["m-1", "m-2", "m-3"])
         self.assertEqual(by_id["m-3"]["backfillReason"], "postprocess_failed_after_retries")
 
-    def test_streaming_manifest_preserves_wave_size_after_rpa_completion(self):
+    def test_wave_manifest_preserves_wave_size_after_rpa_completion(self):
         def attempt_rpa(_args, entry):
             return self._verified_rpa_success(entry)
 

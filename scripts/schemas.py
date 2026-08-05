@@ -223,53 +223,6 @@ def validate_manifest(payload, *, material_ids=None, require_run_id=False):
     return normalized
 
 
-def validate_preflight_receipt(payload, *, args, candidate_payload, material_ids):
-    if not isinstance(payload, dict) or payload.get("schemaVersion") != 2:
-        raise SchemaError("RPA preflight receipt must use schemaVersion 2")
-    if payload.get("satisfied") is not True:
-        raise SchemaError("RPA preflight receipt is not satisfied")
-    if payload.get("shopId") != args.shop_id:
-        raise SchemaError("RPA preflight receipt shopId does not match")
-    _validate_optional_wave_fields(payload, scope="RPA preflight receipt")
-    _validate_optional_lifecycle_fields(payload, scope="RPA preflight receipt")
-    expected_dates = {
-        "type": args.date_range_type,
-        "customStartDate": args.custom_start_date,
-        "customEndDate": args.custom_end_date,
-        "actualStartDate": candidate_payload.get("actualStartDate"),
-        "actualEndDate": candidate_payload.get("actualEndDate"),
-    }
-    date_range = payload.get("dateRange")
-    if not isinstance(date_range, dict) or any(
-        date_range.get(key) != value for key, value in expected_dates.items()
-    ):
-        raise SchemaError("RPA preflight receipt date range does not match")
-    selected = payload.get("selectedMaterials")
-    if not isinstance(selected, list):
-        raise SchemaError("RPA preflight receipt selectedMaterials must be a list")
-    for field in ("selectedMaterials", "rejectedMaterials", "cancelledMaterials"):
-        entries = payload.get(field, [])
-        if not isinstance(entries, list):
-            raise SchemaError(f"RPA preflight receipt {field} must be a list")
-        for entry in entries:
-            if isinstance(entry, dict):
-                _validate_optional_wave_fields(
-                    entry, scope="RPA preflight receipt material"
-                )
-                _validate_optional_lifecycle_fields(
-                    entry, scope="RPA preflight receipt material"
-                )
-    selected_ids = {
-        _text(item.get("materialId")) for item in selected if isinstance(item, dict)
-    }
-    missing = [material_id for material_id in material_ids if material_id not in selected_ids]
-    if missing:
-        raise SchemaError(
-            "RPA preflight receipt does not select material " + ", ".join(missing)
-        )
-    return payload
-
-
 def validate_report_data(payload, *, run_id=None):
     if not isinstance(payload, dict):
         raise SchemaError("report data must be an object")
@@ -294,7 +247,7 @@ def validate_report_data(payload, *, run_id=None):
     return payload
 
 
-def streaming_manifest(
+def wave_manifest(
     args,
     candidates,
     entries,
@@ -343,14 +296,14 @@ def streaming_manifest(
     }
 
 
-def load_streaming_resume(path, args, candidates, error_type):
+def load_wave_resume(path, args, candidates, error_type):
     try:
         manifest = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise error_type(
-            f"unable to read streaming batch manifest for resume: {path}"
+            f"unable to read wave batch manifest for resume: {path}"
         ) from exc
     expected = {
         "schemaVersion": 2,
@@ -381,7 +334,7 @@ def load_streaming_resume(path, args, candidates, error_type):
             "materialIds",
         )
     ):
-        raise error_type("streaming batch manifest does not match the requested RPA batch")
+        raise error_type("wave batch manifest does not match the requested RPA batch")
     return normalized
 
 

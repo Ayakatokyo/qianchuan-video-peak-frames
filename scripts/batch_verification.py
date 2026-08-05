@@ -64,7 +64,7 @@ def material_output_issues(material_id, entry):
     return errors, warnings
 
 
-def verify_streaming_batch(
+def verify_wave_batch(
     args,
     material_ids,
     manifest,
@@ -79,17 +79,17 @@ def verify_streaming_batch(
     rejected = manifest.get("rejectedMaterials")
     cancelled = manifest.get("cancelledMaterials")
     if not isinstance(selected, list):
-        raise RuntimeError("streaming batch manifest has invalid selectedMaterials")
+        raise RuntimeError("wave batch manifest has invalid selectedMaterials")
     if not isinstance(rejected, list):
-        raise RuntimeError("streaming batch manifest has invalid rejectedMaterials")
+        raise RuntimeError("wave batch manifest has invalid rejectedMaterials")
     if not isinstance(cancelled, list):
-        raise RuntimeError("streaming batch manifest has invalid cancelledMaterials")
+        raise RuntimeError("wave batch manifest has invalid cancelledMaterials")
 
     selected_by_id = {}
     successful_selected = []
     for entry in selected:
         if not isinstance(entry, dict):
-            errors.append("streaming selected material entry is invalid")
+            errors.append("wave selected material entry is invalid")
             continue
         material_id = str(entry.get("materialId") or "").strip()
         if material_id:
@@ -118,7 +118,7 @@ def verify_streaming_batch(
     ):
         if len(successful_selected) < target_top_n:
             errors.append(
-                "streaming batch postprocessSucceededCount does not satisfy targetTopN"
+                "wave batch postprocessSucceededCount does not satisfy targetTopN"
             )
         material_ids_to_verify = [
             str(entry.get("materialId") or "").strip()
@@ -155,12 +155,12 @@ def verify_streaming_batch(
             or len(set(ready_ids)) != len(ready_ids)
             or set(ready_ids) != set(material_ids_to_verify)
         ):
-            errors.append("ready materials do not match verified streaming materials")
+            errors.append("ready materials do not match verified wave materials")
 
     for material_id in material_ids_to_verify:
         entry = selected_by_id.get(material_id)
         if entry is None:
-            errors.append(f"material {material_id} is missing from streaming selectedMaterials")
+            errors.append(f"material {material_id} is missing from wave selectedMaterials")
             continue
         if entry.get("rpaStatus") != "selected":
             errors.append(f"material {material_id} is not RPA selected")
@@ -198,35 +198,3 @@ def verify_streaming_batch(
     receipt_path = Path(args.output_dir) / verification_name
     write_json(receipt_path, receipt)
     return receipt_path, receipt
-
-
-def verify_batch(
-    args,
-    material_ids,
-    *,
-    manifest_path,
-    load_resume_manifest,
-    new_batch_manifest,
-    material_output_issues_fn=material_output_issues,
-    write_json,
-    verification_name,
-    error_type,
-):
-    try:
-        raw_manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise error_type(
-            f"unable to read batch manifest for verification: {manifest_path}"
-        ) from exc
-    try:
-        manifest = validate_manifest(raw_manifest)
-        return verify_streaming_batch(
-            args,
-            material_ids,
-            manifest,
-            material_output_issues_fn=material_output_issues_fn,
-            write_json=write_json,
-            verification_name=verification_name,
-        )
-    except (SchemaError, RuntimeError) as exc:
-        raise error_type(str(exc)) from exc

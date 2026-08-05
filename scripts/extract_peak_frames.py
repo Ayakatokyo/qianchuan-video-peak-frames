@@ -25,7 +25,6 @@ from rpa_adapter import (
     FUNCTION_CODE,
     RpaAdapterError,
     download_video,
-    fetch_material_diagnosis,
     fetch_material_preflight,
     find_material_video_url,
     list_accounts,
@@ -35,12 +34,10 @@ from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from batch_runtime import BatchLockError, acquire_run_lock, read_json, stage_counts
 import batch_verification
 from batch_verification import material_output_issues
-import material_processing
 import rpa_batch_runner
-import rpa_preflight
 from path_safety import artifact_path, validate_material_id
 from rpa_runtime import multiprocessing_context_name, run_isolated_preflight
-from schemas import SchemaError, validate_manifest, validate_preflight_receipt
+from schemas import SchemaError, validate_manifest
 import schemas
 
 _material_output_issues = material_output_issues
@@ -48,7 +45,7 @@ _material_output_issues = material_output_issues
 
 BATCH_MANIFEST_NAME = "batch-manifest.json"
 BATCH_MANIFEST_VERSION = 2
-STREAMING_BATCH_MANIFEST_VERSION = 2
+WAVE_BATCH_MANIFEST_VERSION = 2
 BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
 BATCH_VERIFICATION_NAME = "batch-verification.json"
 BATCH_VERIFICATION_FAILURE_EXIT_CODE = 6
@@ -131,9 +128,6 @@ def build_parser():
     parser.add_argument("--rpa-concurrency", type=_positive_int, default=3)
     parser.add_argument("--postprocess-concurrency", type=_positive_int, default=3)
     parser.set_defaults(
-        allow_rpa_refetch=False,
-        preflight_only=False,
-        rpa_preflight_json=None,
         rpa_wave_barrier=True,
     )
     parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
@@ -358,45 +352,10 @@ def _write_json_atomically(path, payload):
         ) from exc
 
 
-def _preflight_path(args):
-    return Path(args.output_dir) / RPA_PREFLIGHT_NAME
-
-
 def _ready_top_materials_path(args):
     if args.rpa_ready_top_materials_json:
         return Path(args.rpa_ready_top_materials_json)
     return Path(args.output_dir) / RPA_READY_TOP_MATERIALS_NAME
-
-
-def _preflight_enabled(args):
-    return bool(args.target_top_n or args.preflight_only)
-
-
-def _material_entry_with_preflight(material, outcome, status=None, timings=None):
-    enriched = dict(material)
-    enriched.update(
-        {
-            "rpaAvailable": bool(outcome.get("rpaAvailable")),
-            "failureReason": outcome.get("failureReason"),
-            "videoUrl": outcome.get("videoUrl"),
-            "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
-            "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
-            "preflightStatus": status or (
-                "selected" if outcome.get("rpaAvailable") else "rejected"
-            ),
-        }
-    )
-    if timings is not None:
-        enriched["timingsSec"] = timings
-        for field in (
-            "waveIndex",
-            "waveSize",
-            "waveStartedAtSec",
-            "waveFinishedAtSec",
-        ):
-            if field in timings:
-                enriched[field] = timings[field]
-    return enriched
 
 
 def _ready_top_materials_payload(candidate_payload, selected_materials):
@@ -437,47 +396,6 @@ def _rpa_preflight_deadline(timeout_sec):
         signal.signal(signal.SIGALRM, previous_handler)
         if previous_timer[0] > 0:
             signal.setitimer(signal.ITIMER_REAL, *previous_timer)
-
-
-def _preflight_receipt(
-    args, candidate_payload, materials, selected, rejected, cancelled=None, started_at=None
-):
-    target_top_n = args.target_top_n or len(materials)
-    return {
-        "schemaVersion": 2,
-        "requestedTopN": target_top_n,
-        "candidateCount": len(materials),
-        "candidateLimit": len(materials),
-        "preflightConcurrency": args.rpa_concurrency,
-        "waveBarrier": args.rpa_wave_barrier,
-        "shopId": args.shop_id,
-        "dateRange": {
-            "type": args.date_range_type,
-            "customStartDate": args.custom_start_date,
-            "customEndDate": args.custom_end_date,
-            "actualStartDate": candidate_payload.get("actualStartDate"),
-            "actualEndDate": candidate_payload.get("actualEndDate"),
-        },
-        "selectedMaterials": [dict(material) for material in selected],
-        "rejectedMaterials": [dict(material) for material in rejected],
-        "cancelledMaterials": [dict(material) for material in (cancelled or [])],
-        "satisfied": len(selected) >= target_top_n,
-        "stoppedAfterSatisfied": len(selected) >= target_top_n and len(selected) < len(materials),
-        "timingsSec": {"totalSec": _elapsed_since(started_at)} if started_at else {"totalSec": 0.0},
-    }
-
-
-def _write_preflight_artifacts(
-    args, candidate_payload, materials, selected, rejected, cancelled=None, started_at=None
-):
-    receipt = _preflight_receipt(
-        args, candidate_payload, materials, selected, rejected, cancelled, started_at
-    )
-    _write_json_atomically(_preflight_path(args), receipt)
-    ready_payload = _ready_top_materials_payload(candidate_payload, selected)
-    ready_path = _ready_top_materials_path(args)
-    _write_json_atomically(ready_path, ready_payload)
-    return receipt, ready_path, ready_payload
 
 
 def _preflight_failure(material_id, reason, error=None):
@@ -725,7 +643,7 @@ def _resolved_rpa_outcome(outcome, attempts):
     return result
 
 
-def _recover_stream_rpa_result(
+def _recover_wave_rpa_result(
     args, material_id, outcome, *, started_at_epoch, fetch_once
 ):
     """Resolve a pending request using one artifact grace budget and bounded retries."""
@@ -807,73 +725,27 @@ def _recover_stream_rpa_result(
     return outcome
 
 
-def _run_rpa_preflight(args, candidate_payload):
-    def fetch_material(args_, material_id):
-        started_at_epoch = time.time()
-
-        def fetch_once():
-            return _fetch_material_preflight_for_cli(
-                args_, material_id, recover_late_artifacts=False
-            )
-
-        return _recover_stream_rpa_result(
-            args_,
-            material_id,
-            fetch_once(),
-            started_at_epoch=started_at_epoch,
-            fetch_once=fetch_once,
-        )
-
-    def materialize(args_, outcome, material_id):
-        records, path = _materialize_preflight_records(args_, outcome, material_id)
-        if outcome.get("diagnosisCsvPath"):
-            outcome["diagnosisCsvPath"] = _run_relative_path(
-                args_, outcome["diagnosisCsvPath"]
-            )
-        return records, _run_relative_path(args_, path)
-
-    def entry(material, outcome, status, timings=None):
-        result = _material_entry_with_preflight(material, outcome, status, timings)
-        return result
-
-    def write_artifacts(args_, candidate, materials, selected, rejected, cancelled, started):
-        return _write_preflight_artifacts(
-            args_, candidate, materials, selected, rejected, cancelled, started
-        )
-
-    return rpa_preflight.run_preflight(
-        args,
-        candidate_payload,
-        fetch_material=fetch_material,
-        materialize_records=materialize,
-        material_entry=entry,
-        failure_entry=_preflight_failure,
-        write_artifacts=write_artifacts,
-        elapsed=_elapsed_since,
-    )
+def _wave_entry(material, rank):
+    return rpa_batch_runner.wave_entry(material, rank, _empty_material_timings)
 
 
-def _stream_entry(material, rank):
-    return rpa_batch_runner.stream_entry(material, rank, _empty_material_timings)
-
-
-def _stream_public_entry(entry):
+def _wave_public_entry(entry):
     return rpa_batch_runner.public_entry(entry)
 
 
-def _stream_ordered(entries):
-    return rpa_batch_runner.ordered(entries, _stream_public_entry)
+def _wave_ordered(entries):
+    return rpa_batch_runner.ordered(entries, _wave_public_entry)
 
 
-def _stream_accounted_indices(*entry_maps):
+def _wave_accounted_indices(*entry_maps):
     return rpa_batch_runner.accounted_indices(*entry_maps)
 
 
-def _new_streaming_batch_manifest(args, candidates, entries, submitted, selected, rejected, cancelled):
-    return schemas.streaming_manifest(
+def _new_wave_batch_manifest(args, candidates, entries, submitted, selected, rejected, cancelled):
+    return schemas.wave_manifest(
         args, candidates, entries, submitted, selected, rejected, cancelled,
-        public_entry=_stream_public_entry,
-        ordered=_stream_ordered,
+        public_entry=_wave_public_entry,
+        ordered=_wave_ordered,
         stage_counts=stage_counts,
     )
 
@@ -889,13 +761,13 @@ def _resolve_run_retained_path(args, path):
     return retained_path
 
 
-def _load_streaming_resume_manifest(args, candidates):
-    return schemas.load_streaming_resume(
+def _load_wave_resume_manifest(args, candidates):
+    return schemas.load_wave_resume(
         _batch_manifest_path(args), args, candidates, RpaAdapterError
     )
 
 
-def _stream_entry_from_existing_manifest(manifest):
+def _wave_entry_from_existing_manifest(manifest):
     entries = {}
     if not isinstance(manifest, dict):
         return entries
@@ -908,7 +780,7 @@ def _stream_entry_from_existing_manifest(manifest):
     return entries
 
 
-def _existing_stream_records(args, material_id, entry):
+def _existing_wave_records(args, material_id, entry):
     candidates = []
     records_path = entry.get("diagnosisRecordsPath") if isinstance(entry, dict) else None
     if isinstance(records_path, str) and records_path.strip():
@@ -929,7 +801,7 @@ def _existing_stream_records(args, material_id, entry):
     return None, None
 
 
-def _existing_stream_summary_entry(args, entry):
+def _existing_wave_summary_entry(args, entry):
     material_id = entry["materialId"]
     candidates = []
     summary_json = entry.get("summaryJson")
@@ -963,12 +835,12 @@ def _existing_stream_summary_entry(args, entry):
     return None
 
 
-def _resume_streaming_state(args, candidates, entries):
+def _resume_wave_state(args, candidates, entries):
     if not args.resume:
         return {}, {}, {}, {}, []
-    manifest = _load_streaming_resume_manifest(args, candidates)
+    manifest = _load_wave_resume_manifest(args, candidates)
     if manifest is not None:
-        for index, entry in _stream_entry_from_existing_manifest(manifest).items():
+        for index, entry in _wave_entry_from_existing_manifest(manifest).items():
             if index in entries:
                 entries[index].update(entry)
 
@@ -980,7 +852,7 @@ def _resume_streaming_state(args, candidates, entries):
     for index in sorted(entries):
         entry = dict(entries[index])
         material_id = entry["materialId"]
-        records, records_path = _existing_stream_records(args, material_id, entry)
+        records, records_path = _existing_wave_records(args, material_id, entry)
         if records is not None:
             entry.update(
                 {
@@ -995,7 +867,7 @@ def _resume_streaming_state(args, candidates, entries):
                     "records": records,
                 }
             )
-            summary_entry = _existing_stream_summary_entry(args, entry)
+            summary_entry = _existing_wave_summary_entry(args, entry)
             if summary_entry is not None:
                 entry.update(summary_entry)
             entries[index] = entry
@@ -1026,11 +898,11 @@ def _resume_streaming_state(args, candidates, entries):
             cancelled[index] = entry
             continue
 
-        entries[index] = _stream_entry(candidates[index], index + 1)
+        entries[index] = _wave_entry(candidates[index], index + 1)
     return submitted, selected, rejected, cancelled, postprocess_queue
 
 
-def _attempt_stream_rpa(args, entry):
+def _attempt_wave_rpa(args, entry):
     started_at = time.perf_counter()
     started_at_epoch = time.time()
     timings = _empty_material_timings()
@@ -1052,7 +924,7 @@ def _attempt_stream_rpa(args, entry):
                 timings["rpaFetchSec"] + _elapsed_since(request_started_at), 6
             )
 
-    outcome = _recover_stream_rpa_result(
+    outcome = _recover_wave_rpa_result(
         args,
         material_id,
         fetch_once(),
@@ -1125,7 +997,7 @@ def _attempt_stream_rpa(args, entry):
     return updated
 
 
-def _attempt_stream_postprocess(args, entry):
+def _attempt_wave_postprocess(args, entry):
     started_at = time.perf_counter()
     timings = dict(entry["timingsSec"])
     material_id = entry["materialId"]
@@ -1133,7 +1005,7 @@ def _attempt_stream_postprocess(args, entry):
     try:
         records = entry.get("records")
         if records is None:
-            records, _records_path = _existing_stream_records(args, material_id, entry)
+            records, _records_path = _existing_wave_records(args, material_id, entry)
         if records is None:
             raise RpaAdapterError("persisted RPA diagnosis records are unavailable")
         video_url = find_material_video_url(records, material_id)
@@ -1171,7 +1043,7 @@ def _attempt_stream_postprocess(args, entry):
     }
 
 
-def _merge_stream_postprocess_timings(entry_timings, attempt_timings):
+def _merge_wave_postprocess_timings(entry_timings, attempt_timings):
     merged = dict(entry_timings)
     merged.update(attempt_timings)
     try:
@@ -1192,25 +1064,25 @@ def _merge_stream_postprocess_timings(entry_timings, attempt_timings):
     return merged
 
 
-def _run_streaming_rpa_batch(args, candidate_payload):
+def _run_wave_rpa_batch(args, candidate_payload):
     manifest_path = _batch_manifest_path(args)
-    manifest, failures, last_result = rpa_batch_runner.run_streaming_batch(
+    manifest, failures, last_result = rpa_batch_runner.run_wave_batch(
         args,
         candidate_payload,
-        stream_entry=_stream_entry,
-        resume_state=_resume_streaming_state,
-        attempt_rpa=_attempt_stream_rpa,
-        attempt_postprocess=_attempt_stream_postprocess,
-        merge_timings=_merge_stream_postprocess_timings,
-        new_manifest=_new_streaming_batch_manifest,
+        wave_entry=_wave_entry,
+        resume_state=_resume_wave_state,
+        attempt_rpa=_attempt_wave_rpa,
+        attempt_postprocess=_attempt_wave_postprocess,
+        merge_timings=_merge_wave_postprocess_timings,
+        new_manifest=_new_wave_batch_manifest,
         write_json=_write_json_atomically,
         manifest_path=manifest_path,
         ready_payload=_ready_top_materials_payload,
         ready_path=_ready_top_materials_path(args),
         entry_result=_entry_result,
         elapsed=_elapsed_since,
-        accounted_indices=_stream_accounted_indices,
-        ordered=_stream_ordered,
+        accounted_indices=_wave_accounted_indices,
+        ordered=_wave_ordered,
     )
     return manifest_path, last_result, failures
 
@@ -1221,11 +1093,11 @@ def _batch_manifest_path(args):
     return Path(args.output_dir) / BATCH_MANIFEST_NAME
 
 
-def _streaming_lock_path(args):
+def _wave_lock_path(args):
     return Path(args.output_dir) / ".batch-run.lock"
 
 
-def _manifest_has_unfinished_streaming_work(manifest):
+def _manifest_has_unfinished_wave_work(manifest):
     if not isinstance(manifest, dict):
         return False
     for entry in manifest.get("materials", []):
@@ -1243,38 +1115,30 @@ def _manifest_has_unfinished_streaming_work(manifest):
     return False
 
 
-def _acquire_streaming_lock(args):
+def _acquire_wave_lock(args):
     manifest_path = _batch_manifest_path(args)
     existing = read_json(manifest_path)
     requested_run_id = existing.get("runId") if args.resume and isinstance(existing, dict) else None
     try:
         lock = acquire_run_lock(
-            _streaming_lock_path(args), manifest_path, run_id=requested_run_id
+            _wave_lock_path(args), manifest_path, run_id=requested_run_id
         )
     except BatchLockError as exc:
         if not exc.stale:
             raise RpaAdapterError(str(exc)) from exc
-        if _manifest_has_unfinished_streaming_work(existing) and not args.resume:
+        if _manifest_has_unfinished_wave_work(existing) and not args.resume:
             raise RpaAdapterError(
-                "stale streaming batch requires --resume or repair-manifest before retry"
+                "stale wave batch requires --resume or repair-manifest before retry"
             ) from exc
         try:
-            _streaming_lock_path(args).unlink()
+            _wave_lock_path(args).unlink()
         except FileNotFoundError:
             pass
         lock = acquire_run_lock(
-            _streaming_lock_path(args), manifest_path, run_id=requested_run_id
+            _wave_lock_path(args), manifest_path, run_id=requested_run_id
         )
     args.run_id = lock.payload["runId"]
     return lock
-
-
-def _new_batch_manifest(args, material_ids):
-    return schemas.build_batch_manifest(args, material_ids, _empty_material_timings)
-
-
-def _load_resume_manifest(path, expected_manifest):
-    return schemas.load_batch_resume(path, expected_manifest, RpaAdapterError)
 
 
 def _material_success_is_valid(material_id, entry):
@@ -1306,118 +1170,8 @@ def _time_call(timings, field, function, *args, **kwargs):
         timings[field] = _elapsed_since(started_at)
 
 
-def _set_last_material_timings(timings):
-    _MATERIAL_TIMING_STATE.timings = timings
-
-
-def _pop_last_material_timings():
-    timings = getattr(_MATERIAL_TIMING_STATE, "timings", None)
-    if hasattr(_MATERIAL_TIMING_STATE, "timings"):
-        delattr(_MATERIAL_TIMING_STATE, "timings")
-    return timings
-
-
-def _timings_or_fallback(started_at):
-    timings = _pop_last_material_timings()
-    if timings is None:
-        timings = _empty_material_timings()
-        timings["totalSec"] = _elapsed_since(started_at)
-    elif timings.get("totalSec", 0.0) <= 0:
-        timings["totalSec"] = _elapsed_since(started_at)
-    return timings
-
-
-def _start_material_attempt(entry):
-    entry.update(
-        {
-            "status": "running",
-            "attempts": entry.get("attempts", 0) + 1,
-            "errorType": None,
-            "errorMessage": None,
-            "timingsSec": _empty_material_timings(),
-        }
-    )
-
-
-def _attempt_rpa_material(args, material_id):
-    started_at = time.perf_counter()
-    try:
-        result = _process_rpa_material(args, material_id)
-        return {
-            "materialId": material_id,
-            "result": result,
-            "error": None,
-            "timingsSec": _timings_or_fallback(started_at),
-        }
-    except HANDLED_MATERIAL_ERRORS as exc:
-        return {
-            "materialId": material_id,
-            "result": None,
-            "error": exc,
-            "timingsSec": _timings_or_fallback(started_at),
-        }
-
-
-def _apply_material_attempt(manifest, material_id, attempt):
-    entry = manifest["materials"][material_id]
-    entry["timingsSec"] = attempt["timingsSec"]
-    error = attempt["error"]
-    if error is not None:
-        entry.update(
-            {
-                "status": "failed",
-                "errorType": type(error).__name__,
-                "errorMessage": (
-                    f"{type(error).__name__} while processing material {material_id}"
-                ),
-            }
-        )
-        return
-
-    result_dir, summary_json, summary_md = attempt["result"]
-    entry.update(
-        {
-            "status": "succeeded",
-            "summaryJson": str(summary_json),
-            "summaryMd": str(summary_md),
-        }
-    )
-    if not _material_success_is_valid(material_id, entry):
-        entry.update(
-            {
-                "status": "failed",
-                "errorType": "InputDataError",
-                "errorMessage": (
-                    f"InputDataError while processing material {material_id}"
-                ),
-            }
-        )
-
-
-def _iter_pending_material_ids(args, manifest, material_ids):
-    for material_id in material_ids:
-        entry = manifest["materials"][material_id]
-        if args.resume and _material_success_is_valid(material_id, entry):
-            continue
-        yield material_id
-
-
-def _verify_rpa_batch(args, material_ids):
-    return batch_verification.verify_batch(
-        args,
-        material_ids,
-        manifest_path=_batch_manifest_path(args),
-        load_resume_manifest=_load_resume_manifest,
-        new_batch_manifest=_new_batch_manifest,
-        material_output_issues_fn=_material_output_issues,
-        write_json=_write_json_atomically,
-        verification_name=BATCH_VERIFICATION_NAME,
-        error_type=RpaAdapterError,
-    )
-
-
-def _verify_streaming_rpa_batch(args, material_ids, manifest):
-    return batch_verification.verify_streaming_batch(
+def _verify_wave_rpa_batch(args, material_ids, manifest):
+    return batch_verification.verify_wave_batch(
         args,
         material_ids,
         manifest,
@@ -1427,26 +1181,26 @@ def _verify_streaming_rpa_batch(args, material_ids, manifest):
     )
 
 
-STREAMING_BATCH_RUNNING = "RUNNING"
-STREAMING_BATCH_COMPLETED = "COMPLETED"
-STREAMING_BATCH_INVALID_MANIFEST = "INVALID_MANIFEST"
-STREAMING_BATCH_NOT_FOUND = "NOT_FOUND"
+WAVE_BATCH_RUNNING = "RUNNING"
+WAVE_BATCH_COMPLETED = "COMPLETED"
+WAVE_BATCH_INVALID_MANIFEST = "INVALID_MANIFEST"
+WAVE_BATCH_NOT_FOUND = "NOT_FOUND"
 
 
-def _streaming_batch_status(args):
+def _wave_batch_status(args):
     manifest_path = _batch_manifest_path(args)
     try:
         manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return STREAMING_BATCH_NOT_FOUND, f"streaming batch manifest is missing: {manifest_path}"
+        return WAVE_BATCH_NOT_FOUND, f"wave batch manifest is missing: {manifest_path}"
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return STREAMING_BATCH_INVALID_MANIFEST, (
-            f"streaming batch manifest is unreadable: {manifest_path}: {exc}"
+        return WAVE_BATCH_INVALID_MANIFEST, (
+            f"wave batch manifest is unreadable: {manifest_path}: {exc}"
         )
     try:
         manifest = validate_manifest(manifest)
     except SchemaError as exc:
-        return STREAMING_BATCH_INVALID_MANIFEST, str(exc)
+        return WAVE_BATCH_INVALID_MANIFEST, str(exc)
     material_ids = manifest["materialIds"]
     accounted_ids = {
         str(entry.get("materialId") or "").strip()
@@ -1455,81 +1209,8 @@ def _streaming_batch_status(args):
         if isinstance(entry, dict) and str(entry.get("materialId") or "").strip()
     }
     if accounted_ids >= set(material_ids):
-        return STREAMING_BATCH_COMPLETED, None
-    return STREAMING_BATCH_RUNNING, None
-
-
-def _run_rpa_batch(args, material_ids):
-    return rpa_batch_runner.run_legacy_batch(
-        args,
-        material_ids,
-        manifest_path=_batch_manifest_path(args),
-        new_manifest=_new_batch_manifest,
-        load_resume_manifest=_load_resume_manifest,
-        iter_pending=_iter_pending_material_ids,
-        start_attempt=_start_material_attempt,
-        attempt_material=_attempt_rpa_material,
-        apply_attempt=_apply_material_attempt,
-        write_json=_write_json_atomically,
-        entry_result=_entry_result,
-        elapsed=_elapsed_since,
-    )
-
-
-def _process_rpa_material(args, material_id):
-    records = getattr(args, "rpa_preflight_records", {}).get(material_id)
-    result, timings = material_processing.process_rpa_material(
-        args,
-        material_id,
-        preflight_records=records,
-        fetch_records=fetch_material_diagnosis,
-        diagnosis_csv_dir=_diagnosis_csv_dir(args),
-        diagnosis_records_dir=args.diagnosis_records_dir,
-        write_records=_write_diagnosis_records,
-        find_video=find_material_video_url,
-        download_video=download_video,
-        process_records=process_records,
-        artifact_path=artifact_path,
-        function_code=FUNCTION_CODE,
-    )
-    _set_last_material_timings(timings)
-    return result
-
-
-def _load_preflight_records(args, candidate_payload, material_ids):
-    try:
-        receipt_path = Path(args.rpa_preflight_json)
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise RpaAdapterError(f"unable to read RPA preflight receipt: {exc}") from exc
-    try:
-        validate_preflight_receipt(
-            receipt, args=args, candidate_payload=candidate_payload, material_ids=material_ids
-        )
-    except SchemaError as exc:
-        raise RpaAdapterError(str(exc)) from exc
-    selected = receipt["selectedMaterials"]
-    by_id = {str(item.get("materialId") or "").strip(): item for item in selected if isinstance(item, dict)}
-    records_by_id = {}
-    receipt_run_dir = receipt_path.parent.parent
-    for material_id in material_ids:
-        entry = by_id.get(material_id)
-        try:
-            if not entry or entry.get("preflightStatus") != "selected":
-                raise RpaAdapterError(f"RPA preflight receipt does not select material {material_id}")
-            relative_path = entry.get("diagnosisRecordsPath")
-            if not isinstance(relative_path, str) or not relative_path:
-                raise RpaAdapterError(f"RPA preflight records path is missing for material {material_id}")
-            records = json.loads((receipt_run_dir / relative_path).read_text(encoding="utf-8"))
-            if not isinstance(records, list):
-                raise RpaAdapterError(f"RPA preflight records must be a list for material {material_id}")
-            find_material_video_url(records, material_id)
-        except (OSError, UnicodeError, json.JSONDecodeError, RpaAdapterError) as exc:
-            if args.allow_rpa_refetch:
-                continue
-            raise RpaAdapterError(str(exc)) from exc
-        records_by_id[material_id] = records
-    return records_by_id
+        return WAVE_BATCH_COMPLETED, None
+    return WAVE_BATCH_RUNNING, None
 
 
 def process_local_input(args):
@@ -1599,12 +1280,11 @@ def main(argv=None):
         if args.source == "rpa":
             if not args.output_dir:
                 parser.error("--output-dir is required")
-            if not args.date_range_type or not (
-                args.material_id or args.top_materials_json
-            ):
+            if not args.date_range_type:
+                parser.error("--date-range-type is required for --source rpa")
+            if not args.top_materials_json or not args.target_top_n:
                 parser.error(
-                    "--date-range-type and either --material-id "
-                    "or --top-materials-json are required for --source rpa"
+                    "--source rpa requires --top-materials-json and --target-top-n"
                 )
             if args.date_range_type == "CUSTOM" and not (
                 args.custom_start_date and args.custom_end_date
@@ -1613,104 +1293,44 @@ def main(argv=None):
                     "CUSTOM requires --custom-start-date and "
                     "--custom-end-date"
                 )
-            if args.preflight_only and not args.top_materials_json:
-                parser.error("--preflight-only requires --top-materials-json")
-            if args.preflight_only and not args.target_top_n:
-                parser.error("--preflight-only requires --target-top-n")
-            if args.target_top_n and not args.top_materials_json:
-                parser.error("--target-top-n requires --top-materials-json")
             args.shop_id = _resolve_shop_id(args)
-            if args.top_materials_json:
-                top_materials_payload, material_ids = _load_top_materials(
-                    args.top_materials_json,
-                    args.date_range_type,
-                    args.custom_start_date,
-                    args.custom_end_date,
+            top_materials_payload, material_ids = _load_top_materials(
+                args.top_materials_json,
+                args.date_range_type,
+                args.custom_start_date,
+                args.custom_end_date,
+            )
+            if args.verify:
+                wave_status, wave_error = _wave_batch_status(args)
+                if wave_status == WAVE_BATCH_RUNNING:
+                    parser.error("--verify is not available for a running wave batch")
+                if wave_status != WAVE_BATCH_COMPLETED:
+                    raise RpaAdapterError(wave_error)
+                manifest = read_json(_batch_manifest_path(args))
+                if not isinstance(manifest, dict):
+                    raise RpaAdapterError("wave batch manifest is unreadable")
+                verification_path, receipt = _verify_wave_rpa_batch(
+                    args, material_ids, manifest
                 )
-            else:
-                top_materials_payload = None
-                material_ids = [args.material_id]
-            if args.top_materials_json:
-                if args.target_top_n and not args.preflight_only:
-                    if args.rpa_preflight_json:
-                        parser.error(
-                            "--rpa-preflight-json is incompatible with streaming --target-top-n"
-                        )
-                    if args.verify:
-                        streaming_status, streaming_error = _streaming_batch_status(args)
-                        if streaming_status == STREAMING_BATCH_RUNNING:
-                            parser.error("--verify is not available for a running streaming batch")
-                        if streaming_status != STREAMING_BATCH_COMPLETED:
-                            raise RpaAdapterError(streaming_error)
-                        verification_path, receipt = _verify_rpa_batch(
-                            args, material_ids
-                        )
-                        print(f"batch_verification={verification_path}")
-                        return (
-                            0
-                            if receipt["valid"]
-                            else BATCH_VERIFICATION_FAILURE_EXIT_CODE
-                        )
-                    with _acquire_streaming_lock(args):
-                        manifest_path, result, failed = _run_streaming_rpa_batch(
-                            args, top_materials_payload
-                        )
-                    manifest_snapshot = read_json(manifest_path) or {}
-                    print(
-                        "stage_counts="
-                        + json.dumps(
-                            manifest_snapshot.get("stageCounts", {}),
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        )
-                    )
-                    if failed:
-                        print(f"batch_manifest={manifest_path}", file=sys.stderr)
-                        return BATCH_PARTIAL_FAILURE_EXIT_CODE
-                    result_dir, json_path, markdown_path = result
-                elif _preflight_enabled(args):
-                    receipt, ready_path, ready_payload = _run_rpa_preflight(
-                        args, top_materials_payload
-                    )
-                    print(f"rpa_preflight={_preflight_path(args)}")
-                    print(f"rpa_ready_top_materials_json={ready_path}")
-                    material_ids = [
-                        str(material["materialId"])
-                        for material in ready_payload["materials"]
-                    ]
-                    if not receipt["satisfied"]:
-                        raise RpaAdapterError(
-                            "RPA preflight did not satisfy requested Top N"
-                        )
-                    if args.preflight_only:
-                        return 0
-                if not args.target_top_n or args.preflight_only:
-                    if args.rpa_preflight_json:
-                        args.rpa_preflight_records = _load_preflight_records(
-                            args, top_materials_payload, material_ids
-                        )
-                    if args.verify:
-                        verification_path, receipt = _verify_rpa_batch(
-                            args, material_ids
-                        )
-                        print(f"batch_verification={verification_path}")
-                        return (
-                            0
-                            if receipt["valid"]
-                            else BATCH_VERIFICATION_FAILURE_EXIT_CODE
-                        )
-                    if not args.preflight_only:
-                        manifest_path, result, failures = _run_rpa_batch(
-                            args, material_ids
-                        )
-                        if failures:
-                            print(f"batch_manifest={manifest_path}", file=sys.stderr)
-                            return BATCH_PARTIAL_FAILURE_EXIT_CODE
-                        result_dir, json_path, markdown_path = result
-            else:
-                result_dir, json_path, markdown_path = _process_rpa_material(
-                    args, material_ids[0]
+                print(f"batch_verification={verification_path}")
+                return 0 if receipt["valid"] else BATCH_VERIFICATION_FAILURE_EXIT_CODE
+            with _acquire_wave_lock(args):
+                manifest_path, result, failed = _run_wave_rpa_batch(
+                    args, top_materials_payload
                 )
+            manifest_snapshot = read_json(manifest_path) or {}
+            print(
+                "stage_counts="
+                + json.dumps(
+                    manifest_snapshot.get("stageCounts", {}),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            if failed:
+                print(f"batch_manifest={manifest_path}", file=sys.stderr)
+                return BATCH_PARTIAL_FAILURE_EXIT_CODE
+            result_dir, json_path, markdown_path = result
 
         else:
             if not args.output_dir:

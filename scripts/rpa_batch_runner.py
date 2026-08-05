@@ -11,7 +11,7 @@ from pathlib import Path
 import time
 
 
-def stream_entry(material, rank, empty_timings):
+def wave_entry(material, rank, empty_timings):
     entry = dict(material)
     entry.update(
         {
@@ -101,11 +101,11 @@ def has_accepted_record(entry, *, records_base_dir=None):
     )
 
 
-def run_streaming_batch(
+def run_wave_batch(
     args,
     candidate_payload,
     *,
-    stream_entry,
+    wave_entry,
     resume_state,
     attempt_rpa,
     attempt_postprocess,
@@ -125,7 +125,7 @@ def run_streaming_batch(
     candidate_limit = args.candidate_top_n or args.target_top_n * 3
     candidates = candidate_payload["materials"][:candidate_limit]
     entries = {
-        index: stream_entry(material, index + 1)
+        index: wave_entry(material, index + 1)
         for index, material in enumerate(candidates)
     }
     submitted, selected, rejected, cancelled, pending_postprocess = resume_state(
@@ -631,61 +631,3 @@ def run_streaming_batch(
         last_result = entry_result(final_successes[index])
         break
     return manifest, failures, last_result
-
-
-def run_legacy_batch(
-    args,
-    material_ids,
-    *,
-    manifest_path,
-    new_manifest,
-    load_resume_manifest,
-    iter_pending,
-    start_attempt,
-    attempt_material,
-    apply_attempt,
-    write_json,
-    entry_result,
-    elapsed,
-):
-    started_at = time.perf_counter()
-    expected = new_manifest(args, material_ids)
-    manifest = load_resume_manifest(manifest_path, expected) if args.resume else expected
-    manifest["concurrency"] = args.concurrency
-    manifest.setdefault("timingsSec", {})["totalSec"] = 0.0
-    write_json(manifest_path, manifest)
-
-    pending = list(iter_pending(args, manifest, material_ids))
-    for material_id in pending:
-        start_attempt(manifest["materials"][material_id])
-    write_json(manifest_path, manifest)
-
-    if args.concurrency == 1:
-        for material_id in pending:
-            apply_attempt(manifest, material_id, attempt_material(args, material_id))
-            write_json(manifest_path, manifest)
-    else:
-        with ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-            futures = {
-                executor.submit(attempt_material, args, material_id): material_id
-                for material_id in pending
-            }
-            for future in as_completed(futures):
-                material_id = futures[future]
-                apply_attempt(manifest, material_id, future.result())
-                write_json(manifest_path, manifest)
-
-    manifest["timingsSec"]["totalSec"] = elapsed(started_at)
-    write_json(manifest_path, manifest)
-    failures = [
-        material_id
-        for material_id in material_ids
-        if manifest["materials"][material_id].get("status") == "failed"
-    ]
-    last_result = None
-    for material_id in reversed(material_ids):
-        entry = manifest["materials"][material_id]
-        if entry.get("status") == "succeeded":
-            last_result = entry_result(entry)
-            break
-    return manifest_path, last_result, failures

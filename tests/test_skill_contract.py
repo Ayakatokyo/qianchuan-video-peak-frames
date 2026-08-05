@@ -86,14 +86,14 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("running` 或 `submitted", skill)
         self.assertIn("诊断 CSV -> records -> 后处理", skill)
 
-    def test_runbook_owns_legacy_recovery_and_debug_commands(self):
+    def test_runbook_owns_wave_recovery_commands(self):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
         self.assertIn("仅在标准工作流失败且需要排障时使用", runbook)
         self.assertIn("repair_manifest.py", runbook)
         self.assertIn("--resume", runbook)
-        self.assertIn("单素材 RPA 调试", runbook)
         self.assertIn("不重新调用 RPA", runbook)
+        self.assertNotIn("--material-id", runbook)
 
     def test_prompt_retains_business_analysis_and_evidence_contract(self):
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
@@ -128,6 +128,19 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("CSV -> records", contract)
         self.assertIn("records -> 后处理", contract)
         self.assertIn("render_final_report.py --copy-assets", contract)
+
+    def test_rpa_contract_documents_only_wave_top_n_execution(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        for removed_flag in (
+            "--preflight-only",
+            "--rpa-preflight-json",
+            "--allow-rpa-refetch",
+            "--no-rpa-wave-barrier",
+        ):
+            self.assertNotIn(removed_flag, skill)
+            self.assertNotIn(removed_flag, contract)
 
     def test_entry_prompt_keeps_peak_frame_definition(self):
         prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")

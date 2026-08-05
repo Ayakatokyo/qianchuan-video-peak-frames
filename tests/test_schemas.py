@@ -1,6 +1,4 @@
 import unittest
-from types import SimpleNamespace
-
 import sys
 from pathlib import Path
 
@@ -10,7 +8,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from schemas import (  # noqa: E402
     SchemaError,
     validate_manifest,
-    validate_preflight_receipt,
     validate_report_data,
 )
 
@@ -194,39 +191,6 @@ class SchemaNormalizationTests(unittest.TestCase):
             normalized["materials"][0]["compensationStatus"], "not_needed"
         )
         self.assertEqual(normalized["materials"][0]["postprocessAttempts"], [])
-
-    def test_preflight_receipt_rejects_invalid_wave_fields(self):
-        args = SimpleNamespace(
-            shop_id="shop-1",
-            date_range_type="CUSTOM",
-            custom_start_date="2026-07-25",
-            custom_end_date="2026-07-31",
-        )
-        payload = {
-            "schemaVersion": 2,
-            "satisfied": True,
-            "shopId": "shop-1",
-            "waveBarrier": "true",
-            "dateRange": {
-                "type": "CUSTOM",
-                "customStartDate": "2026-07-25",
-                "customEndDate": "2026-07-31",
-                "actualStartDate": "2026-07-25",
-                "actualEndDate": "2026-07-31",
-            },
-            "selectedMaterials": [{"materialId": "m-1", "waveIndex": -1}],
-        }
-
-        with self.assertRaises(SchemaError):
-            validate_preflight_receipt(
-                payload,
-                args=args,
-                candidate_payload={
-                    "actualStartDate": "2026-07-25",
-                    "actualEndDate": "2026-07-31",
-                },
-                material_ids=["m-1"],
-            )
 
     def test_report_schema_requires_matching_pipeline_run_id(self):
         with self.assertRaises(SchemaError):

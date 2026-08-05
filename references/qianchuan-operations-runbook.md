@@ -43,19 +43,4 @@ python scripts/repair_manifest.py \
 
 该命令只执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。
 
-## 单素材 RPA 调试
-
-仅用于已知素材的协议或视频问题，不可替代资产表选材：
-
-```bash
-python scripts/extract_peak_frames.py \
-  --source rpa \
-  --shop-id "<rpa-authorized-shop-id>" \
-  --material-id "7647499280192372763" \
-  --date-range-type CUSTOM \
-  --custom-start-date 2026-07-19 \
-  --custom-end-date 2026-07-25 \
-  --output-dir "/path/to/debug-output"
-```
-
 检查保留的 `diagnosis-records/`、`diagnosis-csv/`、素材 `summary.json` 与 JPEG，而不是仅凭文件名判断成功。RPA 输出字段、下载上限和波次状态的完整约束见 [RPA 输出契约](rpa-output-contract.md)。
