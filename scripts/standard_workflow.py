@@ -12,7 +12,7 @@ import export_top_materials
 import extract_peak_frames
 from diagnostic_analysis_lib import prepare_diagnostic_analysis
 from final_report_lib import generate_final_report
-from batch_runtime import BatchLockError, acquire_run_lock, mark_report_ready
+from batch_runtime import BatchLockError, acquire_run_lock, mark_report_ready, read_json
 
 
 SUMMARY_NAME = "run-summary.json"
@@ -121,7 +121,7 @@ def _relative(root, path):
 
 
 def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=None,
-             report=None, failure=None):
+             report=None, failure=None, active_stage=None):
     root = paths["root"]
     request_summary = {
         "startDate": request.start_date,
@@ -132,6 +132,7 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
     return {
         "schemaVersion": 1,
         "status": status,
+        "activeStage": active_stage,
         "request": request_summary,
         "artifacts": {
             "topMaterials": _relative(root, paths["top_materials"]),
@@ -163,6 +164,48 @@ def _write_failure(request, paths, stage, message, *, status="failed"):
     write_run_summary(paths["summary"], summary)
 
 
+def _write_running(request, paths, stage):
+    write_run_summary(paths["summary"], _summary(
+        request,
+        paths,
+        status="running",
+        active_stage=stage,
+    ))
+
+
+def standard_run_status(output_dir):
+    paths = workflow_paths(output_dir)
+    summary = read_json(paths["summary"])
+    if not isinstance(summary, dict):
+        summary = {}
+    manifest = read_json(paths["peak_frames"] / "batch-manifest.json")
+    stage_counts = manifest.get("stageCounts", {}) if isinstance(manifest, dict) else {}
+    if not isinstance(stage_counts, dict):
+        stage_counts = {}
+
+    lock = None
+    summary_path = str(paths["summary"].resolve())
+    lock_root = paths["root"].parent / ".qianchuan-workflow-locks"
+    if lock_root.is_dir():
+        for lock_path in lock_root.glob("*.lock"):
+            payload = read_json(lock_path)
+            if not isinstance(payload, dict):
+                continue
+            manifest_path = payload.get("manifestPath")
+            if manifest_path and str(Path(manifest_path).resolve()) == summary_path:
+                lock = payload
+                break
+
+    return {
+        "workflowStatus": summary.get("status", "not_started"),
+        "activeStage": summary.get("activeStage"),
+        "lock": lock,
+        "rpaAcceptedCount": stage_counts.get("rpaAcceptedCount", 0),
+        "postprocessSucceededCount": stage_counts.get("postprocessSucceededCount", 0),
+        "reportReadyCount": stage_counts.get("reportReadyCount", 0),
+    }
+
+
 def prepare_standard_run(request, output_dir, *, export_main=export_top_materials.main,
                          extract_main=extract_peak_frames.main,
                          prepare_facts=prepare_diagnostic_analysis):
@@ -172,6 +215,7 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
         candidate_top_n = request.top_n * 3
         shop_id = os.environ.get("QIANCHUAN_RPA_SHOP_ID", "").strip()
         with acquire_workflow_lock(request, output_dir, shop_id):
+            _write_running(request, paths, "selection")
             _run_stage("selection", export_main, [
                 "--start-date", request.start_date,
                 "--end-date", request.end_date,
@@ -192,8 +236,11 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
             ]
             if shop_id:
                 batch_arguments.extend(["--shop-id", shop_id])
+            _write_running(request, paths, "diagnosis_batch")
             _run_stage("diagnosis_batch", extract_main, batch_arguments)
+            _write_running(request, paths, "verification")
             _run_stage("verification", extract_main, [*batch_arguments, "--verify"])
+            _write_running(request, paths, "facts")
             data_path, prompt_path, _analysis = prepare_facts(
                 top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
                 diagnosis_records_dir=paths["records"],
@@ -248,6 +295,7 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
         if not analysis_path.is_file():
             raise StandardWorkflowError("report", "analysis JSON is missing")
         with acquire_workflow_lock(request, output_dir):
+            _write_running(request, paths, "report")
             try:
                 data_path, html_path, _data = render_report(
                     top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,

@@ -25,6 +25,14 @@ class StandardWorkflowTests(unittest.TestCase):
             advertiser_id="1770096415226951",
         )
 
+    def request_payload(self):
+        return {
+            "startDate": "2026-07-19",
+            "endDate": "2026-07-25",
+            "topN": 2,
+            "advertiserId": "1770096415226951",
+        }
+
     def test_prepare_runs_selection_batch_verification_and_fact_package(self):
         calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -155,6 +163,37 @@ class StandardWorkflowTests(unittest.TestCase):
                 lock.release()
 
             self.assertEqual(summary_path.read_bytes(), original_summary)
+
+    def test_status_is_read_only_and_reports_manifest_counts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            summary_path = root / "run-summary.json"
+            manifest_path = root / "peak-frames" / "batch-manifest.json"
+            standard_workflow.write_run_summary(summary_path, {
+                "schemaVersion": 1,
+                "status": "running",
+                "activeStage": "diagnosis_batch",
+                "request": self.request_payload(),
+                "artifacts": {},
+                "failure": None,
+            })
+            manifest_path.parent.mkdir()
+            manifest_path.write_text(json.dumps({"stageCounts": {
+                "rpaAcceptedCount": 2,
+                "postprocessSucceededCount": 1,
+                "reportReadyCount": 0,
+            }}), encoding="utf-8")
+            before = (summary_path.read_bytes(), manifest_path.read_bytes())
+
+            status = standard_workflow.standard_run_status(root)
+
+            self.assertEqual(status["workflowStatus"], "running")
+            self.assertEqual(status["activeStage"], "diagnosis_batch")
+            self.assertEqual(status["rpaAcceptedCount"], 2)
+            self.assertEqual(status["postprocessSucceededCount"], 1)
+            self.assertEqual(status["reportReadyCount"], 0)
+            self.assertIsNone(status["lock"])
+            self.assertEqual(before, (summary_path.read_bytes(), manifest_path.read_bytes()))
 
     def test_prepare_records_request_failure_for_non_request_input(self):
         export_calls = []
@@ -407,6 +446,12 @@ class StandardWorkflowCliTests(unittest.TestCase):
                 parser.parse_args(["finalize", "--output-dir", "run"])
 
         self.assertEqual(error.exception.code, 2)
+
+    def test_status_parser_requires_output_dir(self):
+        parser = run_standard_analysis.build_parser()
+        args = parser.parse_args(["status", "--output-dir", "run"])
+
+        self.assertEqual(args.command, "status")
 
     def test_finalize_missing_analysis_json_returns_cli_error_code(self):
         stderr = io.StringIO()
