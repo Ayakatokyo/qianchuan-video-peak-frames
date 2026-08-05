@@ -110,6 +110,52 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(len(batch_argv), 2)
         self.assertTrue(all("--shop-id" not in argv for argv in batch_argv))
 
+    def test_prepare_rejects_v2_while_same_request_is_running(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = root / "qianchuan-run"
+            versioned = root / "qianchuan-run-v2"
+            lock = standard_workflow.acquire_workflow_lock(self.request(), original)
+            try:
+                with self.assertRaisesRegex(
+                    standard_workflow.StandardWorkflowError, "already running"
+                ):
+                    standard_workflow.prepare_standard_run(
+                        self.request(),
+                        versioned,
+                        export_main=lambda _argv: self.fail("selection must not run"),
+                        extract_main=lambda _argv: self.fail("RPA must not run"),
+                    )
+            finally:
+                lock.release()
+
+            self.assertFalse((versioned / "run-summary.json").exists())
+
+    def test_prepare_lock_conflict_preserves_existing_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = root / "qianchuan-run"
+            versioned = root / "qianchuan-run-v2"
+            summary_path = versioned / "run-summary.json"
+            original_summary = b'{"status":"existing"}\n'
+            summary_path.parent.mkdir(parents=True)
+            summary_path.write_bytes(original_summary)
+            lock = standard_workflow.acquire_workflow_lock(self.request(), original)
+            try:
+                with self.assertRaisesRegex(
+                    standard_workflow.StandardWorkflowError, "already running"
+                ):
+                    standard_workflow.prepare_standard_run(
+                        self.request(),
+                        versioned,
+                        export_main=lambda _argv: self.fail("selection must not run"),
+                        extract_main=lambda _argv: self.fail("RPA must not run"),
+                    )
+            finally:
+                lock.release()
+
+            self.assertEqual(summary_path.read_bytes(), original_summary)
+
     def test_prepare_records_request_failure_for_non_request_input(self):
         export_calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
