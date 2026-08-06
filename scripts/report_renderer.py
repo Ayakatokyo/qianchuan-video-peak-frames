@@ -5,8 +5,10 @@ import json
 import mimetypes
 import os
 from pathlib import Path
+import re
 import shutil
 import uuid
+import zipfile
 
 
 class ReportRenderingError(RuntimeError):
@@ -15,6 +17,9 @@ class ReportRenderingError(RuntimeError):
 
 REPORT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "final-report-template.html"
 REPORT_DATA_PLACEHOLDER = "__REPORT_DATA_JSON__"
+REPORT_ARCHIVE_IMAGE_PATTERN = re.compile(
+    r"assets/highlight-frames/[^\"'\s<>]+"
+)
 
 
 def _text(value):
@@ -56,6 +61,86 @@ def atomic_write_text(path, content):
         except OSError:
             pass
         raise ReportRenderingError(f"unable to write report output {target}: {exc}") from exc
+
+
+def _report_image_references(report_dir, html_text):
+    root = Path(report_dir).resolve()
+    references = set(REPORT_ARCHIVE_IMAGE_PATTERN.findall(html_text))
+    for reference in references:
+        relative_path = Path(reference)
+        if (
+            relative_path.is_absolute()
+            or relative_path.parts[:2] != ("assets", "highlight-frames")
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+        ):
+            raise ReportRenderingError(f"unsafe report image reference: {reference}")
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ReportRenderingError(
+                f"unsafe report image reference: {reference}"
+            ) from exc
+        if not candidate.is_file() or candidate.is_symlink():
+            raise ReportRenderingError(f"referenced report image is missing: {reference}")
+    return references
+
+
+def _validate_report_archive(archive_path, report_name, references):
+    prefix = f"{report_name}/"
+    required = {
+        f"{prefix}final-report.html",
+        f"{prefix}final-report-data.json",
+        *(f"{prefix}{reference}" for reference in references),
+    }
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ReportRenderingError("report archive is unreadable") from exc
+    if any(not name.startswith(prefix) for name in names) or not required.issubset(names):
+        raise ReportRenderingError("report archive content is invalid")
+
+
+def create_report_archive(report_dir, archive_path=None):
+    root = Path(report_dir).resolve()
+    html_path = root / "final-report.html"
+    data_path = root / "final-report-data.json"
+    if not root.is_dir() or not html_path.is_file() or not data_path.is_file():
+        raise ReportRenderingError("report directory is missing required files")
+
+    target = (
+        Path(archive_path) if archive_path is not None
+        else root.parent / f"{root.name}.zip"
+    )
+    try:
+        target = target.resolve()
+        target.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise ReportRenderingError("report archive must not be inside the report directory")
+    if not target.parent.is_dir():
+        raise ReportRenderingError(f"report archive parent is missing: {target.parent}")
+
+    references = _report_image_references(
+        root, html_path.read_text(encoding="utf-8")
+    )
+    staging = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for source in sorted(root.rglob("*")):
+                if source.is_file() and not source.is_symlink():
+                    archive.write(source, source.relative_to(root.parent).as_posix())
+        _validate_report_archive(staging, root.name, references)
+        os.replace(staging, target)
+    except (OSError, zipfile.BadZipFile) as exc:
+        staging.unlink(missing_ok=True)
+        raise ReportRenderingError(f"unable to create report archive: {target}") from exc
+    except ReportRenderingError:
+        staging.unlink(missing_ok=True)
+        raise
+    return target
 
 
 def copy_html_asset(source_path, asset_base_dir, material_id):

@@ -12,6 +12,7 @@ import export_top_materials
 import extract_peak_frames
 from diagnostic_analysis_lib import prepare_diagnostic_analysis
 from final_report_lib import generate_final_report
+from report_renderer import create_report_archive
 from batch_runtime import BatchLockError, acquire_run_lock, mark_report_ready, read_json
 
 
@@ -117,11 +118,11 @@ def _validate_request(request):
 
 
 def _relative(root, path):
-    return str(Path(path).relative_to(root))
+    return str(Path(path).resolve().relative_to(Path(root).resolve()))
 
 
 def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=None,
-             report=None, failure=None, active_stage=None):
+             report=None, report_archive=None, failure=None, active_stage=None):
     root = paths["root"]
     request_summary = {
         "startDate": request.start_date,
@@ -140,6 +141,7 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
             "diagnosticData": _relative(root, diagnostic_data) if diagnostic_data else None,
             "diagnosticPrompt": _relative(root, diagnostic_prompt) if diagnostic_prompt else None,
             "report": _relative(root, report) if report else None,
+            "reportArchive": _relative(root, report_archive) if report_archive else None,
         },
         "failure": failure,
     }
@@ -364,6 +366,10 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
                 raise StandardWorkflowError("report", str(exc)) from exc
             if not mark_ready(paths["peak_frames"] / "batch-manifest.json", data_path, html_path):
                 raise StandardWorkflowError("report", "final report failed manifest validation")
+            try:
+                archive_path = create_report_archive(paths["report"])
+            except Exception as exc:
+                raise StandardWorkflowError("report", str(exc)) from exc
             completed = _summary(
                 request,
                 paths,
@@ -371,6 +377,7 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
                 diagnostic_data=paths["analysis"] / "diagnostic-analysis-data.json",
                 diagnostic_prompt=paths["analysis"] / "diagnostic-analysis-prompt.md",
                 report=html_path,
+                report_archive=archive_path,
             )
             write_run_summary(paths["summary"], completed)
             return completed

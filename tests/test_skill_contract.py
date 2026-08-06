@@ -56,7 +56,10 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
 
         self.assertIn("run-summary.json", skill)
         self.assertIn("complete", skill)
-        self.assertIn("final-report/", skill)
+        self.assertIn("final-report.zip", skill)
+        self.assertIn("final-report/final-report.html", skill)
+        self.assertIn("图片不依赖三方链接", skill)
+        self.assertIn("视频仍使用平台返回的 URL", skill)
         self.assertIn("不得交付草稿报告", skill)
 
     def test_skill_documents_finalize_retry_after_correcting_ai_json(self):
@@ -128,6 +131,8 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("CSV -> records", contract)
         self.assertIn("records -> 后处理", contract)
         self.assertIn("render_final_report.py --copy-assets", contract)
+        self.assertIn("final-report.zip", contract)
+        self.assertIn("Video bytes must never be downloaded", contract)
 
     def test_entry_prompt_keeps_peak_frame_definition(self):
         prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")
