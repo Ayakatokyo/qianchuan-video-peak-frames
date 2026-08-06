@@ -133,7 +133,6 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("render_final_report.py --copy-assets", contract)
         self.assertIn("final-report.zip", contract)
         self.assertIn("Video bytes must never be downloaded", contract)
-
     def test_rpa_contract_documents_only_wave_top_n_execution(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
