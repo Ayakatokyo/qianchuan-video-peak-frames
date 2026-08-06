@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +17,7 @@ from final_report_lib import (  # noqa: E402
 )
 from final_report_lib import generate_final_report  # noqa: E402
 import render_final_report  # noqa: E402
+from report_renderer import create_report_archive  # noqa: E402
 
 
 def write_json(path, payload):
@@ -51,6 +53,55 @@ def write_diagnosis_csv(path, records):
         rows.append("\x02" + "\x01".join(values))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+class FinalReportArchiveTests(unittest.TestCase):
+    def test_creates_portable_archive_with_local_images(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_dir = root / "final-report"
+            image_path = (
+                report_dir / "assets" / "highlight-frames" / "m-1" / "peak.jpg"
+            )
+            image_path.parent.mkdir(parents=True)
+            image_path.write_bytes(b"jpeg")
+            (report_dir / "final-report.html").write_text(
+                '<img src="assets/highlight-frames/m-1/peak.jpg">',
+                encoding="utf-8",
+            )
+            (report_dir / "final-report-data.json").write_text(
+                '{"video":{"src":"https://video.example/m-1.mp4"}}',
+                encoding="utf-8",
+            )
+
+            archive_path = create_report_archive(report_dir)
+
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(
+                    sorted(archive.namelist()),
+                    [
+                        "final-report/assets/highlight-frames/m-1/peak.jpg",
+                        "final-report/final-report-data.json",
+                        "final-report/final-report.html",
+                    ],
+                )
+                self.assertEqual(
+                    archive.read("final-report/final-report-data.json"),
+                    b'{"video":{"src":"https://video.example/m-1.mp4"}}',
+                )
+
+    def test_rejects_archive_when_referenced_local_image_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir) / "final-report"
+            report_dir.mkdir()
+            (report_dir / "final-report.html").write_text(
+                '<img src="assets/highlight-frames/m-1/missing.jpg">',
+                encoding="utf-8",
+            )
+            (report_dir / "final-report-data.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(FinalReportError, "referenced report image"):
+                create_report_archive(report_dir)
 
 
 class FinalReportConclusionTests(unittest.TestCase):

@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +14,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import standard_workflow  # noqa: E402
 import run_standard_analysis  # noqa: E402
+
+
+def write_rendered_report(root):
+    report_dir = root / "final-report"
+    report_dir.mkdir(exist_ok=True)
+    data_path = report_dir / "final-report-data.json"
+    html_path = report_dir / "final-report.html"
+    data_path.write_text("{}", encoding="utf-8")
+    html_path.write_text("<main>report</main>", encoding="utf-8")
+    return data_path, html_path, {}
 
 
 class StandardWorkflowTests(unittest.TestCase):
@@ -371,16 +381,15 @@ class StandardWorkflowTests(unittest.TestCase):
             )
             summary = standard_workflow.finalize_standard_run(
                 root, analysis_json,
-                render_report=lambda **_kwargs: (
-                    root / "final-report" / "final-report-data.json",
-                    root / "final-report" / "final-report.html",
-                    {},
-                ),
+                render_report=lambda **_kwargs: write_rendered_report(root),
                 mark_ready=lambda *_paths: True,
             )
+            archive_exists = (root / "final-report.zip").is_file()
 
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["artifacts"]["report"], "final-report/final-report.html")
+        self.assertEqual(summary["artifacts"]["reportArchive"], "final-report.zip")
+        self.assertTrue(archive_exists)
 
     def test_finalize_requires_dense_ai_analysis(self):
         render_calls = []
@@ -406,11 +415,7 @@ class StandardWorkflowTests(unittest.TestCase):
 
             def render_report(**kwargs):
                 render_calls.append(kwargs)
-                return (
-                    root / "final-report" / "final-report-data.json",
-                    root / "final-report" / "final-report.html",
-                    {},
-                )
+                return write_rendered_report(root)
 
             standard_workflow.finalize_standard_run(
                 root,
@@ -449,11 +454,7 @@ class StandardWorkflowTests(unittest.TestCase):
                 render_calls.append("rendered")
                 if len(render_calls) == 1:
                     raise ValueError("AI JSON needs correction")
-                return (
-                    root / "final-report" / "final-report-data.json",
-                    root / "final-report" / "final-report.html",
-                    {},
-                )
+                return write_rendered_report(root)
 
             with self.assertRaises(standard_workflow.StandardWorkflowError) as error:
                 standard_workflow.finalize_standard_run(
@@ -519,6 +520,35 @@ class StandardWorkflowCliTests(unittest.TestCase):
 
         self.assertEqual(result, 2)
         self.assertIn("usage:", stderr.getvalue())
+
+    def test_finalize_prints_final_report_zip_path(self):
+        stdout = io.StringIO()
+        with patch.object(
+            run_standard_analysis,
+            "finalize_standard_run",
+            return_value={
+                "artifacts": {
+                    "report": "final-report/final-report.html",
+                    "reportArchive": "final-report.zip",
+                }
+            },
+        ):
+            with redirect_stdout(stdout):
+                result = run_standard_analysis.main(
+                    [
+                        "finalize",
+                        "--output-dir",
+                        "/tmp/qianchuan-run",
+                        "--analysis-json",
+                        "/tmp/analysis.json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "final_report_zip=/tmp/qianchuan-run/final-report.zip",
+            stdout.getvalue(),
+        )
 
 
 if __name__ == "__main__":

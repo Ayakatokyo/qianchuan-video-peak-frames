@@ -78,6 +78,7 @@ def main(argv=None):
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"final_report_data={report_dir / 'final-report-data.json'}")
             print(f"final_report_html={_artifact_path(args.output_dir, artifacts['report'])}")
+            print(f"final_report_zip={_artifact_path(args.output_dir, artifacts['reportArchive'])}")
         else:
             print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
     except StandardWorkflowError as exc:

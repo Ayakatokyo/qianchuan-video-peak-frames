@@ -60,7 +60,7 @@ python scripts/run_standard_analysis.py finalize \
   --analysis-json "/path/to/new-run/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-仅当 `run-summary.json` 的状态为 `complete` 时，交付整个 `final-report/` 目录。该目录包含 `final-report.html` 和高光帧资产。不得交付草稿报告，也不得手工改写 HTML 或绕过 AI JSON 的证据校验。
+仅当 `run-summary.json` 的状态为 `complete` 时，交付 `final-report.zip`。解压后打开 `final-report/final-report.html`；压缩包包含报告 HTML、数据文件和本地高光帧资产，图片不依赖三方链接。视频仍使用平台返回的 URL，不下载或打包视频文件。不得交付草稿报告，也不得手工改写 HTML 或绕过 AI JSON 的证据校验。
 
 ## 峰值帧口径
 
