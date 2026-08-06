@@ -16,7 +16,7 @@
 - Create: `scripts/rpa_artifact_receipts.py`
 - Create: `tests/test_rpa_artifact_receipts.py`
 
-- [ ] **Step 1: Write failing receipt lifecycle tests**
+- [x] **Step 1: Write failing receipt lifecycle tests**
 
 ```python
 def test_publish_records_persisted_receipt_includes_csv_digest_and_paths(self):
@@ -31,13 +31,13 @@ def test_load_reconciled_receipt_rejects_changed_csv(self):
         load_records_persisted_receipt(...)
 ```
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED**
 
 Run: `pytest tests/test_rpa_artifact_receipts.py -q`
 
 Expected: FAIL because `rpa_artifact_receipts` does not exist.
 
-- [ ] **Step 3: Implement atomic receipt publication and validation**
+- [x] **Step 3: Implement atomic receipt publication and validation**
 
 ```python
 RECEIPT_SCHEMA_VERSION = 1
@@ -51,13 +51,13 @@ def load_records_persisted_receipt(receipts_dir, *, material_id, base_dir):
     # Require matching material, regular CSV/records files, digest, and retained record.
 ```
 
-- [ ] **Step 4: Run test to verify GREEN**
+- [x] **Step 4: Run test to verify GREEN**
 
 Run: `pytest tests/test_rpa_artifact_receipts.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/rpa_artifact_receipts.py tests/test_rpa_artifact_receipts.py
@@ -71,7 +71,7 @@ git commit -m "feat: add durable rpa artifact receipts"
 - Modify: `scripts/extract_peak_frames.py`
 - Modify: `tests/test_peak_frames.py`
 
-- [ ] **Step 1: Write failing lifecycle-order test**
+- [x] **Step 1: Write failing lifecycle-order test**
 
 ```python
 def test_isolated_worker_publishes_csv_receipt_before_records_receipt(self):
@@ -80,13 +80,13 @@ def test_isolated_worker_publishes_csv_receipt_before_records_receipt(self):
                      ["artifact_downloaded", "records_persisted"])
 ```
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED**
 
 Run: `pytest tests/test_peak_frames.py -q -k receipt`
 
 Expected: FAIL because `run_isolated_preflight` has no receipt callback.
 
-- [ ] **Step 3: Add worker publication hooks and submission identifiers**
+- [x] **Step 3: Add worker publication hooks and submission identifiers**
 
 ```python
 def _worker_entry(..., persist_records=None, publish_receipt=None):
@@ -96,13 +96,13 @@ def _worker_entry(..., persist_records=None, publish_receipt=None):
     # Retain records atomically, then publish records_persisted.
 ```
 
-- [ ] **Step 4: Run lifecycle and RPA module tests**
+- [x] **Step 4: Run lifecycle and RPA module tests**
 
 Run: `pytest tests/test_peak_frames.py tests/test_rpa_batch_runner.py -q`
 
 Expected: PASS, including the default three-material wave tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/rpa_runtime.py scripts/extract_peak_frames.py tests/test_peak_frames.py
@@ -115,7 +115,7 @@ git commit -m "feat: publish rpa receipts from isolated worker"
 - Modify: `scripts/extract_peak_frames.py`
 - Modify: `tests/test_peak_frames.py`
 
-- [ ] **Step 1: Write failing resume tests**
+- [x] **Step 1: Write failing resume tests**
 
 ```python
 def test_wave_resume_restores_valid_receipt_before_any_rpa_submission(self):
@@ -128,13 +128,13 @@ def test_wave_resume_rejects_malformed_receipt_without_calling_rpa(self):
         _resume_wave_state(args, candidates, entries)
 ```
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED**
 
 Run: `pytest tests/test_peak_frames.py -q -k "receipt and resume"`
 
 Expected: FAIL because resume only trusts manifest/records paths.
 
-- [ ] **Step 3: Reconcile receipts before manifest state**
+- [x] **Step 3: Reconcile receipts before manifest state**
 
 ```python
 def _resume_wave_state(args, candidates, entries):
@@ -143,13 +143,13 @@ def _resume_wave_state(args, candidates, entries):
     # Invalid or missing expected receipts raise RpaAdapterError; no fetch occurs.
 ```
 
-- [ ] **Step 4: Run resume, worker, and scheduler suites**
+- [x] **Step 4: Run resume, worker, and scheduler suites**
 
 Run: `pytest tests/test_peak_frames.py tests/test_rpa_batch_runner.py tests/test_rpa_artifact_receipts.py -q`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/extract_peak_frames.py tests/test_peak_frames.py
@@ -161,24 +161,23 @@ git commit -m "feat: reconcile rpa receipts on resume"
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-06-reliable-rpa-artifacts.md`
 
-- [ ] **Step 1: Mark completed implementation steps in this plan**
+- [x] **Step 1: Mark completed implementation steps in this plan**
 
-- [ ] **Step 2: Run the full test suite**
+- [x] **Step 2: Run the full test suite**
 
 Run: `pytest -q`
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Inspect the final diff and branch status**
+- [x] **Step 3: Inspect the final diff and branch status**
 
 Run: `git diff feature/qianchuan-top50-rpa-integration...HEAD --check && git status --short --branch`
 
 Expected: no whitespace errors; only receipt implementation and plan changes.
 
-- [ ] **Step 4: Commit the implementation plan status**
+- [x] **Step 4: Commit the implementation plan status**
 
 ```bash
 git add docs/superpowers/plans/2026-08-06-reliable-rpa-artifacts.md
 git commit -m "docs: record rpa artifact receipt implementation"
 ```
-
