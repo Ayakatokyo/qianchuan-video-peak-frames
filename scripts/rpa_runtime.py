@@ -9,7 +9,14 @@ def multiprocessing_context_name():
     return "spawn" if os.name == "nt" else "fork"
 
 
-def _worker_entry(params, worker, failure_factory, result_queue, persist_records=None):
+def _worker_entry(
+    params,
+    worker,
+    failure_factory,
+    result_queue,
+    persist_records=None,
+    publish_receipt=None,
+):
     try:
         outcome = worker(params)
         if not isinstance(outcome, dict):
@@ -26,7 +33,13 @@ def _worker_entry(params, worker, failure_factory, result_queue, persist_records
             and records_dir
             and persist_records is not None
         ):
+            if publish_receipt is not None and outcome.get("diagnosisCsvPath"):
+                publish_receipt(params, outcome, "artifact_downloaded")
             records_path = persist_records(records, records_dir, material_id)
+            if publish_receipt is not None and outcome.get("diagnosisCsvPath"):
+                publish_receipt(
+                    params, outcome, "records_persisted", records_path=str(records_path)
+                )
             outcome = dict(outcome)
             outcome.pop("records", None)
             outcome["diagnosisRecordsPath"] = str(records_path)
@@ -43,6 +56,7 @@ def run_isolated_preflight(
     worker,
     failure_factory,
     persist_records=None,
+    publish_receipt=None,
     soft_timeout_sec=None,
     late_artifact_grace_sec=0,
 ):
@@ -50,7 +64,14 @@ def run_isolated_preflight(
     result_queue = context.Queue()
     process = context.Process(
         target=_worker_entry,
-        args=(params, worker, failure_factory, result_queue, persist_records),
+        args=(
+            params,
+            worker,
+            failure_factory,
+            result_queue,
+            persist_records,
+            publish_receipt,
+        ),
     )
     process.start()
     soft_timeout_exceeded = False

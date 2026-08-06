@@ -36,6 +36,7 @@ from peak_frame_lib import (  # noqa: E402
     write_summaries,
 )
 import rpa_adapter  # noqa: E402
+import rpa_artifact_receipts  # noqa: E402
 import extract_peak_frames  # noqa: E402
 from batch_runtime import (  # noqa: E402
     BatchLockError,
@@ -3185,7 +3186,7 @@ class CliTests(unittest.TestCase):
                                 **extract_peak_frames._wave_entry(
                                     {"materialId": "m-1"}, 1
                                 ),
-                                "rpaStatus": "submitted",
+                                "rpaStatus": "selected",
                                 "rpaCsvVerified": True,
                                 "status": "running",
                             },
@@ -3248,6 +3249,83 @@ class CliTests(unittest.TestCase):
         self.assertEqual(first["summaryJson"], str(summary_json))
         self.assertEqual(first["summaryMd"], str(summary_md))
 
+    def test_wave_resume_repairs_pending_manifest_entry_from_valid_receipt(self):
+        material_id = "m-receipt-resume"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            receipts_dir = root / "rpa-receipts"
+            csv_dir.mkdir()
+            records_dir.mkdir()
+            csv_path = csv_dir / f"{material_id}.csv"
+            records_path = records_dir / f"{material_id}.json"
+            csv_path.write_text("diagnostic csv", encoding="utf-8")
+            records = [{"recordType": "material_info", "materialId": material_id}]
+            records_path.write_text(json.dumps(records), encoding="utf-8")
+            rpa_artifact_receipts.publish_receipt(
+                receipts_dir,
+                material_id=material_id,
+                client_attempt_id="attempt-resume",
+                state="records_persisted",
+                csv_path=csv_path,
+                records_path=records_path,
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(records_dir),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(entries[0], rpaStatus="pending", status="pending")
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ), patch.object(extract_peak_frames, "fetch_material_preflight") as fetch:
+                _submitted, selected, _rejected, _cancelled, postprocess_queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+        self.assertEqual(postprocess_queue, [0])
+        self.assertEqual(selected[0]["rpaStatus"], "selected")
+        self.assertTrue(selected[0]["rpaCsvVerified"])
+        self.assertEqual(selected[0]["rpaClientAttemptId"], "attempt-resume")
+        self.assertEqual(selected[0]["records"], records)
+        fetch.assert_not_called()
+
+    def test_wave_resume_rejects_malformed_receipt_for_submitted_material(self):
+        material_id = "m-malformed-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            receipts_dir = root / "rpa-receipts"
+            receipts_dir.mkdir()
+            (receipts_dir / f"{material_id}.json").write_text(
+                "not json", encoding="utf-8"
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(entries[0], rpaStatus="submitted", status="running")
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                with self.assertRaisesRegex(
+                    rpa_adapter.RpaAdapterError, "local RPA artifact receipt"
+                ):
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+
     def test_wave_resume_does_not_requeue_second_postprocess_failure(self):
         args = type("Args", (), {"resume": True, "output_dir": "/tmp"})()
         candidates = [
@@ -3276,8 +3354,8 @@ class CliTests(unittest.TestCase):
                 },
                 {
                     **entries[2],
-                    "rpaStatus": "submitted",
-                    "status": "running",
+                    "rpaStatus": "pending",
+                    "status": "pending",
                 },
             ]
         }
@@ -3457,6 +3535,50 @@ class CliTests(unittest.TestCase):
         self.assertTrue(result["rpaAvailable"])
         self.assertTrue(result["softTimeoutExceeded"])
 
+    def test_isolated_rpa_preflight_publishes_completed_artifact_receipt(self):
+        material_id = "m-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            receipts_dir = root / "rpa-receipts"
+
+            def worker(params):
+                csv_path = Path(params["diagnosis_csv_dir"]) / f"{material_id}.csv"
+                csv_path.parent.mkdir(parents=True, exist_ok=True)
+                csv_path.write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{material_id}\x01https://video.example/video.mp4\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "videoUrl": "https://video.example/video.mp4",
+                    "diagnosisCsvPath": str(csv_path),
+                    "records": [{"materialId": material_id}],
+                }
+
+            result = extract_peak_frames._fetch_material_preflight_isolated(
+                {
+                    "material_id": material_id,
+                    "diagnosis_csv_dir": csv_dir,
+                    "diagnosis_records_dir": records_dir,
+                    "rpa_receipts_dir": receipts_dir,
+                    "rpa_client_attempt_id": "attempt-receipt",
+                },
+                timeout_sec=1,
+                worker=worker,
+            )
+            receipt = json.loads(
+                (receipts_dir / f"{material_id}.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(result["rpaAvailable"])
+        self.assertEqual(result["diagnosisRecordsPath"], str(records_dir / f"{material_id}.json"))
+        self.assertEqual(receipt["state"], "records_persisted")
+        self.assertEqual(receipt["clientAttemptId"], "attempt-receipt")
+
     def test_wave_rpa_recovers_failed_request_from_late_csv(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -3491,6 +3613,88 @@ class CliTests(unittest.TestCase):
             self.assertTrue(recovered["lateArtifactRecovered"])
             self.assertEqual(recovered["diagnosisCsvPath"], str(csv_path))
             self.assertTrue((records_dir / f"{material_id}.json").is_file())
+
+    def test_wave_rpa_publishes_submitted_receipt_before_request(self):
+        material_id = "m-submitted-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 1,
+            })()
+            failure = {
+                "materialId": material_id,
+                "rpaAvailable": False,
+                "failureReason": "rpa_request_failed",
+                "rpaResultStatus": "pending",
+                "retryable": True,
+            }
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=failure,
+            ):
+                result = extract_peak_frames._attempt_wave_rpa(
+                    args, extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+                )
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(receipt["state"], "submitted")
+        self.assertEqual(receipt["clientAttemptId"], result["rpaClientAttemptId"])
+
+    def test_wave_rpa_refreshes_completed_receipt_after_records_persist(self):
+        material_id = "m-completed-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir()
+            csv_path = csv_dir / f"{material_id}.csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 1,
+            })()
+            outcome = {
+                "materialId": material_id,
+                "rpaAvailable": True,
+                "videoUrl": "https://video.example/video.mp4",
+                "diagnosisCsvPath": str(csv_path),
+                "records": [{"materialId": material_id}],
+            }
+
+            def fetch(*_args, **_kwargs):
+                csv_path.write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{material_id}\x01https://video.example/video.mp4\n",
+                    encoding="utf-8",
+                )
+                return outcome
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ):
+                result = extract_peak_frames._attempt_wave_rpa(
+                    args, extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+                )
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(result["rpaStatus"], "selected")
+        self.assertEqual(receipt["state"], "records_persisted")
+        self.assertEqual(Path(receipt["recordsPath"]).name, Path(result["diagnosisRecordsPath"]).name)
 
     def test_preflight_path_recovers_failed_request_from_late_csv(self):
         with tempfile.TemporaryDirectory() as temp_dir:

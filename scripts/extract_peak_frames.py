@@ -31,6 +31,12 @@ from rpa_adapter import (
     preflight_material_availability,
 )
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
+from rpa_artifact_receipts import (
+    RpaArtifactReceiptError,
+    load_records_persisted_receipt,
+    publish_receipt,
+    receipt_path,
+)
 from batch_runtime import BatchLockError, acquire_run_lock, read_json, stage_counts
 import batch_verification
 from batch_verification import material_output_issues
@@ -339,6 +345,10 @@ def _diagnosis_records_dir(args):
     return Path(args.output_dir).parent / "diagnosis-records"
 
 
+def _rpa_receipts_dir(args):
+    return Path(args.output_dir).parent / "rpa-receipts"
+
+
 def _run_relative_path(args, path):
     return os.path.relpath(Path(path), Path(args.output_dir).parent)
 
@@ -536,9 +546,25 @@ def _fetch_material_preflight_worker(params):
     adapter_params = {
         key: value
         for key, value in params.items()
-        if key != "diagnosis_records_dir"
+        if key
+        not in {
+            "diagnosis_records_dir",
+            "rpa_receipts_dir",
+            "rpa_client_attempt_id",
+        }
     }
     return fetch_material_preflight(**adapter_params)
+
+
+def _publish_worker_rpa_receipt(params, outcome, state, records_path=None):
+    publish_receipt(
+        params["rpa_receipts_dir"],
+        material_id=params["material_id"],
+        client_attempt_id=params["rpa_client_attempt_id"],
+        state=state,
+        csv_path=outcome.get("diagnosisCsvPath"),
+        records_path=records_path,
+    )
 
 
 def _fetch_material_preflight_isolated(
@@ -555,6 +581,7 @@ def _fetch_material_preflight_isolated(
         worker,
         _preflight_failure,
         persist_records=_write_diagnosis_records,
+        publish_receipt=_publish_worker_rpa_receipt,
         soft_timeout_sec=soft_timeout_sec,
         late_artifact_grace_sec=late_artifact_grace_sec,
     )
@@ -582,7 +609,9 @@ def _call_mock_preflight_with_timeout(params, timeout_sec):
     return outcome[0]
 
 
-def _fetch_material_preflight_for_cli(args, material_id, *, recover_late_artifacts=True):
+def _fetch_material_preflight_for_cli(
+    args, material_id, *, recover_late_artifacts=True, client_attempt_id=None
+):
     started_at_epoch = time.time()
     params = {
         "shop_id": args.shop_id,
@@ -592,6 +621,8 @@ def _fetch_material_preflight_for_cli(args, material_id, *, recover_late_artifac
         "custom_end_date": args.custom_end_date,
         "diagnosis_csv_dir": _diagnosis_csv_dir(args),
         "diagnosis_records_dir": _diagnosis_records_dir(args),
+        "rpa_receipts_dir": _rpa_receipts_dir(args),
+        "rpa_client_attempt_id": client_attempt_id or uuid.uuid4().hex,
         "timeout_sec": args.rpa_preflight_timeout_sec,
     }
     if hasattr(fetch_material_preflight, "mock_calls"):
@@ -835,6 +866,42 @@ def _existing_wave_summary_entry(args, entry):
     return None
 
 
+def _reconcile_submitted_wave_receipt(args, entry):
+    material_id = entry["materialId"]
+    try:
+        recovered = load_records_persisted_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            base_dir=Path(args.output_dir).parent,
+        )
+    except RpaArtifactReceiptError as exc:
+        raise RpaAdapterError(
+            f"local RPA artifact receipt for {material_id} is invalid: {exc}"
+        ) from exc
+    receipt = recovered["receipt"]
+    reconciled = dict(entry)
+    reconciled.update(
+        {
+            "rpaStatus": "selected",
+            "postprocessStatus": "queued",
+            "status": "running",
+            "failureReason": None,
+            "errorType": None,
+            "errorMessage": None,
+            "diagnosisCsvPath": _run_relative_path(args, recovered["csvPath"]),
+            "diagnosisRecordsPath": _run_relative_path(
+                args, recovered["recordsPath"]
+            ),
+            "recordsPersisted": True,
+            "rpaCsvVerified": True,
+            "rpaResultStatus": "available",
+            "rpaClientAttemptId": receipt["clientAttemptId"],
+            "records": recovered["records"],
+        }
+    )
+    return reconciled
+
+
 def _resume_wave_state(args, candidates, entries):
     if not args.resume:
         return {}, {}, {}, {}, []
@@ -852,7 +919,13 @@ def _resume_wave_state(args, candidates, entries):
     for index in sorted(entries):
         entry = dict(entries[index])
         material_id = entry["materialId"]
-        records, records_path = _existing_wave_records(args, material_id, entry)
+        receipt_exists = receipt_path(_rpa_receipts_dir(args), material_id).exists()
+        if entry.get("rpaStatus") == "submitted" or receipt_exists:
+            entry = _reconcile_submitted_wave_receipt(args, entry)
+            records = entry["records"]
+            records_path = Path(entry["diagnosisRecordsPath"])
+        else:
+            records, records_path = _existing_wave_records(args, material_id, entry)
         if records is not None:
             entry.update(
                 {
@@ -907,11 +980,22 @@ def _attempt_wave_rpa(args, entry):
     started_at_epoch = time.time()
     timings = _empty_material_timings()
     material_id = entry["materialId"]
+    client_attempt_id = uuid.uuid4().hex
+    publish_receipt(
+        _rpa_receipts_dir(args),
+        material_id=material_id,
+        client_attempt_id=client_attempt_id,
+        state="submitted",
+    )
+
     def fetch_once():
         request_started_at = time.perf_counter()
         try:
             return _fetch_material_preflight_for_cli(
-                args, material_id, recover_late_artifacts=False
+                args,
+                material_id,
+                recover_late_artifacts=False,
+                client_attempt_id=client_attempt_id,
             )
         except RpaPreflightDeadlineExceeded as exc:
             return _preflight_failure(material_id, "rpa_request_failed", exc)
@@ -933,7 +1017,9 @@ def _attempt_wave_rpa(args, entry):
     )
 
     updated = dict(entry)
-    updated["timingsSec"] = timings
+    updated.update(
+        {"timingsSec": timings, "rpaClientAttemptId": client_attempt_id}
+    )
     if not outcome.get("rpaAvailable"):
         updated.update(
             {
@@ -969,6 +1055,23 @@ def _attempt_wave_rpa(args, entry):
         )
         timings["totalSec"] = _elapsed_since(started_at)
         return updated
+
+    if outcome.get("diagnosisCsvPath"):
+        publish_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            client_attempt_id=client_attempt_id,
+            state="artifact_downloaded",
+            csv_path=outcome["diagnosisCsvPath"],
+        )
+        publish_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            client_attempt_id=client_attempt_id,
+            state="records_persisted",
+            csv_path=outcome["diagnosisCsvPath"],
+            records_path=records_path,
+        )
 
     updated.update(
         {
