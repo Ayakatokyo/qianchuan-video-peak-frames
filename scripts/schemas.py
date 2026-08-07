@@ -9,8 +9,21 @@ class SchemaError(ValueError):
     """Raised when a persisted artifact cannot be normalized safely."""
 
 
+_OPTIONAL_WAVE_COMPLETION_FIELDS = (
+    "waveFinishedAtSec",
+    "waveCsvArtifactFinishedAtSec",
+)
+
+
 def _text(value):
     return str(value).strip() if value is not None else ""
+
+
+def _normalize_inflight_wave_completion(payload):
+    """Treat legacy null wave-completion fields as absent during resume."""
+    for field in _OPTIONAL_WAVE_COMPLETION_FIELDS:
+        if payload.get(field) is None:
+            payload.pop(field, None)
 
 
 def _validate_optional_wave_fields(payload, *, scope):
@@ -143,6 +156,7 @@ def normalize_manifest(payload, *, material_ids=None):
     normalized = deepcopy(payload)
     normalized["sourceSchemaVersion"] = source_version
     normalized["schemaVersion"] = 2
+    _normalize_inflight_wave_completion(normalized)
     _validate_optional_wave_fields(normalized, scope="batch manifest")
     _validate_optional_lifecycle_fields(normalized, scope="batch manifest")
     _validate_rpa_collection(normalized)
@@ -177,6 +191,7 @@ def normalize_manifest(payload, *, material_ids=None):
     else:
         raise SchemaError("batch manifest materials must be a list or object")
     for item in normalized["materials"]:
+        _normalize_inflight_wave_completion(item)
         _validate_optional_wave_fields(item, scope="batch manifest material")
         _validate_optional_lifecycle_fields(item, scope="batch manifest material")
         _normalize_postprocess_telemetry(item, scope="batch manifest material")

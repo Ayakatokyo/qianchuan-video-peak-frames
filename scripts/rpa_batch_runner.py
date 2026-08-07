@@ -203,7 +203,6 @@ def run_wave_batch(
                     "waveIndex": wave_index,
                     "waveSize": wave_size,
                     "waveStartedAtSec": wave_started_at,
-                    "waveFinishedAtSec": None,
                 }
             )
         submitted[index] = entry

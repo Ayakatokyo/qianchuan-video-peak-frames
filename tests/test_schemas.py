@@ -69,6 +69,29 @@ class SchemaNormalizationTests(unittest.TestCase):
         self.assertTrue(normalized["waveBarrier"])
         self.assertEqual(normalized["materials"][1]["waveIndex"], 1)
 
+    def test_manifest_normalizes_legacy_inflight_wave_null_completion(self):
+        normalized = validate_manifest(
+            {
+                "schemaVersion": 2,
+                "waveFinishedAtSec": None,
+                "waveCsvArtifactFinishedAtSec": None,
+                "materials": [
+                    {
+                        "materialId": "m-1",
+                        "rpaStatus": "submitted",
+                        "waveStartedAtSec": 1.0,
+                        "waveFinishedAtSec": None,
+                        "waveCsvArtifactFinishedAtSec": None,
+                    }
+                ],
+            }
+        )
+
+        self.assertNotIn("waveFinishedAtSec", normalized)
+        self.assertNotIn("waveCsvArtifactFinishedAtSec", normalized)
+        self.assertNotIn("waveFinishedAtSec", normalized["materials"][0])
+        self.assertNotIn("waveCsvArtifactFinishedAtSec", normalized["materials"][0])
+
     def test_manifest_rejects_csv_wave_completion_before_wave_start(self):
         with self.assertRaisesRegex(
             SchemaError, "waveCsvArtifactFinishedAtSec cannot precede waveStartedAtSec"

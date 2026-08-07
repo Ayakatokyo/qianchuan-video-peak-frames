@@ -404,6 +404,44 @@ class WaveBatchRunnerTests(unittest.TestCase):
         thread.join(timeout=1)
         self.assertFalse(thread.is_alive())
 
+    def test_wave_submission_checkpoint_omits_completion_timestamp(self):
+        release_wave = threading.Event()
+        checkpoint_seen = threading.Event()
+        captured_manifests = []
+
+        def attempt_rpa(_args, entry):
+            release_wave.wait(timeout=1)
+            return self._verified_rpa_success(entry)
+
+        def write_json(path, manifest):
+            if path == "manifest":
+                captured_manifests.append(manifest)
+                if any(
+                    entry["rpaStatus"] == "submitted"
+                    for entry in manifest["materials"]
+                ):
+                    checkpoint_seen.set()
+            self._write_json(path, manifest)
+
+        runner = threading.Thread(
+            target=self.run_batch,
+            args=(["m-1"], attempt_rpa, self._success_postprocess),
+            kwargs={"write_json": write_json, "poll_interval_sec": 0.01},
+        )
+        runner.start()
+        try:
+            self.assertTrue(checkpoint_seen.wait(timeout=1))
+            checkpoint = next(
+                manifest
+                for manifest in captured_manifests
+                if manifest["materials"][0]["rpaStatus"] == "submitted"
+            )
+            self.assertNotIn("waveFinishedAtSec", checkpoint["materials"][0])
+        finally:
+            release_wave.set()
+            runner.join(timeout=1)
+        self.assertFalse(runner.is_alive())
+
     def test_rpa_future_exception_records_final_recovery_diagnostics(self):
         def attempt_rpa(_args, _entry):
             raise RuntimeError("worker process exited")
