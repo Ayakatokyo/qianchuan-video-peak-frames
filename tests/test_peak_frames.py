@@ -109,11 +109,12 @@ def successful_frame_subprocess(command, **_kwargs):
 
 
 class FakeResponse:
-    def __init__(self, payload, status_error=None, content=b""):
+    def __init__(self, payload, status_error=None, content=b"", status_code=200, headers=None):
         self._payload = payload
         self._status_error = status_error
         self.content = content
-        self.headers = {}
+        self.status_code = status_code
+        self.headers = {} if headers is None else headers
         self.closed = False
 
     def raise_for_status(self):
@@ -601,6 +602,31 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertTrue(result.get("retryable"))
         self.assertEqual(result.get("errorType"), "RpaAdapterError")
         self.assertIn("timed out", result.get("errorMessage") or "")
+
+    def test_fetch_material_preflight_preserves_gateway_http_diagnostics(self):
+        response = FakeResponse(
+            {
+                "error": "rate limited",
+                "request_id": "req-123",
+                "authorization": "secret-token",
+            },
+            status_error=RuntimeError("429 Client Error"),
+            status_code=429,
+            headers={"X-Request-Id": "req-123"},
+        )
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-http-diagnostics",
+            date_range_type="LAST_7_DAYS",
+            environ=self._env(),
+            session=RecordingSession(response),
+        )
+
+        self.assertEqual(result["failureReason"], "rpa_request_failed")
+        self.assertEqual(result["httpStatus"], 429)
+        self.assertEqual(result["requestId"], "req-123")
+        self.assertIn("rate limited", result["responseSummary"])
+        self.assertNotIn("secret-token", result["responseSummary"])
 
     def test_fetch_material_preflight_marks_invalid_payload_final(self):
         session = RecordingSession(FakeResponse({"payload": {"not": "a-list"}}))
@@ -3321,10 +3347,19 @@ class CliTests(unittest.TestCase):
             with patch.object(
                 extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
             ):
-                with self.assertRaisesRegex(
-                    rpa_adapter.RpaAdapterError, "local RPA artifact receipt"
-                ):
+                submitted, selected, rejected, cancelled, postprocess_queue = (
                     extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+        self.assertEqual(submitted, {})
+        self.assertEqual(selected, {})
+        self.assertEqual(rejected, {})
+        self.assertEqual(cancelled, {})
+        self.assertEqual(postprocess_queue, [])
+        self.assertEqual(entries[0]["rpaStatus"], "pending")
+        self.assertEqual(
+            entries[0]["resumeRecovery"]["reason"], "local_artifact_unavailable"
+        )
 
     def test_wave_resume_does_not_requeue_second_postprocess_failure(self):
         args = type("Args", (), {"resume": True, "output_dir": "/tmp"})()
@@ -3923,6 +3958,73 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.get("errorType"), "RpaAdapterError")
         self.assertEqual(result.get("errorMessage"), "gateway timed out")
         self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
+
+    def test_wave_attempt_backs_off_between_fast_retryable_failures(self):
+        material_id = "m-fast-retry"
+        failure = {
+            "materialId": material_id,
+            "rpaAvailable": False,
+            "failureReason": "rpa_request_failed",
+            "rpaResultStatus": "pending",
+            "retryable": True,
+            "errorType": "RpaAdapterError",
+            "errorMessage": "gateway unavailable",
+            "rpaFetchSec": 5.0,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 2,
+                "rpa_fast_failure_threshold_sec": 60,
+                "rpa_recovery_backoff_sec": 45,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=failure,
+            ) as fetch, patch.object(extract_peak_frames.time, "sleep") as sleep:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        self.assertEqual(fetch.call_count, 2)
+        sleep.assert_called_once_with(45)
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
+
+    def test_wave_attempt_does_not_retry_gateway_client_error(self):
+        material_id = "m-client-error"
+        failure = {
+            "materialId": material_id,
+            "rpaAvailable": False,
+            "failureReason": "rpa_request_failed",
+            "rpaResultStatus": "pending",
+            "retryable": False,
+            "rpaFailureClass": "gateway_client_error",
+            "httpStatus": 401,
+            "errorType": "RpaAdapterError",
+            "errorMessage": "unauthorized",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 3,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=failure,
+            ) as fetch:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        fetch.assert_called_once()
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        self.assertEqual(result["rpaRecoveryAttempts"][0]["httpStatus"], 401)
 
     def test_wave_attempt_selects_only_after_fresh_expected_csv_is_verified(self):
         material_id = "m-csv-fresh"

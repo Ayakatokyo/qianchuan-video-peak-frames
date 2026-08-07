@@ -83,11 +83,15 @@ Failure reasons:
 - `rpa_request_failed`: gateway, HTTP, network, or configured RPA request failure. Its initial state is `rpaResultStatus: pending` and `retryable: true`.
 
 The batch runner records a slow request after 8 分钟 (480 seconds) and uses a 10 分钟 (600 seconds) hard request limit by default. Crossing the soft threshold only records `rpaSoftTimeoutExceeded=true`; the isolated request remains alive and may still write its records/CSV, so it is not rejected or backfilled. A request unresolved through the hard limit is terminated and marked `rpaHardTimeoutExceeded=true`, then follows the same result-pending recovery policy as a fast gateway failure. One wave material attempt has a single 30-second local-artifact grace budget shared by every recovery step, then retries a retryable connector request up to `--rpa-result-recovery-attempts` times (default 2, including the original request). Only recovery exhaustion writes `rpaResultStatus: final_failed` and adds the material to `rejectedMaterials`.
+
+For a retryable `rpa_request_failed` that returns in less than 60 seconds, the next request waits 45 seconds before the first retry and doubles that wait for each later retry. The wait remains inside the current wave, so `rpaConcurrency=3` still caps parallel RPA calls and no later wave opens early. HTTP 429/5xx and transport failures are retryable; explicit gateway 4xx responses are final and not retried. Every recovery attempt retains safe diagnostics when available: HTTP status, gateway request ID, a redacted response summary, worker stage, child exit code/signal, result-queue state, and an exception traceback summary.
 - `rpa_payload_invalid`: gateway payload could not be normalized into usable records; it is immediately `final_failed` and not retried.
 - `missing_material_info`: no matching `material_info` record was returned.
 - `missing_video_url`: matching `material_info` exists but has no usable `videoUrl`.
 - `unknown_preflight_failure`: unexpected failure outside the known classes.
 - `target_satisfied`: a candidate was never submitted because `postprocessSucceededCount >= targetTopN`.
+
+`submitted` alone proves only that the local client started an invocation. It is not evidence of platform failure or success. The local receipt can reconcile a downloaded CSV or persisted records, but cannot retrieve a platform-completed task if the invocation failed before the client received a CSV URL. That requires a platform query API keyed by a client or platform request identifier.
 
 The wave scheduler writes:
 

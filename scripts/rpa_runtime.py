@@ -3,6 +3,8 @@
 import multiprocessing
 import os
 import queue as queue_module
+import signal
+import traceback
 
 
 def multiprocessing_context_name():
@@ -17,12 +19,14 @@ def _worker_entry(
     persist_records=None,
     publish_receipt=None,
 ):
+    stage = "worker"
     try:
         outcome = worker(params)
+        stage = "validate_worker_result"
         if not isinstance(outcome, dict):
-            result_queue.put(
-                failure_factory(params.get("material_id"), "unknown_preflight_failure")
-            )
+            failure = failure_factory(params.get("material_id"), "unknown_preflight_failure")
+            failure.update({"workerStage": stage, "errorType": "InvalidWorkerResult"})
+            result_queue.put(failure)
             return
         records = outcome.get("records")
         records_dir = params.get("diagnosis_records_dir")
@@ -33,21 +37,33 @@ def _worker_entry(
             and records_dir
             and persist_records is not None
         ):
+            stage = "persist_records"
             if publish_receipt is not None and outcome.get("diagnosisCsvPath"):
+                stage = "publish_artifact_receipt"
                 publish_receipt(params, outcome, "artifact_downloaded")
+                stage = "persist_records"
             records_path = persist_records(records, records_dir, material_id)
             if publish_receipt is not None and outcome.get("diagnosisCsvPath"):
+                stage = "publish_records_receipt"
                 publish_receipt(
                     params, outcome, "records_persisted", records_path=str(records_path)
                 )
             outcome = dict(outcome)
             outcome.pop("records", None)
             outcome["diagnosisRecordsPath"] = str(records_path)
+        stage = "result_queue_put"
         result_queue.put(outcome)
-    except Exception:
-        result_queue.put(
-            failure_factory(params.get("material_id"), "unknown_preflight_failure")
+    except Exception as exc:
+        failure = failure_factory(params.get("material_id"), "unknown_preflight_failure")
+        failure.update(
+            {
+                "workerStage": stage,
+                "errorType": type(exc).__name__,
+                "errorMessage": str(exc),
+                "errorTraceback": traceback.format_exc(limit=12),
+            }
         )
+        result_queue.put(failure)
 
 
 def run_isolated_preflight(
@@ -93,6 +109,8 @@ def run_isolated_preflight(
                 process.join(1)
             failure = failure_factory(params.get("material_id"), "rpa_request_failed")
             failure["hardTimeoutExceeded"] = True
+            failure["workerStage"] = "hard_timeout"
+            failure["childExitCode"] = process.exitcode
             if soft_timeout_sec is not None:
                 failure["softTimeoutExceeded"] = soft_timeout_exceeded
             return failure
@@ -108,6 +126,14 @@ def run_isolated_preflight(
             "unknown_preflight_failure" if process.exitcode == 0 else "rpa_request_failed"
         )
         failure = failure_factory(params.get("material_id"), failure_reason)
+        failure["childExitCode"] = process.exitcode
+        failure["childSignal"] = (
+            signal.Signals(-process.exitcode).name
+            if process.exitcode is not None and process.exitcode < 0
+            else None
+        )
+        failure["workerStage"] = "result_queue_read"
+        failure["resultQueueEmpty"] = True
         if soft_timeout_sec is not None:
             failure["softTimeoutExceeded"] = soft_timeout_exceeded
         return failure

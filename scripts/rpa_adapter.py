@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import time
 import uuid
 
@@ -27,6 +28,10 @@ HEADERS = {"Content-Type": "application/json"}
 
 class RpaAdapterError(RuntimeError):
     """Raised when the Yuce RPA gateway cannot provide usable records."""
+
+    def __init__(self, message, diagnostics=None):
+        super().__init__(message)
+        self.diagnostics = dict(diagnostics or {})
 
 
 class RpaNotConfiguredError(RpaAdapterError):
@@ -137,7 +142,63 @@ def _raise_for_status(response, action):
     try:
         response.raise_for_status()
     except Exception as exc:
-        raise RpaAdapterError(f"unable to {action}: {exc}") from exc
+        raise RpaAdapterError(
+            f"unable to {action}: {exc}",
+            _gateway_response_diagnostics(response),
+        ) from exc
+
+
+def _redact_gateway_summary(value):
+    if isinstance(value, (dict, list, tuple)):
+        text = json.dumps(value, ensure_ascii=False, default=str)
+    else:
+        text = str(value or "")
+    text = re.sub(
+        r"(?i)([?&](?:access_)?token|[?&]secret|[?&]authorization)=([^&\s]+)",
+        r"\1=[redacted]",
+        text,
+    )
+    text = re.sub(
+        r'(?i)("(?:access_)?token"\s*:\s*")[^"]*',
+        r'\1[redacted]',
+        text,
+    )
+    text = re.sub(
+        r'(?i)("(?:authorization|secret|session(?:_id)?)"\s*:\s*")[^"]*',
+        r'\1[redacted]',
+        text,
+    )
+    return text[:1024]
+
+
+def _gateway_response_diagnostics(response):
+    diagnostics = {"gatewayPhase": "response"}
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        diagnostics["httpStatus"] = status
+        if status == 429:
+            diagnostics["rpaFailureClass"] = "gateway_rate_limited"
+        elif 500 <= status <= 599:
+            diagnostics["rpaFailureClass"] = "gateway_server_error"
+        elif 400 <= status <= 499:
+            diagnostics["rpaFailureClass"] = "gateway_client_error"
+    headers = getattr(response, "headers", {})
+    if isinstance(headers, dict):
+        request_id = headers.get("X-Request-Id") or headers.get("x-request-id")
+        if isinstance(request_id, str) and request_id.strip():
+            diagnostics["requestId"] = request_id.strip()
+    try:
+        payload = response.json()
+    except Exception:
+        payload = getattr(response, "text", "")
+    if isinstance(payload, dict) and "requestId" not in diagnostics:
+        request_id = payload.get("requestId") or payload.get("request_id")
+        if isinstance(request_id, str) and request_id.strip():
+            diagnostics["requestId"] = request_id.strip()
+    summary = _redact_gateway_summary(payload)
+    if summary:
+        diagnostics["responseSummary"] = summary
+    return diagnostics
 
 
 def normalize_gateway_records(result):
@@ -316,7 +377,12 @@ def fetch_material_diagnosis(
         )
     except Exception as exc:
         raise RpaAdapterError(
-            f"unable to fetch RPA material diagnosis: {exc}"
+            f"unable to fetch RPA material diagnosis: {exc}",
+            {
+                "gatewayPhase": "request",
+                "rpaFailureClass": "transport_error",
+                "transportErrorType": type(exc).__name__,
+            },
         ) from exc
     _raise_for_status(response, "fetch RPA material diagnosis")
     gateway_result = unpack_gateway_result(response.json())
@@ -403,16 +469,21 @@ def _preflight_failure_reason(error):
 
 def _preflight_failure_result(material_id, reason, error=None):
     result = _preflight_result(material_id, False, reason)
+    diagnostics = getattr(error, "diagnostics", {}) if error is not None else {}
+    retryable = reason == "rpa_request_failed" and diagnostics.get(
+        "rpaFailureClass"
+    ) != "gateway_client_error"
     result.update(
         {
             "rpaResultStatus": (
                 "pending" if reason == "rpa_request_failed" else "final_failed"
             ),
-            "retryable": reason == "rpa_request_failed",
+            "retryable": retryable,
             "errorType": type(error).__name__ if error is not None else None,
             "errorMessage": str(error) if error is not None else None,
         }
     )
+    result.update(diagnostics)
     return result
 
 

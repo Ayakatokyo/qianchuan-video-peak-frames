@@ -127,6 +127,8 @@ def build_parser():
     parser.add_argument("--rpa-preflight-soft-timeout-sec", type=_positive_timeout, default=480)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
     parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
+    parser.add_argument("--rpa-fast-failure-threshold-sec", type=_positive_timeout, default=60)
+    parser.add_argument("--rpa-recovery-backoff-sec", type=_positive_timeout, default=45)
     parser.add_argument("--rpa-ready-top-materials-json")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify", action="store_true")
@@ -415,16 +417,21 @@ def _preflight_failure(material_id, reason, error=None):
         "failureReason": reason,
         "videoUrl": None,
     }
+    diagnostics = getattr(error, "diagnostics", {}) if error is not None else {}
+    retryable = reason == "rpa_request_failed" and diagnostics.get(
+        "rpaFailureClass"
+    ) != "gateway_client_error"
     result.update(
         {
             "rpaResultStatus": (
                 "pending" if reason == "rpa_request_failed" else "final_failed"
             ),
-            "retryable": reason == "rpa_request_failed",
+            "retryable": retryable,
             "errorType": type(error).__name__ if error is not None else None,
             "errorMessage": str(error) if error is not None else None,
         }
     )
+    result.update(diagnostics)
     return result
 
 
@@ -653,10 +660,22 @@ def _rpa_recovery_attempt(number, outcome, source="request"):
     return {
         "attempt": number,
         "source": source,
-        "rpaResultStatus": outcome.get("rpaResultStatus"),
+        "rpaResultStatus": outcome.get("rpaResultStatus") or (
+            "available" if outcome.get("rpaAvailable") else None
+        ),
         "failureReason": outcome.get("failureReason"),
         "errorType": outcome.get("errorType"),
         "errorMessage": outcome.get("errorMessage"),
+        "errorTraceback": outcome.get("errorTraceback"),
+        "workerStage": outcome.get("workerStage"),
+        "childExitCode": outcome.get("childExitCode"),
+        "childSignal": outcome.get("childSignal"),
+        "resultQueueEmpty": outcome.get("resultQueueEmpty"),
+        "requestDurationSec": outcome.get("rpaFetchSec"),
+        "rpaFailureClass": outcome.get("rpaFailureClass"),
+        "httpStatus": outcome.get("httpStatus"),
+        "requestId": outcome.get("requestId"),
+        "responseSummary": outcome.get("responseSummary"),
     }
 
 
@@ -741,6 +760,19 @@ def _recover_wave_rpa_result(
             return _resolved_rpa_outcome(recovered, attempts)
         if not outcome["retryable"] or attempt_number == max_attempts:
             break
+        try:
+            fast_threshold = float(getattr(args, "rpa_fast_failure_threshold_sec", 60))
+            request_duration = float(outcome.get("rpaFetchSec") or 0)
+            backoff = float(getattr(args, "rpa_recovery_backoff_sec", 45))
+        except (TypeError, ValueError):
+            fast_threshold, request_duration, backoff = 60.0, 0.0, 45.0
+        if (
+            outcome.get("failureReason") == "rpa_request_failed"
+            and request_duration > 0
+            and request_duration < fast_threshold
+            and backoff > 0
+        ):
+            time.sleep(backoff * (2 ** (attempt_number - 1)))
         outcome = fetch_once()
 
     outcome = dict(outcome)
@@ -991,12 +1023,16 @@ def _attempt_wave_rpa(args, entry):
     def fetch_once():
         request_started_at = time.perf_counter()
         try:
-            return _fetch_material_preflight_for_cli(
+            outcome = _fetch_material_preflight_for_cli(
                 args,
                 material_id,
                 recover_late_artifacts=False,
                 client_attempt_id=client_attempt_id,
             )
+            if isinstance(outcome, dict):
+                outcome = dict(outcome)
+                outcome["rpaFetchSec"] = round(_elapsed_since(request_started_at), 6)
+            return outcome
         except RpaPreflightDeadlineExceeded as exc:
             return _preflight_failure(material_id, "rpa_request_failed", exc)
         except RpaAdapterError as exc:
@@ -1030,6 +1066,15 @@ def _attempt_wave_rpa(args, entry):
                 "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
                 "errorType": outcome.get("errorType"),
                 "errorMessage": outcome.get("errorMessage"),
+                "errorTraceback": outcome.get("errorTraceback"),
+                "workerStage": outcome.get("workerStage"),
+                "childExitCode": outcome.get("childExitCode"),
+                "childSignal": outcome.get("childSignal"),
+                "resultQueueEmpty": outcome.get("resultQueueEmpty"),
+                "rpaFailureClass": outcome.get("rpaFailureClass"),
+                "httpStatus": outcome.get("httpStatus"),
+                "requestId": outcome.get("requestId"),
+                "responseSummary": outcome.get("responseSummary"),
                 "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
                 "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
             }
