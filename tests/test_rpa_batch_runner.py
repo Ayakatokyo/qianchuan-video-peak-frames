@@ -442,6 +442,30 @@ class WaveBatchRunnerTests(unittest.TestCase):
             runner.join(timeout=1)
         self.assertFalse(runner.is_alive())
 
+    def test_wave_batch_checkpoints_interrupt_before_second_wave(self):
+        connector_calls = []
+
+        def attempt_rpa(_args, entry):
+            connector_calls.append(entry["materialId"])
+            return self._verified_rpa_success(entry)
+
+        with self.assertRaises(rpa_batch_runner.BatchInterrupted):
+            self.run_batch(
+                ["m-1", "m-2", "m-3", "m-4", "m-5", "m-6"],
+                attempt_rpa,
+                self._success_postprocess,
+                args={"target_top_n": 6},
+                is_interrupted=lambda: len(connector_calls) == 3,
+            )
+
+        self.assertEqual(set(connector_calls), {"m-1", "m-2", "m-3"})
+        checkpoint = self.manifests[-1]
+        self.assertEqual(checkpoint["interruption"]["reason"], "signal")
+        self.assertTrue(
+            set(checkpoint["interruption"]["pendingMaterialIds"])
+            <= {"m-1", "m-2", "m-3"}
+        )
+
     def test_rpa_future_exception_records_final_recovery_diagnostics(self):
         def attempt_rpa(_args, _entry):
             raise RuntimeError("worker process exited")

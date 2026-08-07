@@ -1270,7 +1270,7 @@ def _merge_wave_postprocess_timings(entry_timings, attempt_timings):
     return merged
 
 
-def _run_wave_rpa_batch(args, candidate_payload):
+def _run_wave_rpa_batch(args, candidate_payload, *, is_interrupted=None):
     manifest_path = _batch_manifest_path(args)
     manifest, failures, last_result = rpa_batch_runner.run_wave_batch(
         args,
@@ -1289,8 +1289,29 @@ def _run_wave_rpa_batch(args, candidate_payload):
         elapsed=_elapsed_since,
         accounted_indices=_wave_accounted_indices,
         ordered=_wave_ordered,
+        is_interrupted=is_interrupted,
     )
     return manifest_path, last_result, failures
+
+
+@contextmanager
+def _temporary_wave_signal_handlers():
+    """Convert an interactive stop signal into a wave-boundary checkpoint."""
+    interrupted = threading.Event()
+    previous = {}
+
+    def request_interruption(_signum, _frame):
+        interrupted.set()
+
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_interruption)
+    try:
+        yield interrupted
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
 
 def _batch_manifest_path(args):
@@ -1520,10 +1541,20 @@ def main(argv=None):
                 )
                 print(f"batch_verification={verification_path}")
                 return 0 if receipt["valid"] else BATCH_VERIFICATION_FAILURE_EXIT_CODE
+            interrupted = False
             with _acquire_wave_lock(args):
-                manifest_path, result, failed = _run_wave_rpa_batch(
-                    args, top_materials_payload
-                )
+                with _temporary_wave_signal_handlers() as signal_interrupted:
+                    try:
+                        manifest_path, result, failed = _run_wave_rpa_batch(
+                            args,
+                            top_materials_payload,
+                            is_interrupted=signal_interrupted.is_set,
+                        )
+                    except rpa_batch_runner.BatchInterrupted:
+                        manifest_path = _batch_manifest_path(args)
+                        result = None
+                        failed = True
+                        interrupted = True
             manifest_snapshot = read_json(manifest_path) or {}
             print(
                 "stage_counts="

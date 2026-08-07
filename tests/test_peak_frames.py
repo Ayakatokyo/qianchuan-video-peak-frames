@@ -2,6 +2,7 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -2289,6 +2290,17 @@ class CliTests(unittest.TestCase):
         parser = extract_peak_frames.build_parser()
 
         self.assertTrue(parser.parse_args([]).rpa_wave_barrier)
+
+    def test_temporary_wave_signal_handlers_request_checkpoint_and_restore(self):
+        previous_term = signal.getsignal(signal.SIGTERM)
+        previous_int = signal.getsignal(signal.SIGINT)
+
+        with extract_peak_frames._temporary_wave_signal_handlers() as interrupted:
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            self.assertTrue(interrupted.is_set())
+
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous_term)
+        self.assertIs(signal.getsignal(signal.SIGINT), previous_int)
 
     def test_rpa_isolation_uses_spawn_on_windows(self):
         with patch.object(extract_peak_frames.os, "name", "nt"):

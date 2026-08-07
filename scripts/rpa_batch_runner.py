@@ -11,6 +11,14 @@ from pathlib import Path
 import time
 
 
+class BatchInterrupted(RuntimeError):
+    """Raised after a requested stop has been checkpointed safely."""
+
+    def __init__(self, manifest):
+        super().__init__("wave batch interruption checkpointed")
+        self.manifest = manifest
+
+
 def wave_entry(material, rank, empty_timings):
     entry = dict(material)
     entry.update(
@@ -121,6 +129,7 @@ def run_wave_batch(
     ordered,
     clock=time.perf_counter,
     poll_interval_sec=0.1,
+    is_interrupted=None,
 ):
     candidate_limit = args.candidate_top_n or args.target_top_n * 3
     candidates = candidate_payload["materials"][:candidate_limit]
@@ -137,6 +146,7 @@ def run_wave_batch(
     batch_started_at = clock()
     rpa_started_at = {}
     records_base_dir = Path(getattr(args, "output_dir", ".")).parent
+    interruption = None
 
     def persist():
         manifest = new_manifest(
@@ -173,8 +183,27 @@ def run_wave_batch(
             "targetCount": args.target_top_n,
             "acceptedCount": accepted_count,
         }
+        if interruption is not None:
+            manifest["interruption"] = interruption
         write_json(manifest_path, manifest)
         return manifest
+
+    def checkpoint_interruption():
+        nonlocal interruption
+        if interruption is not None or not callable(is_interrupted) or not is_interrupted():
+            return False
+        interruption = {
+            "reason": "signal",
+            "interruptedAtSec": elapsed(batch_started_at),
+            "pendingMaterialIds": [
+                entries[index]["materialId"]
+                for _future, index in sorted(
+                    rpa_futures.items(), key=lambda item: item[1]
+                )
+            ],
+        }
+        persist()
+        return True
 
     def submit_rpa(
         executor,
@@ -446,7 +475,8 @@ def run_wave_batch(
             pending_wave = set()
             wave = {}
             while True:
-                if not pending_wave:
+                checkpoint_interruption()
+                if not pending_wave and interruption is None:
                     capacity = min(args.rpa_concurrency, primary_collection_slots())
                     if capacity and next_index < len(candidates):
                         wave_started_at = elapsed(batch_started_at)
@@ -473,11 +503,16 @@ def run_wave_batch(
                         persist()
                     elif not postprocess_futures:
                         break
+                elif not pending_wave and not postprocess_futures:
+                    break
                 wait_for = pending_wave | set(postprocess_futures)
+                if not wait_for:
+                    continue
                 done, _pending = wait(
                     wait_for, timeout=poll_interval_sec, return_when=FIRST_COMPLETED
                 )
                 changed = collect_done(done, postprocess_executor)
+                checkpoint_interruption()
                 if pending_wave:
                     pending_wave -= done
                     changed = mark_soft_timeouts(pending_wave) or changed
@@ -519,6 +554,9 @@ def run_wave_batch(
                 changed = mark_soft_timeouts(set(rpa_futures)) or changed
                 if changed:
                     persist()
+
+    if interruption is not None:
+        raise BatchInterrupted(interruption)
 
     def compensate_terminal_failures():
         compensation_queue = sorted(
