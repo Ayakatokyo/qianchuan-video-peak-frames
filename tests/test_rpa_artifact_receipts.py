@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from rpa_artifact_receipts import (  # noqa: E402
     RpaArtifactReceiptError,
+    load_artifact_receipt,
     load_records_persisted_receipt,
     publish_receipt,
 )
@@ -95,6 +96,24 @@ class RpaArtifactReceiptTests(unittest.TestCase):
 
         self.assertEqual(records["artifactDownloadedAt"], artifact["artifactDownloadedAt"])
         self.assertNotEqual(records["recordsPersistedAt"], None)
+
+    def test_loader_reads_verified_downloaded_csv_before_records_persist(self):
+        receipts_dir = self.root / "rpa-receipts"
+        publish_receipt(
+            receipts_dir,
+            material_id=self.material_id,
+            client_attempt_id=self.attempt_id,
+            state="artifact_downloaded",
+            csv_path=self.csv_path,
+        )
+
+        recovered = load_artifact_receipt(
+            receipts_dir, material_id=self.material_id
+        )
+
+        self.assertEqual(recovered["receipt"]["state"], "artifact_downloaded")
+        self.assertEqual(recovered["csvPath"], self.csv_path)
+        self.assertIsNone(recovered["recordsPath"])
 
     def test_loader_rejects_csv_digest_mismatch(self):
         receipts_dir = self.root / "rpa-receipts"

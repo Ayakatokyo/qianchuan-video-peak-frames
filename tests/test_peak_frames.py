@@ -3212,7 +3212,7 @@ class CliTests(unittest.TestCase):
                                 **extract_peak_frames._wave_entry(
                                     {"materialId": "m-1"}, 1
                                 ),
-                                "rpaStatus": "selected",
+                                "rpaStatus": "submitted",
                                 "rpaCsvVerified": True,
                                 "status": "running",
                             },
@@ -3323,7 +3323,109 @@ class CliTests(unittest.TestCase):
         self.assertEqual(selected[0]["records"], records)
         fetch.assert_not_called()
 
-    def test_wave_resume_rejects_malformed_receipt_for_submitted_material(self):
+    def test_wave_resume_materializes_records_from_downloaded_csv_receipt(self):
+        material_id = "m-csv-resume"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            csv_dir.mkdir()
+            records_dir.mkdir()
+            self._write_wave_csv(csv_dir, material_id)
+            rpa_artifact_receipts.publish_receipt(
+                root / "rpa-receipts",
+                material_id=material_id,
+                client_attempt_id="attempt-csv-resume",
+                state="artifact_downloaded",
+                csv_path=csv_dir / f"{material_id}.csv",
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(records_dir),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(entries[0], rpaStatus="submitted", status="running")
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                _submitted, selected, _rejected, _cancelled, postprocess_queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+            receipt = rpa_artifact_receipts.load_records_persisted_receipt(
+                root / "rpa-receipts", material_id=material_id
+            )
+            records_persisted = (records_dir / f"{material_id}.json").is_file()
+            selected_entry = dict(selected[0])
+
+        self.assertEqual(postprocess_queue, [0])
+        self.assertTrue(records_persisted)
+        self.assertEqual(selected_entry["records"], receipt["records"])
+        self.assertEqual(selected_entry["rpaClientAttemptId"], "attempt-csv-resume")
+
+    def test_wave_resume_requeues_submitted_without_local_artifact(self):
+        material_id = "m-requeue-resume"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rpa_artifact_receipts.publish_receipt(
+                root / "rpa-receipts",
+                material_id=material_id,
+                client_attempt_id="old-attempt",
+                state="submitted",
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(
+                        entries[0],
+                        rpaStatus="submitted",
+                        status="running",
+                        rpaClientAttemptId="old-attempt",
+                    )
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                submitted, selected, rejected, cancelled, postprocess_queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+            retained = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(submitted, {})
+        self.assertEqual(selected, {})
+        self.assertEqual(rejected, {})
+        self.assertEqual(cancelled, {})
+        self.assertEqual(postprocess_queue, [])
+        self.assertEqual(entries[0]["rpaStatus"], "pending")
+        self.assertEqual(
+            entries[0]["resumeRecovery"],
+            {
+                "reason": "local_artifact_unavailable",
+                "previousClientAttemptId": "old-attempt",
+                "previousReceiptState": "submitted",
+            },
+        )
+        self.assertEqual(retained["clientAttemptId"], "old-attempt")
+
+    def test_wave_resume_requeues_submitted_material_with_malformed_receipt(self):
         material_id = "m-malformed-receipt"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

@@ -161,8 +161,8 @@ def _resolve_artifact(raw_path, base_dir, label):
     return _regular_file(path, label=label)[0]
 
 
-def load_records_persisted_receipt(receipts_dir, *, material_id, base_dir=None):
-    """Validate and return a completed receipt and the retained artifacts."""
+def load_artifact_receipt(receipts_dir, *, material_id, base_dir=None):
+    """Validate receipt identity and any durable artifact it references."""
     try:
         material_id = validate_material_id(material_id)
     except ValueError as exc:
@@ -175,17 +175,43 @@ def load_records_persisted_receipt(receipts_dir, *, material_id, base_dir=None):
     if payload.get("materialId") != material_id:
         raise RpaArtifactReceiptError("RPA receipt material ID does not match")
     _require_text(payload, "clientAttemptId")
-    if payload.get("state") != "records_persisted":
-        raise RpaArtifactReceiptError("RPA receipt is not records_persisted")
-    csv_path = _resolve_artifact(_require_text(payload, "csvPath"), base_dir, "CSV")
-    records_path = _resolve_artifact(
-        _require_text(payload, "recordsPath"), base_dir, "records"
+    state = payload.get("state")
+    if state not in RECEIPT_STATES:
+        raise RpaArtifactReceiptError("RPA receipt state is invalid")
+
+    csv_path = None
+    records_path = None
+    if state in {"artifact_downloaded", "records_persisted"}:
+        csv_path = _resolve_artifact(
+            _require_text(payload, "csvPath"), base_dir, "CSV"
+        )
+        _csv_path, actual_size, actual_digest = _csv_metadata(csv_path)
+        if payload.get("csvSizeBytes") != actual_size:
+            raise RpaArtifactReceiptError("RPA receipt CSV size does not match")
+        if payload.get("csvSha256") != actual_digest:
+            raise RpaArtifactReceiptError("RPA receipt CSV digest does not match")
+    if state == "records_persisted":
+        records_path = _resolve_artifact(
+            _require_text(payload, "recordsPath"), base_dir, "records"
+        )
+
+    return {
+        "receipt": payload,
+        "csvPath": csv_path,
+        "recordsPath": records_path,
+    }
+
+
+def load_records_persisted_receipt(receipts_dir, *, material_id, base_dir=None):
+    """Validate and return a completed receipt and the retained artifacts."""
+    recovered = load_artifact_receipt(
+        receipts_dir, material_id=material_id, base_dir=base_dir
     )
-    _csv_path, actual_size, actual_digest = _csv_metadata(csv_path)
-    if payload.get("csvSizeBytes") != actual_size:
-        raise RpaArtifactReceiptError("RPA receipt CSV size does not match")
-    if payload.get("csvSha256") != actual_digest:
-        raise RpaArtifactReceiptError("RPA receipt CSV digest does not match")
+    payload = recovered["receipt"]
+    if payload["state"] != "records_persisted":
+        raise RpaArtifactReceiptError("RPA receipt is not records_persisted")
+    csv_path = recovered["csvPath"]
+    records_path = recovered["recordsPath"]
     try:
         records = json.loads(records_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:

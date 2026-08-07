@@ -33,9 +33,9 @@ from rpa_adapter import (
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from rpa_artifact_receipts import (
     RpaArtifactReceiptError,
+    load_artifact_receipt,
     load_records_persisted_receipt,
     publish_receipt,
-    receipt_path,
 )
 from batch_runtime import BatchLockError, acquire_run_lock, read_json, stage_counts
 import batch_verification
@@ -900,16 +900,69 @@ def _existing_wave_summary_entry(args, entry):
 
 def _reconcile_submitted_wave_receipt(args, entry):
     material_id = entry["materialId"]
+    receipt = None
     try:
         recovered = load_records_persisted_receipt(
             _rpa_receipts_dir(args),
             material_id=material_id,
             base_dir=Path(args.output_dir).parent,
         )
-    except RpaArtifactReceiptError as exc:
-        raise RpaAdapterError(
-            f"local RPA artifact receipt for {material_id} is invalid: {exc}"
-        ) from exc
+    except RpaArtifactReceiptError:
+        recovered = None
+    if recovered is not None:
+        receipt = recovered["receipt"]
+        reconciled = dict(entry)
+        reconciled.update(
+            {
+                "rpaStatus": "selected",
+                "postprocessStatus": "queued",
+                "status": "running",
+                "failureReason": None,
+                "errorType": None,
+                "errorMessage": None,
+                "diagnosisCsvPath": _run_relative_path(args, recovered["csvPath"]),
+                "diagnosisRecordsPath": _run_relative_path(
+                    args, recovered["recordsPath"]
+                ),
+                "recordsPersisted": True,
+                "rpaCsvVerified": True,
+                "rpaResultStatus": "available",
+                "rpaClientAttemptId": receipt["clientAttemptId"],
+                "records": recovered["records"],
+            }
+        )
+        return reconciled, receipt
+
+    try:
+        recovered = load_artifact_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            base_dir=Path(args.output_dir).parent,
+        )
+    except RpaArtifactReceiptError:
+        return None, None
+    receipt = recovered["receipt"]
+    if receipt["state"] != "artifact_downloaded":
+        return None, receipt
+    try:
+        records = parse_diagnosis_csv(recovered["csvPath"])
+        availability = preflight_material_availability(records, material_id)
+        if not availability.get("rpaAvailable"):
+            return None, receipt
+        records_path = _write_diagnosis_records(
+            records, _diagnosis_records_dir(args), material_id
+        )
+        publish_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            client_attempt_id=receipt["clientAttemptId"],
+            state="records_persisted",
+            csv_path=recovered["csvPath"],
+            records_path=records_path,
+        )
+    except (OSError, RpaAdapterError, RpaCsvError, RpaArtifactReceiptError, ValueError):
+        return None, receipt
+
     receipt = recovered["receipt"]
     reconciled = dict(entry)
     reconciled.update(
@@ -921,17 +974,15 @@ def _reconcile_submitted_wave_receipt(args, entry):
             "errorType": None,
             "errorMessage": None,
             "diagnosisCsvPath": _run_relative_path(args, recovered["csvPath"]),
-            "diagnosisRecordsPath": _run_relative_path(
-                args, recovered["recordsPath"]
-            ),
+            "diagnosisRecordsPath": _run_relative_path(args, records_path),
             "recordsPersisted": True,
             "rpaCsvVerified": True,
             "rpaResultStatus": "available",
             "rpaClientAttemptId": receipt["clientAttemptId"],
-            "records": recovered["records"],
+            "records": records,
         }
     )
-    return reconciled
+    return reconciled, receipt
 
 
 def _resume_wave_state(args, candidates, entries):
@@ -951,9 +1002,21 @@ def _resume_wave_state(args, candidates, entries):
     for index in sorted(entries):
         entry = dict(entries[index])
         material_id = entry["materialId"]
-        receipt_exists = receipt_path(_rpa_receipts_dir(args), material_id).exists()
-        if entry.get("rpaStatus") == "submitted" or receipt_exists:
-            entry = _reconcile_submitted_wave_receipt(args, entry)
+        if entry.get("rpaStatus") == "rejected":
+            entry.update({"status": "failed", "postprocessStatus": "not_started"})
+            entries[index] = entry
+            submitted[index] = entry
+            rejected[index] = entry
+            continue
+
+        if entry.get("rpaStatus") == "cancelled" or entry.get("status") == "cancelled":
+            entries[index] = entry
+            cancelled[index] = entry
+            continue
+
+        recovered, receipt = _reconcile_submitted_wave_receipt(args, entry)
+        if recovered is not None:
+            entry = recovered
             records = entry["records"]
             records_path = Path(entry["diagnosisRecordsPath"])
         else:
@@ -991,19 +1054,14 @@ def _resume_wave_state(args, candidates, entries):
                     )
             continue
 
-        if entry.get("rpaStatus") == "rejected":
-            entry.update({"status": "failed", "postprocessStatus": "not_started"})
-            entries[index] = entry
-            submitted[index] = entry
-            rejected[index] = entry
-            continue
-
-        if entry.get("rpaStatus") == "cancelled" or entry.get("status") == "cancelled":
-            entries[index] = entry
-            cancelled[index] = entry
-            continue
-
-        entries[index] = _wave_entry(candidates[index], index + 1)
+        restored = _wave_entry(candidates[index], index + 1)
+        if entry.get("rpaStatus") == "submitted":
+            restored["resumeRecovery"] = {
+                "reason": "local_artifact_unavailable",
+                "previousClientAttemptId": entry.get("rpaClientAttemptId"),
+                "previousReceiptState": receipt.get("state") if receipt else None,
+            }
+        entries[index] = restored
     return submitted, selected, rejected, cancelled, postprocess_queue
 
 
