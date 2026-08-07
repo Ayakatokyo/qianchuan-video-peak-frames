@@ -276,6 +276,7 @@ def lock_payload(run_id, manifest_path):
         "runId": run_id,
         "pid": os.getpid(),
         "hostname": socket.gethostname(),
+        "processStart": _process_start(os.getpid()),
         "startedAt": time.time(),
         "manifestPath": str(manifest_path),
     }
@@ -288,7 +289,23 @@ def read_json(path):
         return None
 
 
-def _pid_is_alive(pid, hostname):
+def _process_start(pid):
+    """Return Linux's stable process-start token, when the platform exposes it."""
+    try:
+        pid_value = int(pid)
+    except (TypeError, ValueError):
+        return None
+    if pid_value <= 0:
+        return None
+    try:
+        stat = Path(f"/proc/{pid_value}/stat").read_text(encoding="utf-8")
+        _prefix, suffix = stat.rsplit(")", 1)
+        return suffix.split()[19]
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _pid_is_alive(pid, hostname, process_start=None):
     if hostname and hostname != socket.gethostname():
         return False
     try:
@@ -305,6 +322,10 @@ def _pid_is_alive(pid, hostname):
         return True
     except OSError:
         return False
+    if process_start is not None:
+        observed_start = _process_start(pid_value)
+        if observed_start is not None and str(observed_start) != str(process_start):
+            return False
     return True
 
 
@@ -345,7 +366,11 @@ def acquire_run_lock(path, manifest_path, run_id=None):
         )
     except FileExistsError as exc:
         existing = read_json(lock_path) or {}
-        stale = not _pid_is_alive(existing.get("pid"), existing.get("hostname"))
+        stale = not _pid_is_alive(
+            existing.get("pid"),
+            existing.get("hostname"),
+            existing.get("processStart"),
+        )
         state = "stale" if stale else "active"
         raise BatchLockError(
             f"batch run lock is {state}: {lock_path}",

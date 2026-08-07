@@ -1,14 +1,23 @@
 import json
+import os
 from pathlib import Path
+import socket
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from batch_runtime import mark_report_ready, stage_counts  # noqa: E402
+import batch_runtime  # noqa: E402
+from batch_runtime import (  # noqa: E402
+    BatchLockError,
+    acquire_run_lock,
+    mark_report_ready,
+    stage_counts,
+)
 from report_renderer import render_html_report  # noqa: E402
 
 
@@ -83,6 +92,32 @@ class StageCountTests(unittest.TestCase):
             )
         self.assertEqual(counts["recordsPersistedCount"], 0)
         self.assertEqual(counts["recordsPersistedUnknownCount"], 1)
+
+
+class BatchLockTests(unittest.TestCase):
+    def test_lock_with_reused_pid_is_stale(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lock_path = root / ".batch-run.lock"
+            manifest_path = root / "batch-manifest.json"
+            lock_path.write_text(
+                json.dumps(
+                    {
+                        "runId": "old-run",
+                        "pid": os.getpid(),
+                        "hostname": socket.gethostname(),
+                        "processStart": "old-start",
+                        "manifestPath": str(manifest_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(batch_runtime, "_process_start", return_value="new-start"):
+                with self.assertRaises(BatchLockError) as raised:
+                    acquire_run_lock(lock_path, manifest_path)
+
+        self.assertTrue(raised.exception.stale)
 
 
 class ReportReadyTests(unittest.TestCase):
