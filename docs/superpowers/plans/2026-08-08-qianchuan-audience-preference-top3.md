@@ -4,7 +4,7 @@
 
 **Goal:** 在 `02｜人群洞察` 渲染最终入选素材的八大人群偏好 TOP3，按素材内展现占比确定唯一人群归属。
 
-**Architecture:** `diagnostic_analysis_lib` 从既有保留的 `crowd_analysis` 记录中构造 `audience.preferences`，不调用或改变 RPA。`final_report_lib` 已将完整 `audience` 对象透传给模板；模板在 AI 人群洞察与可折叠真实数据之间渲染默认展开的偏好卡，并链接到既有单素材附录锚点。
+**Architecture:** `diagnostic_analysis_lib` 从既有保留的 `crowd_analysis` 记录中构造 `audience.preferences`，不调用或改变 RPA。`final_report_lib` 已将完整 `audience` 对象透传给模板；模板在 AI 人群洞察与可折叠真实数据之间渲染默认展开的偏好卡，并复用既有单素材 Tab 跳转。
 
 **Tech Stack:** Python 标准库、`unittest`、现有内嵌 HTML/CSS/JavaScript 报告模板。
 
@@ -15,7 +15,7 @@
 - Modify: `scripts/diagnostic_analysis_lib.py`：生成确定性 `audience.preferences` 事实。
 - Modify: `tests/test_diagnostic_analysis.py`：覆盖素材归属、并列排除和稳定 TOP3 排序。
 - Modify: `templates/final-report-template.html`：在第 02 部分增加外层偏好挂载点及其渲染函数。
-- Modify: `tests/test_final_report.py`：验证报告数据透传及模板层级、锚点和空状态。
+- Modify: `tests/test_final_report.py`：验证报告数据透传及模板层级、单素材 Tab 跳转和空状态。
 - Create: `docs/superpowers/specs/2026-08-08-qianchuan-audience-preference-top3-design.md`：已提交的设计基线，不在实现提交中再次修改。
 
 ### Task 1: 构造八大人群偏好事实
@@ -185,7 +185,7 @@ Run: `python3 -m unittest tests.test_final_report.FinalReportDataTests tests.tes
 
 Expected: FAIL，模板尚无 `audience-preferences` 挂载点和渲染函数。
 
-- [ ] **Step 3: 增加默认展开的偏好卡与锚点链接**
+- [ ] **Step 3: 增加默认展开的偏好卡与单素材 Tab 跳转**
 
 在第 02 部分的 `audience-primary` 后插入：
 
@@ -215,8 +215,8 @@ function renderAudiencePreferences() {
     const list = element("ol", "preference-list");
     (preference.topMaterials || []).forEach((item) => {
       const row = element("li", "preference-item");
-      const link = element("a", "preference-material", text(item.materialName, item.materialId));
-      link.href = `#material-${text(item.materialId)}`;
+      const link = materialLink(text(item.materialId));
+      link.textContent = text(item.materialName, item.materialId);
       row.append(
         element("span", "preference-rank", `TOP ${text(item.rank)}`),
         link,
@@ -236,18 +236,19 @@ function renderAudiencePreferences() {
 在模板现有卡片样式区添加以下样式；不使用收起按钮，也不把它们嵌入 `.data-dashboard`：
 
 ```css
-.audience-preferences { margin-top: 16px; }
-.preference-card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 20px; }
-.preference-card h3, .preference-group h4 { margin: 0; }
-.preference-groups { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); margin-top: 16px; }
+.audience-preferences { display: grid; gap: 12px; }
+.preference-card { display: grid; gap: 14px; }
+.preference-card h3 { font-size: 18px; margin: 0; }
+.preference-groups { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
 .preference-group { border-top: 1px solid var(--line); padding-top: 12px; }
+.preference-group h4 { font-size: 16px; line-height: 1.45; margin: 0; }
 .preference-list { display: grid; gap: 8px; list-style: none; margin: 10px 0 0; padding: 0; }
-.preference-item { align-items: baseline; display: grid; gap: 8px; grid-template-columns: auto minmax(0, 1fr) auto auto; }
-.preference-material { color: var(--ink); overflow-wrap: anywhere; }
-.preference-rank, .preference-metric, .preference-cost { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.preference-item { align-items: baseline; color: var(--muted); display: grid; font-size: 13px; gap: 8px; grid-template-columns: max-content minmax(0, 1fr) max-content max-content; line-height: 1.45; }
+.preference-rank { color: #7d4a25; font-weight: 800; white-space: nowrap; }
+.preference-item .material-link { min-width: 0; overflow-wrap: anywhere; text-align: left; }
+.preference-metric, .preference-cost { white-space: nowrap; }
 @media (max-width: 640px) {
-  .preference-card { padding: 16px; }
-  .preference-item { grid-template-columns: auto minmax(0, 1fr); }
+  .preference-item { grid-template-columns: max-content minmax(0, 1fr); }
   .preference-metric, .preference-cost { grid-column: 2; white-space: normal; }
 }
 ```
