@@ -290,6 +290,109 @@
       gap: 14px;
     }
 
+    .column-item-interactive {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .column-item-interactive:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .script-drill-view {
+      display: grid;
+      gap: 14px;
+    }
+
+    .script-drill-back {
+      justify-self: start;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      color: var(--ink);
+      padding: 8px 12px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 700;
+    }
+
+    .script-drill-back:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .script-drill-layout {
+      display: grid;
+      grid-template-columns: 170px minmax(0, 1fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .script-drill-primary {
+      display: grid;
+      grid-template-rows: auto 230px auto;
+      gap: 10px;
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .script-drill-primary > b {
+      font-size: 16px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .script-drill-primary-plot {
+      display: flex;
+      align-items: end;
+      justify-content: center;
+      border-bottom: 1px solid rgba(82, 45, 24, .22);
+    }
+
+    .script-drill-primary-bar {
+      width: min(64px, 72%);
+      min-height: 4px;
+      border-radius: 8px 8px 0 0;
+      background: linear-gradient(180deg, #d79a4b, #9b6a37);
+    }
+
+    .script-drill-primary-bar.is-arriving {
+      opacity: 0;
+    }
+
+    .script-drill-moving-bar {
+      position: fixed;
+      z-index: 40;
+      margin: 0;
+      pointer-events: none;
+      transform-origin: bottom center;
+      transition: transform 240ms cubic-bezier(.16, 1, .3, 1), opacity 160ms ease-out;
+    }
+
+    @media (max-width: 640px) {
+      .script-drill-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .script-drill-primary {
+        grid-template-rows: auto 120px auto;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .script-drill-moving-bar {
+        transition: none;
+      }
+    }
+
     .audience-preferences {
       display: grid;
       gap: 12px;
@@ -1556,7 +1659,17 @@ function renderColumnChart(title, buckets, valueFormatter, options = {}) {
   plot.style.setProperty("--column-gap", itemCount > 24 ? "4px" : itemCount > 14 ? "8px" : "18px");
   buckets.forEach((bucket, index) => {
     const value = valueAccessor(bucket);
-    const item = element("div", "column-item");
+    const item = options.onBucketClick
+      ? document.createElement("button")
+      : element("div", "column-item");
+    item.className = options.onBucketClick
+      ? "column-item column-item-interactive"
+      : "column-item";
+    if (options.onBucketClick) {
+      item.type = "button";
+      item.setAttribute("aria-label", `查看 ${text(bucket.bucket ?? bucket.label)} 的明细`);
+      item.addEventListener("click", () => options.onBucketClick(bucket, item));
+    }
     item.title = itemTitleFormatter(bucket);
     item.style.minWidth = itemCount > 24 ? "0" : "46px";
     const bar = element("div", "column-bar");
@@ -1605,7 +1718,7 @@ function findPieBucketAtPosition(event, pie, slices) {
   return slices.find((slice) => ratio >= slice.startRatio && ratio < slice.endRatio) || slices[slices.length - 1] || null;
 }
 
-function renderPieChart(title, buckets) {
+function renderPieChart(title, buckets, options = {}) {
   const card = element("div", "chart-card");
   card.append(element("h3", "", title));
   if (!Array.isArray(buckets) || buckets.length === 0) {
@@ -1619,9 +1732,13 @@ function renderPieChart(title, buckets) {
   pie.style.background = `conic-gradient(${stops.join(", ")})`;
   const pieTooltip = element("div", "chart-tooltip");
   pie.append(pieTooltip);
+  const tooltipLines = options.tooltipLines || ((bucket) => [
+    `占比 ${formatNumber(bucket.metricPercentage)}%`,
+  ]);
+  const legendValue = options.legendValue || ((bucket) => `${formatNumber(bucket.metricPercentage)}%`);
   function showPieTooltip(bucket) {
-    appendTooltipLines(pieTooltip, text(bucket.bucket), [`占比 ${formatNumber(bucket.metricPercentage)}%`]);
-    pie.title = `${text(bucket.bucket)}：占比 ${formatNumber(bucket.metricPercentage)}%`;
+    appendTooltipLines(pieTooltip, text(bucket.bucket), tooltipLines(bucket));
+    pie.title = `${text(bucket.bucket)}：${tooltipLines(bucket).join(" · ")}`;
     pieTooltip.classList.add("is-visible");
   }
   function syncPieTooltip(event) {
@@ -1642,10 +1759,10 @@ function renderPieChart(title, buckets) {
   const legend = element("ul", "pie-legend");
   buckets.forEach((bucket, index) => {
     const item = element("li", "legend-item");
-    item.title = `${text(bucket.bucket)}：占比 ${formatNumber(bucket.metricPercentage)}%`;
+    item.title = `${text(bucket.bucket)}：${tooltipLines(bucket).join(" · ")}`;
     const swatch = element("span", "legend-swatch");
     swatch.style.background = chartColors[index % chartColors.length];
-    item.append(swatch, element("span", "", text(bucket.bucket)), element("span", "", `${formatNumber(bucket.metricPercentage)}%`));
+    item.append(swatch, element("span", "", text(bucket.bucket)), element("span", "", legendValue(bucket)));
     legend.append(item);
   });
   layout.append(pie, legend);
@@ -1846,18 +1963,114 @@ function renderAudienceDashboard() {
   renderMetric(metricKeys[0]);
 }
 
+function sortScriptBuckets(buckets) {
+  return buckets.sort((left, right) => {
+    const valueDifference = Number(right.value || 0) - Number(left.value || 0);
+    return valueDifference || text(left.bucket).localeCompare(text(right.bucket), "zh-CN");
+  });
+}
+
+function animateScriptDrill(sourceItem) {
+  const sourceBar = sourceItem?.querySelector(".column-bar");
+  const targetBar = document.querySelector("#script-dashboard .script-drill-primary-bar");
+  if (!sourceBar || !targetBar || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const sourceRect = sourceBar.getBoundingClientRect();
+  const targetRect = targetBar.getBoundingClientRect();
+  if (!sourceRect.width || !sourceRect.height || !targetRect.width || !targetRect.height) return;
+
+  targetBar.classList.add("is-arriving");
+  const clone = sourceBar.cloneNode(true);
+  clone.className = "script-drill-moving-bar";
+  Object.assign(clone.style, {
+    left: `${sourceRect.left}px`,
+    top: `${sourceRect.top}px`,
+    width: `${sourceRect.width}px`,
+    height: `${sourceRect.height}px`,
+  });
+  document.body.append(clone);
+
+  let removed = false;
+  const removeClone = () => {
+    if (removed) return;
+    removed = true;
+    clone.remove();
+    targetBar.classList.remove("is-arriving");
+  };
+  clone.addEventListener("transitionend", removeClone, { once: true });
+  window.setTimeout(() => {
+    const translateX = targetRect.left - sourceRect.left;
+    const translateY = targetRect.top - sourceRect.top;
+    const scaleX = targetRect.width / sourceRect.width;
+    const scaleY = targetRect.height / sourceRect.height;
+    clone.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`;
+  }, 0);
+  window.setTimeout(removeClone, 360);
+}
+
+function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
+  const root = document.getElementById("script-dashboard");
+  const level2 = {};
+  summary.forEach((item) => {
+    if (text(item.level1, "其他") !== level1) return;
+    const key = text(item.level2, "其他");
+    level2[key] = (level2[key] || 0) + Number(item.occurrenceCount || 0);
+  });
+  const total = Number(level1Bucket?.value || 0) || 1;
+  const level2Buckets = sortScriptBuckets(Object.entries(level2).map(([label, value]) => ({
+    bucket: label,
+    value,
+    metricPercentage: Number(value || 0) / total * 100,
+  })));
+
+  const view = element("div", "script-drill-view");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "script-drill-back";
+  button.textContent = "返回一级标签";
+  button.addEventListener("click", () => renderScriptDashboard());
+
+  const layout = element("div", "script-drill-layout");
+  const primary = element("section", "script-drill-primary");
+  const plot = element("div", "script-drill-primary-plot");
+  const bar = element("div", "script-drill-primary-bar");
+  bar.style.height = "100%";
+  plot.append(bar);
+  primary.append(
+    element("b", "", level1),
+    plot,
+    element("span", "muted", `出现次数 ${formatNumber(level1Bucket.value)} 次`)
+  );
+  layout.append(
+    primary,
+    renderPieChart(`${level1} 二级标签分布`, level2Buckets, {
+      tooltipLines: (bucket) => [
+        `出现次数 ${formatNumber(bucket.value)} 次`,
+        `占比 ${formatNumber(bucket.metricPercentage)}%`,
+      ],
+      legendValue: (bucket) => `${formatNumber(bucket.value)}次 · ${formatNumber(bucket.metricPercentage)}%`,
+    })
+  );
+  view.append(button, layout);
+  root.replaceChildren(view);
+  animateScriptDrill(sourceItem);
+}
+
 function renderScriptDashboard() {
   const root = document.getElementById("script-dashboard");
-  const summary = Array.isArray(reportData.scripts?.labelSummary) ? reportData.scripts.labelSummary : [];
+  const summary = Array.isArray(reportData.scripts?.labelSummary)
+    ? reportData.scripts.labelSummary
+    : [];
   root.replaceChildren();
+  if (summary.length === 0) {
+    root.append(element("p", "muted", "暂无脚本标签数据"));
+    return;
+  }
   const level1 = {};
   summary.forEach((item) => {
     const key = text(item.level1, "其他");
     level1[key] = (level1[key] || 0) + Number(item.occurrenceCount || 0);
   });
-  const level1Buckets = Object.entries(level1)
-    .map(([label, value]) => ({ bucket: label, value }))
-    .sort((left, right) => right.value - left.value);
+  const level1Buckets = sortScriptBuckets(Object.entries(level1).map(([label, value]) => ({ bucket: label, value })));
   const totalOccurrences = level1Buckets.reduce((sum, bucket) => sum + Number(bucket.value || 0), 0) || 1;
   const maxCount = Math.max(...level1Buckets.map((bucket) => Number(bucket.value || 0)), 0);
   const chartGrid = element("div", "chart-grid");
@@ -1868,6 +2081,7 @@ function renderScriptDashboard() {
       `占比 ${formatNumber((Number(bucket.value || 0) / totalOccurrences) * 100)}%`,
       `次数 ${formatNumber(bucket.value || 0)} 次`,
     ],
+    onBucketClick: (bucket, item) => renderScriptDrill(bucket.bucket, summary, bucket, item),
   }));
   root.append(chartGrid);
 }
