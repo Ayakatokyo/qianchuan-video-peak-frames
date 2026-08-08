@@ -1,9 +1,15 @@
 import ast
 import json
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone
 import math
 from pathlib import Path
 from batch_runtime import stage_counts
+from asset_metrics_lib import (
+    COST_METRIC,
+    NET_SETTLEMENT_AMOUNT_METRIC,
+    OVERALL_PAYMENT_AMOUNT_METRIC,
+)
 
 from diagnostic_analysis_lib import (
     build_diagnostic_analysis,
@@ -25,6 +31,15 @@ FinalReportError = ReportRenderingError
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script"}
+PORTFOLIO_DIMENSION_TOPICS = ("commercial", "audience", "script", "highlight")
+COMMERCIAL_EVIDENCE_REFS = {
+    "commercial:cost",
+    "commercial:netSettlementAmount",
+    "commercial:overallPaymentAmount",
+    "commercial:netSettlementRoi",
+    "commercial:overallPaymentRoi",
+}
+COMMERCIAL_SOURCE_TERMS = ("资产表", "数据来源")
 AI_QUALITY_MINIMUMS = {
     "overallConclusion": 420,
     "batchInsight": 180,
@@ -316,6 +331,46 @@ def _normalize_v2_conclusion(payload):
     }
 
 
+def _validate_dimension_conclusion(raw, topic):
+    if not isinstance(raw, dict):
+        raise FinalReportError(
+            f"portfolioDimensionConclusions.{topic} must be an object"
+        )
+    conclusion = _text(raw.get("conclusion"))
+    if not conclusion:
+        raise FinalReportError(
+            f"portfolioDimensionConclusions.{topic}.conclusion is required"
+        )
+    return {
+        "conclusion": conclusion,
+        "evidenceRefs": _string_list(
+            raw.get("evidenceRefs"),
+            f"portfolioDimensionConclusions.{topic}.evidenceRefs",
+        ),
+    }
+
+
+def _normalize_v3_conclusion(payload):
+    normalized = _normalize_v2_conclusion(payload)
+    dimensions = payload.get("portfolioDimensionConclusions")
+    if not isinstance(dimensions, dict) or set(dimensions) != set(
+        PORTFOLIO_DIMENSION_TOPICS
+    ):
+        raise FinalReportError(
+            "portfolioDimensionConclusions must contain exactly "
+            + ", ".join(PORTFOLIO_DIMENSION_TOPICS)
+        )
+    return {
+        **normalized,
+        "schemaVersion": 3,
+        "overallConclusion": "",
+        "portfolioDimensionConclusions": {
+            topic: _validate_dimension_conclusion(dimensions[topic], topic)
+            for topic in PORTFOLIO_DIMENSION_TOPICS
+        },
+    }
+
+
 def normalize_conclusion_analysis(payload):
     if not isinstance(payload, dict):
         raise FinalReportError("conclusion analysis must be an object")
@@ -324,6 +379,8 @@ def normalize_conclusion_analysis(payload):
         return _normalize_v1_conclusion(payload)
     if schema_version == 2:
         return _normalize_v2_conclusion(payload)
+    if schema_version == 3:
+        return _normalize_v3_conclusion(payload)
     raise FinalReportError("unsupported conclusion schemaVersion")
 
 
@@ -392,7 +449,7 @@ def _empty_material_analysis(material_id):
 def _analyses_by_material(conclusion):
     if not conclusion:
         return {}
-    if conclusion.get("schemaVersion") == 2:
+    if conclusion.get("schemaVersion") in {2, 3}:
         return {
             item["materialId"]: item
             for item in conclusion.get("materialAnalyses", [])
@@ -412,11 +469,139 @@ def _batch_insights(conclusion):
     result = {topic: [] for topic in ALLOWED_INSIGHT_TOPICS}
     if not conclusion:
         return result
-    if conclusion.get("schemaVersion") == 2:
+    if conclusion.get("schemaVersion") in {2, 3}:
         for insight in conclusion.get("batchInsights", []):
             result[insight["topic"]].append(insight)
         return result
     return result
+
+
+TOP_MATERIAL_ROI_METRICS = (
+    ("netSettlementRoi", "净成交 ROI"),
+    ("overallPaymentRoi", "整体支付 ROI"),
+)
+TOP_MATERIAL_ROI_METRIC_KEYS = {
+    "cost": COST_METRIC,
+    "netSettlementAmount": NET_SETTLEMENT_AMOUNT_METRIC,
+    "overallPaymentAmount": OVERALL_PAYMENT_AMOUNT_METRIC,
+}
+TOP_MATERIAL_ROI_TOTAL_KEYS = {
+    "netSettlementRoi": "netSettlementAmount",
+    "overallPaymentRoi": "overallPaymentAmount",
+}
+
+
+def _top_material_roi_data(top_payload, materials, facts):
+    expected_ids = [material["materialId"] for material in materials]
+    default = {
+        "source": "unavailable",
+        "actualStartDate": _text(top_payload.get("actualStartDate")),
+        "actualEndDate": _text(top_payload.get("actualEndDate")),
+        "materialCount": len(expected_ids),
+        "materialIds": expected_ids,
+        "metrics": [
+            {
+                "key": key,
+                "label": label,
+                "value": None,
+                "displayValue": None,
+                "available": False,
+            }
+            for key, label in TOP_MATERIAL_ROI_METRICS
+        ],
+    }
+    if not facts:
+        return default
+    if not isinstance(facts, dict) or facts.get("schemaVersion") != 1:
+        raise FinalReportError("top material ROI facts schemaVersion must be 1")
+    if facts.get("actualStartDate") != default["actualStartDate"] or facts.get(
+        "actualEndDate"
+    ) != default["actualEndDate"]:
+        raise FinalReportError("top material ROI facts period does not match report")
+    if facts.get("materialIds") != expected_ids:
+        raise FinalReportError("top material ROI facts do not match verified report materials")
+    if facts.get("metricKeys") != TOP_MATERIAL_ROI_METRIC_KEYS:
+        raise FinalReportError("top material ROI facts metric keys are invalid")
+    raw_totals = facts.get("totals")
+    if not isinstance(raw_totals, dict) or set(raw_totals) != set(
+        TOP_MATERIAL_ROI_METRIC_KEYS
+    ):
+        raise FinalReportError("top material ROI facts totals are invalid")
+    totals = {
+        key: _roi_decimal(raw_totals[key], "top material ROI facts totals")
+        for key in TOP_MATERIAL_ROI_METRIC_KEYS
+    }
+    raw_metrics = facts.get("metrics")
+    if not isinstance(raw_metrics, list) or len(raw_metrics) != len(TOP_MATERIAL_ROI_METRICS):
+        raise FinalReportError("top material ROI facts metrics are invalid")
+    metrics = []
+    for raw, (key, label) in zip(raw_metrics, TOP_MATERIAL_ROI_METRICS):
+        if not isinstance(raw, dict) or raw.get("key") != key or raw.get("label") != label:
+            raise FinalReportError("top material ROI facts metrics are invalid")
+        available = raw.get("available")
+        value = raw.get("value")
+        expected_formula = "sum(%s) / sum(%s)" % (
+            TOP_MATERIAL_ROI_METRIC_KEYS[TOP_MATERIAL_ROI_TOTAL_KEYS[key]],
+            COST_METRIC,
+        )
+        if raw.get("formula") != expected_formula:
+            raise FinalReportError("top material ROI facts formula is invalid")
+        if type(available) is not bool or (available and not _text(value)) or (
+            not available and value is not None
+        ):
+            raise FinalReportError("top material ROI facts metrics are invalid")
+        expected_available = totals["cost"] != 0
+        if available != expected_available:
+            raise FinalReportError("top material ROI facts availability is invalid")
+        if available:
+            actual_value = _roi_decimal(value, "top material ROI facts metric")
+            expected_value = totals[TOP_MATERIAL_ROI_TOTAL_KEYS[key]] / totals["cost"]
+            if _roi_decimal_text(actual_value) != _roi_decimal_text(expected_value):
+                raise FinalReportError("top material ROI facts value is invalid")
+        metrics.append({
+            "key": key,
+            "label": label,
+            "formula": expected_formula,
+            "value": _text(value) if available else None,
+            "displayValue": (
+                format(
+                    actual_value.quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    ),
+                    ".2f",
+                )
+                if available else None
+            ),
+            "available": available,
+        })
+    return {
+        **default,
+        "source": "verifiedAssetFacts",
+        "metricKeys": TOP_MATERIAL_ROI_METRIC_KEYS,
+        "totals": {
+            key: _roi_decimal_text(value) for key, value in totals.items()
+        },
+        "metrics": metrics,
+    }
+
+
+def _roi_decimal(value, label):
+    if isinstance(value, bool) or value is None or isinstance(value, (dict, list)):
+        raise FinalReportError("%s are invalid" % label)
+    try:
+        result = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as error:
+        raise FinalReportError("%s are invalid" % label) from error
+    if not result.is_finite() or result < 0:
+        raise FinalReportError("%s are invalid" % label)
+    return result
+
+
+def _roi_decimal_text(value):
+    result = format(value, "f")
+    if "." in result:
+        result = result.rstrip("0").rstrip(".")
+    return result or "0"
 
 
 def _material_interaction_timeline(records):
@@ -697,7 +882,7 @@ def _pipeline_summary(batch_manifest, batch_verification):
     }
 
 
-def _known_evidence_refs(diagnostic, summaries_by_material):
+def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
     refs = set()
     for metric, metric_data in diagnostic["audience"]["metrics"].items():
         for dimension_key, dimension in metric_data["dimensions"].items():
@@ -719,13 +904,19 @@ def _known_evidence_refs(diagnostic, summaries_by_material):
                 rank_type = _text(frame.get("rankType"))
                 if rank_type:
                     refs.add(f"highlight:{material_id}:{rank_type}")
+    if top_material_roi.get("source") == "verifiedAssetFacts":
+        refs.update(COMMERCIAL_EVIDENCE_REFS)
     return refs
 
 
-def _validate_v2_evidence(conclusion, diagnostic, summaries_by_material, material_cards):
-    if not conclusion or conclusion.get("schemaVersion") != 2:
+def _validate_v2_evidence(
+    conclusion, diagnostic, summaries_by_material, material_cards, top_material_roi
+):
+    if not conclusion or conclusion.get("schemaVersion") not in {2, 3}:
         return
-    known_refs = _known_evidence_refs(diagnostic, summaries_by_material)
+    known_refs = _known_evidence_refs(
+        diagnostic, summaries_by_material, top_material_roi
+    )
     selected_ids = {material["materialId"] for material in material_cards}
     successful_ids = {
         material["materialId"]
@@ -764,6 +955,45 @@ def _validate_v2_evidence(conclusion, diagnostic, summaries_by_material, materia
             "missing material analysis for succeeded material: "
             + ", ".join(missing_ids)
         )
+    if conclusion.get("schemaVersion") != 3:
+        return
+
+    dimensions = conclusion["portfolioDimensionConclusions"]
+    batch_text_by_topic = {}
+    for insight in conclusion["batchInsights"]:
+        batch_text_by_topic.setdefault(insight["topic"], set()).add(
+            " ".join(insight["conclusion"].split())
+        )
+    seen_dimension_texts = set()
+    for topic in PORTFOLIO_DIMENSION_TOPICS:
+        dimension = dimensions[topic]
+        dimension_text = " ".join(dimension["conclusion"].split())
+        if dimension_text in seen_dimension_texts:
+            raise FinalReportError(
+                "portfolioDimensionConclusions duplicates another dimension conclusion"
+            )
+        seen_dimension_texts.add(dimension_text)
+        if not dimension["evidenceRefs"]:
+            raise FinalReportError(
+                f"portfolioDimensionConclusions.{topic}.evidenceRefs must not be empty"
+            )
+        for reference in dimension["evidenceRefs"]:
+            if reference not in known_refs:
+                raise FinalReportError(f"unknown evidence reference: {reference}")
+            if not reference.startswith(topic + ":"):
+                raise FinalReportError(
+                    f"portfolioDimensionConclusions.{topic} has invalid evidence reference"
+                )
+        if topic in batch_text_by_topic and dimension_text in batch_text_by_topic[topic]:
+            raise FinalReportError(
+                f"portfolioDimensionConclusions.{topic} duplicates detailed insight"
+            )
+    commercial_text = dimensions["commercial"]["conclusion"]
+    for term in COMMERCIAL_SOURCE_TERMS:
+        if term in commercial_text:
+            raise FinalReportError(
+                "portfolioDimensionConclusions.commercial must not reference " + term
+            )
 
 
 def _repeated_values(items, field_name):
@@ -776,16 +1006,27 @@ def _repeated_values(items, field_name):
 
 
 def _validate_v2_analysis_quality(conclusion, material_cards):
-    if not conclusion or conclusion.get("schemaVersion") != 2:
+    if not conclusion or conclusion.get("schemaVersion") not in {2, 3}:
         return
 
     failures = []
     minimums = AI_QUALITY_MINIMUMS
-    if len(conclusion["overallConclusion"]) < minimums["overallConclusion"]:
+    if (
+        conclusion.get("schemaVersion") == 2
+        and len(conclusion["overallConclusion"]) < minimums["overallConclusion"]
+    ):
         failures.append(
             "overallConclusion must contain at least "
             f"{minimums['overallConclusion']} characters"
         )
+
+    if conclusion.get("schemaVersion") == 3:
+        for topic, dimension in conclusion["portfolioDimensionConclusions"].items():
+            if len(dimension["conclusion"]) < minimums["materialConclusion"]:
+                failures.append(
+                    f"portfolioDimensionConclusions.{topic}.conclusion must contain at least "
+                    f"{minimums['materialConclusion']} characters"
+                )
 
     insights_by_topic = {topic: [] for topic in ALLOWED_INSIGHT_TOPICS}
     for index, insight in enumerate(conclusion["batchInsights"]):
@@ -898,9 +1139,13 @@ def build_final_report_data(
     batch_verification=None,
     batch_manifest=None,
     input_warnings=None,
+    top_material_roi=None,
 ):
     materials = _selected_materials(top_payload)
     diagnostic = build_diagnostic_analysis(top_payload, records_by_material)
+    top_material_roi_data = _top_material_roi_data(
+        top_payload, materials, top_material_roi
+    )
     analyses = _analyses_by_material(conclusion)
     script_facts = _scripts_by_material(diagnostic["scripts"])
     script_records = _script_records_by_material(records_by_material)
@@ -917,7 +1162,11 @@ def build_final_report_data(
         for material in materials
     ]
     _validate_v2_evidence(
-        conclusion, diagnostic, summaries_by_material, material_cards
+        conclusion,
+        diagnostic,
+        summaries_by_material,
+        material_cards,
+        top_material_roi_data,
     )
     highlight_frame_count = sum(
         item["highlightFrameCount"] for item in material_cards
@@ -963,6 +1212,7 @@ def build_final_report_data(
             "warningCount": len(report_warnings),
             "rankingMetric": _text(top_payload.get("rankingMetric")) or "totalCost",
         },
+        "topMaterialRoi": top_material_roi_data,
         "materials": material_cards,
         "defaultMaterialId": default_material_id,
         "pipelineSummary": _pipeline_summary(batch_manifest, batch_verification),
@@ -1059,6 +1309,12 @@ def load_batch_manifest(peak_output_dir):
     return _load_report_artifact(Path(peak_output_dir) / "batch-manifest.json")
 
 
+def load_top_material_roi_facts(peak_output_dir):
+    return _load_report_artifact(
+        Path(peak_output_dir) / "top-material-roi-facts-v1.json"
+    )
+
+
 def _atomic_write_text(path, content):
     return atomic_write_text(path, content)
 
@@ -1149,6 +1405,7 @@ def generate_final_report(
     summaries_by_material = load_summaries_for_materials(materials, peak_output_dir)
     batch_verification = load_batch_verification(peak_output_dir)
     batch_manifest = load_batch_manifest(peak_output_dir)
+    top_material_roi = load_top_material_roi_facts(peak_output_dir)
     conclusion = load_conclusion_analysis(analysis_json) if analysis_json else None
     data = build_final_report_data(
         top_payload,
@@ -1158,6 +1415,7 @@ def generate_final_report(
         batch_verification=batch_verification,
         batch_manifest=batch_manifest,
         input_warnings=record_warnings,
+        top_material_roi=top_material_roi,
     )
     if require_ai_quality:
         _validate_v2_analysis_quality(conclusion, data["materials"])

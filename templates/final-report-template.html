@@ -144,6 +144,63 @@
       color: var(--ink);
     }
 
+    .top-roi-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .top-roi-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 16px;
+    }
+
+    .top-roi-card b,
+    .top-roi-card span {
+      display: block;
+    }
+
+    .top-roi-card span {
+      margin-top: 6px;
+      color: #7d4a25;
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .top-roi-scope {
+      grid-column: 1 / -1;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .top-dimension-conclusions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .top-dimension-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 16px;
+    }
+
+    .top-dimension-card b {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+
+    .top-dimension-card p {
+      font-size: 15px;
+      line-height: 1.72;
+    }
+
     .insight-stack {
       display: grid;
       gap: 12px;
@@ -1083,6 +1140,8 @@
       }
 
       .insight-layout,
+      .top-roi-grid,
+      .top-dimension-conclusions,
       .rec-list,
       .chart-grid,
       .side-tabs,
@@ -1129,7 +1188,9 @@
   <section class="section">
     <h2>01｜TOP 素材组合结论</h2>
     <div class="insight-layout">
-      <div class="primary-summary">
+      <div class="top-roi-grid" id="top-material-roi"></div>
+      <div class="top-dimension-conclusions" id="top-dimension-conclusions"></div>
+      <div class="primary-summary" id="overall-conclusion-card">
         <p id="overall-conclusion"></p>
       </div>
     </div>
@@ -2579,6 +2640,59 @@ function renderNextActions() {
   });
 }
 
+function renderTopMaterialRoi() {
+  const root = document.getElementById("top-material-roi");
+  const roi = reportData.topMaterialRoi || {};
+  const metrics = Array.isArray(roi.metrics) ? roi.metrics : [];
+  root.replaceChildren();
+  metrics.forEach((metric) => {
+    const card = element("div", "top-roi-card");
+    card.append(
+      element("b", "", text(metric.label)),
+      element("span", "", metric.available ? text(metric.displayValue) : "暂不可用")
+    );
+    root.append(card);
+  });
+  const scope = element(
+    "p",
+    "top-roi-scope",
+    `统计范围：${formatNumber(roi.materialCount)} 条已验证 TOP 素材；${text(roi.actualStartDate)} - ${text(roi.actualEndDate)}`
+  );
+  root.append(scope);
+}
+
+function renderTopDimensionConclusions() {
+  const root = document.getElementById("top-dimension-conclusions");
+  const fallback = document.getElementById("overall-conclusion-card");
+  const conclusion = reportData.conclusion || {};
+  const dimensions = conclusion.portfolioDimensionConclusions || {};
+  const labels = [
+    ["commercial", "经营表现"],
+    ["audience", "人群"],
+    ["script", "脚本"],
+    ["highlight", "高光画面"]
+  ];
+  root.replaceChildren();
+  if (conclusion.schemaVersion !== 3 || !labels.every(([key]) => dimensions[key])) {
+    root.hidden = true;
+    fallback.hidden = false;
+    document.getElementById("overall-conclusion").replaceChildren(
+      renderTextWithMaterialLinks(conclusion.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
+    );
+    return;
+  }
+  root.hidden = false;
+  fallback.hidden = true;
+  labels.forEach(([key, label]) => {
+    const card = element("article", "top-dimension-card");
+    card.append(
+      element("b", "", label),
+      elementWithMaterialLinks("p", "", dimensions[key].conclusion)
+    );
+    root.append(card);
+  });
+}
+
 document.querySelector(".frame-lightbox-close").addEventListener("click", closeFrameLightbox);
 document.getElementById("frame-lightbox").addEventListener("click", (event) => {
   if (event.target.id === "frame-lightbox") {
@@ -2594,9 +2708,8 @@ document.addEventListener("keydown", (event) => {
 function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。`;
-  document.getElementById("overall-conclusion").replaceChildren(
-    renderTextWithMaterialLinks(reportData.conclusion?.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
-  );
+  renderTopMaterialRoi();
+  renderTopDimensionConclusions();
   renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");
   renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");
   renderAudienceDashboard();

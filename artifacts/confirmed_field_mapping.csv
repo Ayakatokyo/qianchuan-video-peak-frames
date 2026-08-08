@@ -1,0 +1,50 @@
+platformField,assetMetric,ruleType,formula,confirmed,notes
+整体消耗,stat_cost_for_overall_roi2,direct_sum,"sum(stat_cost_for_overall_roi2)",true,按素材聚合后直接求和。
+基础消耗,basic_stat_cost_for_roi2_v2,direct_sum,"sum(basic_stat_cost_for_roi2_v2)",true,按素材聚合后直接求和。
+整体成交订单数,total_pay_order_count_for_roi2,direct_sum,"sum(total_pay_order_count_for_roi2)",true,按素材聚合后直接求和。
+净成交订单数,total_order_settle_count_for_roi2_1h,direct_sum,"sum(total_order_settle_count_for_roi2_1h)",true,按素材聚合后直接求和。
+智能优惠券金额,total_pay_order_coupon_amount_for_roi2,direct_sum,"sum(total_pay_order_coupon_amount_for_roi2)",true,按素材聚合后直接求和。
+电商平台补贴金额,total_ecom_platform_subsidy_amount_for_roi2,direct_sum,"sum(total_ecom_platform_subsidy_amount_for_roi2)",true,按素材聚合后直接求和。
+智能优惠券未退款金额,no_refund_ecom_coupon_amount_for_roi2,direct_sum,"sum(no_refund_ecom_coupon_amount_for_roi2)",true,按素材聚合后直接求和。
+电商平台补贴未退款金额,no_refund_ecom_platform_subsidy_amount_for_roi2,direct_sum,"sum(no_refund_ecom_platform_subsidy_amount_for_roi2)",true,按素材聚合后直接求和。
+1小时内退款订单数,total_refund_order_count_for_roi2_1h,direct_sum,"sum(total_refund_order_count_for_roi2_1h)",true,按素材聚合后直接求和。
+1小时内退款金额,total_refund_order_gmv_for_roi2_1h_all,direct_sum,"sum(total_refund_order_gmv_for_roi2_1h_all)",true,按素材聚合后直接求和。
+净成交金额,total_order_settle_amount_for_roi2_1h,direct_sum_swapped_name,"sum(total_order_settle_amount_for_roi2_1h)",true,平台列名与资产表语义对调；不要按中文名直连。
+用户实际支付净成交金额,total_order_real_settle_amount_for_roi2_1h,direct_sum_swapped_name,"sum(total_order_real_settle_amount_for_roi2_1h)",true,平台列名与资产表语义对调；不要按中文名直连。
+整体成交金额,total_pay_order_gmv_include_coupon_for_roi2,direct_sum_swapped_name,"sum(total_pay_order_gmv_include_coupon_for_roi2)",true,平台列名与资产表语义对调；不要按中文名直连。
+用户实际支付金额,total_pay_order_gmv_for_roi2,direct_sum_swapped_name,"sum(total_pay_order_gmv_for_roi2)",true,平台列名与资产表语义对调；不要按中文名直连。
+追投调控消耗,additional_delivery_stat_cost_for_roi2_assist,direct_sum,"sum(additional_delivery_stat_cost_for_roi2_assist)",true,按素材聚合后直接求和。
+追投调控点击次数,additional_delivery_click_cnt_for_roi2_assist,direct_sum,"sum(additional_delivery_click_cnt_for_roi2_assist)",true,按素材聚合后直接求和。
+追投调控成交订单数,additional_delivery_total_pay_order_count_for_roi2_assist,direct_sum,"sum(additional_delivery_total_pay_order_count_for_roi2_assist)",true,按素材聚合后直接求和。
+追投调控净成交订单数,additional_delivery_total_order_settle_count_for_roi2_1h_assist,direct_sum,"sum(additional_delivery_total_order_settle_count_for_roi2_1h_assist)",true,按素材聚合后直接求和。
+追投调控成交金额,additional_delivery_total_pay_order_gmv_include_coupon_for_roi2_assist,direct_sum_swapped_name,"sum(additional_delivery_total_pay_order_gmv_include_coupon_for_roi2_assist)",true,平台列名与资产表语义对调；不要按中文名直连。
+追投用户实际支付金额,additional_delivery_total_pay_order_gmv_for_roi2_assist,direct_sum_swapped_name,"sum(additional_delivery_total_pay_order_gmv_for_roi2_assist)",true,平台列名与资产表语义对调；不要按中文名直连。
+追投调控净成交金额,additional_delivery_total_order_settle_amount_for_roi2_1h_assist,direct_sum_swapped_name,"sum(additional_delivery_total_order_settle_amount_for_roi2_1h_assist)",true,平台列名与资产表语义对调；不要按中文名直连。
+追投调控用户实际支付净成交金额,additional_delivery_total_order_real_settle_amount_for_roi2_1h_assist,direct_sum_swapped_name,"sum(additional_delivery_total_order_real_settle_amount_for_roi2_1h_assist)",true,平台列名与资产表语义对调；不要按中文名直连。
+追投调控7日结算金额,additional_delivery_total_order_settle_amount_for_roi2_7d_assist,direct_sum,"sum(additional_delivery_total_order_settle_amount_for_roi2_7d_assist)",true,按素材聚合后直接求和。
+追投调控7日结算订单数,additional_delivery_total_order_settle_count_for_roi2_7d_assist,direct_sum,"sum(additional_delivery_total_order_settle_count_for_roi2_7d_assist)",true,按素材聚合后直接求和。
+净成交ROI,,derived_formula,净成交金额 / 整体消耗,true,先按素材汇总分子分母再计算；不要逐行先算再平均。
+整体支付ROI,,derived_formula,整体成交金额 / 整体消耗,true,先按素材汇总分子分母再计算；不要逐行先算再平均。
+净成交订单结算率,,derived_formula,净成交订单数 / 整体成交订单数,true,先按素材汇总分子分母再计算。
+整体成交订单成本,,derived_formula,整体消耗 / 整体成交订单数,true,先按素材汇总分子分母再计算。
+净成交订单成本,,derived_formula,整体消耗 / 净成交订单数,true,先按素材汇总分子分母再计算。
+7日结算ROI,,derived_formula,7日结算金额 / 整体消耗,true,先按素材汇总分子分母再计算。
+7日订单结算率,,derived_formula,7日结算订单数 / 整体成交订单数,true,先按素材汇总分子分母再计算。
+7日GMV结算率,,derived_formula,7日结算金额 / 整体成交金额,true,先按素材汇总分子分母再计算。
+14日结算ROI,,derived_formula,14日结算金额 / 整体消耗,true,先按素材汇总分子分母再计算。
+14日订单结算率,,derived_formula,14日结算订单数 / 整体成交订单数,true,先按素材汇总分子分母再计算。
+14日GMV结算率,,derived_formula,14日结算金额 / 整体成交金额,true,先按素材汇总分子分母再计算。
+30日结算ROI,,derived_formula,30日结算金额 / 整体消耗,true,先按素材汇总分子分母再计算。
+30日订单结算率,,derived_formula,30日结算订单数 / 整体成交订单数,true,先按素材汇总分子分母再计算。
+30日GMV结算率,,derived_formula,30日结算金额 / 整体成交金额,true,先按素材汇总分子分母再计算。
+90日结算ROI,,derived_formula,90日结算金额 / 整体消耗,true,先按素材汇总分子分母再计算。
+90日订单结算率,,derived_formula,90日结算订单数 / 整体成交订单数,true,先按素材汇总分子分母再计算。
+90日GMV结算率,,derived_formula,90日结算金额 / 整体成交金额,true,先按素材汇总分子分母再计算。
+追投调控点击率,,derived_formula,追投调控点击次数 / 追投调控展示次数,true,先按素材汇总分子分母再计算。
+追投调控转化率,,derived_formula,追投调控成交订单数 / 追投调控点击次数,true,先按素材汇总分子分母再计算。
+追投调控支付ROI,,derived_formula,追投调控成交金额 / 追投调控消耗,true,先按素材汇总分子分母再计算。
+追投调控净成交ROI,,derived_formula,追投调控净成交金额 / 追投调控消耗,true,先按素材汇总分子分母再计算。
+追投调控净成交转化率,,derived_formula,追投调控净成交订单数 / 追投调控点击次数,true,先按素材汇总分子分母再计算。
+追投调控净成交订单结算率,,derived_formula,追投调控净成交订单数 / 追投调控成交订单数,true,先按素材汇总分子分母再计算。
+追投调控7日结算ROI,,derived_formula,追投调控7日结算金额 / 追投调控消耗,true,先按素材汇总分子分母再计算。
+追投调控7日订单结算率,,derived_formula,追投调控7日结算订单数 / 追投调控成交订单数,true,先按素材汇总分子分母再计算。

@@ -49,7 +49,8 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("实际查看", skill)
         self.assertIn("JPEG", skill)
         self.assertIn("diagnostic-ai-analysis.json", skill)
-        self.assertIn("schemaVersion: 2", skill)
+        self.assertIn("schemaVersion: 3", skill)
+        self.assertIn("经营表现、人群、脚本和高光画面", skill)
 
     def test_skill_delivers_only_a_complete_standard_report(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")

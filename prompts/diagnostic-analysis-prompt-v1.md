@@ -14,9 +14,10 @@
 - 所有 AI 二次分析字段都必须采用“少量关键事实锚点 + 多句分析判断”的写法：只选最能支撑判断的原始数值、占比、出现次数、素材数量或高光帧秒点作为依据，然后展开说明这些事实意味着什么、为什么值得放量或改写、下一步如何验证；不得只写抽象结论，也不得把事实清单当作结论主体。
 - 人群结论必须分别标注 `SHOW_COUNT`、`CLICK_COUNT` 或 `TRANSACTION_AMOUNT`，展示文案使用“展现次数”“点击次数”“成交金额”；不得将展现、点击和成交混写。
 - 人群洞察必须分别从展现次数、点击次数、成交金额三个角度展开，至少引用每个角度的一条合法 `audience:*` 证据。
-- `overallConclusion` 必须综合人群、脚本、高光帧和投放明细中的主要事实，对本次提取到的所有素材做组合级汇总分析，不得只复述单一人群或单一脚本结论。整体结论的数据陈述只作为判断依据，不作为段落主体；优先输出组合公式、机会判断、风险边界和下一轮验证方向。
-- 换言之，overallConclusion 必须综合人群、脚本、高光帧，不得和人群洞察、脚本洞察或单素材分析重复或冲突。
-- `01｜TOP 素材组合结论` 只使用 `overallConclusion`，不得再生成下方组合洞察卡片；不得输出 `batchInsights.topic=integrated`。
+- `portfolioDimensionConclusions` 必须分别输出经营表现、人群、脚本和高光画面四条组合层结论。每条先用少量事实锚定，再给出判断、边界和下一轮验证方向；优先输出组合公式、机会判断、风险边界和下一轮验证方向；不得合并为一段长文本。
+- `commercial` 只能解释事实包 `commercial` 内的整体消耗、净成交金额、整体成交金额、净成交 ROI 和整体支付 ROI。不得自行计算、改名、替换指标或猜测缺失数值；不得出现“资产表”或任何数据来源名称。
+- `audience` 与 `script` 是组合层判断，不能与 `batchInsights` 的对应洞察原文完全相同；不得输出 `batchInsights.topic=integrated`。
+- `highlight` 只能使用事实包中最终 TOP 素材的 `highlight:*` 证据，高光帧的结论必须是对组合画面机制的谨慎判断。
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
 - 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指事实包 `highlights.materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 或 peak_top_3，也必须分别输出对应分析。
 - 若该素材 `highlights.materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 3 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
@@ -26,7 +27,7 @@
 
 ## 内容长度与信息密度（标准入口 finalize 的硬性门禁）
 
-- `overallConclusion` 必须为 420-680 个中文字符，最多用前 1/3 篇幅交代关键事实，其余篇幅用于解释组合表现、可复用机制、创意风险和下一轮策略判断。
+- 每条 `portfolioDimensionConclusions[*].conclusion` 必须为 120-220 个中文字符；每条必须填写至少一个对应维度的合法 `evidenceRefs`。经营表现只有在 `commercial.available=true` 时才可引用商业指标；不可用时明确说明数据不足以判断，不能补造数值。
 - 每条 `batchInsights.conclusion` 必须为 180-280 个中文字符，包含具体指标名称和至少 2 个可核验事实点；事实点之后必须给出分析含义、投放判断和可验证假设，并填写至少一个合法 `evidenceRefs`。
 - 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
 - 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
@@ -38,13 +39,13 @@
 
 最终 HTML 页面保留以下 5 个 section，输出字段必须围绕这些 section 收缩：
 
-- `01｜TOP 素材组合结论`：只使用 `overallConclusion`，不展示、不生成下方组合洞察卡片。
+- `01｜TOP 素材组合结论`：使用 `portfolioDimensionConclusions.commercial`、`audience`、`script`、`highlight`，按该顺序展示；顶部的两张 ROI 指标卡由确定性事实渲染，不需要在文案中重复计算。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
 - `04｜单素材深度分析`：页面会先展示确定性的 `互动时序分析` 和 `脚本分析数据`，再展示 `materialAnalyses` 中的 AI 二次总结。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 - `nextActions` 对应 `05｜下一轮策略`：策略卡片只展示 title 和 body，不展示 priority。
 
-不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧只允许作为 `overallConclusion` 和 `materialAnalyses[*].highlightAnalyses` 的证据来源，不再生成单独的批量高光帧或组合洞察段落。
+不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧只允许作为 `portfolioDimensionConclusions.highlight` 和 `materialAnalyses[*].highlightAnalyses` 的证据来源，不再生成单独的批量高光帧洞察段落。
 
 不得输出“数据质量与执行口径”“方法说明”“补充说明”等额外页面段落，也不得输出顶层 `warnings` 字段。
 
@@ -54,8 +55,25 @@
 
 ```json
 {
-  "schemaVersion": 2,
-  "overallConclusion": "组合级商业结论",
+  "schemaVersion": 3,
+  "portfolioDimensionConclusions": {
+    "commercial": {
+      "conclusion": "基于整体消耗、净成交金额、整体成交金额及两项 ROI 的经营判断",
+      "evidenceRefs": ["commercial:netSettlementRoi", "commercial:overallPaymentRoi"]
+    },
+    "audience": {
+      "conclusion": "组合层人群判断，不复制下方详细人群洞察",
+      "evidenceRefs": ["audience:CLICK_COUNT:age:事实包中的分桶"]
+    },
+    "script": {
+      "conclusion": "组合层脚本判断，不复制下方详细脚本洞察",
+      "evidenceRefs": ["script:事实包中的素材 ID:一级标签:二级标签"]
+    },
+    "highlight": {
+      "conclusion": "基于最终 TOP 素材高光帧的组合画面判断",
+      "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]
+    }
+  },
   "batchInsights": [
     {
       "topic": "audience",

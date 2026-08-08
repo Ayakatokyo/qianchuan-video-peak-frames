@@ -600,6 +600,59 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             )
 
 
+class DiagnosticAnalysisCommercialFactsTests(unittest.TestCase):
+    def test_prepare_includes_verified_commercial_facts_for_selected_materials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            roi_facts = root / "top-material-roi-facts-v1.json"
+            output_dir = root / "analysis"
+            records_dir.mkdir()
+            top_payload = {
+                "actualStartDate": "2026-06-01",
+                "actualEndDate": "2026-06-02",
+                "materials": [{"rank": 1, "materialId": "m-1"}],
+            }
+            top_materials.write_text(json.dumps(top_payload), encoding="utf-8")
+            (records_dir / "m-1.json").write_text("[]", encoding="utf-8")
+            roi_facts.write_text(json.dumps({
+                "schemaVersion": 1,
+                "actualStartDate": "2026-06-01",
+                "actualEndDate": "2026-06-02",
+                "materialIds": ["m-1"],
+                "totals": {
+                    "cost": "100",
+                    "netSettlementAmount": "120",
+                    "overallPaymentAmount": "150",
+                },
+                "metrics": [
+                    {"key": "netSettlementRoi", "label": "净成交 ROI", "value": "1.2", "available": True},
+                    {"key": "overallPaymentRoi", "label": "整体支付 ROI", "value": "1.5", "available": True},
+                ],
+            }), encoding="utf-8")
+
+            _data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+                top_materials,
+                records_dir,
+                output_dir,
+                top_material_roi_facts_path=roi_facts,
+            )
+
+        self.assertEqual(analysis["commercial"], {
+            "available": True,
+            "totals": {
+                "cost": "100",
+                "netSettlementAmount": "120",
+                "overallPaymentAmount": "150",
+            },
+            "metrics": [
+                {"evidenceRef": "commercial:netSettlementRoi", "key": "netSettlementRoi", "label": "净成交 ROI", "value": "1.2", "available": True},
+                {"evidenceRef": "commercial:overallPaymentRoi", "key": "overallPaymentRoi", "label": "整体支付 ROI", "value": "1.5", "available": True},
+            ],
+        })
+
+
 class DiagnosticAnalysisCliTests(unittest.TestCase):
     def test_cli_writes_both_artifacts_and_reports_their_paths(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -17,7 +17,7 @@ from final_report_lib import (  # noqa: E402
 )
 from final_report_lib import generate_final_report  # noqa: E402
 import render_final_report  # noqa: E402
-from report_renderer import create_report_archive  # noqa: E402
+from report_renderer import create_report_archive, report_data_for_template  # noqa: E402
 
 
 def write_json(path, payload):
@@ -191,6 +191,248 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
         self.assertIn("function renderFrameCoverageNote", template)
         self.assertIn("renderFrameCoverageNote(analysis.frameCoverageNote)", template)
         self.assertIn("高光帧说明", template)
+
+
+class TopMaterialRoiReportTests(unittest.TestCase):
+    def test_report_data_exposes_only_verified_top_material_roi_facts(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [material("m-1"), material("m-2", rank=2)],
+        }
+        roi_facts = {
+            "schemaVersion": 1,
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialIds": ["m-1", "m-2"],
+            "totals": {"cost": "100", "netSettlementAmount": "110", "overallPaymentAmount": "210"},
+            "metricKeys": {
+                "cost": "stat_cost_for_overall_roi2",
+                "netSettlementAmount": "total_order_settle_amount_for_roi2_1h",
+                "overallPaymentAmount": "total_pay_order_gmv_include_coupon_for_roi2",
+            },
+            "metrics": [
+                {"key": "netSettlementRoi", "label": "净成交 ROI", "formula": "sum(total_order_settle_amount_for_roi2_1h) / sum(stat_cost_for_overall_roi2)", "value": "1.1", "displayValue": "1.10", "available": True},
+                {"key": "overallPaymentRoi", "label": "整体支付 ROI", "formula": "sum(total_pay_order_gmv_include_coupon_for_roi2) / sum(stat_cost_for_overall_roi2)", "value": "2.1", "displayValue": "2.10", "available": True},
+            ],
+        }
+
+        result = build_final_report_data(
+            top_payload,
+            {"m-1": [], "m-2": []},
+            {"m-1": {}, "m-2": {}},
+            top_material_roi=roi_facts,
+        )
+
+        self.assertEqual(result["topMaterialRoi"], {
+            "source": "verifiedAssetFacts",
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialCount": 2,
+            "materialIds": ["m-1", "m-2"],
+            "totals": {"cost": "100", "netSettlementAmount": "110", "overallPaymentAmount": "210"},
+            "metricKeys": {
+                "cost": "stat_cost_for_overall_roi2",
+                "netSettlementAmount": "total_order_settle_amount_for_roi2_1h",
+                "overallPaymentAmount": "total_pay_order_gmv_include_coupon_for_roi2",
+            },
+            "metrics": [
+                {"key": "netSettlementRoi", "label": "净成交 ROI", "formula": "sum(total_order_settle_amount_for_roi2_1h) / sum(stat_cost_for_overall_roi2)", "value": "1.1", "displayValue": "1.10", "available": True},
+                {"key": "overallPaymentRoi", "label": "整体支付 ROI", "formula": "sum(total_pay_order_gmv_include_coupon_for_roi2) / sum(stat_cost_for_overall_roi2)", "value": "2.1", "displayValue": "2.10", "available": True},
+            ],
+        })
+        self.assertNotIn("999", json.dumps(result, ensure_ascii=False))
+
+    def test_report_rejects_roi_facts_with_unconfirmed_mapping_or_formula(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [material("m-1")],
+        }
+        tampered = {
+            "schemaVersion": 1,
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialIds": ["m-1"],
+            "totals": {"cost": "10", "netSettlementAmount": "20", "overallPaymentAmount": "30"},
+            "metricKeys": {"cost": "bad", "netSettlementAmount": "bad", "overallPaymentAmount": "bad"},
+            "metrics": [
+                {"key": "netSettlementRoi", "label": "净成交 ROI", "formula": "bad", "value": "2", "available": True},
+                {"key": "overallPaymentRoi", "label": "整体支付 ROI", "formula": "bad", "value": "3", "available": True},
+            ],
+        }
+
+        with self.assertRaisesRegex(FinalReportError, "metric keys"):
+            build_final_report_data(
+                top_payload, {"m-1": []}, {"m-1": {}}, top_material_roi=tampered
+            )
+
+        tampered["metricKeys"] = {
+            "cost": "stat_cost_for_overall_roi2",
+            "netSettlementAmount": "total_order_settle_amount_for_roi2_1h",
+            "overallPaymentAmount": "total_pay_order_gmv_include_coupon_for_roi2",
+        }
+        with self.assertRaisesRegex(FinalReportError, "formula"):
+            build_final_report_data(
+                top_payload, {"m-1": []}, {"m-1": {}}, top_material_roi=tampered
+            )
+
+    def test_missing_or_zero_cost_roi_facts_render_explicitly_unavailable(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [material("m-1")],
+        }
+        result = build_final_report_data(top_payload, {"m-1": []}, {"m-1": {}})
+
+        self.assertEqual(result["topMaterialRoi"]["source"], "unavailable")
+        self.assertEqual(
+            [(metric["label"], metric["available"], metric["value"])
+            for metric in result["topMaterialRoi"]["metrics"]],
+            [("净成交 ROI", False, None), ("整体支付 ROI", False, None)],
+        )
+
+        zero_cost_facts = {
+            "schemaVersion": 1,
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialIds": ["m-1"],
+            "totals": {"cost": "0", "netSettlementAmount": "1", "overallPaymentAmount": "2"},
+            "metricKeys": {
+                "cost": "stat_cost_for_overall_roi2",
+                "netSettlementAmount": "total_order_settle_amount_for_roi2_1h",
+                "overallPaymentAmount": "total_pay_order_gmv_include_coupon_for_roi2",
+            },
+            "metrics": [
+                {"key": "netSettlementRoi", "label": "净成交 ROI", "formula": "sum(total_order_settle_amount_for_roi2_1h) / sum(stat_cost_for_overall_roi2)", "value": None, "available": False},
+                {"key": "overallPaymentRoi", "label": "整体支付 ROI", "formula": "sum(total_pay_order_gmv_include_coupon_for_roi2) / sum(stat_cost_for_overall_roi2)", "value": None, "available": False},
+            ],
+        }
+        result = build_final_report_data(
+            top_payload, {"m-1": []}, {"m-1": {}}, top_material_roi=zero_cost_facts
+        )
+        self.assertEqual(
+            [(metric["available"], metric["value"])
+            for metric in result["topMaterialRoi"]["metrics"]],
+            [(False, None), (False, None)],
+        )
+
+    def test_report_rejects_roi_facts_from_candidate_pool(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [material("m-1")],
+        }
+        candidate_pool_facts = {
+            "schemaVersion": 1,
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialIds": ["m-1", "candidate-m-2"],
+            "metrics": [
+                {"key": "netSettlementRoi", "label": "净成交 ROI", "value": "9", "available": True},
+                {"key": "overallPaymentRoi", "label": "整体支付 ROI", "value": "9", "available": True},
+            ],
+        }
+
+        with self.assertRaisesRegex(FinalReportError, "verified report materials"):
+            build_final_report_data(
+                top_payload, {"m-1": []}, {"m-1": {}},
+                top_material_roi=candidate_pool_facts,
+            )
+
+    def test_generate_report_reads_roi_facts_from_peak_frames_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top_materials.json"
+            peak_dir = root / "peak-frames"
+            write_json(top_path, {
+                "actualStartDate": "2026-06-01",
+                "actualEndDate": "2026-06-02",
+                "materials": [material("m-1")],
+            })
+            write_json(peak_dir / "top-material-roi-facts-v1.json", {
+                "schemaVersion": 1,
+                "actualStartDate": "2026-06-01",
+                "actualEndDate": "2026-06-02",
+                "materialIds": ["m-1"],
+                "totals": {"cost": "4", "netSettlementAmount": "5", "overallPaymentAmount": "10"},
+                "metricKeys": {
+                    "cost": "stat_cost_for_overall_roi2",
+                    "netSettlementAmount": "total_order_settle_amount_for_roi2_1h",
+                    "overallPaymentAmount": "total_pay_order_gmv_include_coupon_for_roi2",
+                },
+                "metrics": [
+                    {"key": "netSettlementRoi", "label": "净成交 ROI", "formula": "sum(total_order_settle_amount_for_roi2_1h) / sum(stat_cost_for_overall_roi2)", "value": "1.25", "available": True},
+                    {"key": "overallPaymentRoi", "label": "整体支付 ROI", "formula": "sum(total_pay_order_gmv_include_coupon_for_roi2) / sum(stat_cost_for_overall_roi2)", "value": "2.5", "available": True},
+                ],
+            })
+
+            _data_path, _html_path, data = generate_final_report(
+                top_path, peak_dir, root / "diagnosis-records", root / "final-report"
+            )
+
+        self.assertEqual(data["topMaterialRoi"]["source"], "verifiedAssetFacts")
+        self.assertEqual(data["topMaterialRoi"]["metrics"][0]["value"], "1.25")
+
+    def test_template_has_fixed_top_material_roi_cards_before_ai_conclusion(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="top-material-roi"', template)
+        self.assertIn("function renderTopMaterialRoi", template)
+        self.assertLess(
+            template.index('id="top-material-roi"'),
+            template.index('id="overall-conclusion"'),
+        )
+
+    def test_report_data_formats_available_roi_to_two_decimal_places(self):
+        top_payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materials": [material("m-1")],
+        }
+        roi_facts = {
+            "schemaVersion": 1,
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialIds": ["m-1"],
+            "totals": {
+                "cost": "100",
+                "netSettlementAmount": "120",
+                "overallPaymentAmount": "234.5",
+            },
+            "metricKeys": {
+                "cost": "stat_cost_for_overall_roi2",
+                "netSettlementAmount": "total_order_settle_amount_for_roi2_1h",
+                "overallPaymentAmount": "total_pay_order_gmv_include_coupon_for_roi2",
+            },
+            "metrics": [
+                {"key": "netSettlementRoi", "label": "净成交 ROI", "formula": "sum(total_order_settle_amount_for_roi2_1h) / sum(stat_cost_for_overall_roi2)", "value": "1.2", "available": True},
+                {"key": "overallPaymentRoi", "label": "整体支付 ROI", "formula": "sum(total_pay_order_gmv_include_coupon_for_roi2) / sum(stat_cost_for_overall_roi2)", "value": "2.345", "available": True},
+            ],
+        }
+
+        result = build_final_report_data(
+            top_payload, {"m-1": []}, {"m-1": {}}, top_material_roi=roi_facts
+        )
+
+        self.assertEqual(
+            [metric["value"] for metric in result["topMaterialRoi"]["metrics"]],
+            ["1.2", "2.345"],
+        )
+        self.assertEqual(
+            [metric["displayValue"] for metric in result["topMaterialRoi"]["metrics"]],
+            ["1.20", "2.35"],
+        )
+
+    def test_template_has_v3_dimension_conclusion_container(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('id="top-dimension-conclusions"', template)
+        self.assertIn("function renderTopDimensionConclusions", template)
 
 
 def material(material_id, rank=1, cost=100.0):
@@ -1022,6 +1264,112 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
             self._build_data(conclusion)
 
 
+class FinalReportV3ConclusionTests(unittest.TestCase):
+    def setUp(self):
+        FinalReportV2ConclusionTests.setUp(self)
+
+    def _roi_facts(self):
+        return {
+            "schemaVersion": 1,
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-30",
+            "materialIds": ["m-1"],
+            "totals": {
+                "cost": "100",
+                "netSettlementAmount": "120",
+                "overallPaymentAmount": "150",
+            },
+            "metricKeys": {
+                "cost": "stat_cost_for_overall_roi2",
+                "netSettlementAmount": "total_order_settle_amount_for_roi2_1h",
+                "overallPaymentAmount": "total_pay_order_gmv_include_coupon_for_roi2",
+            },
+            "metrics": [
+                {"key": "netSettlementRoi", "label": "净成交 ROI", "formula": "sum(total_order_settle_amount_for_roi2_1h) / sum(stat_cost_for_overall_roi2)", "value": "1.2", "available": True},
+                {"key": "overallPaymentRoi", "label": "整体支付 ROI", "formula": "sum(total_pay_order_gmv_include_coupon_for_roi2) / sum(stat_cost_for_overall_roi2)", "value": "1.5", "available": True},
+            ],
+        }
+
+    def _conclusion(self):
+        conclusion = FinalReportV2ConclusionTests._conclusion(self)
+        conclusion["schemaVersion"] = 3
+        conclusion["portfolioDimensionConclusions"] = {
+            "commercial": {
+                "conclusion": "净成交 ROI 与整体支付 ROI 均可作为下一轮素材组合验证的商业基线，应在保持整体消耗可控的前提下比较不同创意表达。",
+                "evidenceRefs": ["commercial:netSettlementRoi", "commercial:overallPaymentRoi"],
+            },
+            "audience": {
+                "conclusion": "组合层面可优先围绕已有点击人群信号继续验证创意表达差异，而不是直接复述单个分桶的表现。",
+                "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
+            },
+            "script": {
+                "conclusion": "价格优惠脚本可作为组合测试中的稳定对照条件，并通过调整利益点呈现顺序识别真正驱动表现的表达机制。",
+                "evidenceRefs": ["script:m-1:价格优惠:降价/折扣"],
+            },
+            "highlight": {
+                "conclusion": "最终入选素材的首个峰值画面包含人物与产品近景，可作为验证产品信息前置效果的画面假设。",
+                "evidenceRefs": ["highlight:m-1:first_peak"],
+            },
+        }
+        return conclusion
+
+    def _build_data(self, conclusion):
+        return build_final_report_data(
+            self.top_payload,
+            self.records_by_material,
+            self.summaries_by_material,
+            conclusion=normalize_conclusion_analysis(conclusion),
+            batch_verification={"valid": True, "errors": [], "warnings": []},
+            top_material_roi=self._roi_facts(),
+        )
+
+    def test_accepts_v3_dimension_conclusions_without_overall_conclusion(self):
+        result = self._build_data(self._conclusion())
+
+        self.assertEqual(result["conclusion"]["schemaVersion"], 3)
+        self.assertEqual(result["conclusion"]["overallConclusion"], "")
+        self.assertEqual(
+            list(result["conclusion"]["portfolioDimensionConclusions"]),
+            ["commercial", "audience", "script", "highlight"],
+        )
+
+    def test_template_payload_preserves_v3_dimension_conclusions(self):
+        result = self._build_data(self._conclusion())
+
+        template_data = report_data_for_template(result, None)
+
+        self.assertEqual(template_data["conclusion"]["schemaVersion"], 3)
+        self.assertIn(
+            "portfolioDimensionConclusions", template_data["conclusion"]
+        )
+        self.assertEqual(
+            list(template_data["conclusion"]["portfolioDimensionConclusions"]),
+            ["commercial", "audience", "script", "highlight"],
+        )
+
+    def test_rejects_v3_missing_dimension_or_exposed_data_source(self):
+        conclusion = self._conclusion()
+        conclusion["portfolioDimensionConclusions"].pop("highlight")
+        with self.assertRaisesRegex(FinalReportError, "highlight"):
+            normalize_conclusion_analysis(conclusion)
+
+        conclusion = self._conclusion()
+        conclusion["portfolioDimensionConclusions"]["commercial"]["conclusion"] = (
+            "资产表显示净成交 ROI 可继续验证。"
+        )
+        with self.assertRaisesRegex(FinalReportError, "资产表"):
+            self._build_data(conclusion)
+
+    def test_rejects_v3_dimension_text_copied_from_detailed_insight(self):
+        conclusion = self._conclusion()
+        conclusion["portfolioDimensionConclusions"]["audience"]["conclusion"] = (
+            conclusion["batchInsights"][0]["conclusion"]
+        )
+
+        with self.assertRaisesRegex(FinalReportError, "duplicates"):
+            self._build_data(conclusion)
+
+
 class FinalReportQualityGateTests(unittest.TestCase):
     def test_standard_quality_gate_rejects_short_unanchored_v2_analysis(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1588,7 +1936,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句", prompt_text)
         self.assertIn("解释这些事实为什么影响素材放量、改写或保留判断", prompt_text)
         self.assertIn("少量关键事实锚点 + 多句分析判断", prompt_text)
-        self.assertIn("整体结论的数据陈述只作为判断依据，不作为段落主体", prompt_text)
+        self.assertIn("每条先用少量事实锚定，再给出判断、边界和下一轮验证方向", prompt_text)
         self.assertIn("优先输出组合公式、机会判断、风险边界和下一轮验证方向", prompt_text)
         self.assertIn("每条 `batchInsights.conclusion` 必须为 180-280 个中文字符", prompt_text)
         self.assertIn(

@@ -14,6 +14,7 @@ from diagnostic_analysis_lib import prepare_diagnostic_analysis
 from final_report_lib import generate_final_report
 from report_renderer import create_report_archive
 from batch_runtime import BatchLockError, acquire_run_lock, mark_report_ready, read_json
+from top_material_roi_lib import write_top_material_roi_facts
 
 
 SUMMARY_NAME = "run-summary.json"
@@ -43,6 +44,8 @@ def workflow_paths(output_dir):
     return {
         "root": root,
         "top_materials": root / "top_materials.json",
+        "asset_facts": root / "asset-material-facts-v1.json",
+        "top_material_roi_facts": root / "peak-frames" / "top-material-roi-facts-v1.json",
         "peak_frames": root / "peak-frames",
         "records": root / "diagnosis-records",
         "analysis": root / "diagnostic-analysis",
@@ -137,6 +140,8 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
         "request": request_summary,
         "artifacts": {
             "topMaterials": _relative(root, paths["top_materials"]),
+            "assetMaterialFacts": _relative(root, paths["asset_facts"]),
+            "topMaterialRoiFacts": _relative(root, paths["top_material_roi_facts"]),
             "readyMaterials": _relative(root, paths["peak_frames"] / READY_MATERIALS_NAME),
             "diagnosticData": _relative(root, diagnostic_data) if diagnostic_data else None,
             "diagnosticPrompt": _relative(root, diagnostic_prompt) if diagnostic_prompt else None,
@@ -277,6 +282,7 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 "--advertiser-id", request.advertiser_id,
                 "--top-n", str(candidate_top_n),
                 "--output", str(paths["top_materials"]),
+                "--asset-facts-output", str(paths["asset_facts"]),
             ])
             batch_arguments = [
                 "--source", "rpa",
@@ -297,10 +303,16 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
             _run_stage("verification", extract_main, [*batch_arguments, "--verify"])
             _write_running(request, paths, "facts")
             validate_ready_materials(paths, request.top_n)
+            write_top_material_roi_facts(
+                paths["asset_facts"],
+                paths["peak_frames"] / READY_MATERIALS_NAME,
+                paths["top_material_roi_facts"],
+            )
             data_path, prompt_path, _analysis = prepare_facts(
                 top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
                 diagnosis_records_dir=paths["records"],
                 peak_output_dir=paths["peak_frames"],
+                top_material_roi_facts_path=paths["top_material_roi_facts"],
                 output_dir=paths["analysis"],
             )
             summary = _summary(

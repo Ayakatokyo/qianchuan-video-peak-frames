@@ -279,13 +279,18 @@ def report_data_for_template(
         "status": data.get("status"),
         "period": data.get("period", {}),
         "pipelineSummary": data.get("pipelineSummary", {}),
+        "topMaterialRoi": data.get("topMaterialRoi", {}),
         "materials": materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
         "batchInsights": data.get("batchInsights", {}),
         "audience": data.get("audience", {}),
         "scripts": data.get("scripts", {}),
         "conclusion": {
+            "schemaVersion": conclusion.get("schemaVersion"),
             "overallConclusion": conclusion.get("overallConclusion", ""),
+            "portfolioDimensionConclusions": conclusion.get(
+                "portfolioDimensionConclusions", {}
+            ),
             "nextActions": conclusion.get("nextActions", []),
         },
         "warnings": warnings,

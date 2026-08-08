@@ -50,7 +50,7 @@ python scripts/run_standard_analysis.py status \
 
 ### 2. 生成 AI 二次分析
 
-当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 2`。
+当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 3`；第 01 部分必须分别输出经营表现、人群、脚本和高光画面四条组合层结论。
 
 结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。
 

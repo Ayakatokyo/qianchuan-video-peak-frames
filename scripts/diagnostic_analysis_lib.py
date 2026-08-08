@@ -574,6 +574,64 @@ def _load_highlights(top_payload, peak_output_dir):
     return result, warnings
 
 
+def _commercial_facts(top_payload, top_material_roi_facts_path):
+    unavailable = {
+        "available": False,
+        "totals": {},
+        "metrics": [],
+    }
+    if top_material_roi_facts_path is None:
+        return unavailable
+    facts = _read_json(top_material_roi_facts_path, "top material ROI facts")
+    materials, _warnings = _selected_materials(top_payload)
+    expected_ids = [material["materialId"] for material in materials]
+    if (
+        facts.get("schemaVersion") != 1
+        or facts.get("actualStartDate") != _text(top_payload.get("actualStartDate"))
+        or facts.get("actualEndDate") != _text(top_payload.get("actualEndDate"))
+        or facts.get("materialIds") != expected_ids
+    ):
+        raise DiagnosticAnalysisError("top material ROI facts do not match selected materials")
+    totals = facts.get("totals")
+    if not isinstance(totals, dict) or set(totals) != {
+        "cost", "netSettlementAmount", "overallPaymentAmount"
+    }:
+        raise DiagnosticAnalysisError("top material ROI facts totals are invalid")
+    metrics = facts.get("metrics")
+    if not isinstance(metrics, list) or len(metrics) != 2:
+        raise DiagnosticAnalysisError("top material ROI facts metrics are invalid")
+    expected_metrics = (
+        ("netSettlementRoi", "净成交 ROI"),
+        ("overallPaymentRoi", "整体支付 ROI"),
+    )
+    normalized_metrics = []
+    for raw, (key, label) in zip(metrics, expected_metrics):
+        if (
+            not isinstance(raw, dict)
+            or raw.get("key") != key
+            or raw.get("label") != label
+            or type(raw.get("available")) is not bool
+        ):
+            raise DiagnosticAnalysisError("top material ROI facts metrics are invalid")
+        value = raw.get("value")
+        if raw["available"] and not _text(value):
+            raise DiagnosticAnalysisError("top material ROI facts metrics are invalid")
+        if not raw["available"] and value is not None:
+            raise DiagnosticAnalysisError("top material ROI facts metrics are invalid")
+        normalized_metrics.append({
+            "evidenceRef": "commercial:" + key,
+            "key": key,
+            "label": label,
+            "value": _text(value) if raw["available"] else None,
+            "available": raw["available"],
+        })
+    return {
+        "available": True,
+        "totals": {key: _text(totals[key]) for key in sorted(totals)},
+        "metrics": normalized_metrics,
+    }
+
+
 def _publish_output_pair(output_dir, analysis, prompt):
     root = Path(output_dir)
     data_path = root / "diagnostic-analysis-data.json"
@@ -602,7 +660,7 @@ def _publish_output_pair(output_dir, analysis, prompt):
     return data_path, prompt_path
 
 
-def build_diagnostic_analysis(top_payload, records_by_material):
+def build_diagnostic_analysis(top_payload, records_by_material, commercial=None):
     materials, warnings = _selected_materials(top_payload)
     selected_ids = [material["materialId"] for material in materials]
     return {
@@ -617,6 +675,9 @@ def build_diagnostic_analysis(top_payload, records_by_material):
         },
         "scripts": _build_scripts(records_by_material, selected_ids, warnings),
         "delivery": {"materials": _build_delivery(records_by_material, selected_ids)},
+        "commercial": commercial if commercial is not None else {
+            "available": False, "totals": {}, "metrics": []
+        },
         "warnings": warnings,
     }
 
@@ -627,6 +688,7 @@ def prepare_diagnostic_analysis(
     output_dir,
     prompt_template=None,
     peak_output_dir=None,
+    top_material_roi_facts_path=None,
 ):
     top_payload = _read_json(top_materials_json, "top materials JSON")
     records_by_material, read_warnings = _load_selected_records(
@@ -636,7 +698,11 @@ def prepare_diagnostic_analysis(
         prompt_template if prompt_template else DEFAULT_PROMPT_PATH,
         "diagnostic prompt template",
     )
-    analysis = build_diagnostic_analysis(top_payload, records_by_material)
+    analysis = build_diagnostic_analysis(
+        top_payload,
+        records_by_material,
+        commercial=_commercial_facts(top_payload, top_material_roi_facts_path),
+    )
     highlight_warnings = []
     if peak_output_dir:
         analysis["highlights"], highlight_warnings = _load_highlights(

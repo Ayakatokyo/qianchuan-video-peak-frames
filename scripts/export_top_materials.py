@@ -11,6 +11,11 @@ import sys
 import tempfile
 
 from asset_table_client import AssetTableClient, AssetTableError
+from asset_metrics_lib import (
+    AssetMetricsAggregator,
+    AssetMetricsError,
+    build_asset_facts_payload,
+)
 from top_materials_lib import MaterialAggregator, MaterialDataError, build_output
 
 
@@ -22,6 +27,7 @@ def build_parser():
     parser.add_argument("--start-date", required=True)
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--asset-facts-output")
     parser.add_argument("--name-regex")
     parser.add_argument("--material-type", action="append", default=[])
     parser.add_argument("--advertiser-id")
@@ -56,6 +62,11 @@ def main(argv=None):
         output = Path(args.output)
         if output.exists():
             raise ValueError("output path already exists")
+        asset_facts_output = (
+            Path(args.asset_facts_output) if args.asset_facts_output else None
+        )
+        if asset_facts_output is not None and asset_facts_output.exists():
+            raise ValueError("asset facts output path already exists")
         base_url = os.environ.get("ENV_BACKEND_HOST", "")
         session_token = os.environ.get("YCSESSIONID") or os.environ.get("YUCE_AUTHORIZATION", "")
         if not base_url or not session_token:
@@ -64,6 +75,10 @@ def main(argv=None):
         client = AssetTableClient(base_url, session_token)
         physical_table = client.discover_table(TABLE_NAME)
         aggregator = MaterialAggregator(pattern, args.material_type, args.top_n)
+        metrics_aggregator = (
+            AssetMetricsAggregator(pattern, args.material_type)
+            if asset_facts_output is not None else None
+        )
         for partition_date in iter_dates(start_date, end_date):
             if args.advertiser_id is None:
                 origin_rows = client.iter_origin_data(physical_table, partition_date)
@@ -75,13 +90,25 @@ def main(argv=None):
                 )
             for origin_data in origin_rows:
                 aggregator.add_raw_origin_data(origin_data)
+                if metrics_aggregator is not None:
+                    metrics_aggregator.add_raw_origin_data(origin_data)
         materials, excluded = aggregator.select()
         payload = build_output(
             start_date.isoformat(), end_date.isoformat(), pattern,
             args.material_type, args.advertiser_id, materials, excluded,
         )
         _write_atomic_json(output, payload)
-    except (AssetTableError, MaterialDataError, ValueError, re.error) as error:
+        if metrics_aggregator is not None:
+            asset_payload = build_asset_facts_payload(
+                start_date.isoformat(),
+                end_date.isoformat(),
+                pattern,
+                args.material_type,
+                args.advertiser_id,
+                metrics_aggregator.facts(),
+            )
+            _write_atomic_json(asset_facts_output, asset_payload)
+    except (AssetTableError, AssetMetricsError, MaterialDataError, ValueError, re.error) as error:
         print("top material export failed: %s" % error, file=sys.stderr)
         return 1
     print("top_materials_json=%s" % output)

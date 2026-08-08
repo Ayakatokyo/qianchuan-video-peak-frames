@@ -461,6 +461,8 @@ def origin_data(
     material_type="live_video",
     video_type="portrait",
     cost="1",
+    net_settlement="1",
+    overall_payment="1",
 ):
     return json.dumps(
         {
@@ -470,7 +472,11 @@ def origin_data(
                 "roi2_material_type_v3": {"ValueStr": material_type},
                 "roi2_material_video_type": {"ValueStr": video_type},
             },
-            "metrics": {"stat_cost_for_overall_roi2": {"Value": cost}},
+            "metrics": {
+                "stat_cost_for_overall_roi2": {"Value": cost},
+                "total_order_settle_amount_for_roi2_1h": {"Value": net_settlement},
+                "total_pay_order_gmv_include_coupon_for_roi2": {"Value": overall_payment},
+            },
         }
     )
 
@@ -660,6 +666,43 @@ class MaterialSelectionTests(unittest.TestCase):
         )
 
 class ExportCliTests(unittest.TestCase):
+    def test_optional_asset_facts_output_preserves_top_materials_payload(self):
+        rows = [
+            origin_data("m-1", cost="3", net_settlement="4", overall_payment="5"),
+            origin_data("m-1", cost="7", net_settlement="8", overall_payment="9"),
+        ]
+
+        class Client:
+            def __init__(self, *_args, **_kwargs): pass
+            def discover_table(self, _name): return "material_table"
+            def iter_origin_data(self, _table, _date, advertiser_id=None): return iter(rows)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "top_materials.json"
+            baseline_output = Path(temp_dir) / "baseline-top_materials.json"
+            facts_output = Path(temp_dir) / "asset-material-facts-v1.json"
+            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
+            with patch.dict("os.environ", environment, clear=True), patch("export_top_materials.AssetTableClient", Client):
+                self.assertEqual(main([
+                    "--start-date", "2026-05-01", "--end-date", "2026-05-01",
+                    "--advertiser-id", "1765875532", "--output", str(baseline_output),
+                ]), 0)
+                result = main([
+                    "--start-date", "2026-05-01", "--end-date", "2026-05-01",
+                    "--advertiser-id", "1765875532", "--output", str(output),
+                    "--asset-facts-output", str(facts_output),
+                ])
+
+            self.assertEqual(result, 0)
+            self.assertEqual(output.read_bytes(), baseline_output.read_bytes())
+            facts = json.loads(facts_output.read_text(encoding="utf-8"))
+            self.assertEqual(facts["filters"]["advertiserId"], "1765875532")
+            self.assertEqual(facts["materials"]["m-1"], {
+                "stat_cost_for_overall_roi2": "10",
+                "total_order_settle_amount_for_roi2_1h": "12",
+                "total_pay_order_gmv_include_coupon_for_roi2": "14",
+            })
+
     def test_exports_only_after_every_partition_succeeds(self):
         rows = [origin_data(material_id="m-1", cost="3")]
 

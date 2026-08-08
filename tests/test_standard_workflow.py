@@ -1,6 +1,7 @@
 import io
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 import sys
 import tempfile
@@ -14,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import standard_workflow  # noqa: E402
 import run_standard_analysis  # noqa: E402
+from asset_metrics_lib import build_asset_facts_payload  # noqa: E402
 
 
 def write_rendered_report(root):
@@ -80,6 +82,22 @@ class StandardWorkflowTests(unittest.TestCase):
         material_ids = ["m-1", "m-2"]
         self.write_ready_materials(root, material_ids)
         self.write_success_manifest(root, material_ids, target_top_n=2)
+        self.write_asset_facts(root, material_ids)
+
+    def write_asset_facts(self, root, material_ids=("m-1", "m-2")):
+        payload = build_asset_facts_payload(
+            "2026-07-19", "2026-07-25", None, (), "1770096415226951", {
+                material_id: {
+                    "stat_cost_for_overall_roi2": Decimal("10"),
+                    "total_order_settle_amount_for_roi2_1h": Decimal("20"),
+                    "total_pay_order_gmv_include_coupon_for_roi2": Decimal("30"),
+                }
+                for material_id in material_ids
+            }
+        )
+        (root / "asset-material-facts-v1.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
 
     def test_prepare_runs_selection_batch_verification_and_fact_package(self):
         calls = []
@@ -88,6 +106,7 @@ class StandardWorkflowTests(unittest.TestCase):
 
             def export_main(argv):
                 calls.append(("selection", argv))
+                self.write_asset_facts(root)
                 return 0
 
             def extract_main(argv):
@@ -120,14 +139,56 @@ class StandardWorkflowTests(unittest.TestCase):
                 calls[0][1][calls[0][1].index("--advertiser-id") + 1],
                 "1770096415226951",
             )
+            self.assertIn("--asset-facts-output", calls[0][1])
             self.assertIn("--target-top-n", calls[1][1])
             self.assertIn("--verify", calls[2][1])
+            self.assertNotIn("--asset-facts-output", calls[1][1])
+            self.assertNotIn("--asset-facts-output", calls[2][1])
             self.assertEqual(
                 calls[3][1]["top_materials_json"],
                 root / "peak-frames" / "top_materials_rpa_ready.json",
             )
+            self.assertEqual(
+                calls[3][1]["top_material_roi_facts_path"],
+                root / "peak-frames" / "top-material-roi-facts-v1.json",
+            )
             persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(persisted, summary)
+
+    def test_prepare_writes_top_roi_facts_only_after_rpa_verification(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def export_main(_argv):
+                self.write_asset_facts(root)
+                return 0
+
+            def extract_main(argv):
+                calls.append("verification" if "--verify" in argv else "batch")
+                self.assertFalse(
+                    (root / "peak-frames" / "top-material-roi-facts-v1.json").exists()
+                )
+                if "--verify" in argv:
+                    self.write_complete_ready_data(root)
+                return 0
+
+            standard_workflow.prepare_standard_run(
+                self.request(), root,
+                export_main=export_main,
+                extract_main=extract_main,
+                prepare_facts=lambda **_kwargs: (root / "data.json", root / "prompt.md", {}),
+            )
+
+            roi_facts = json.loads(
+                (root / "peak-frames" / "top-material-roi-facts-v1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(calls, ["batch", "verification"])
+        self.assertEqual(roi_facts["materialIds"], ["m-1", "m-2"])
+        self.assertEqual(roi_facts["metrics"][0]["value"], "2")
 
     def test_prepare_uses_configured_shop_id_without_exposing_it_in_request(self):
         batch_argv = []
