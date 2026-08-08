@@ -21,7 +21,7 @@
 ### Task 1: 构造八大人群偏好事实
 
 **Files:**
-- Modify: `tests/test_diagnostic_analysis.py:64` 
+- Modify: `tests/test_diagnostic_analysis.py:64`
 - Modify: `scripts/diagnostic_analysis_lib.py:220-282, 663-678`
 
 - [ ] **Step 1: 写入失败的素材归属与排序测试**
