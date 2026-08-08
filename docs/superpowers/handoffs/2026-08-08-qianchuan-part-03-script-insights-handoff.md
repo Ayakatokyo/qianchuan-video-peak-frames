@@ -9,7 +9,6 @@
 先阅读：
 
 - [整体 2.0 改造设计](/Users/shuzida/Desktop/FDE客户/小仙炖/千川技能2.0改造设计.md)
-- [第二部分交接摘要](/Users/shuzida/Desktop/FDE客户/小仙炖/qianchuan-video-peak-frames/docs/superpowers/handoffs/2026-08-08-qianchuan-part-02-audience-insights-handoff.md)
 - [第一部分设计](/Users/shuzida/Desktop/FDE客户/小仙炖/qianchuan-video-peak-frames/docs/superpowers/specs/2026-08-08-qianchuan-top-material-dimension-conclusions-design.md)
 - [第二部分人群偏好设计](/Users/shuzida/Desktop/FDE客户/小仙炖/qianchuan-video-peak-frames/docs/superpowers/specs/2026-08-08-qianchuan-audience-preference-top3-design.md)
 
