@@ -11,6 +11,9 @@ from path_safety import artifact_path, validate_material_id
 
 SCHEMA_VERSION = 1
 AUDIENCE_METRICS = ("SHOW_COUNT", "CLICK_COUNT", "TRANSACTION_AMOUNT")
+PREFERENCE_METRIC = "SHOW_COUNT"
+PREFERENCE_DIMENSION = "user_group_label_name"
+PREFERENCE_LIMIT = 3
 DEFAULT_PROMPT_PATH = (
     Path(__file__).resolve().parents[1]
     / "prompts"
@@ -285,6 +288,74 @@ def _aggregate_audience_metric(records_by_material, selected_ids, metric):
             "buckets": buckets,
         }
     return {"dimensions": normalized_dimensions, "missingMaterialIds": missing_material_ids}
+
+
+def _aggregate_audience_preferences(records_by_material, materials):
+    groups = {}
+    for material in materials:
+        material_id = material["materialId"]
+        material_records = records_by_material.get(material_id, [])
+        if not isinstance(material_records, list):
+            material_records = []
+        buckets = {}
+        for record in material_records:
+            if not isinstance(record, dict):
+                continue
+            if record.get("recordType") != "crowd_analysis":
+                continue
+            if record.get("displayMetric") != PREFERENCE_METRIC:
+                continue
+            if _text(record.get("dimensionKey")) != PREFERENCE_DIMENSION:
+                continue
+            record_material_id = _text(record.get("materialId"))
+            if record_material_id and record_material_id != material_id:
+                continue
+            bucket = _bucket_label(record, PREFERENCE_DIMENSION)
+            value = _crowd_metric_value(record)
+            if not bucket or value is None or value < 0:
+                continue
+            buckets[bucket] = buckets.get(bucket, 0.0) + value
+
+        total = sum(buckets.values())
+        if total <= 0:
+            continue
+        maximum = max(buckets.values())
+        leaders = [bucket for bucket, value in buckets.items() if value == maximum]
+        if len(leaders) != 1:
+            continue
+        group = leaders[0]
+        groups.setdefault(group, []).append(
+            {
+                "materialId": material_id,
+                "materialName": material["materialName"],
+                "audiencePercentage": round(maximum / total * 100.0, 6),
+                "audienceShowCount": round(maximum, 6),
+                "totalCost": round(
+                    _finite_number(material.get("totalCost")) or 0.0, 6
+                ),
+            }
+        )
+
+    preferences = []
+    for group, items in sorted(groups.items()):
+        ranked_items = sorted(
+            items,
+            key=lambda item: (
+                -item["audiencePercentage"],
+                -item["totalCost"],
+                item["materialId"],
+            ),
+        )[:PREFERENCE_LIMIT]
+        preferences.append(
+            {
+                "audienceGroup": group,
+                "topMaterials": [
+                    {"rank": index, **item}
+                    for index, item in enumerate(ranked_items, start=1)
+                ],
+            }
+        )
+    return preferences
 
 
 def _parse_script_info(value):
@@ -671,7 +742,8 @@ def build_diagnostic_analysis(top_payload, records_by_material, commercial=None)
             "metrics": {
                 metric: _aggregate_audience_metric(records_by_material, selected_ids, metric)
                 for metric in AUDIENCE_METRICS
-            }
+            },
+            "preferences": _aggregate_audience_preferences(records_by_material, materials),
         },
         "scripts": _build_scripts(records_by_material, selected_ids, warnings),
         "delivery": {"materials": _build_delivery(records_by_material, selected_ids)},
