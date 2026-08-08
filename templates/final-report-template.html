@@ -309,8 +309,19 @@
       gap: 14px;
     }
 
+    .script-dashboard-control {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+    }
+
+    .script-dashboard-hint {
+      color: var(--muted);
+      font-size: 16px;
+      font-weight: 700;
+    }
+
     .script-drill-back {
-      justify-self: start;
       border: 1px solid var(--line);
       border-radius: 8px;
       background: #fff;
@@ -324,6 +335,26 @@
     .script-drill-back:focus-visible {
       outline: 3px solid var(--gold);
       outline-offset: 2px;
+    }
+
+    .script-drill-detail,
+    .script-dashboard-overview {
+      min-height: 388px;
+      transition: opacity 260ms ease;
+    }
+
+    .script-drill-detail.is-entering,
+    .script-dashboard-overview.is-entering {
+      opacity: 0;
+    }
+
+    .script-drill-detail.is-visible,
+    .script-dashboard-overview.is-visible {
+      opacity: 1;
+    }
+
+    .script-drill-detail.is-leaving {
+      opacity: 0;
     }
 
     .script-drill-layout {
@@ -385,10 +416,16 @@
       .script-drill-primary {
         grid-template-rows: auto 120px auto;
       }
+
+      .script-dashboard-control {
+        min-height: 52px;
+      }
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .script-drill-moving-bar {
+      .script-drill-moving-bar,
+      .script-drill-detail,
+      .script-dashboard-overview {
         transition: none;
       }
     }
@@ -1667,6 +1704,10 @@ function renderColumnChart(title, buckets, valueFormatter, options = {}) {
       : "column-item";
     if (options.onBucketClick) {
       item.type = "button";
+      const dataKey = text(options.bucketDataKey);
+      if (dataKey) {
+        item.dataset[dataKey] = text(bucket.bucket ?? bucket.label);
+      }
       item.setAttribute("aria-label", `查看 ${text(bucket.bucket ?? bucket.label)} 的明细`);
       item.addEventListener("click", () => options.onBucketClick(bucket, item));
     }
@@ -1970,17 +2011,29 @@ function sortScriptBuckets(buckets) {
   });
 }
 
-function animateScriptDrill(sourceItem) {
-  const sourceBar = sourceItem?.querySelector(".column-bar");
-  const targetBar = document.querySelector("#script-dashboard .script-drill-primary-bar");
-  if (!sourceBar || !targetBar || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+function captureScriptBarTransition(sourceItem) {
+  const sourceBar = sourceItem?.querySelector(".column-bar, .script-drill-primary-bar");
+  if (!sourceBar) return null;
   const sourceRect = sourceBar.getBoundingClientRect();
+  if (!sourceRect.width || !sourceRect.height) return null;
+  return { clone: sourceBar.cloneNode(true), sourceRect };
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function animateScriptDrill(transition, targetBar) {
+  if (!transition || !targetBar || prefersReducedMotion()) {
+    return;
+  }
+  const sourceRect = transition.sourceRect;
   const targetRect = targetBar.getBoundingClientRect();
-  if (!sourceRect.width || !sourceRect.height || !targetRect.width || !targetRect.height) return;
+  if (!targetRect.width || !targetRect.height) return;
 
   targetBar.classList.add("is-arriving");
-  const clone = sourceBar.cloneNode(true);
-  clone.className = "script-drill-moving-bar";
+  const clone = transition.clone;
+  clone.classList.add("script-drill-moving-bar");
   Object.assign(clone.style, {
     left: `${sourceRect.left}px`,
     top: `${sourceRect.top}px`,
@@ -1998,8 +2051,8 @@ function animateScriptDrill(sourceItem) {
   };
   clone.addEventListener("transitionend", removeClone, { once: true });
   window.setTimeout(() => {
-    const translateX = targetRect.left - sourceRect.left;
-    const translateY = targetRect.top - sourceRect.top;
+    const translateX = targetRect.left + targetRect.width / 2 - (sourceRect.left + sourceRect.width / 2);
+    const translateY = targetRect.bottom - sourceRect.bottom;
     const scaleX = targetRect.width / sourceRect.width;
     const scaleY = targetRect.height / sourceRect.height;
     clone.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`;
@@ -2009,6 +2062,7 @@ function animateScriptDrill(sourceItem) {
 
 function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
   const root = document.getElementById("script-dashboard");
+  const transition = captureScriptBarTransition(sourceItem);
   const level2 = {};
   summary.forEach((item) => {
     if (text(item.level1, "其他") !== level1) return;
@@ -2023,12 +2077,15 @@ function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
   })));
 
   const view = element("div", "script-drill-view");
+  const control = element("div", "script-dashboard-control");
   const button = document.createElement("button");
   button.type = "button";
   button.className = "script-drill-back";
   button.textContent = "返回一级标签";
-  button.addEventListener("click", () => renderScriptDashboard());
+  button.addEventListener("click", () => returnToScriptOverview(level1));
+  control.append(button);
 
+  const detail = element("div", "script-drill-detail is-entering");
   const layout = element("div", "script-drill-layout");
   const primary = element("section", "script-drill-primary");
   const plot = element("div", "script-drill-primary-plot");
@@ -2050,20 +2107,34 @@ function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
       legendValue: (bucket) => `${formatNumber(bucket.value)}次 · ${formatNumber(bucket.metricPercentage)}%`,
     })
   );
-  view.append(button, layout);
+  detail.append(layout);
+  view.append(control, detail);
   root.replaceChildren(view);
-  animateScriptDrill(sourceItem);
+  window.setTimeout(() => detail.classList.add("is-visible"), 0);
+  animateScriptDrill(transition, bar);
 }
 
-function renderScriptDashboard() {
+function returnToScriptOverview(level1) {
   const root = document.getElementById("script-dashboard");
+  const detail = root.querySelector(".script-drill-detail");
+  const transition = captureScriptBarTransition(root.querySelector(".script-drill-primary"));
+  if (!detail || prefersReducedMotion()) {
+    renderScriptDashboard({ level1, transition });
+    return;
+  }
+  detail.classList.add("is-leaving");
+  window.setTimeout(() => renderScriptDashboard({ level1, transition }), 260);
+}
+
+function buildScriptDashboard() {
   const summary = Array.isArray(reportData.scripts?.labelSummary)
     ? reportData.scripts.labelSummary
     : [];
-  root.replaceChildren();
   if (summary.length === 0) {
-    root.append(element("p", "muted", "暂无脚本标签数据"));
-    return;
+    return {
+      control: element("p", "muted", "暂无脚本标签数据"),
+      chartGrid: element("div", "chart-grid script-dashboard-overview"),
+    };
   }
   const level1 = {};
   summary.forEach((item) => {
@@ -2073,7 +2144,9 @@ function renderScriptDashboard() {
   const level1Buckets = sortScriptBuckets(Object.entries(level1).map(([label, value]) => ({ bucket: label, value })));
   const totalOccurrences = level1Buckets.reduce((sum, bucket) => sum + Number(bucket.value || 0), 0) || 1;
   const maxCount = Math.max(...level1Buckets.map((bucket) => Number(bucket.value || 0)), 0);
-  const chartGrid = element("div", "chart-grid");
+  const control = element("div", "script-dashboard-control");
+  control.append(element("p", "script-dashboard-hint", "点击一级标签柱可查看二级标签分布"));
+  const chartGrid = element("div", "chart-grid script-dashboard-overview");
   chartGrid.append(renderColumnChart("内容公式一级标签分布", level1Buckets, (bucket) => `${formatNumber(bucket.value ?? bucket.metricPercentage)} 次`, {
     axisTicks: [maxCount, Math.round(maxCount * 0.75), Math.round(maxCount * 0.5), Math.round(maxCount * 0.25), 0],
     axisValueFormatter: (value) => `${Math.round(value)} 次`,
@@ -2081,9 +2154,23 @@ function renderScriptDashboard() {
       `占比 ${formatNumber((Number(bucket.value || 0) / totalOccurrences) * 100)}%`,
       `次数 ${formatNumber(bucket.value || 0)} 次`,
     ],
+    bucketDataKey: "scriptLevel1",
     onBucketClick: (bucket, item) => renderScriptDrill(bucket.bucket, summary, bucket, item),
   }));
-  root.append(chartGrid);
+  return { control, chartGrid };
+}
+
+function renderScriptDashboard(options = {}) {
+  const root = document.getElementById("script-dashboard");
+  const { control, chartGrid } = buildScriptDashboard();
+  root.replaceChildren(control, chartGrid);
+  if (options.level1) {
+    const targetItem = Array.from(chartGrid.querySelectorAll("[data-script-level1]")).find((item) => item.dataset.scriptLevel1 === options.level1);
+    const targetBar = targetItem?.querySelector(".column-bar");
+    chartGrid.classList.add("is-entering");
+    window.setTimeout(() => chartGrid.classList.add("is-visible"), 0);
+    animateScriptDrill(options.transition, targetBar);
+  }
 }
 
 function renderFrames(material) {
