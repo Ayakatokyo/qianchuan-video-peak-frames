@@ -1689,6 +1689,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("高光帧", html_text)
         self.assertNotIn("evidenceRefs.join", html_text)
         self.assertIn('id="audience-dashboard"', html_text)
+        self.assertIn('id="audience-preferences"', html_text)
         self.assertIn('id="script-dashboard"', html_text)
         self.assertNotIn('id="integrated-insights"', html_text)
         self.assertIn("function renderInsightList", html_text)
@@ -1698,6 +1699,11 @@ class FinalReportRenderTests(unittest.TestCase):
         )
         self.assertIn(
             'renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");',
+            html_text,
+        )
+        self.assertIn("function renderAudiencePreferences", html_text)
+        self.assertIn(
+            'renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");\n  renderAudiencePreferences();\n  renderAudienceDashboard();',
             html_text,
         )
         self.assertIn(

@@ -290,6 +290,73 @@
       gap: 14px;
     }
 
+    .audience-preferences {
+      display: grid;
+      gap: 12px;
+    }
+
+    .preference-card {
+      display: grid;
+      gap: 14px;
+    }
+
+    .preference-card h3 {
+      font-size: 18px;
+      margin: 0;
+    }
+
+    .preference-groups {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+    }
+
+    .preference-group {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+
+    .preference-group h4 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .preference-list {
+      display: grid;
+      gap: 8px;
+      list-style: none;
+      margin: 10px 0 0;
+      padding: 0;
+    }
+
+    .preference-item {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr) max-content max-content;
+      gap: 8px;
+      align-items: baseline;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .preference-rank {
+      color: #7d4a25;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .preference-item .material-link {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      text-align: left;
+    }
+
+    .preference-metric,
+    .preference-cost {
+      white-space: nowrap;
+    }
+
     .collapsible-head {
       margin-bottom: 12px;
     }
@@ -1171,6 +1238,16 @@
       .material-video {
         min-height: 0;
       }
+
+      .preference-item {
+        grid-template-columns: max-content minmax(0, 1fr);
+      }
+
+      .preference-metric,
+      .preference-cost {
+        grid-column: 2;
+        white-space: normal;
+      }
     }
   </style>
 </head>
@@ -1200,6 +1277,7 @@
     <h2>02｜人群洞察</h2>
     <div class="insight-layout">
       <div class="primary-summary" id="audience-primary"></div>
+      <div class="audience-preferences" id="audience-preferences"></div>
       <div class="data-dashboard" id="audience-dashboard"></div>
     </div>
   </section>
@@ -1670,6 +1748,53 @@ function renderRegionChart(card, dimensions) {
     tabs.append(button);
   });
   renderRegion(activeDimensionKey);
+}
+
+function renderAudiencePreferences() {
+  const root = document.getElementById("audience-preferences");
+  const preferences = Array.isArray(reportData.audience?.preferences)
+    ? reportData.audience.preferences : [];
+  root.replaceChildren();
+  const card = element("div", "preference-card");
+  card.append(element("h3", "", "核心人群偏好 TOP3 素材"));
+  if (preferences.length === 0) {
+    card.append(element("p", "muted", "暂无核心人群偏好数据"));
+    root.append(card);
+    return;
+  }
+
+  const groups = element("div", "preference-groups");
+  preferences.forEach((preference) => {
+    const group = element("section", "preference-group");
+    group.append(element("h4", "", text(preference.audienceGroup)));
+    const list = element("ol", "preference-list");
+    const materials = Array.isArray(preference.topMaterials)
+      ? preference.topMaterials : [];
+    materials.forEach((item) => {
+      const row = element("li", "preference-item");
+      const materialButton = materialLink(text(item.materialId));
+      materialButton.textContent = text(item.materialName, item.materialId);
+      row.append(
+        element("span", "preference-rank", `TOP ${text(item.rank)}`),
+        materialButton,
+        element(
+          "span",
+          "preference-metric",
+          `人群占比 ${formatNumber(item.audiencePercentage)}%`
+        ),
+        element(
+          "span",
+          "preference-cost",
+          `素材消耗 ${formatNumber(item.totalCost)}`
+        )
+      );
+      list.append(row);
+    });
+    group.append(list);
+    groups.append(group);
+  });
+  card.append(groups);
+  root.append(card);
 }
 
 function renderAudienceDashboard() {
@@ -2711,8 +2836,9 @@ function renderReport() {
   renderTopMaterialRoi();
   renderTopDimensionConclusions();
   renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");
-  renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");
+  renderAudiencePreferences();
   renderAudienceDashboard();
+  renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");
   renderScriptDashboard();
   renderMaterialTabs();
   renderNextActions();
