@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
@@ -17,6 +18,7 @@ from final_report_lib import (  # noqa: E402
 )
 from final_report_lib import generate_final_report  # noqa: E402
 import render_final_report  # noqa: E402
+import report_renderer  # noqa: E402
 from report_renderer import create_report_archive, report_data_for_template  # noqa: E402
 
 
@@ -1649,6 +1651,70 @@ class FinalReportQualityGateTests(unittest.TestCase):
 
 
 class FinalReportRenderTests(unittest.TestCase):
+    def test_skill_documents_unified_report_delivery_contract(self):
+        skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+        self.assertIn("assets/report/", skill)
+        self.assertIn("内联", skill)
+        self.assertIn("不得手工修改", skill)
+        self.assertIn("1440x1000", skill)
+
+    def test_render_html_inlines_vendored_unified_assets(self):
+        rendered = report_renderer.render_html_report({"status": "complete"})
+
+        self.assertIn('data-unified-report-version="2026-08-09"', rendered)
+        self.assertIn(".unified-report .report-shell", rendered)
+        self.assertIn("data-unified-report-ready", rendered)
+        self.assertNotIn('rel="stylesheet"', rendered)
+        self.assertNotIn('script src=', rendered)
+        self.assertNotIn("__REPORT_STYLE_CSS__", rendered)
+        self.assertNotIn("__REPORT_SCRIPT_JS__", rendered)
+
+    def test_render_html_rejects_missing_unified_asset(self):
+        with patch.object(
+            report_renderer,
+            "REPORT_STYLE_PATH",
+            ROOT / "assets" / "report" / "missing.css",
+        ):
+            with self.assertRaisesRegex(report_renderer.ReportRenderingError, "report style"):
+                report_renderer.render_html_report({"status": "complete"})
+
+    def test_render_html_rejects_template_missing_unified_placeholder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template_path = Path(temp_dir) / "template.html"
+            template_path.write_text(
+                "<style>__REPORT_STYLE_CSS__</style>"
+                '<script id="report-data">__REPORT_DATA_JSON__</script>',
+                encoding="utf-8",
+            )
+            with patch.object(report_renderer, "REPORT_TEMPLATE_PATH", template_path):
+                with self.assertRaisesRegex(
+                    report_renderer.ReportRenderingError,
+                    "__REPORT_SCRIPT_JS__",
+                ):
+                    report_renderer.render_html_report({"status": "complete"})
+
+    def test_template_emits_unified_desktop_report_structure(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('<body class="unified-report unified-qianchuan"', template)
+        self.assertIn('<header class="hero report-cover">', template)
+        self.assertNotIn('class="eyebrow"', template)
+        self.assertIn("千川 TOP 素材池商业诊断报告", template)
+        self.assertIn('class="report-shell"', template)
+        self.assertIn('class="report-nav" aria-label="报告目录"', template)
+        self.assertEqual(template.count('class="section-header"'), 5)
+        for section_id in (
+            "top-material-combination",
+            "audience-insights",
+            "script-insights",
+            "material-analysis",
+            "next-actions-section",
+        ):
+            self.assertIn(f'id="{section_id}"', template)
+
     def test_template_keeps_current_structure_with_livecheck_visual_style(self):
         template_path = ROOT / "templates" / "final-report-template.html"
         html_text = template_path.read_text(encoding="utf-8")
@@ -1672,7 +1738,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("width: 100%;", html_text)
         self.assertIn("grid-template-columns: 1fr;", html_text)
         self.assertIn("grid-template-columns: 190px minmax(0, 1fr);", html_text)
-        self.assertIn("统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。", html_text)
+        self.assertIn("统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`", html_text)
         self.assertNotIn("报告状态", html_text)
         self.assertNotIn("min-height: 360px;", html_text)
         self.assertIn("function humanizeEvidenceRef", html_text)
@@ -2600,7 +2666,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("高光帧类型分布", html_text)
         self.assertNotIn("highlight-all-grid", html_text)
         self.assertNotIn("script-summary-grid", html_text)
-        self.assertNotIn("report-cover", html_text)
+        self.assertIn('class="hero report-cover"', html_text)
         self.assertNotIn("cover-title", html_text)
         self.assertNotIn("cover-empty", html_text)
         self.assertNotIn("report-warnings", html_text)

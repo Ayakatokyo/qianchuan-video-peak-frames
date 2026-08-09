@@ -1390,20 +1390,32 @@
       }
     }
   </style>
+  <style data-unified-report-style="true">__REPORT_STYLE_CSS__</style>
 </head>
-<body>
+<body class="unified-report unified-qianchuan" data-unified-report-version="2026-08-09">
+<a class="skip-link" href="#report-content">跳至报告正文</a>
 <script type="application/json" id="report-data">__REPORT_DATA_JSON__</script>
-<main>
-  <section class="hero">
+<main class="page">
+  <header class="hero report-cover">
     <div class="hero-copy">
-      <p class="eyebrow">QIANCHUAN MATERIAL PORTFOLIO REPORT</p>
       <h1>千川 TOP 素材池商业诊断报告</h1>
       <p class="subtitle" id="report-subtitle"></p>
     </div>
-  </section>
+  </header>
 
-  <section class="section">
-    <h2>01｜TOP 素材组合结论</h2>
+  <div class="report-shell">
+    <nav class="report-nav" aria-label="报告目录">
+      <small>报告目录</small>
+      <a href="#top-material-combination" aria-current="location">01｜TOP 素材组合结论</a>
+      <a href="#audience-insights">02｜人群洞察</a>
+      <a href="#script-insights">03｜脚本洞察</a>
+      <a href="#material-analysis">04｜单素材深度分析</a>
+      <a href="#next-actions-section">05｜下一轮策略</a>
+    </nav>
+    <div class="report-content" id="report-content">
+
+  <section class="section" id="top-material-combination">
+    <header class="section-header"><h2>01｜TOP 素材组合结论</h2></header>
     <div class="insight-layout">
       <div class="top-roi-grid" id="top-material-roi"></div>
       <div class="top-dimension-conclusions" id="top-dimension-conclusions"></div>
@@ -1413,8 +1425,8 @@
     </div>
   </section>
 
-  <section class="section">
-    <h2>02｜人群洞察</h2>
+  <section class="section" id="audience-insights">
+    <header class="section-header"><h2>02｜人群洞察</h2></header>
     <div class="insight-layout">
       <div class="primary-summary" id="audience-primary"></div>
       <div class="audience-preferences" id="audience-preferences"></div>
@@ -1422,26 +1434,28 @@
     </div>
   </section>
 
-  <section class="section">
-    <h2>03｜脚本洞察</h2>
+  <section class="section" id="script-insights">
+    <header class="section-header"><h2>03｜脚本洞察</h2></header>
     <div class="insight-layout">
       <div class="primary-summary" id="script-primary"></div>
       <div class="data-dashboard" id="script-dashboard"></div>
     </div>
   </section>
 
-  <section class="section">
-    <h2>04｜单素材深度分析</h2>
+  <section class="section" id="material-analysis">
+    <header class="section-header"><h2>04｜单素材深度分析</h2></header>
     <div class="material-tabs side-tabs" data-material-tabs>
       <div class="tab-list" role="tablist" aria-label="素材选择" id="material-tab-list"></div>
       <div class="material-panels" id="material-panels"></div>
     </div>
   </section>
 
-  <section class="section">
-    <h2>05｜下一轮策略</h2>
+  <section class="section" id="next-actions-section">
+    <header class="section-header"><h2>05｜下一轮策略</h2></header>
     <ul class="rec-list" id="next-actions"></ul>
   </section>
+    </div>
+  </div>
 
 </main>
 <div class="frame-lightbox" id="frame-lightbox" role="dialog" aria-modal="true" aria-label="高光帧大图" hidden>
@@ -3079,12 +3093,9 @@ function renderTopMaterialRoi() {
     );
     root.append(card);
   });
-  const scope = element(
-    "p",
-    "top-roi-scope",
-    `统计范围：${formatNumber(roi.materialCount)} 条已验证 TOP 素材；${text(roi.actualStartDate)} - ${text(roi.actualEndDate)}`
-  );
-  root.append(scope);
+  const divider = element("hr", "unified-divider");
+  divider.setAttribute("aria-hidden", "true");
+  root.append(divider);
 }
 
 function renderTopDimensionConclusions() {
@@ -3133,7 +3144,7 @@ document.addEventListener("keydown", (event) => {
 
 function renderReport() {
   const period = reportData.period || {};
-  document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}。`;
+  document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
   renderTopMaterialRoi();
   renderTopDimensionConclusions();
   renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");
@@ -3147,5 +3158,6 @@ function renderReport() {
 
 renderReport();
 </script>
+<script data-unified-report-script="true">__REPORT_SCRIPT_JS__</script>
 </body>
 </html>

@@ -15,8 +15,13 @@ class ReportRenderingError(RuntimeError):
     """Raised when report assets or the HTML template cannot be published."""
 
 
-REPORT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "templates" / "final-report-template.html"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+REPORT_TEMPLATE_PATH = SKILL_ROOT / "templates" / "final-report-template.html"
+REPORT_STYLE_PATH = SKILL_ROOT / "assets" / "report" / "unified-report.css"
+REPORT_SCRIPT_PATH = SKILL_ROOT / "assets" / "report" / "unified-report.js"
 REPORT_DATA_PLACEHOLDER = "__REPORT_DATA_JSON__"
+REPORT_STYLE_PLACEHOLDER = "__REPORT_STYLE_CSS__"
+REPORT_SCRIPT_PLACEHOLDER = "__REPORT_SCRIPT_JS__"
 REPORT_ARCHIVE_IMAGE_PATTERN = re.compile(
     r"assets/highlight-frames/[^\"'\s<>]+"
 )
@@ -193,17 +198,26 @@ def html_asset_src(path, asset_base_dir, embed_assets=False, copy_assets=False, 
     return Path(relative).as_posix()
 
 
-def _load_report_template():
+def _read_report_source(path, label):
     try:
-        template = REPORT_TEMPLATE_PATH.read_text(encoding="utf-8")
+        return Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise ReportRenderingError(
-            f"unable to read report template: {REPORT_TEMPLATE_PATH}"
+            f"unable to read {label}: {path}"
         ) from exc
-    if REPORT_DATA_PLACEHOLDER not in template:
-        raise ReportRenderingError(
-            f"report template is missing {REPORT_DATA_PLACEHOLDER}"
-        )
+
+
+def _load_report_template():
+    template = _read_report_source(REPORT_TEMPLATE_PATH, "report template")
+    for placeholder in (
+        REPORT_DATA_PLACEHOLDER,
+        REPORT_STYLE_PLACEHOLDER,
+        REPORT_SCRIPT_PLACEHOLDER,
+    ):
+        if template.count(placeholder) != 1:
+            raise ReportRenderingError(
+                f"report template must contain exactly one {placeholder}"
+            )
     return template
 
 
@@ -311,6 +325,11 @@ def render_html_report(
         copy_assets,
         contains_execution_process_term,
     )
-    return _load_report_template().replace(
-        REPORT_DATA_PLACEHOLDER, json_for_html_script(template_data)
+    template = _load_report_template()
+    style = _read_report_source(REPORT_STYLE_PATH, "report style")
+    script = _read_report_source(REPORT_SCRIPT_PATH, "report script")
+    return (
+        template.replace(REPORT_STYLE_PLACEHOLDER, style)
+        .replace(REPORT_SCRIPT_PLACEHOLDER, script)
+        .replace(REPORT_DATA_PLACEHOLDER, json_for_html_script(template_data))
     )
