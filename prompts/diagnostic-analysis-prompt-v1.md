@@ -19,10 +19,10 @@
 - `audience` 与 `script` 是组合层判断，不能与 `batchInsights` 的对应洞察原文完全相同；不得输出 `batchInsights.topic=integrated`。
 - `highlight` 只能使用事实包中最终 TOP 素材的 `highlight:*` 证据，高光帧的结论必须是对组合画面机制的谨慎判断。
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
-- 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指事实包 `highlights.materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 或 peak_top_3，也必须分别输出对应分析。
-- 若该素材 `highlights.materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 3 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
+- 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指事实包 `highlights.materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 至 peak_top_5，也必须分别输出对应分析。
+- 若该素材 `highlights.materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 5 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
 - 高光帧的 `visualObservation` 必须来自实际查看 JPEG 的画面观察；`commercialInterpretation` 使用“与点击峰值同时出现”“待验证假设”等谨慎表述。
-- `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。
+- `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。当前事实包没有脚本分段时码，不得宣称帧对应具体话术，也不得根据整段脚本猜测画面所在秒的话术。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。
 
 ## 内容长度与信息密度（标准入口 finalize 的硬性门禁）
@@ -37,15 +37,16 @@
 
 ## 页面结构映射
 
-最终 HTML 页面保留以下 5 个 section，输出字段必须围绕这些 section 收缩：
+最终 HTML 页面保留以下 6 个 section，输出字段必须围绕这些 section 收缩：
 
 - `01｜TOP 素材组合结论`：使用 `portfolioDimensionConclusions.commercial`、`audience`、`script`、`highlight`，按该顺序展示；顶部的两张 ROI 指标卡由确定性事实渲染，不需要在文案中重复计算。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜单素材深度分析`：页面会先展示确定性的 `互动时序分析` 和 `脚本分析数据`，再展示 `materialAnalyses` 中的 AI 二次总结。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
-- `nextActions` 对应 `05｜下一轮策略`：策略卡片只展示 title 和 body，不展示 priority。
+- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用已查看 JPEG 的共同可见信号写至少 20 个字符的 `commonConclusion`，再给出至少一条正文不少于 20 个字符的可验证 `derivativeDirections`；不得把峰值同时性写成因果。
+- `05｜单素材深度分析`：页面会先展示确定性的 `互动时序分析` 和 `脚本分析数据`，再展示 `materialAnalyses` 中的 AI 二次总结。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
+- `nextActions` 对应 `06｜下一轮策略`：策略卡片只展示 title 和 body，不展示 priority。
 
-不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧只允许作为 `portfolioDimensionConclusions.highlight` 和 `materialAnalyses[*].highlightAnalyses` 的证据来源，不再生成单独的批量高光帧洞察段落。
+不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧只允许作为 `portfolioDimensionConclusions.highlight`、`materialAnalyses[*].highlightAnalyses` 和 `highlightDashboard` 的证据来源。
 
 不得输出“数据质量与执行口径”“方法说明”“补充说明”等额外页面段落，也不得输出顶层 `warnings` 字段。
 
@@ -55,7 +56,7 @@
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "portfolioDimensionConclusions": {
     "commercial": {
       "conclusion": "基于整体消耗、净成交金额、整体成交金额及两项 ROI 的经营判断",
@@ -73,6 +74,22 @@
       "conclusion": "基于最终 TOP 素材高光帧的组合画面判断",
       "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]
     }
+  },
+  "highlightDashboard": {
+    "groups": [
+      {
+        "category": "portrait",
+        "frameRefs": ["highlight:事实包中的素材 ID:帧类型"],
+        "commonConclusion": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。",
+        "derivativeDirections": [
+          {
+            "title": "待验证画面变量",
+            "body": "说明保留或调整的画面变量以及下一轮如何验证。",
+            "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]
+          }
+        ]
+      }
+    ]
   },
   "batchInsights": [
     {

@@ -305,6 +305,7 @@ def report_data_for_template(
             "portfolioDimensionConclusions": conclusion.get(
                 "portfolioDimensionConclusions", {}
             ),
+            "highlightDashboard": conclusion.get("highlightDashboard", {}),
             "nextActions": conclusion.get("nextActions", []),
         },
         "warnings": warnings,

@@ -49,7 +49,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("实际查看", skill)
         self.assertIn("JPEG", skill)
         self.assertIn("diagnostic-ai-analysis.json", skill)
-        self.assertIn("schemaVersion: 3", skill)
+        self.assertIn("schemaVersion: 4", skill)
+        self.assertIn("highlightDashboard", skill)
+        self.assertIn("v3 仅用于历史报告兼容", skill)
         self.assertIn("经营表现、人群、脚本和高光画面", skill)
 
     def test_skill_delivers_only_a_complete_standard_report(self):
@@ -108,8 +110,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
             "01｜TOP 素材组合结论",
             "02｜人群洞察",
             "03｜脚本洞察",
-            "04｜单素材深度分析",
-            "05｜下一轮策略",
+            "04｜高光画面洞察",
+            "05｜单素材深度分析",
+            "06｜下一轮策略",
         ):
             self.assertIn(section, prompt)
         self.assertIn("不得分析执行过程", prompt)
@@ -121,7 +124,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("明确视觉结论基于其余成功帧", prompt)
         self.assertIn("不得只分析 zero_second 和 peak_top_1", prompt)
         self.assertIn("peak_top_2", prompt)
-        self.assertIn("peak_top_3", prompt)
+        self.assertIn("peak_top_5", prompt)
+        self.assertIn("highlightDashboard", prompt)
+        self.assertIn("不得宣称帧对应具体话术", prompt)
         self.assertNotIn("缺失任何一帧都不能视为完成", prompt)
 
     def test_rpa_contract_remains_the_source_of_operational_details(self):
@@ -151,7 +156,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")
 
         self.assertIn("第 0 秒封面帧", prompt)
-        self.assertIn("按点击数全局排序的 Top 3 局部峰值帧", prompt)
+        self.assertIn("按点击数全局排序的 Top 5 局部峰值帧", prompt)
         self.assertIn("点击数相同按时间较早优先", prompt)
 
 

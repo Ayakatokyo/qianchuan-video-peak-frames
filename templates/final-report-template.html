@@ -1340,6 +1340,171 @@
       margin-top: 10px;
     }
 
+    .highlight-dashboard {
+      display: grid;
+      gap: 28px;
+    }
+
+    .highlight-sample-overview {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .highlight-category {
+      display: grid;
+      gap: 16px;
+      padding-top: 4px;
+    }
+
+    .highlight-category-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .highlight-category-head h3 {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .highlight-category-count {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .highlight-frame-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .highlight-frame-card {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .highlight-frame-card figure {
+      margin: 0;
+    }
+
+    .highlight-frame-preview {
+      display: block;
+      width: 100%;
+      aspect-ratio: 9 / 16;
+      padding: 0;
+      border: 0;
+      background: #120b08;
+      cursor: zoom-in;
+    }
+
+    .highlight-frame-preview img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .highlight-frame-meta {
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .highlight-frame-meta small {
+      font-size: 12px;
+    }
+
+    .highlight-source-link {
+      justify-self: start;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #7d4a25;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 800;
+      text-align: left;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .highlight-source-link:focus-visible,
+    .highlight-frame-preview:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .highlight-analysis-pair {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+      padding-top: 2px;
+    }
+
+    .highlight-analysis-copy {
+      min-width: 0;
+    }
+
+    .highlight-analysis-copy + .highlight-analysis-copy {
+      padding-left: 24px;
+      border-left: 1px solid var(--line);
+    }
+
+    .highlight-analysis-copy b {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+
+    .highlight-direction-list {
+      display: grid;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .highlight-direction-list b {
+      margin-bottom: 3px;
+    }
+
+    @media (max-width: 1180px) {
+      .highlight-frame-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 680px) {
+      .highlight-frame-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .highlight-analysis-pair {
+        grid-template-columns: 1fr;
+        gap: 18px;
+      }
+
+      .highlight-analysis-copy + .highlight-analysis-copy {
+        padding: 18px 0 0;
+        border-top: 1px solid var(--line);
+        border-left: 0;
+      }
+    }
+
     @media (max-width: 980px) {
       main {
         width: min(100% - 28px, 760px);
@@ -1409,8 +1574,9 @@
       <a href="#top-material-combination" aria-current="location">01｜TOP 素材组合结论</a>
       <a href="#audience-insights">02｜人群洞察</a>
       <a href="#script-insights">03｜脚本洞察</a>
-      <a href="#material-analysis">04｜单素材深度分析</a>
-      <a href="#next-actions-section">05｜下一轮策略</a>
+      <a href="#highlight-dashboard-section">04｜高光画面洞察</a>
+      <a href="#material-analysis">05｜单素材深度分析</a>
+      <a href="#next-actions-section">06｜下一轮策略</a>
     </nav>
     <div class="report-content" id="report-content">
 
@@ -1442,8 +1608,13 @@
     </div>
   </section>
 
+  <section class="section" id="highlight-dashboard-section">
+    <header class="section-header"><h2>04｜高光画面洞察</h2></header>
+    <div class="highlight-dashboard" id="highlight-dashboard"></div>
+  </section>
+
   <section class="section" id="material-analysis">
-    <header class="section-header"><h2>04｜单素材深度分析</h2></header>
+    <header class="section-header"><h2>05｜单素材深度分析</h2></header>
     <div class="material-tabs side-tabs" data-material-tabs>
       <div class="tab-list" role="tablist" aria-label="素材选择" id="material-tab-list"></div>
       <div class="material-panels" id="material-panels"></div>
@@ -1451,7 +1622,7 @@
   </section>
 
   <section class="section" id="next-actions-section">
-    <header class="section-header"><h2>05｜下一轮策略</h2></header>
+    <header class="section-header"><h2>06｜下一轮策略</h2></header>
     <ul class="rec-list" id="next-actions"></ul>
   </section>
     </div>
@@ -1540,6 +1711,8 @@ const frameLabels = {
   peak_top_1: "点击 Top1 峰值画面",
   peak_top_2: "点击 Top2 峰值画面",
   peak_top_3: "点击 Top3 峰值画面",
+  peak_top_4: "点击 Top4 峰值画面",
+  peak_top_5: "点击 Top5 峰值画面",
 };
 
 const statusLabels = {
@@ -3008,6 +3181,163 @@ function renderHighlightFormula(highlights) {
   return card;
 }
 
+const highlightCategoryLabels = {
+  portrait: "人像高光洞察",
+  product: "产品高光洞察",
+  other: "其他高光画面洞察",
+};
+
+function highFrameFactsByReference() {
+  const facts = new Map();
+  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
+  materials.forEach((material) => {
+    const materialId = text(material.materialId);
+    const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
+    frames.forEach((frame) => {
+      const reference = `highlight:${materialId}:${text(frame.rankType)}`;
+      facts.set(reference, { material, frame });
+    });
+  });
+  return facts;
+}
+
+function renderDashboardFrame(reference, fact) {
+  const { material, frame } = fact;
+  const materialId = text(material.materialId);
+  const materialName = displayText(material.materialName, materialId);
+  const rankLabel = frameLabels[text(frame.rankType)] || text(frame.rankType);
+  const caption = `${rankLabel} · ${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
+  const card = element("article", "highlight-frame-card");
+  card.dataset.frameRef = reference;
+  const figure = document.createElement("figure");
+  const preview = document.createElement("button");
+  const image = document.createElement("img");
+  preview.type = "button";
+  preview.className = "highlight-frame-preview";
+  preview.setAttribute("aria-label", `查看大图：${materialName}，${caption}`);
+  image.src = text(frame.framePath);
+  image.alt = `${materialName} 高光画面`;
+  image.loading = "lazy";
+  image.decoding = "async";
+  preview.append(image);
+  preview.addEventListener("click", () => openFrameLightbox(text(frame.framePath), caption));
+  figure.append(preview);
+
+  const meta = element("div", "highlight-frame-meta");
+  const source = element("button", "highlight-source-link", `查看素材：${materialName}`);
+  source.type = "button";
+  source.title = "跳转到单素材深度分析";
+  source.addEventListener("click", () => activateMaterialById(materialId));
+  meta.append(element("small", "", rankLabel), element("span", "", `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`), source);
+  card.append(figure, meta);
+  return card;
+}
+
+function renderHighlightDashboard() {
+  const root = document.getElementById("highlight-dashboard");
+  const conclusion = reportData.conclusion || {};
+  const groups = Array.isArray(conclusion.highlightDashboard?.groups)
+    ? conclusion.highlightDashboard.groups
+    : [];
+  root.replaceChildren();
+
+  const overview = reportData.overview || {};
+  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
+  const successfulMaterialCount = overview.successfulMaterialCount ?? materials.length;
+  const highlightFrameCount = overview.highlightFrameCount ?? materials.reduce(
+    (sum, material) => sum + (Array.isArray(material.highlightFrames) ? material.highlightFrames.length : 0),
+    0
+  );
+  const sample = element("div", "highlight-sample-overview");
+  sample.append(
+    element("span", "", `覆盖素材 ${formatNumber(successfulMaterialCount)} 条`),
+    element("span", "", `高光帧 ${formatNumber(highlightFrameCount)} 张`),
+    element("span", "", "取帧：封面 + 点击次数局部波峰 TOP3")
+  );
+  root.append(sample);
+
+  const dimensionHighlight = conclusion.portfolioDimensionConclusions?.highlight;
+  if (conclusion.schemaVersion === 3 && dimensionHighlight?.conclusion) {
+    const factsByReference = highFrameFactsByReference();
+    const refs = Array.isArray(dimensionHighlight.evidenceRefs)
+      ? dimensionHighlight.evidenceRefs
+      : [];
+    const categoryRoot = element("section", "highlight-category");
+    const head = element("div", "highlight-category-head");
+    head.append(
+      element("h3", "", "组合高光画面结论"),
+      element("span", "highlight-category-count", `${refs.length} 帧证据`)
+    );
+    const grid = element("div", "highlight-frame-grid");
+    refs.forEach((reference) => {
+      const fact = factsByReference.get(text(reference));
+      if (fact) grid.append(renderDashboardFrame(text(reference), fact));
+    });
+    const common = element("div", "highlight-analysis-copy");
+    common.append(
+      element("b", "", "共性结论"),
+      elementWithMaterialLinks("p", "", dimensionHighlight.conclusion)
+    );
+    categoryRoot.append(head);
+    if (grid.childElementCount > 0) categoryRoot.append(grid);
+    categoryRoot.append(common);
+    root.append(categoryRoot);
+    return;
+  }
+
+  if (conclusion.schemaVersion !== 4 || groups.length === 0) {
+    root.append(element("p", "muted", "暂无可用的高光画面分类汇总。"));
+    return;
+  }
+
+  const factsByReference = highFrameFactsByReference();
+  ["portrait", "product", "other"].forEach((category) => {
+    const group = groups.find((item) => text(item.category) === category);
+    if (!group) return;
+    const categoryRoot = element("section", "highlight-category");
+    const head = element("div", "highlight-category-head");
+    const frameRefs = Array.isArray(group.frameRefs) ? group.frameRefs : [];
+    head.append(
+      element("h3", "", highlightCategoryLabels[category]),
+      element("span", "highlight-category-count", `${frameRefs.length} 帧`)
+    );
+    const grid = element("div", "highlight-frame-grid");
+    frameRefs.forEach((reference) => {
+      const fact = factsByReference.get(text(reference));
+      if (fact) grid.append(renderDashboardFrame(text(reference), fact));
+    });
+    const common = element("div", "highlight-analysis-copy");
+    common.append(
+      element("b", "", "共性结论"),
+      elementWithMaterialLinks("p", "", group.commonConclusion)
+    );
+    const directions = Array.isArray(group.derivativeDirections)
+      ? group.derivativeDirections
+      : [];
+    categoryRoot.append(head, grid);
+    if (directions.length === 0) {
+      categoryRoot.append(common);
+      root.append(categoryRoot);
+      return;
+    }
+    const directionCopy = element("div", "highlight-analysis-copy");
+    const directionList = element("ul", "highlight-direction-list");
+    directions.forEach((direction) => {
+      const item = element("li", "");
+      item.append(
+        elementWithMaterialLinks("b", "", direction.title),
+        elementWithMaterialLinks("p", "", direction.body)
+      );
+      directionList.append(item);
+    });
+    directionCopy.append(element("b", "", "裂变方向"), directionList);
+    const analysisPair = element("div", "highlight-analysis-pair");
+    analysisPair.append(common, directionCopy);
+    categoryRoot.append(analysisPair);
+    root.append(categoryRoot);
+  });
+}
+
 function activateMaterialTab(tab) {
   const container = tab.closest("[data-material-tabs]");
   container.querySelectorAll('[role="tab"]').forEach((item) => {
@@ -3110,7 +3440,7 @@ function renderTopDimensionConclusions() {
     ["highlight", "高光画面"]
   ];
   root.replaceChildren();
-  if (conclusion.schemaVersion !== 3 || !labels.every(([key]) => dimensions[key])) {
+  if (![3, 4].includes(conclusion.schemaVersion) || !labels.every(([key]) => dimensions[key])) {
     root.hidden = true;
     fallback.hidden = false;
     document.getElementById("overall-conclusion").replaceChildren(
@@ -3152,6 +3482,7 @@ function renderReport() {
   renderAudienceDashboard();
   renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");
   renderScriptDashboard();
+  renderHighlightDashboard();
   renderMaterialTabs();
   renderNextActions();
 }

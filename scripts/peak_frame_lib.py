@@ -532,16 +532,16 @@ def build_summary(
         peak.rank_type.startswith("peak_top_") for peak in expected
     )
     warnings = []
-    if peak_count < 3:
+    if peak_count < 5:
         warnings.append(
-            f"click curve has {peak_count} local peak(s); up to 3 are targeted"
+            f"click curve has {peak_count} local peak(s); up to 5 are targeted"
         )
     summary = {
         "materialId": str(material_id),
         "inputJsonPath": str(input_json_path),
         "selectionRule": {
             "zero": "video_timestamp_0_seconds",
-            "peaks": "top_3_local_peaks_by_metric_desc_then_time_asc",
+            "peaks": "top_5_local_peaks_by_metric_desc_then_time_asc",
             "plateau": "collapse_to_earliest_second",
             "boundariesExcluded": True,
         },
@@ -566,7 +566,7 @@ def build_summary(
         ],
         "missingFrames": missing,
         "frameCoverage": {
-            "targetFrameCount": 4,
+            "targetFrameCount": 6,
             "expectedFrameCount": len(expected),
             "succeededFrameCount": len(selected_peaks),
             "expectedPeakCount": peak_count,
@@ -945,7 +945,7 @@ def find_local_peaks(points):
     return peaks
 
 
-def select_peak_frames(points, peak_limit=3):
+def select_peak_frames(points, peak_limit=5):
     if not points:
         raise InputDataError("No local peaks found")
     zero_metric = next(

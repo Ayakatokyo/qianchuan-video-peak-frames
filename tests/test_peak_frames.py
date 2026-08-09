@@ -720,8 +720,8 @@ class RpaAdapterTests(unittest.TestCase):
 
 
 class PeakSelectionTests(unittest.TestCase):
-    def test_selects_zero_second_frame_then_global_top_three_peaks(self):
-        values = [1, 5, 1, 9, 1, 7, 1, 8, 1]
+    def test_selects_zero_second_frame_then_global_top_five_peaks(self):
+        values = [1, 5, 1, 9, 1, 7, 1, 8, 1, 6, 1]
         points = [SeriesPoint(i, value) for i, value in enumerate(values)]
 
         selected = select_peak_frames(points)
@@ -736,6 +736,8 @@ class PeakSelectionTests(unittest.TestCase):
                 ("peak_top_1", 3.0, 9.0),
                 ("peak_top_2", 7.0, 8.0),
                 ("peak_top_3", 5.0, 7.0),
+                ("peak_top_4", 9.0, 6.0),
+                ("peak_top_5", 1.0, 5.0),
             ],
         )
 
@@ -815,7 +817,7 @@ class PeakSelectionTests(unittest.TestCase):
         )
 
     def test_later_ties_are_ordered_by_second(self):
-        values = [0, 2, 0, 6, 0, 6, 0, 6, 0]
+        values = [0, 2, 0, 6, 0, 6, 0, 6, 0, 6, 0, 6, 0]
 
         selected = select_peak_frames(
             [SeriesPoint(i, value) for i, value in enumerate(values)]
@@ -823,7 +825,7 @@ class PeakSelectionTests(unittest.TestCase):
 
         self.assertEqual(
             [item.duration_sec for item in selected],
-            [0.0, 3.0, 5.0, 7.0],
+            [0.0, 3.0, 5.0, 7.0, 9.0, 11.0],
         )
 
     def test_select_rejects_no_peaks(self):
@@ -2072,7 +2074,7 @@ class SummaryTests(unittest.TestCase):
             "peak_top_1_0007p5s_12p25.jpg",
         )
 
-    def test_summary_explains_curve_with_fewer_than_three_peaks(self):
+    def test_summary_explains_curve_with_fewer_than_five_peaks(self):
         selected = [
             SelectedPeak("zero_second", 0.0, 1.0),
             SelectedPeak("peak_top_1", 3.0, 4.0),
@@ -2089,8 +2091,13 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(len(summary["frames"]), 2)
         self.assertEqual(
             summary["warnings"],
-            ["click curve has 1 local peak(s); up to 3 are targeted"],
+            ["click curve has 1 local peak(s); up to 5 are targeted"],
         )
+        self.assertEqual(
+            summary["selectionRule"]["peaks"],
+            "top_5_local_peaks_by_metric_desc_then_time_asc",
+        )
+        self.assertEqual(summary["frameCoverage"]["targetFrameCount"], 6)
         self.assertEqual(
             [frame["rankType"] for frame in summary["frames"]],
             ["zero_second", "peak_top_1"],
@@ -2144,7 +2151,7 @@ class SummaryTests(unittest.TestCase):
             self.assertIn("video.mp4", markdown)
             self.assertIn("video_timestamp_0_seconds", markdown)
             self.assertIn(
-                "top_3_local_peaks_by_metric_desc_then_time_asc", markdown
+                "top_5_local_peaks_by_metric_desc_then_time_asc", markdown
             )
             self.assertIn("collapse_to_earliest_second", markdown)
             self.assertIn("boundariesExcluded: true", markdown)
@@ -2153,7 +2160,7 @@ class SummaryTests(unittest.TestCase):
             self.assertLess(
                 markdown.index("zero_second"), markdown.index("peak_top_1")
             )
-            self.assertIn("click curve has 1 local peak(s); up to 3 are targeted", markdown)
+            self.assertIn("click curve has 1 local peak(s); up to 5 are targeted", markdown)
             self.assertEqual(list(result_dir.glob("*.tmp*")), [])
 
     def test_refuses_to_write_summaries_for_missing_or_empty_frame(self):
@@ -2259,10 +2266,10 @@ class ProcessingPipelineTests(unittest.TestCase):
                 )
 
         probe_video.assert_called_once_with("ffmpeg", video, timeout_sec=120)
-        self.assertEqual(extract.call_count, 4)
+        self.assertEqual(extract.call_count, 5)
         self.assertEqual(
             [call.kwargs["timeout_sec"] for call in extract.call_args_list],
-            [120, 120, 120, 120],
+            [120, 120, 120, 120, 120],
         )
 
 
@@ -4413,7 +4420,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result["rpaResultStatus"], "final_failed")
         self.assertEqual(preflight.call_count, 2)
 
-    def test_local_cli_outputs_four_frames_and_two_summaries(self):
+    def test_local_cli_outputs_available_peaks_and_two_summaries(self):
         ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4430,7 +4437,7 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             result_dir = output / "m-123"
-            self.assertEqual(len(list(result_dir.glob("*.jpg"))), 4)
+            self.assertEqual(len(list(result_dir.glob("*.jpg"))), 5)
             summary_path = result_dir / "summary.json"
             self.assertTrue(summary_path.is_file())
             self.assertTrue((result_dir / "summary.md").is_file())
@@ -4442,9 +4449,13 @@ class CliTests(unittest.TestCase):
                     "peak_top_1",
                     "peak_top_2",
                     "peak_top_3",
+                    "peak_top_4",
                 ],
             )
-            self.assertEqual(summary["warnings"], [])
+            self.assertEqual(
+                summary["warnings"],
+                ["click curve has 4 local peak(s); up to 5 are targeted"],
+            )
             self.assertIn(f"result_dir={result_dir}", completed.stdout)
 
     def test_local_csv_cli_reuses_peak_frame_pipeline(self):
@@ -4477,7 +4488,7 @@ class CliTests(unittest.TestCase):
             summary = json.loads(
                 (output / "m-csv" / "summary.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(len(summary["frames"]), 4)
+            self.assertEqual(len(summary["frames"]), 5)
             saved_records = json.loads(
                 (diagnosis_records / "m-csv.json").read_text(encoding="utf-8")
             )
@@ -4529,7 +4540,7 @@ class CliTests(unittest.TestCase):
             first_run = self._run_local(input_json, video, output, ffmpeg)
             self.assertEqual(first_run.returncode, 0, first_run.stderr)
             stale_owned_frames = set(result_dir.glob("*.jpg"))
-            self.assertEqual(len(stale_owned_frames), 4)
+            self.assertEqual(len(stale_owned_frames), 5)
             stale_peak_frames = {
                 path for path in stale_owned_frames if not path.name.startswith("zero_second_")
             }
@@ -4596,7 +4607,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(len(summary["frames"]), 3)
             self.assertEqual(
                 summary["warnings"],
-                ["click curve has 2 local peak(s); up to 3 are targeted"],
+                ["click curve has 2 local peak(s); up to 5 are targeted"],
             )
 
     def test_list_shop_accounts_prints_authorized_accounts(self):

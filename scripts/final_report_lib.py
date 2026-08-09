@@ -32,6 +32,11 @@ ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script"}
 PORTFOLIO_DIMENSION_TOPICS = ("commercial", "audience", "script", "highlight")
+HIGHLIGHT_DASHBOARD_CATEGORIES = ("portrait", "product", "other")
+HIGHLIGHT_DASHBOARD_MINIMUMS = {
+    "commonConclusion": 20,
+    "derivativeDirectionBody": 20,
+}
 COMMERCIAL_EVIDENCE_REFS = {
     "commercial:cost",
     "commercial:netSettlementAmount",
@@ -371,6 +376,110 @@ def _normalize_v3_conclusion(payload):
     }
 
 
+def _validate_highlight_dashboard_group(raw, index):
+    if not isinstance(raw, dict):
+        raise FinalReportError(f"highlightDashboard.groups[{index}] must be an object")
+    category = _text(raw.get("category"))
+    if category not in HIGHLIGHT_DASHBOARD_CATEGORIES:
+        raise FinalReportError(
+            f"highlightDashboard.groups[{index}].category is unsupported"
+        )
+    frame_refs = _string_list(
+        raw.get("frameRefs"), f"highlightDashboard.groups[{index}].frameRefs"
+    )
+    if not frame_refs:
+        raise FinalReportError(
+            f"highlightDashboard.groups[{index}].frameRefs must not be empty"
+        )
+    common_conclusion = _text(raw.get("commonConclusion"))
+    if not common_conclusion:
+        raise FinalReportError(
+            f"highlightDashboard.groups[{index}].commonConclusion is required"
+        )
+    if len(common_conclusion) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
+        raise FinalReportError(
+            f"highlightDashboard.groups[{index}].commonConclusion must contain at least "
+            f"{HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters"
+        )
+    directions = raw.get("derivativeDirections", [])
+    if not isinstance(directions, list):
+        raise FinalReportError(
+            f"highlightDashboard.groups[{index}].derivativeDirections must be a list"
+        )
+    if not directions:
+        raise FinalReportError(
+            f"highlightDashboard.groups[{index}].derivativeDirections must not be empty"
+        )
+    normalized_directions = []
+    for direction_index, direction in enumerate(directions):
+        if not isinstance(direction, dict):
+            raise FinalReportError(
+                "highlightDashboard.groups[{}].derivativeDirections[{}] must be an object".format(
+                    index, direction_index
+                )
+            )
+        title = _text(direction.get("title"))
+        body = _text(direction.get("body"))
+        evidence_refs = _string_list(
+            direction.get("evidenceRefs"),
+            "highlightDashboard.groups[{}].derivativeDirections[{}].evidenceRefs".format(
+                index, direction_index
+            ),
+        )
+        if not title or not body or not evidence_refs:
+            raise FinalReportError(
+                "highlightDashboard.groups[{}].derivativeDirections[{}] requires title, body, and evidenceRefs".format(
+                    index, direction_index
+                )
+            )
+        if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["derivativeDirectionBody"]:
+            raise FinalReportError(
+                "highlightDashboard.groups[{}].derivativeDirections[{}].body must contain at least {} characters".format(
+                    index,
+                    direction_index,
+                    HIGHLIGHT_DASHBOARD_MINIMUMS["derivativeDirectionBody"],
+                )
+            )
+        normalized_directions.append(
+            {"title": title, "body": body, "evidenceRefs": evidence_refs}
+        )
+    return {
+        "category": category,
+        "frameRefs": frame_refs,
+        "commonConclusion": common_conclusion,
+        "derivativeDirections": normalized_directions,
+    }
+
+
+def _normalize_v4_conclusion(payload):
+    normalized = _normalize_v3_conclusion(payload)
+    dashboard = payload.get("highlightDashboard")
+    if not isinstance(dashboard, dict):
+        raise FinalReportError("highlightDashboard must be an object")
+    groups = dashboard.get("groups")
+    if not isinstance(groups, list):
+        raise FinalReportError("highlightDashboard.groups must be a list")
+    normalized_groups = [
+        _validate_highlight_dashboard_group(group, index)
+        for index, group in enumerate(groups)
+    ]
+    categories = [group["category"] for group in normalized_groups]
+    if len(set(categories)) != len(categories):
+        raise FinalReportError("highlightDashboard.groups must not repeat category")
+    expected_categories = [
+        category for category in HIGHLIGHT_DASHBOARD_CATEGORIES if category in categories
+    ]
+    if categories != expected_categories:
+        raise FinalReportError(
+            "highlightDashboard.groups must use the fixed category order: portrait, product, other"
+        )
+    return {
+        **normalized,
+        "schemaVersion": 4,
+        "highlightDashboard": {"groups": normalized_groups},
+    }
+
+
 def normalize_conclusion_analysis(payload):
     if not isinstance(payload, dict):
         raise FinalReportError("conclusion analysis must be an object")
@@ -381,6 +490,8 @@ def normalize_conclusion_analysis(payload):
         return _normalize_v2_conclusion(payload)
     if schema_version == 3:
         return _normalize_v3_conclusion(payload)
+    if schema_version == 4:
+        return _normalize_v4_conclusion(payload)
     raise FinalReportError("unsupported conclusion schemaVersion")
 
 
@@ -449,7 +560,7 @@ def _empty_material_analysis(material_id):
 def _analyses_by_material(conclusion):
     if not conclusion:
         return {}
-    if conclusion.get("schemaVersion") in {2, 3}:
+    if conclusion.get("schemaVersion") in {2, 3, 4}:
         return {
             item["materialId"]: item
             for item in conclusion.get("materialAnalyses", [])
@@ -469,7 +580,7 @@ def _batch_insights(conclusion):
     result = {topic: [] for topic in ALLOWED_INSIGHT_TOPICS}
     if not conclusion:
         return result
-    if conclusion.get("schemaVersion") in {2, 3}:
+    if conclusion.get("schemaVersion") in {2, 3, 4}:
         for insight in conclusion.get("batchInsights", []):
             result[insight["topic"]].append(insight)
         return result
@@ -912,7 +1023,7 @@ def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
 def _validate_v2_evidence(
     conclusion, diagnostic, summaries_by_material, material_cards, top_material_roi
 ):
-    if not conclusion or conclusion.get("schemaVersion") not in {2, 3}:
+    if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4}:
         return
     known_refs = _known_evidence_refs(
         diagnostic, summaries_by_material, top_material_roi
@@ -955,7 +1066,7 @@ def _validate_v2_evidence(
             "missing material analysis for succeeded material: "
             + ", ".join(missing_ids)
         )
-    if conclusion.get("schemaVersion") != 3:
+    if conclusion.get("schemaVersion") not in {3, 4}:
         return
 
     dimensions = conclusion["portfolioDimensionConclusions"]
@@ -995,6 +1106,43 @@ def _validate_v2_evidence(
                 "portfolioDimensionConclusions.commercial must not reference " + term
             )
 
+    if conclusion.get("schemaVersion") != 4:
+        return
+
+    expected_frame_refs = {
+        f"highlight:{card['materialId']}:{frame['rankType']}"
+        for card in material_cards
+        if card["extractionStatus"] == "succeeded"
+        for frame in card["highlightFrames"]
+    }
+    actual_frame_refs = []
+    for group in conclusion["highlightDashboard"]["groups"]:
+        group_refs = set(group["frameRefs"])
+        if len(group_refs) != len(group["frameRefs"]):
+            raise FinalReportError(
+                "highlightDashboard.groups frameRefs must contain each frame exactly once"
+            )
+        for reference in group_refs:
+            require_known(reference)
+            if not reference.startswith("highlight:"):
+                raise FinalReportError(
+                    "highlightDashboard.groups frameRefs must be highlight evidence"
+                )
+        actual_frame_refs.extend(group["frameRefs"])
+        for direction in group["derivativeDirections"]:
+            for reference in direction["evidenceRefs"]:
+                require_known(reference)
+                if reference not in group_refs:
+                    raise FinalReportError(
+                        "highlightDashboard derivativeDirections must reference its group"
+                    )
+    if set(actual_frame_refs) != expected_frame_refs or len(actual_frame_refs) != len(
+        expected_frame_refs
+    ):
+        raise FinalReportError(
+            "highlightDashboard.groups must cover each successful highlight frame exactly once"
+        )
+
 
 def _repeated_values(items, field_name):
     values = {}
@@ -1006,7 +1154,7 @@ def _repeated_values(items, field_name):
 
 
 def _validate_v2_analysis_quality(conclusion, material_cards):
-    if not conclusion or conclusion.get("schemaVersion") not in {2, 3}:
+    if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4}:
         return
 
     failures = []
@@ -1020,7 +1168,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
             f"{minimums['overallConclusion']} characters"
         )
 
-    if conclusion.get("schemaVersion") == 3:
+    if conclusion.get("schemaVersion") in {3, 4}:
         for topic, dimension in conclusion["portfolioDimensionConclusions"].items():
             if len(dimension["conclusion"]) < minimums["materialConclusion"]:
                 failures.append(
@@ -1129,6 +1277,14 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
 
     if failures:
         raise FinalReportError("AI quality gate: " + "; ".join(failures))
+
+
+def _validate_standard_ai_quality(conclusion, material_cards):
+    if not conclusion or conclusion.get("schemaVersion") != 4:
+        raise FinalReportError(
+            "AI quality gate requires schemaVersion 4 with highlightDashboard"
+        )
+    _validate_v2_analysis_quality(conclusion, material_cards)
 
 
 def build_final_report_data(
@@ -1418,7 +1574,7 @@ def generate_final_report(
         top_material_roi=top_material_roi,
     )
     if require_ai_quality:
-        _validate_v2_analysis_quality(conclusion, data["materials"])
+        _validate_standard_ai_quality(conclusion, data["materials"])
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"
     html_path = output_root / "final-report.html"

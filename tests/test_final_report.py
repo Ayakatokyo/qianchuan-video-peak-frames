@@ -15,6 +15,7 @@ from final_report_lib import (  # noqa: E402
     build_final_report_data,
     load_conclusion_analysis,
     normalize_conclusion_analysis,
+    _validate_v2_analysis_quality,
 )
 from final_report_lib import generate_final_report  # noqa: E402
 import render_final_report  # noqa: E402
@@ -1372,8 +1373,137 @@ class FinalReportV3ConclusionTests(unittest.TestCase):
             self._build_data(conclusion)
 
 
+class FinalReportV4HighlightDashboardTests(unittest.TestCase):
+    def setUp(self):
+        FinalReportV3ConclusionTests.setUp(self)
+
+    def _roi_facts(self):
+        return FinalReportV3ConclusionTests._roi_facts(self)
+
+    def _conclusion(self):
+        conclusion = FinalReportV3ConclusionTests._conclusion(self)
+        conclusion["schemaVersion"] = 4
+        conclusion["highlightDashboard"] = {
+            "groups": [
+                {
+                    "category": "portrait",
+                    "frameRefs": ["highlight:m-1:first_peak"],
+                    "commonConclusion": "人物口播与产品同框，是本组已查看高光画面中的共同可见信号。",
+                    "derivativeDirections": [
+                        {
+                            "title": "验证人物开场景别",
+                            "body": "保持人物与产品同框，分别测试近景和中景，观察点击表现是否出现稳定差异。",
+                            "evidenceRefs": ["highlight:m-1:first_peak"],
+                        }
+                    ],
+                }
+            ]
+        }
+        return conclusion
+
+    def _build_data(self, conclusion):
+        return build_final_report_data(
+            self.top_payload,
+            self.records_by_material,
+            self.summaries_by_material,
+            conclusion=normalize_conclusion_analysis(conclusion),
+            batch_verification={"valid": True, "errors": [], "warnings": []},
+            top_material_roi=self._roi_facts(),
+        )
+
+    def test_accepts_v4_dashboard_that_covers_each_successful_frame_once(self):
+        result = self._build_data(self._conclusion())
+
+        self.assertEqual(result["conclusion"]["schemaVersion"], 4)
+        self.assertEqual(
+            result["conclusion"]["highlightDashboard"]["groups"][0]["category"],
+            "portrait",
+        )
+
+    def test_rejects_v4_dashboard_with_duplicate_or_missing_frame_reference(self):
+        duplicate = self._conclusion()
+        duplicate["highlightDashboard"]["groups"].append(
+            {
+                "category": "other",
+                "frameRefs": ["highlight:m-1:first_peak"],
+                "commonConclusion": "同一高光帧不得同时归入其他分类，否则会破坏分类汇总的唯一性。",
+                "derivativeDirections": [
+                    {
+                        "title": "保持唯一归类",
+                        "body": "每个成功高光帧只能归入一个分类，避免重复画面同时支撑多个分类结论。",
+                        "evidenceRefs": ["highlight:m-1:first_peak"],
+                    }
+                ],
+            }
+        )
+        with self.assertRaisesRegex(FinalReportError, "exactly once"):
+            self._build_data(duplicate)
+
+        missing = self._conclusion()
+        missing["highlightDashboard"]["groups"][0]["frameRefs"] = []
+        with self.assertRaisesRegex(FinalReportError, "must not be empty"):
+            normalize_conclusion_analysis(missing)
+
+    def test_rejects_v4_dashboard_with_unknown_or_cross_group_reference(self):
+        unknown = self._conclusion()
+        unknown["highlightDashboard"]["groups"][0]["frameRefs"] = [
+            "highlight:m-1:peak_top_5"
+        ]
+        unknown["highlightDashboard"]["groups"][0]["derivativeDirections"][0][
+            "evidenceRefs"
+        ] = ["highlight:m-1:peak_top_5"]
+        with self.assertRaisesRegex(FinalReportError, "unknown evidence reference"):
+            self._build_data(unknown)
+
+        outside_group = self._conclusion()
+        outside_group["highlightDashboard"]["groups"][0]["derivativeDirections"][0][
+            "evidenceRefs"
+        ] = ["audience:CLICK_COUNT:age:24-30"]
+        with self.assertRaisesRegex(FinalReportError, "must reference its group"):
+            self._build_data(outside_group)
+
+    def test_rejects_v4_dashboard_without_ordered_substantive_directions(self):
+        no_direction = self._conclusion()
+        no_direction["highlightDashboard"]["groups"][0]["derivativeDirections"] = []
+        with self.assertRaisesRegex(FinalReportError, "must not be empty"):
+            normalize_conclusion_analysis(no_direction)
+
+        short_common_conclusion = self._conclusion()
+        short_common_conclusion["highlightDashboard"]["groups"][0][
+            "commonConclusion"
+        ] = "太短"
+        with self.assertRaisesRegex(FinalReportError, "commonConclusion must contain"):
+            normalize_conclusion_analysis(short_common_conclusion)
+
+        short_direction = self._conclusion()
+        short_direction["highlightDashboard"]["groups"][0][
+            "derivativeDirections"
+        ][0]["body"] = "太短"
+        with self.assertRaisesRegex(FinalReportError, "body must contain"):
+            normalize_conclusion_analysis(short_direction)
+
+        unordered = self._conclusion()
+        unordered["highlightDashboard"]["groups"] = [
+            {
+                "category": "product",
+                "frameRefs": ["highlight:placeholder:peak_top_1"],
+                "commonConclusion": "产品包装位于画面中央，是已查看帧中可见的产品主视觉信号。",
+                "derivativeDirections": [
+                    {
+                        "title": "验证产品景别",
+                        "body": "保持产品包装为主视觉，分别测试近景和中景，观察点击信号是否出现稳定差异。",
+                        "evidenceRefs": ["highlight:placeholder:peak_top_1"],
+                    }
+                ],
+            },
+            self._conclusion()["highlightDashboard"]["groups"][0],
+        ]
+        with self.assertRaisesRegex(FinalReportError, "fixed category order"):
+            normalize_conclusion_analysis(unordered)
+
+
 class FinalReportQualityGateTests(unittest.TestCase):
-    def test_standard_quality_gate_rejects_short_unanchored_v2_analysis(self):
+    def test_standard_quality_gate_requires_v4_highlight_dashboard(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             top_path = root / "top_materials.json"
@@ -1493,14 +1623,7 @@ class FinalReportQualityGateTests(unittest.TestCase):
 
         message = str(error.exception)
         self.assertIn("AI quality gate", message)
-        for field_name in (
-            "overallConclusion",
-            "batchInsights",
-            "evidenceRefs",
-            "visualObservation",
-            "materialAnalyses",
-        ):
-            self.assertIn(field_name, message)
+        self.assertIn("schemaVersion 4", message)
 
     def test_standard_quality_gate_rejects_repeated_material_conclusions(self):
         repeated_audience = "24-30 岁用户对产品利益点的关注更集中，下一轮应保留利益点前置并继续验证不同开场的点击差异。" * 3
@@ -1628,15 +1751,15 @@ class FinalReportQualityGateTests(unittest.TestCase):
                 },
             )
 
+            _data_path, _html_path, data = generate_final_report(
+                top_path,
+                peak_dir,
+                records_dir,
+                output_dir,
+                analysis_json=analysis_path,
+            )
             with self.assertRaises(FinalReportError) as error:
-                generate_final_report(
-                    top_path,
-                    peak_dir,
-                    records_dir,
-                    output_dir,
-                    analysis_json=analysis_path,
-                    require_ai_quality=True,
-                )
+                _validate_v2_analysis_quality(data["conclusion"], data["materials"])
 
         message = str(error.exception)
         self.assertIn("AI quality gate", message)
@@ -1705,11 +1828,12 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("千川 TOP 素材池商业诊断报告", template)
         self.assertIn('class="report-shell"', template)
         self.assertIn('class="report-nav" aria-label="报告目录"', template)
-        self.assertEqual(template.count('class="section-header"'), 5)
+        self.assertEqual(template.count('class="section-header"'), 6)
         for section_id in (
             "top-material-combination",
             "audience-insights",
             "script-insights",
+            "highlight-dashboard-section",
             "material-analysis",
             "next-actions-section",
         ):
@@ -1785,7 +1909,11 @@ class FinalReportRenderTests(unittest.TestCase):
             html_text,
         )
         self.assertNotIn("function renderPrimaryInsight", html_text)
-        self.assertNotIn('id="highlight-dashboard"', html_text)
+        self.assertIn('id="highlight-dashboard"', html_text)
+        self.assertIn("function renderHighlightDashboard", html_text)
+        self.assertIn("function renderDashboardFrame", html_text)
+        self.assertIn("activateMaterialById(materialId)", html_text)
+        self.assertNotIn("帧对应具体话术", html_text)
         self.assertIn("function renderAudienceDashboard", html_text)
         self.assertIn("function renderScriptDashboard", html_text)
         self.assertIn("function createCollapseToggle", html_text)
@@ -1920,7 +2048,7 @@ class FinalReportRenderTests(unittest.TestCase):
             "    renderScriptAnalysis(material),",
             html_text,
         )
-        self.assertNotIn("function renderHighlightDashboard", html_text)
+        self.assertIn("function renderHighlightDashboard", html_text)
         self.assertNotIn("data:video/", html_text)
         self.assertIn("八大人群分布", html_text)
         self.assertIn("年龄分布", html_text)
@@ -2028,7 +2156,15 @@ class FinalReportRenderTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("04｜单素材深度分析", prompt_text)
+        self.assertIn("04｜高光画面洞察", prompt_text)
+        self.assertIn("05｜单素材深度分析", prompt_text)
+        self.assertIn("06｜下一轮策略", prompt_text)
+        self.assertIn('"schemaVersion": 4', prompt_text)
+        self.assertIn("highlightDashboard", prompt_text)
+        self.assertIn("portrait", prompt_text)
+        self.assertIn("product", prompt_text)
+        self.assertIn("other", prompt_text)
+        self.assertIn("不得宣称帧对应具体话术", prompt_text)
         self.assertIn("互动时序分析", prompt_text)
         self.assertIn("脚本分析数据", prompt_text)
         self.assertIn("AI 二次总结", prompt_text)
@@ -2137,10 +2273,9 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("01｜TOP 素材组合结论", html_text)
         self.assertIn("02｜人群洞察", html_text)
         self.assertIn("03｜脚本洞察", html_text)
-        self.assertNotIn("04｜高光帧洞察", html_text)
-        self.assertIn("04｜单素材深度分析", html_text)
-        self.assertIn("05｜下一轮策略", html_text)
-        self.assertNotIn("06｜下一轮策略", html_text)
+        self.assertIn("04｜高光画面洞察", html_text)
+        self.assertIn("05｜单素材深度分析", html_text)
+        self.assertIn("06｜下一轮策略", html_text)
         self.assertNotIn("07｜数据质量与执行口径", html_text)
         self.assertNotIn('id="report-cover"', html_text)
         self.assertNotIn("renderWarnings", html_text)
@@ -2440,12 +2575,13 @@ class FinalReportRenderTests(unittest.TestCase):
             "01｜TOP 素材组合结论",
             "02｜人群洞察",
             "03｜脚本洞察",
-            "04｜单素材深度分析",
-            "05｜下一轮策略",
+            "04｜高光画面洞察",
+            "05｜单素材深度分析",
+            "06｜下一轮策略",
         ):
             self.assertIn(heading, html_text)
-        self.assertNotIn("04｜高光帧洞察", html_text)
-        self.assertNotIn("06｜下一轮策略", html_text)
+        self.assertIn("function renderHighlightDashboard", html_text)
+        self.assertIn("activateMaterialById(materialId)", html_text)
         self.assertNotIn("07｜数据质量与执行口径", html_text)
         self.assertIn('role="tablist"', html_text)
         self.assertIn('setAttribute("role", "tab")', html_text)
@@ -2648,7 +2784,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('element("p", "eyebrow", `#${text(material.rank)}`)', html_text)
         self.assertIn("renderAudienceDashboard();", html_text)
         self.assertIn("renderScriptDashboard();", html_text)
-        self.assertNotIn("renderHighlightDashboard();", html_text)
+        self.assertIn("renderHighlightDashboard();", html_text)
         self.assertIn("renderNextActions();", html_text)
         self.assertIn("function renderNextActions", html_text)
         self.assertIn('id="next-actions"', html_text)

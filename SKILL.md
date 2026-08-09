@@ -50,9 +50,9 @@ python scripts/run_standard_analysis.py status \
 
 ### 2. 生成 AI 二次分析
 
-当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 3`；第 01 部分必须分别输出经营表现、人群、脚本和高光画面四条组合层结论。
+当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 4`；第 01 部分必须分别输出经营表现、人群、脚本和高光画面四条组合层结论。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`：将每个成功高光帧按 `portrait`、`product`、`other` 的固定顺序归类一次且仅一次，并为实际存在的分类填写共同画面结论与可验证的裂变方向。不得把帧秒数宣称为对应某句脚本话术。
 
-结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。
+结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。标准 `finalize` 只接受 schema v4；v3 仅用于历史报告兼容，允许降级渲染组合层高光结论，但不承诺人像、产品、其他分类 dashboard。
 
 ### 3. 校验并交付报告
 
@@ -68,7 +68,7 @@ python scripts/run_standard_analysis.py finalize \
 
 ## 峰值帧口径
 
-每条素材固定保留第 0 秒封面帧 `zero_second`，并从 `CLICK_COUNT` 曲线的全部局部峰值中按点击数降序、秒数升序取最多三个帧。少于三个局部峰值是曲线特征，不伪造峰值。素材后处理成功要求第 0 秒帧成功，且存在局部峰值时至少一张峰值帧成功。
+每条素材固定保留第 0 秒封面帧 `zero_second`，并从 `CLICK_COUNT` 曲线的全部局部峰值中按点击数降序、秒数升序取最多五个帧。少于五个局部峰值是曲线特征，不伪造峰值。素材后处理成功要求第 0 秒帧成功，且存在局部峰值时至少一张峰值帧成功。
 
 ## 失败处理
 
