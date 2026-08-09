@@ -304,6 +304,11 @@
       outline-offset: 2px;
     }
 
+    .column-item-interactive[aria-pressed="true"] .column-bar {
+      box-shadow: 0 0 0 3px rgba(44, 24, 16, .18);
+      background: linear-gradient(180deg, #f0b65e, #6f4425);
+    }
+
     .script-drill-view {
       display: grid;
       gap: 14px;
@@ -413,6 +418,10 @@
         grid-template-columns: 1fr;
       }
 
+      .audience-drill-layout {
+        grid-template-columns: 1fr;
+      }
+
       .script-drill-primary {
         grid-template-rows: auto 120px auto;
       }
@@ -433,6 +442,39 @@
     .audience-preferences {
       display: grid;
       gap: 12px;
+    }
+
+    .audience-preferences:empty {
+      display: none;
+    }
+
+    .audience-drill-layout {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    .audience-drill-chart,
+    .audience-drill-panel {
+      min-width: 0;
+    }
+
+    .audience-drill-panel {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fffdf9;
+      padding: 16px;
+    }
+
+    .audience-drill-panel .preference-card {
+      height: 100%;
+    }
+
+    .audience-drill-empty {
+      color: var(--muted);
+      line-height: 1.7;
     }
 
     .preference-card {
@@ -595,6 +637,11 @@
       padding: 16px;
     }
 
+    .column-chart-card {
+      border-color: transparent;
+      box-shadow: none;
+    }
+
     .chart-card h3 {
       font-size: 18px;
       margin-bottom: 12px;
@@ -711,6 +758,14 @@
       padding-left: 10px;
       padding-right: 10px;
       padding-bottom: 0;
+    }
+
+    .region-card-plain {
+      grid-column: 1 / -1;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
     }
 
     .pie-layout {
@@ -869,7 +924,7 @@
 
     .frame-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       grid-template-rows: repeat(2, minmax(0, 1fr));
       gap: 12px;
       height: var(--visual-height);
@@ -1342,7 +1397,7 @@
 
     .highlight-dashboard {
       display: grid;
-      gap: 28px;
+      gap: 18px;
     }
 
     .highlight-sample-overview {
@@ -1360,6 +1415,49 @@
       display: grid;
       gap: 16px;
       padding-top: 4px;
+    }
+
+    .highlight-dashboard-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f7ead8;
+    }
+
+    .highlight-dashboard-tabs button {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .highlight-dashboard-tabs button[aria-selected="true"] {
+      border-color: #2c1810;
+      background: #2c1810;
+      color: #fff;
+    }
+
+    .highlight-dashboard-tabs button:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .highlight-category-panel {
+      display: grid;
+      gap: 18px;
+    }
+
+    .highlight-category-panel[hidden] {
+      display: none;
     }
 
     .highlight-category-head {
@@ -1385,6 +1483,41 @@
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 12px;
+    }
+
+    .highlight-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding-top: 2px;
+    }
+
+    .highlight-pagination button {
+      appearance: none;
+      min-width: 86px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 12px;
+      background: #fffdf9;
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .highlight-pagination button:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+    }
+
+    .highlight-page-status {
+      min-width: 92px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 13px;
+      font-weight: 800;
     }
 
     .highlight-frame-card {
@@ -1849,7 +1982,7 @@ function appendTooltipLines(tooltip, title, lines) {
 }
 
 function renderColumnChart(title, buckets, valueFormatter, options = {}) {
-  const card = element("div", `chart-card chart-card-full${options.cardClass ? ` ${options.cardClass}` : ""}`);
+  const card = element("div", `chart-card chart-card-full column-chart-card${options.cardClass ? ` ${options.cardClass}` : ""}`);
   card.append(element("h3", "", title));
   if (!Array.isArray(buckets) || buckets.length === 0) {
     card.append(element("p", "muted", "暂无可视化数据"));
@@ -2097,49 +2230,114 @@ function renderRegionChart(card, dimensions) {
 
 function renderAudiencePreferences() {
   const root = document.getElementById("audience-preferences");
+  root.replaceChildren();
+}
+
+function renderAudiencePreferenceCard(audienceGroup) {
   const preferences = Array.isArray(reportData.audience?.preferences)
     ? reportData.audience.preferences : [];
-  root.replaceChildren();
   const card = element("div", "preference-card");
+  const groupName = text(audienceGroup);
+  const preference = preferences.find((item) => text(item.audienceGroup) === groupName);
   card.append(element("h3", "", "核心人群偏好 TOP3 素材"));
-  if (preferences.length === 0) {
-    card.append(element("p", "muted", "暂无核心人群偏好数据"));
-    root.append(card);
+  const group = element("section", "preference-group");
+  group.append(element("h4", "", groupName || "未选择人群"));
+  const materials = Array.isArray(preference?.topMaterials) ? preference.topMaterials : [];
+  if (materials.length === 0) {
+    group.append(element("p", "audience-drill-empty", "暂无该人群的 TOP3 素材偏好数据。"));
+    card.append(group);
+    return card;
+  }
+  const list = element("ol", "preference-list");
+  materials.forEach((item) => {
+    const row = element("li", "preference-item");
+    const materialButton = materialLink(text(item.materialId));
+    materialButton.textContent = text(item.materialName, item.materialId);
+    row.append(
+      element("span", "preference-rank", `TOP ${text(item.rank)}`),
+      materialButton,
+      element(
+        "span",
+        "preference-metric",
+        `人群占比 ${formatNumber(item.audiencePercentage)}%`
+      ),
+      element(
+        "span",
+        "preference-cost",
+        `素材消耗 ${formatNumber(item.totalCost)}`
+      )
+    );
+    list.append(row);
+  });
+  group.append(list);
+  card.append(group);
+  return card;
+}
+
+function renderAudienceGroupDrill(root, buckets, selectedBucket, metricKey, sourceItem) {
+  const selectedName = text(selectedBucket?.bucket ?? selectedBucket?.label ?? buckets[0]?.bucket);
+  const transition = captureScriptBarTransition(sourceItem);
+  const view = element("div", "script-drill-view");
+  const control = element("div", "script-dashboard-control");
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "script-drill-back";
+  back.textContent = "返回八大人群分布";
+  back.addEventListener("click", () => returnToAudienceOverview(root, buckets, selectedName, metricKey));
+  control.append(back);
+  const detail = element("div", "script-drill-detail is-entering");
+  const layout = element("div", "script-drill-layout");
+  const primary = element("section", "script-drill-primary");
+  const plot = element("div", "script-drill-primary-plot");
+  const bar = element("div", "script-drill-primary-bar");
+  const panel = element("aside", "audience-drill-panel");
+  bar.style.height = "100%";
+  plot.append(bar);
+  primary.append(
+    element("b", "", selectedName),
+    plot,
+    element("span", "muted", `${metricLabels[metricKey] || metricKey}占比 ${formatNumber(selectedBucket?.metricPercentage ?? selectedBucket?.value)}%`)
+  );
+  panel.append(renderAudiencePreferenceCard(selectedName));
+  layout.append(primary, panel);
+  detail.append(layout);
+  view.append(control, detail);
+  root.replaceChildren(view);
+  window.setTimeout(() => detail.classList.add("is-visible"), 0);
+  animateScriptDrill(transition, bar);
+}
+
+function renderAudienceDashboardOverview(root, buckets, metricKey, options = {}) {
+  const view = element("div", "script-drill-view");
+  const control = element("div", "script-dashboard-control");
+  control.append(element("p", "script-dashboard-hint", "点击八大人群柱可查看该人群 TOP3 素材"));
+  const chartGrid = element("div", "chart-grid script-dashboard-overview");
+  chartGrid.append(renderColumnChart("八大人群分布", buckets, null, {
+    tooltipFormatter: (bucket) => `占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`,
+    tooltipLines: (bucket) => [`占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`],
+    bucketDataKey: "audienceGroup",
+    onBucketClick: (bucket, item) => renderAudienceGroupDrill(root, buckets, bucket, metricKey, item),
+  }));
+  view.append(control, chartGrid);
+  root.replaceChildren(view);
+  if (options.selectedName) {
+    const targetItem = Array.from(chartGrid.querySelectorAll("[data-audience-group]")).find((item) => item.dataset.audienceGroup === options.selectedName);
+    const targetBar = targetItem?.querySelector(".column-bar");
+    chartGrid.classList.add("is-entering");
+    window.setTimeout(() => chartGrid.classList.add("is-visible"), 0);
+    animateScriptDrill(options.transition, targetBar);
+  }
+}
+
+function returnToAudienceOverview(root, buckets, selectedName, metricKey) {
+  const detail = root.querySelector(".script-drill-detail");
+  const transition = captureScriptBarTransition(root.querySelector(".script-drill-primary"));
+  if (!detail || prefersReducedMotion()) {
+    renderAudienceDashboardOverview(root, buckets, metricKey, { selectedName, transition });
     return;
   }
-
-  const groups = element("div", "preference-groups");
-  preferences.forEach((preference) => {
-    const group = element("section", "preference-group");
-    group.append(element("h4", "", text(preference.audienceGroup)));
-    const list = element("ol", "preference-list");
-    const materials = Array.isArray(preference.topMaterials)
-      ? preference.topMaterials : [];
-    materials.forEach((item) => {
-      const row = element("li", "preference-item");
-      const materialButton = materialLink(text(item.materialId));
-      materialButton.textContent = text(item.materialName, item.materialId);
-      row.append(
-        element("span", "preference-rank", `TOP ${text(item.rank)}`),
-        materialButton,
-        element(
-          "span",
-          "preference-metric",
-          `人群占比 ${formatNumber(item.audiencePercentage)}%`
-        ),
-        element(
-          "span",
-          "preference-cost",
-          `素材消耗 ${formatNumber(item.totalCost)}`
-        )
-      );
-      list.append(row);
-    });
-    group.append(list);
-    groups.append(group);
-  });
-  card.append(groups);
-  root.append(card);
+  detail.classList.add("is-leaving");
+  window.setTimeout(() => renderAudienceDashboardOverview(root, buckets, metricKey, { selectedName, transition }), 260);
 }
 
 function renderAudienceDashboard() {
@@ -2165,14 +2363,14 @@ function renderAudienceDashboard() {
     });
     chartGrid.replaceChildren();
     const dimensions = metrics[metricKey]?.dimensions || {};
-    const regionCard = element("div", "chart-card chart-card-full chart-card-plain");
+    const regionCard = element("div", "chart-card-full region-card-plain");
     regionCard.append(element("h3", "", "地域分布"));
     renderRegionChart(regionCard, dimensions);
+    const audienceBuckets = topBuckets(dimensions.user_group_label_name);
+    const audienceMount = element("div", "chart-card-full");
+    renderAudienceDashboardOverview(audienceMount, audienceBuckets, metricKey);
     chartGrid.append(
-      renderColumnChart("八大人群分布", topBuckets(dimensions.user_group_label_name), null, {
-        tooltipFormatter: (bucket) => `占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`,
-        tooltipLines: (bucket) => [`占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`],
-      }),
+      audienceMount,
       renderPieChart("年龄分布", topBuckets(dimensions.age, 6)),
       renderPieChart("性别分布", topBuckets(dimensions.gender, 4)),
       regionCard
@@ -3186,6 +3384,7 @@ const highlightCategoryLabels = {
   product: "产品高光洞察",
   other: "其他高光画面洞察",
 };
+const HIGHLIGHT_FRAMES_PER_PAGE = 8;
 
 function highFrameFactsByReference() {
   const facts = new Map();
@@ -3233,6 +3432,69 @@ function renderDashboardFrame(reference, fact) {
   return card;
 }
 
+function renderHighlightFramePage(panel) {
+  const factsByReference = highFrameFactsByReference();
+  const refs = Array.isArray(panel._highlightFrameRefs) ? panel._highlightFrameRefs : [];
+  const pageCount = Math.max(1, Math.ceil(refs.length / HIGHLIGHT_FRAMES_PER_PAGE));
+  const page = Math.min(Math.max(0, Number(panel._highlightPage || 0)), pageCount - 1);
+  panel._highlightPage = page;
+  const grid = panel.querySelector(".highlight-frame-grid");
+  const status = panel.querySelector(".highlight-page-status");
+  const previous = panel.querySelector("[data-highlight-page='previous']");
+  const next = panel.querySelector("[data-highlight-page='next']");
+  if (!grid) return;
+  grid.replaceChildren();
+  refs.slice(page * HIGHLIGHT_FRAMES_PER_PAGE, (page + 1) * HIGHLIGHT_FRAMES_PER_PAGE).forEach((reference) => {
+    const fact = factsByReference.get(text(reference));
+    if (fact) grid.append(renderDashboardFrame(text(reference), fact));
+  });
+  if (status) {
+    status.textContent = `${page + 1} / ${pageCount}`;
+  }
+  if (previous) previous.disabled = page <= 0;
+  if (next) next.disabled = page >= pageCount - 1;
+}
+
+function renderHighlightPagination(panel, frameCount) {
+  const pageCount = Math.max(1, Math.ceil(frameCount / HIGHLIGHT_FRAMES_PER_PAGE));
+  const pagination = element("div", "highlight-pagination");
+  const previous = document.createElement("button");
+  const status = element("span", "highlight-page-status");
+  const next = document.createElement("button");
+  previous.type = "button";
+  next.type = "button";
+  previous.dataset.highlightPage = "previous";
+  next.dataset.highlightPage = "next";
+  previous.textContent = "上一页";
+  next.textContent = "下一页";
+  previous.addEventListener("click", () => {
+    panel._highlightPage = Math.max(0, Number(panel._highlightPage || 0) - 1);
+    renderHighlightFramePage(panel);
+  });
+  next.addEventListener("click", () => {
+    panel._highlightPage = Math.min(pageCount - 1, Number(panel._highlightPage || 0) + 1);
+    renderHighlightFramePage(panel);
+  });
+  pagination.append(previous, status, next);
+  return pagination;
+}
+
+function activateHighlightCategoryTab(tab) {
+  const dashboard = tab.closest(".highlight-dashboard");
+  if (!dashboard) return;
+  dashboard.querySelectorAll(".highlight-dashboard-tabs [role='tab']").forEach((item) => {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  dashboard.querySelectorAll(".highlight-category-panel[role='tabpanel']").forEach((panel) => {
+    const selected = panel.id === tab.getAttribute("aria-controls");
+    panel.hidden = !selected;
+    if (selected) renderHighlightFramePage(panel);
+  });
+  tab.focus();
+}
+
 function renderHighlightDashboard() {
   const root = document.getElementById("highlight-dashboard");
   const conclusion = reportData.conclusion || {};
@@ -3248,11 +3510,19 @@ function renderHighlightDashboard() {
     (sum, material) => sum + (Array.isArray(material.highlightFrames) ? material.highlightFrames.length : 0),
     0
   );
+  const peakLimit = Math.max(0, ...materials.map((material) => Math.max(
+    0,
+    ...(Array.isArray(material.highlightFrames) ? material.highlightFrames : [])
+      .map((frame) => {
+        const match = text(frame.rankType).match(/^peak_top_(\d+)$/);
+        return match ? Number(match[1]) : 0;
+      })
+  )));
   const sample = element("div", "highlight-sample-overview");
   sample.append(
     element("span", "", `覆盖素材 ${formatNumber(successfulMaterialCount)} 条`),
     element("span", "", `高光帧 ${formatNumber(highlightFrameCount)} 张`),
-    element("span", "", "取帧：封面 + 点击次数局部波峰 TOP3")
+    element("span", "", `取帧：封面 + 点击次数局部波峰 TOP${formatNumber(peakLimit)}`)
   );
   root.append(sample);
 
@@ -3291,21 +3561,37 @@ function renderHighlightDashboard() {
   }
 
   const factsByReference = highFrameFactsByReference();
-  ["portrait", "product", "other"].forEach((category) => {
-    const group = groups.find((item) => text(item.category) === category);
-    if (!group) return;
-    const categoryRoot = element("section", "highlight-category");
-    const head = element("div", "highlight-category-head");
+  const orderedGroups = ["portrait", "product", "other"].map((category) => groups.find((item) => text(item.category) === category)).filter(Boolean);
+  const tabList = element("div", "highlight-dashboard-tabs");
+  tabList.setAttribute("role", "tablist");
+  tabList.setAttribute("aria-label", "高光画面分类");
+  const panelRoot = element("div", "highlight-dashboard-panels");
+  orderedGroups.forEach((group, index) => {
+    const category = text(group.category);
     const frameRefs = Array.isArray(group.frameRefs) ? group.frameRefs : [];
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = `highlight-tab-${category}`;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", `highlight-panel-${category}`);
+    tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    tab.textContent = `${highlightCategoryLabels[category]} · ${frameRefs.length} 帧`;
+    tab.addEventListener("click", () => activateHighlightCategoryTab(tab));
+    tabList.append(tab);
+
+    const categoryRoot = element("section", "highlight-category");
+    categoryRoot.id = `highlight-panel-${category}`;
+    categoryRoot.classList.add("highlight-category-panel");
+    categoryRoot.setAttribute("role", "tabpanel");
+    categoryRoot.setAttribute("aria-labelledby", tab.id);
+    categoryRoot.hidden = index !== 0;
+    const head = element("div", "highlight-category-head");
     head.append(
       element("h3", "", highlightCategoryLabels[category]),
       element("span", "highlight-category-count", `${frameRefs.length} 帧`)
     );
     const grid = element("div", "highlight-frame-grid");
-    frameRefs.forEach((reference) => {
-      const fact = factsByReference.get(text(reference));
-      if (fact) grid.append(renderDashboardFrame(text(reference), fact));
-    });
     const common = element("div", "highlight-analysis-copy");
     common.append(
       element("b", "", "共性结论"),
@@ -3314,10 +3600,14 @@ function renderHighlightDashboard() {
     const directions = Array.isArray(group.derivativeDirections)
       ? group.derivativeDirections
       : [];
-    categoryRoot.append(head, grid);
+    categoryRoot.append(head);
     if (directions.length === 0) {
       categoryRoot.append(common);
-      root.append(categoryRoot);
+      if (frameRefs.length > 0) categoryRoot.append(grid, renderHighlightPagination(categoryRoot, frameRefs.length));
+      categoryRoot._highlightFrameRefs = frameRefs.map(text);
+      categoryRoot._highlightPage = 0;
+      renderHighlightFramePage(categoryRoot);
+      panelRoot.append(categoryRoot);
       return;
     }
     const directionCopy = element("div", "highlight-analysis-copy");
@@ -3334,8 +3624,25 @@ function renderHighlightDashboard() {
     const analysisPair = element("div", "highlight-analysis-pair");
     analysisPair.append(common, directionCopy);
     categoryRoot.append(analysisPair);
-    root.append(categoryRoot);
+    if (frameRefs.length > 0) categoryRoot.append(grid, renderHighlightPagination(categoryRoot, frameRefs.length));
+    categoryRoot._highlightFrameRefs = frameRefs.map(text);
+    categoryRoot._highlightPage = 0;
+    renderHighlightFramePage(categoryRoot);
+    panelRoot.append(categoryRoot);
   });
+  tabList.querySelectorAll('[role="tab"]').forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateHighlightCategoryTab(allTabs[nextIndex]);
+    });
+  });
+  root.append(tabList, panelRoot);
 }
 
 function activateMaterialTab(tab) {
