@@ -1481,8 +1481,8 @@
 
     .highlight-frame-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
     }
 
     .highlight-pagination {
@@ -1825,6 +1825,27 @@ function appendCollapsibleHead(root, title, target) {
   root.append(head);
 }
 
+function createCollapsibleDataCard(title) {
+  const card = element("div", "raw-fact-card dashboard-data-card");
+  const body = element("div", "collapsible-body");
+  appendCollapsibleHead(card, title, body);
+  card.append(body);
+  return { card, body };
+}
+
+function resetCollapsibleBody(body, title, ...nodes) {
+  body.replaceChildren(element("b", "collapsible-body-title", title), ...nodes);
+}
+
+function getScriptDashboardBody(title) {
+  const root = document.getElementById("script-dashboard");
+  let body = root.querySelector(":scope > .dashboard-data-card > .collapsible-body");
+  if (body) return body;
+  const { card, body: nextBody } = createCollapsibleDataCard(title);
+  root.replaceChildren(card);
+  return nextBody;
+}
+
 const metricLabels = {
   SHOW_COUNT: "展现次数",
   CLICK_COUNT: "点击次数",
@@ -1983,7 +2004,9 @@ function appendTooltipLines(tooltip, title, lines) {
 
 function renderColumnChart(title, buckets, valueFormatter, options = {}) {
   const card = element("div", `chart-card chart-card-full column-chart-card${options.cardClass ? ` ${options.cardClass}` : ""}`);
-  card.append(element("h3", "", title));
+  if (!options.hideTitle) {
+    card.append(element("h3", "", title));
+  }
   if (!Array.isArray(buckets) || buckets.length === 0) {
     card.append(element("p", "muted", "暂无可视化数据"));
     return card;
@@ -2012,8 +2035,9 @@ function renderColumnChart(title, buckets, valueFormatter, options = {}) {
     axis.append(element("span", "", axisValueFormatter(value)));
   });
   const plot = element("div", "column-plot");
+  plot.dataset.columnDensity = itemCount > 36 ? "dense" : itemCount > 18 ? "compact" : "normal";
   plot.style.gridTemplateColumns = `repeat(${itemCount}, minmax(0, 1fr))`;
-  plot.style.setProperty("--column-gap", itemCount > 24 ? "4px" : itemCount > 14 ? "8px" : "18px");
+  plot.style.setProperty("--column-gap", itemCount > 36 ? "0px" : itemCount > 24 ? "4px" : itemCount > 14 ? "8px" : "18px");
   buckets.forEach((bucket, index) => {
     const value = valueAccessor(bucket);
     const item = options.onBucketClick
@@ -2035,7 +2059,7 @@ function renderColumnChart(title, buckets, valueFormatter, options = {}) {
     item.style.minWidth = itemCount > 24 ? "0" : "46px";
     const bar = element("div", "column-bar");
     bar.style.height = `${Math.max(2, value / axisMax * 100)}%`;
-    bar.style.width = itemCount > 24 ? "100%" : "min(64px, 72%)";
+    bar.style.width = itemCount > 36 ? "10px" : itemCount > 24 ? "14px" : itemCount > 14 ? "22px" : "min(48px, 56%)";
     const label = element("span", "column-label", index % labelStep === 0 || index === itemCount - 1 ? text(bucket.bucket ?? bucket.label) : "");
     label.style.width = itemCount > 24 ? "48px" : itemCount > 14 ? "72px" : "92px";
     const tooltip = element("div", "chart-tooltip");
@@ -2170,10 +2194,12 @@ function createRegionScaleControl(state, onChange, totalCount) {
 }
 
 function renderRegionChart(card, dimensions) {
-  const tabs = element("div", "metric-switch");
-  tabs.append(element("span", "", "地域口径："));
+  const regionHeader = element("div", "region-card-header");
+  const regionTabs = element("div", "metric-switch region-tabs");
+  regionTabs.append(element("span", "", "地域口径："));
   const body = element("div", "");
-  card.append(tabs, body);
+  regionHeader.append(element("h3", "", "地域分布"), regionTabs);
+  card.append(regionHeader, body);
   const options = [
     ["province_name", "省份"],
     ["city_name", "城市"],
@@ -2188,7 +2214,7 @@ function renderRegionChart(card, dimensions) {
   body.append(chartMount, scaleMount);
   function renderRegion(dimensionKey) {
     activeDimensionKey = dimensionKey || activeDimensionKey;
-    tabs.querySelectorAll("button").forEach((button) => {
+    regionTabs.querySelectorAll("button").forEach((button) => {
       button.setAttribute("aria-pressed", String(button.dataset.dimension === activeDimensionKey));
     });
     const allBuckets = Array.isArray(dimensions[activeDimensionKey]?.buckets) ? dimensions[activeDimensionKey].buckets : [];
@@ -2208,7 +2234,8 @@ function renderRegionChart(card, dimensions) {
         `占比 ${formatNumber(bucket.metricPercentage ?? 0)}%`,
         `人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)}`,
       ],
-      maxLabels: activeDimensionKey === "city_name" ? 16 : 18,
+      maxLabels: activeDimensionKey === "city_name" ? 16 : 36,
+      hideTitle: true,
     });
     chartMount.replaceChildren(chart);
     const scale = createRegionScaleControl(state, renderRegion, allBuckets.length);
@@ -2223,7 +2250,7 @@ function renderRegionChart(card, dimensions) {
     button.setAttribute("aria-pressed", String(index === 0));
     button.textContent = label;
     button.addEventListener("click", () => renderRegion(dimensionKey));
-    tabs.append(button);
+    regionTabs.append(button);
   });
   renderRegion(activeDimensionKey);
 }
@@ -2349,13 +2376,12 @@ function renderAudienceDashboard() {
     root.append(element("p", "muted", "暂无人群汇总数据"));
     return;
   }
-  const body = element("div", "collapsible-body");
-  appendCollapsibleHead(root, "人群真实数据", body);
+  const { card, body } = createCollapsibleDataCard("人群汇总数据");
   const switcher = element("div", "metric-switch");
   switcher.append(element("span", "", "展示指标："));
   const chartGrid = element("div", "chart-grid");
   body.append(switcher, chartGrid);
-  root.append(body);
+  root.append(card);
 
   function renderMetric(metricKey) {
     switcher.querySelectorAll("button").forEach((button) => {
@@ -2363,8 +2389,7 @@ function renderAudienceDashboard() {
     });
     chartGrid.replaceChildren();
     const dimensions = metrics[metricKey]?.dimensions || {};
-    const regionCard = element("div", "chart-card-full region-card-plain");
-    regionCard.append(element("h3", "", "地域分布"));
+    const regionCard = element("div", "chart-card chart-card-full region-card");
     renderRegionChart(regionCard, dimensions);
     const audienceBuckets = topBuckets(dimensions.user_group_label_name);
     const audienceMount = element("div", "chart-card-full");
@@ -2446,7 +2471,7 @@ function animateScriptDrill(transition, targetBar) {
 }
 
 function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
-  const root = document.getElementById("script-dashboard");
+  const body = getScriptDashboardBody("脚本汇总数据");
   const transition = captureScriptBarTransition(sourceItem);
   const level2 = {};
   summary.forEach((item) => {
@@ -2494,7 +2519,7 @@ function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
   );
   detail.append(layout);
   view.append(control, detail);
-  root.replaceChildren(view);
+  resetCollapsibleBody(body, "脚本汇总数据", view);
   window.setTimeout(() => detail.classList.add("is-visible"), 0);
   animateScriptDrill(transition, bar);
 }
@@ -2548,7 +2573,9 @@ function buildScriptDashboard() {
 function renderScriptDashboard(options = {}) {
   const root = document.getElementById("script-dashboard");
   const { control, chartGrid } = buildScriptDashboard();
-  root.replaceChildren(control, chartGrid);
+  const { card, body } = createCollapsibleDataCard("脚本汇总数据");
+  body.append(control, chartGrid);
+  root.replaceChildren(card);
   if (options.level1) {
     const targetItem = Array.from(chartGrid.querySelectorAll("[data-script-level1]")).find((item) => item.dataset.scriptLevel1 === options.level1);
     const targetBar = targetItem?.querySelector(".column-bar");
@@ -3384,7 +3411,7 @@ const highlightCategoryLabels = {
   product: "产品高光洞察",
   other: "其他高光画面洞察",
 };
-const HIGHLIGHT_FRAMES_PER_PAGE = 8;
+const HIGHLIGHT_FRAMES_PER_PAGE = 10;
 
 function highFrameFactsByReference() {
   const facts = new Map();
@@ -3444,10 +3471,16 @@ function renderHighlightFramePage(panel) {
   const next = panel.querySelector("[data-highlight-page='next']");
   if (!grid) return;
   grid.replaceChildren();
-  refs.slice(page * HIGHLIGHT_FRAMES_PER_PAGE, (page + 1) * HIGHLIGHT_FRAMES_PER_PAGE).forEach((reference) => {
+  const pageRefs = refs.slice(page * HIGHLIGHT_FRAMES_PER_PAGE, (page + 1) * HIGHLIGHT_FRAMES_PER_PAGE);
+  pageRefs.forEach((reference) => {
     const fact = factsByReference.get(text(reference));
     if (fact) grid.append(renderDashboardFrame(text(reference), fact));
   });
+  for (let index = pageRefs.length; index < HIGHLIGHT_FRAMES_PER_PAGE; index += 1) {
+    const placeholder = element("div", "highlight-frame-card highlight-frame-placeholder");
+    placeholder.setAttribute("aria-hidden", "true");
+    grid.append(placeholder);
+  }
   if (status) {
     status.textContent = `${page + 1} / ${pageCount}`;
   }
@@ -3502,29 +3535,6 @@ function renderHighlightDashboard() {
     ? conclusion.highlightDashboard.groups
     : [];
   root.replaceChildren();
-
-  const overview = reportData.overview || {};
-  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
-  const successfulMaterialCount = overview.successfulMaterialCount ?? materials.length;
-  const highlightFrameCount = overview.highlightFrameCount ?? materials.reduce(
-    (sum, material) => sum + (Array.isArray(material.highlightFrames) ? material.highlightFrames.length : 0),
-    0
-  );
-  const peakLimit = Math.max(0, ...materials.map((material) => Math.max(
-    0,
-    ...(Array.isArray(material.highlightFrames) ? material.highlightFrames : [])
-      .map((frame) => {
-        const match = text(frame.rankType).match(/^peak_top_(\d+)$/);
-        return match ? Number(match[1]) : 0;
-      })
-  )));
-  const sample = element("div", "highlight-sample-overview");
-  sample.append(
-    element("span", "", `覆盖素材 ${formatNumber(successfulMaterialCount)} 条`),
-    element("span", "", `高光帧 ${formatNumber(highlightFrameCount)} 张`),
-    element("span", "", `取帧：封面 + 点击次数局部波峰 TOP${formatNumber(peakLimit)}`)
-  );
-  root.append(sample);
 
   const dimensionHighlight = conclusion.portfolioDimensionConclusions?.highlight;
   if (conclusion.schemaVersion === 3 && dimensionHighlight?.conclusion) {
@@ -3719,20 +3729,8 @@ function renderNextActions() {
 
 function renderTopMaterialRoi() {
   const root = document.getElementById("top-material-roi");
-  const roi = reportData.topMaterialRoi || {};
-  const metrics = Array.isArray(roi.metrics) ? roi.metrics : [];
   root.replaceChildren();
-  metrics.forEach((metric) => {
-    const card = element("div", "top-roi-card");
-    card.append(
-      element("b", "", text(metric.label)),
-      element("span", "", metric.available ? text(metric.displayValue) : "暂不可用")
-    );
-    root.append(card);
-  });
-  const divider = element("hr", "unified-divider");
-  divider.setAttribute("aria-hidden", "true");
-  root.append(divider);
+  root.hidden = true;
 }
 
 function renderTopDimensionConclusions() {

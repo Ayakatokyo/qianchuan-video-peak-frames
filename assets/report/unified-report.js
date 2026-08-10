@@ -38,9 +38,202 @@
   }
 
   function exposeTruncatedMaterialTitles() {
-    document.querySelectorAll('.preference-item .material-link').forEach(function (link) {
+    document.querySelectorAll('.preference-item .material-link, .tab-list button, .material-deep-tab').forEach(function (link) {
       var title = link.textContent.trim();
       if (title) link.setAttribute('title', title);
+    });
+  }
+
+  function normalizeYuntuHighlightPagination() {
+    if (!document.body.classList.contains('unified-yuntu')) return;
+
+    var pageSize = 8;
+    function renderPage(panel, requestedPage) {
+      var cards = Array.from(panel.querySelectorAll('[data-highlight-frame-card]'));
+      var grid = panel.querySelector('.highlight-frame-grid');
+      var pagination = panel.querySelector('[data-highlight-pagination]');
+      if (!grid || !pagination) return;
+      if (grid.nextElementSibling !== pagination) grid.after(pagination);
+
+      if (cards.length <= pageSize) {
+        cards.forEach(function (card) { card.hidden = false; });
+        pagination.hidden = true;
+        return;
+      }
+
+      var pageCount = Math.ceil(cards.length / pageSize);
+      var page = typeof requestedPage === 'number'
+        ? requestedPage
+        : Number(panel.getAttribute('data-unified-highlight-page') || '1');
+      page = Math.max(1, Math.min(pageCount, page));
+      panel.setAttribute('data-unified-highlight-page', String(page));
+      cards.forEach(function (card, index) {
+        card.hidden = index < (page - 1) * pageSize || index >= page * pageSize;
+      });
+      pagination.hidden = false;
+      var status = pagination.querySelector('[data-highlight-page-status]');
+      var previous = pagination.querySelector('[data-highlight-page="previous"]');
+      var next = pagination.querySelector('[data-highlight-page="next"]');
+      if (status) status.textContent = page + ' / ' + pageCount;
+      if (previous) previous.disabled = page <= 1;
+      if (next) next.disabled = page >= pageCount;
+    }
+
+    document.querySelectorAll('.highlight-category-panel').forEach(function (panel) {
+      renderPage(panel, 1);
+    });
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-highlight-page]');
+      if (!button) return;
+      var panel = button.closest('.highlight-category-panel');
+      if (!panel) return;
+      var paginationScrollX = window.scrollX;
+      var paginationScrollY = window.scrollY;
+      event.preventDefault();
+      event.stopPropagation();
+      var currentPage = Number(panel.getAttribute('data-unified-highlight-page') || '1');
+      renderPage(panel, button.getAttribute('data-highlight-page') === 'next' ? currentPage + 1 : currentPage - 1);
+      window.requestAnimationFrame(function () {
+        window.scrollTo(paginationScrollX, paginationScrollY);
+      });
+    }, true);
+  }
+
+  function bindStaticYuntuHighlightPagination() {
+    if (!document.body.classList.contains('unified-yuntu')) return;
+
+    document.addEventListener('click', function (event) {
+      var label = event.target.closest('.static-highlight-pagination label.highlight-page-button[for]');
+      if (!label) return;
+      var control = document.getElementById(label.htmlFor);
+      if (!control) return;
+      var staticPageScrollX = window.scrollX;
+      var staticPageScrollY = window.scrollY;
+      event.preventDefault();
+      event.stopPropagation();
+      control.checked = true;
+      if (typeof control.focus === 'function') control.focus({ preventScroll: true });
+      window.requestAnimationFrame(function () {
+        window.scrollTo(staticPageScrollX, staticPageScrollY);
+        window.requestAnimationFrame(function () {
+          window.scrollTo(staticPageScrollX, staticPageScrollY);
+        });
+      });
+    }, true);
+  }
+
+  function createUnifiedHighlightLightbox() {
+    var existingOverlay = document.getElementById('unified-highlight-lightbox');
+    if (existingOverlay) return existingOverlay;
+
+    var overlay = document.createElement('div');
+    overlay.id = 'unified-highlight-lightbox';
+    overlay.className = 'unified-highlight-lightbox';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', '高光帧大图');
+    overlay.hidden = true;
+
+    var surface = document.createElement('div');
+    surface.className = 'unified-highlight-lightbox-surface';
+    var closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.setAttribute('data-unified-close-highlight-lightbox', 'true');
+    closeButton.setAttribute('aria-label', '关闭高光帧大图');
+    closeButton.textContent = '关闭';
+    var image = document.createElement('img');
+    image.alt = '高光帧大图';
+    var caption = document.createElement('p');
+
+    surface.append(closeButton, image, caption);
+    overlay.append(surface);
+    document.body.append(overlay);
+    return overlay;
+  }
+
+  function bindUnifiedHighlightLightbox() {
+    var overlay = createUnifiedHighlightLightbox();
+    var lastFocusedElement = null;
+
+    function closeOverlay() {
+      if (!overlay || overlay.hidden) return;
+      overlay.hidden = true;
+      document.body.style.overflow = '';
+      var overlayImage = overlay.querySelector('img');
+      if (overlayImage) overlayImage.removeAttribute('src');
+      if (lastFocusedElement && typeof lastFocusedElement.focus === 'function') {
+        lastFocusedElement.focus({ preventScroll: true });
+      }
+      lastFocusedElement = null;
+    }
+
+    function openLightbox(button) {
+      var source = button.getAttribute('data-highlight-src');
+      if (!source) return;
+      var caption = button.getAttribute('data-highlight-caption') || button.getAttribute('aria-label') || '';
+      var scrollX = window.scrollX;
+      var scrollY = window.scrollY;
+      if (overlay) {
+        lastFocusedElement = document.activeElement;
+        var overlayImage = overlay.querySelector('img');
+        var overlayCaption = overlay.querySelector('p');
+        if (overlayImage) overlayImage.src = source;
+        if (overlayCaption) overlayCaption.textContent = caption;
+        overlay.hidden = false;
+        document.body.style.overflow = 'hidden';
+        var overlayClose = overlay.querySelector('[data-unified-close-highlight-lightbox]');
+        if (overlayClose && typeof overlayClose.focus === 'function') {
+          overlayClose.focus({ preventScroll: true });
+        }
+        window.requestAnimationFrame(function () {
+          window.scrollTo(scrollX, scrollY);
+        });
+        return;
+      }
+      var dialog = document.getElementById('highlight-lightbox');
+      if (dialog && typeof dialog.showModal === 'function') {
+        var dialogImage = dialog.querySelector('img');
+        var dialogCaption = dialog.querySelector('p');
+        if (dialogImage) dialogImage.src = source;
+        if (dialogCaption) dialogCaption.textContent = caption;
+        if (!dialog.open) dialog.showModal();
+        var dialogClose = dialog.querySelector('[data-close-highlight-lightbox]');
+        if (dialogClose && typeof dialogClose.focus === 'function') {
+          dialogClose.focus({ preventScroll: true });
+        }
+        window.requestAnimationFrame(function () {
+          window.scrollTo(scrollX, scrollY);
+        });
+        return;
+      }
+      var frameLightbox = document.getElementById('frame-lightbox');
+      if (!frameLightbox) return;
+      var overlayImage = frameLightbox.querySelector('img');
+      var overlayCaption = frameLightbox.querySelector('.frame-lightbox-caption');
+      if (overlayImage) overlayImage.src = source;
+      if (overlayCaption) overlayCaption.textContent = caption;
+      frameLightbox.hidden = false;
+      document.body.style.overflow = 'hidden';
+      var closeButton = frameLightbox.querySelector('.frame-lightbox-close');
+      if (closeButton) closeButton.focus();
+    }
+
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest('[data-highlight-src]');
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      openLightbox(button);
+    }, true);
+    document.addEventListener('click', function (event) {
+      if (!overlay) return;
+      if (event.target === overlay || event.target.closest('[data-unified-close-highlight-lightbox]')) {
+        event.preventDefault();
+        closeOverlay();
+      }
+    }, true);
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') closeOverlay();
     });
   }
 
@@ -111,19 +304,22 @@
   }
 
   function parseSerializedPieStops(source) {
-    var stopPattern = /(#[0-9a-f]{3,8}|rgba?\([^)]+\))\s+(-?[\d.]+)deg(?:\s+(-?[\d.]+)deg)?/gi;
+    var stopPattern = /(#[0-9a-f]{3,8}|rgba?\([^)]+\))\s+(-?[\d.]+)(deg|%)(?:\s+(-?[\d.]+)\3)?/gi;
     var explicitSlices = [];
     var singleStops = [];
     var match;
+    function toDegrees(value, unit) {
+      return unit === '%' ? Number(value) * 3.6 : Number(value);
+    }
     while ((match = stopPattern.exec(source))) {
-      if (match[3] !== undefined) {
+      if (match[4] !== undefined) {
         explicitSlices.push({
-          start: Number(match[2]),
-          end: Number(match[3]),
+          start: toDegrees(match[2], match[3]),
+          end: toDegrees(match[4], match[3]),
           color: match[1]
         });
       } else {
-        singleStops.push({ angle: Number(match[2]), color: match[1] });
+        singleStops.push({ angle: toDegrees(match[2], match[3]), color: match[1] });
       }
     }
     if (explicitSlices.length) return explicitSlices;
@@ -276,5 +472,8 @@
   syncReportNavigation();
   exposeTruncatedMaterialTitles();
   normalizeQianchuanPresentation();
+  normalizeYuntuHighlightPagination();
+  bindStaticYuntuHighlightPagination();
+  bindUnifiedHighlightLightbox();
   observePieCharts();
 }());

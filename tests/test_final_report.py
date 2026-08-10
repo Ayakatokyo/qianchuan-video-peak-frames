@@ -377,13 +377,15 @@ class TopMaterialRoiReportTests(unittest.TestCase):
         self.assertEqual(data["topMaterialRoi"]["source"], "verifiedAssetFacts")
         self.assertEqual(data["topMaterialRoi"]["metrics"][0]["value"], "1.25")
 
-    def test_template_has_fixed_top_material_roi_cards_before_ai_conclusion(self):
+    def test_template_keeps_roi_data_but_does_not_render_top_roi_cards(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
         )
 
         self.assertIn('id="top-material-roi"', template)
         self.assertIn("function renderTopMaterialRoi", template)
+        self.assertIn("root.hidden = true;", template)
+        self.assertNotIn('const card = element("div", "top-roi-card");', template)
         self.assertLess(
             template.index('id="top-material-roi"'),
             template.index('id="overall-conclusion"'),
@@ -1782,6 +1784,18 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("不得手工修改", skill)
         self.assertIn("1440x1000", skill)
 
+    def test_unified_report_style_defines_text_card_and_control_contract(self):
+        css = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("--unified-text-card: #f7ead8;", css)
+        self.assertIn(".top-dimension-card", css)
+        self.assertIn(".highlight-summary", css)
+        self.assertIn(".tab-list button", css)
+        self.assertIn("background: var(--unified-text-card);", css)
+        self.assertIn("border-radius: 8px;", css)
+
     def test_render_html_inlines_vendored_unified_assets(self):
         rendered = report_renderer.render_html_report({"status": "complete"})
 
@@ -1838,6 +1852,167 @@ class FinalReportRenderTests(unittest.TestCase):
             "next-actions-section",
         ):
             self.assertIn(f'id="{section_id}"', template)
+
+    def test_unified_report_removes_duplicate_dividers(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('root.append(divider);', template)
+        self.assertIn(".unified-report .section-header {", css_text)
+        self.assertIn("border-bottom: 0;", css_text)
+        self.assertIn(".unified-report .insight-layout {", css_text)
+        self.assertIn("border-top: 0;", css_text)
+        self.assertIn(".unified-report .top-roi-grid + .top-dimension-conclusions {", css_text)
+        self.assertIn("border-top: 1px solid var(--unified-line);", css_text)
+        self.assertIn(".unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card:nth-child(n + 3)", css_text)
+        self.assertIn("border-top: 1px solid var(--unified-line);", css_text)
+        self.assertIn("border-bottom: 0;", css_text)
+        self.assertIn(".unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card:nth-child(2n)::before", css_text)
+        self.assertIn("top: 18px;", css_text)
+        self.assertIn("bottom: 18px;", css_text)
+        self.assertNotIn(".top-dimension-card:nth-child(2n) {\n  padding-left: var(--unified-content-gap);\n  border-left: 1px solid var(--unified-line);", css_text)
+
+    def test_batch_data_dashboards_use_collapsible_raw_fact_shells(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("function createCollapsibleDataCard(title)", template)
+        self.assertIn('element("div", "raw-fact-card dashboard-data-card")', template)
+        self.assertIn('const { card, body } = createCollapsibleDataCard("人群汇总数据");', template)
+        self.assertIn('const { card, body } = createCollapsibleDataCard("脚本汇总数据");', template)
+        self.assertIn('getScriptDashboardBody("脚本汇总数据")', template)
+        self.assertIn('resetCollapsibleBody(body, "脚本汇总数据", view);', template)
+        self.assertIn(".unified-report .dashboard-data-card {", css_text)
+        self.assertIn(".unified-report .dashboard-data-card > .collapsible-body {", css_text)
+        self.assertIn(".unified-report .dashboard-data-card > .collapsible-body[hidden] {", css_text)
+        self.assertIn("display: none;", css_text)
+        self.assertIn(".unified-report .dashboard-data-card .metric-switch button {", css_text)
+        self.assertIn("min-height: 36px !important;", css_text)
+        self.assertIn(".unified-report .dashboard-data-card .collapsible-body-title {", css_text)
+        self.assertIn("font-size: 18px;", css_text)
+        self.assertIn(".unified-report #audience-dashboard .collapsible-body {", css_text)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) max-content;", css_text)
+        self.assertIn(".unified-report #audience-dashboard .metric-switch {", css_text)
+        self.assertIn("justify-self: end;", css_text)
+
+    def test_dense_timeline_metric_buttons_and_highlight_grid_height_are_stable(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("for (let index = pageRefs.length; index < HIGHLIGHT_FRAMES_PER_PAGE; index += 1)", template)
+        self.assertIn("const HIGHLIGHT_FRAMES_PER_PAGE = 10;", template)
+        self.assertIn('element("div", "highlight-frame-card highlight-frame-placeholder")', template)
+        self.assertIn(".unified-report .material-body .raw-fact-card .metric-switch {", css_text)
+        self.assertIn("flex-wrap: nowrap;", css_text)
+        self.assertIn(".unified-report .material-body .raw-fact-card .metric-switch button {", css_text)
+        self.assertIn("font-size: 12px;", css_text)
+        self.assertIn("padding: 5px 7px;", css_text)
+        self.assertIn(".unified-report .highlight-frame-grid {", css_text)
+        self.assertIn("grid-template-columns: repeat(5, minmax(0, 1fr));", css_text)
+        self.assertIn("grid-auto-rows: minmax(214px, auto);", css_text)
+        self.assertIn("min-height: 440px;", css_text)
+        self.assertIn(".unified-report .highlight-frame-preview {", css_text)
+        self.assertIn("aspect-ratio: 9 / 16;", css_text)
+        self.assertIn(".unified-report .highlight-frame-placeholder {", css_text)
+        self.assertIn("visibility: hidden;", css_text)
+
+    def test_audience_pie_legends_use_fixed_dashboard_layouts(self):
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(".unified-report .dashboard-data-card .chart-grid > .chart-card:nth-child(2) .pie-legend {", css_text)
+        self.assertIn("grid-template-columns: repeat(3, max-content);", css_text)
+        self.assertIn(".unified-report .dashboard-data-card .chart-grid > .chart-card:nth-child(3) .pie-legend {", css_text)
+        self.assertIn("align-content: center;", css_text)
+        self.assertIn("min-height: 96px;", css_text)
+
+    def test_unified_report_applies_latest_visual_comment_tweaks(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('const sample = element("div", "highlight-sample-overview");', template)
+        self.assertNotIn("root.append(sample);", template)
+        self.assertIn(".unified-report .copy-button {", css_text)
+        self.assertIn("font-size: 14px;", css_text)
+        self.assertIn("grid-template-columns: 184px minmax(0, 1fr);", css_text)
+        self.assertIn("overflow-x: hidden;", css_text)
+        self.assertIn(".unified-report .report-nav a {", css_text)
+        self.assertIn("white-space: nowrap;", css_text)
+        self.assertNotIn(".unified-report .report-nav a:first-of-type", css_text)
+        self.assertIn(".unified-report #next-actions {", css_text)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", css_text)
+        self.assertIn(".unified-report #next-actions .rec-card:nth-child(2n)::before", css_text)
+        self.assertIn("left: calc(var(--unified-content-gap) / -2);", css_text)
+
+    def test_audience_region_card_header_lives_inside_card(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('const regionCard = element("div", "chart-card chart-card-full region-card");', template)
+        self.assertIn('const regionHeader = element("div", "region-card-header");', template)
+        self.assertIn('const regionTabs = element("div", "metric-switch region-tabs");', template)
+        self.assertIn('regionHeader.append(element("h3", "", "地域分布"), regionTabs);', template)
+        self.assertIn("card.append(regionHeader, body);", template)
+        self.assertIn("hideTitle: true,", template)
+
+    def test_unified_report_centers_pie_legends_and_unframes_highlight_tabs(self):
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("justify-content: center;", css_text)
+        self.assertIn("flex-wrap: wrap;", css_text)
+        self.assertIn("overflow-x: visible;", css_text)
+        self.assertIn(".unified-report .highlight-dashboard-tabs {", css_text)
+        self.assertIn("border: 0;", css_text)
+        self.assertIn("background: transparent;", css_text)
+
+    def test_region_columns_stay_within_plot_when_many_buckets_are_visible(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('plot.dataset.columnDensity = itemCount > 36 ? "dense" : itemCount > 18 ? "compact" : "normal";', template)
+        self.assertIn('plot.style.setProperty("--column-gap", itemCount > 36 ? "0px" : itemCount > 24 ? "4px" : itemCount > 14 ? "8px" : "18px");', template)
+        self.assertIn('bar.style.width = itemCount > 36 ? "10px" : itemCount > 24 ? "14px" : itemCount > 14 ? "22px" : "min(48px, 56%)";', template)
+        self.assertIn(".unified-report .column-plot[data-column-density=\"dense\"]", css_text)
+        self.assertIn("overflow: hidden;", css_text)
+        self.assertIn(".unified-report .column-plot[data-column-density=\"dense\"] .column-bar", css_text)
+        self.assertIn("width: 100% !important;", css_text)
+        self.assertIn("display: block;", css_text)
+        self.assertIn("max-width: 100%;", css_text)
+        self.assertIn("text-overflow: ellipsis;", css_text)
+        self.assertIn("writing-mode: vertical-rl;", css_text)
+        self.assertIn(".unified-report .chart-card-plain", css_text)
+        self.assertIn("border: 0 !important;", css_text)
+        self.assertIn("border-color: transparent !important;", css_text)
+        self.assertIn(".unified-report .column-item:first-child .chart-tooltip", css_text)
+        self.assertIn(".unified-report .region-tabs button", css_text)
+        self.assertIn("top: 16px;", css_text)
+        self.assertIn("bottom: auto;", css_text)
+        self.assertIn("width: min(1280px, calc(100% - 20px));", css_text)
+        self.assertIn("grid-template-columns: 184px minmax(0, 1fr);", css_text)
 
     def test_template_keeps_current_structure_with_livecheck_visual_style(self):
         template_path = ROOT / "templates" / "final-report-template.html"
@@ -2103,13 +2278,13 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("city_name: { ratio: 0.16, minRatio: 0.005, minVisible: 4 },", html_text)
         self.assertIn("const minVisible = state.minVisible || (activeDimensionKey === \"city_name\" ? 12 : 8);", html_text)
         self.assertIn("plot.style.gridTemplateColumns = `repeat(${itemCount}, minmax(0, 1fr))`;", html_text)
-        self.assertIn("bar.style.width = itemCount > 24 ? \"100%\" : \"min(64px, 72%)\";", html_text)
+        self.assertIn("bar.style.width = itemCount > 36 ? \"10px\" : itemCount > 24 ? \"14px\" : itemCount > 14 ? \"22px\" : \"min(48px, 56%)\";", html_text)
         self.assertNotIn("column-chart-scroll", html_text)
         self.assertIn("tooltipLines: (bucket) => [", html_text)
         self.assertIn("`占比 ${formatNumber(bucket.metricPercentage ?? 0)}%`", html_text)
         self.assertIn("`人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)}`", html_text)
-        self.assertIn('const regionCard = element("div", "chart-card-full region-card-plain");', html_text)
-        self.assertIn(".region-card-plain {", html_text)
+        self.assertIn('const regionCard = element("div", "chart-card chart-card-full region-card");', html_text)
+        self.assertIn('"region-card-header"', html_text)
         self.assertIn(".chart-card-plain {", html_text)
         self.assertIn("border-color: transparent;", html_text)
         self.assertIn("padding-left: 10px;", html_text)
