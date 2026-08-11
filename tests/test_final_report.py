@@ -1960,6 +1960,9 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", css_text)
         self.assertIn(".unified-report #next-actions .rec-card:nth-child(2n)::before", css_text)
         self.assertIn("left: calc(var(--unified-content-gap) / -2);", css_text)
+        self.assertIn(".unified-report .audience-drill-panel .preference-card {", css_text)
+        self.assertIn("background: transparent;", css_text)
+        self.assertIn("padding: 0;", css_text)
 
     def test_audience_region_card_header_lives_inside_card(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(

@@ -455,6 +455,14 @@ body.unified-report {
   padding: 18px;
 }
 
+.unified-report .audience-drill-panel .preference-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
 .unified-qianchuan :is(#audience-primary, #script-primary) {
   display: grid;
   gap: var(--unified-feature-card-gap);
