@@ -290,8 +290,9 @@ def _aggregate_audience_metric(records_by_material, selected_ids, metric):
     return {"dimensions": normalized_dimensions, "missingMaterialIds": missing_material_ids}
 
 
-def _aggregate_audience_preferences(records_by_material, materials):
-    groups = {}
+def _aggregate_audience_preferences(records_by_material, materials, metric=PREFERENCE_METRIC):
+    material_buckets = {}
+    baseline_buckets = {}
     for material in materials:
         material_id = material["materialId"]
         material_records = records_by_material.get(material_id, [])
@@ -303,7 +304,7 @@ def _aggregate_audience_preferences(records_by_material, materials):
                 continue
             if record.get("recordType") != "crowd_analysis":
                 continue
-            if record.get("displayMetric") != PREFERENCE_METRIC:
+            if record.get("displayMetric") != metric:
                 continue
             if _text(record.get("dimensionKey")) != PREFERENCE_DIMENSION:
                 continue
@@ -312,37 +313,63 @@ def _aggregate_audience_preferences(records_by_material, materials):
                 continue
             bucket = _bucket_label(record, PREFERENCE_DIMENSION)
             value = _crowd_metric_value(record)
-            if not bucket or value is None or value < 0:
+            if not bucket or value is None or value <= 0:
                 continue
             buckets[bucket] = buckets.get(bucket, 0.0) + value
+            baseline_buckets[bucket] = baseline_buckets.get(bucket, 0.0) + value
+        if buckets:
+            material_buckets[material_id] = buckets
 
+    baseline_total = sum(baseline_buckets.values())
+    if baseline_total <= 0:
+        return []
+    baseline_percentages = {
+        group: value / baseline_total * 100.0
+        for group, value in baseline_buckets.items()
+        if value > 0
+    }
+
+    groups = {}
+    materials_by_id = {material["materialId"]: material for material in materials}
+    for material_id, buckets in material_buckets.items():
+        material = materials_by_id[material_id]
         total = sum(buckets.values())
         if total <= 0:
             continue
-        maximum = max(buckets.values())
-        leaders = [bucket for bucket, value in buckets.items() if value == maximum]
-        if len(leaders) != 1:
-            continue
-        group = leaders[0]
-        groups.setdefault(group, []).append(
-            {
-                "materialId": material_id,
-                "materialName": material["materialName"],
-                "audiencePercentage": round(maximum / total * 100.0, 6),
-                "audienceShowCount": round(maximum, 6),
-                "totalCost": round(
-                    _finite_number(material.get("totalCost")) or 0.0, 6
-                ),
+        for group, value in buckets.items():
+            baseline_percentage = baseline_percentages.get(group)
+            if not baseline_percentage:
+                continue
+            audience_percentage = value / total * 100.0
+            preference_delta = audience_percentage - baseline_percentage
+            if preference_delta <= 0:
+                continue
+            preference_lift = audience_percentage / baseline_percentage
+            item = {
+                    "materialId": material_id,
+                    "materialName": material["materialName"],
+                    "preferenceMetric": metric,
+                    "audiencePercentage": round(audience_percentage, 6),
+                    "audienceMetricValue": round(value, 6),
+                    "audienceBaselinePercentage": round(baseline_percentage, 6),
+                    "preferenceDeltaPercentage": round(preference_delta, 6),
+                    "preferenceLift": round(preference_lift, 6),
+                    "totalCost": round(
+                        _finite_number(material.get("totalCost")) or 0.0, 6
+                    ),
             }
-        )
+            if metric == PREFERENCE_METRIC:
+                item["audienceShowCount"] = round(value, 6)
+            groups.setdefault(group, []).append(item)
 
     preferences = []
     for group, items in sorted(groups.items()):
         ranked_items = sorted(
             items,
             key=lambda item: (
-                -item["audiencePercentage"],
                 -item["totalCost"],
+                -item["audiencePercentage"],
+                -item["preferenceDeltaPercentage"],
                 item["materialId"],
             ),
         )[:PREFERENCE_LIMIT]
@@ -734,6 +761,10 @@ def _publish_output_pair(output_dir, analysis, prompt):
 def build_diagnostic_analysis(top_payload, records_by_material, commercial=None):
     materials, warnings = _selected_materials(top_payload)
     selected_ids = [material["materialId"] for material in materials]
+    preferences_by_metric = {
+        metric: _aggregate_audience_preferences(records_by_material, materials, metric)
+        for metric in AUDIENCE_METRICS
+    }
     return {
         "schemaVersion": SCHEMA_VERSION,
         "period": _period(top_payload),
@@ -743,7 +774,8 @@ def build_diagnostic_analysis(top_payload, records_by_material, commercial=None)
                 metric: _aggregate_audience_metric(records_by_material, selected_ids, metric)
                 for metric in AUDIENCE_METRICS
             },
-            "preferences": _aggregate_audience_preferences(records_by_material, materials),
+            "preferences": preferences_by_metric.get(PREFERENCE_METRIC, []),
+            "preferencesByMetric": preferences_by_metric,
         },
         "scripts": _build_scripts(records_by_material, selected_ids, warnings),
         "delivery": {"materials": _build_delivery(records_by_material, selected_ids)},

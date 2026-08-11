@@ -1884,9 +1884,9 @@ class FinalReportRenderTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn("function createCollapsibleDataCard(title)", template)
+        self.assertIn('function createCollapsibleDataCard(title = "", toggleLabel = "数据")', template)
         self.assertIn('element("div", "raw-fact-card dashboard-data-card")', template)
-        self.assertIn('const { card, body } = createCollapsibleDataCard("人群汇总数据");', template)
+        self.assertIn('const { card, body } = createCollapsibleDataCard("", "人群汇总数据");', template)
         self.assertIn('const { card, body } = createCollapsibleDataCard("脚本汇总数据");', template)
         self.assertIn('getScriptDashboardBody("脚本汇总数据")', template)
         self.assertIn('resetCollapsibleBody(body, "脚本汇总数据", view);', template)
@@ -1963,6 +1963,21 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(".unified-report .audience-drill-panel .preference-card {", css_text)
         self.assertIn("background: transparent;", css_text)
         self.assertIn("padding: 0;", css_text)
+        self.assertIn('"p",\n    "preference-rule-note",', template)
+        self.assertIn("单个素材在该人群上的占比高于基准才进入候选池", template)
+        self.assertIn(".unified-report .preference-rule-note {", css_text)
+        self.assertIn("line-height: 1.7;", css_text)
+
+    def test_template_preview_uses_unified_stylesheet_link(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        rendered = report_renderer.render_html_report({"status": "complete"})
+
+        self.assertIn('data-template-preview-style="true"', template)
+        self.assertIn('href="../assets/report/unified-report.css"', template)
+        self.assertNotIn('data-template-preview-style="true"', rendered)
+        self.assertNotIn('href="../assets/report/unified-report.css"', rendered)
 
     def test_audience_region_card_header_lives_inside_card(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
@@ -2001,6 +2016,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('bar.style.width = itemCount > 36 ? "10px" : itemCount > 24 ? "14px" : itemCount > 14 ? "22px" : "min(48px, 56%)";', template)
         self.assertIn(".unified-report .column-plot[data-column-density=\"dense\"]", css_text)
         self.assertIn("overflow: hidden;", css_text)
+        self.assertIn(".unified-report .region-card .column-plot", css_text)
+        self.assertIn("overflow: visible !important;", css_text)
         self.assertIn(".unified-report .column-plot[data-column-density=\"dense\"] .column-bar", css_text)
         self.assertIn("width: 100% !important;", css_text)
         self.assertIn("display: block;", css_text)
@@ -2011,6 +2028,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("border: 0 !important;", css_text)
         self.assertIn("border-color: transparent !important;", css_text)
         self.assertIn(".unified-report .column-item:first-child .chart-tooltip", css_text)
+        self.assertIn(".unified-report .region-card .column-item:first-child .chart-tooltip", css_text)
+        self.assertIn("transform: translateX(0);", css_text)
         self.assertIn(".unified-report .region-tabs button", css_text)
         self.assertIn("top: 16px;", css_text)
         self.assertIn("bottom: auto;", css_text)
@@ -2106,11 +2125,14 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(".collapsible-body[hidden] {", html_text)
         self.assertIn("display: none;", html_text)
         self.assertIn('button.setAttribute("aria-expanded", String(expanded));', html_text)
-        self.assertIn('action.textContent = expanded ? "收起数据" : "展开数据";', html_text)
+        self.assertIn('action.textContent = expanded ? `收起${label}` : `展开${label}`;', html_text)
+        self.assertIn('function createCollapseToggle(target, label = "数据", defaultExpanded = true)', html_text)
         self.assertIn("target.hidden = !expanded;", html_text)
-        self.assertIn('target.prepend(element("b", "collapsible-body-title", title));', html_text)
-        self.assertIn("收起数据", html_text)
-        self.assertIn("展开数据", html_text)
+        self.assertIn('if (title) target.prepend(element("b", "collapsible-body-title", title));', html_text)
+        self.assertIn('createCollapsibleDataCard("", "人群汇总数据")', html_text)
+        self.assertIn('className = "audience-dashboard-controls"', html_text)
+        self.assertIn('function createCollapsibleDataCard(title = "", toggleLabel = "数据")', html_text)
+        self.assertIn('appendCollapsibleHead(card, title, body, toggleLabel);', html_text)
         self.assertNotIn("收起真实数据", html_text)
         self.assertNotIn("展开真实数据", html_text)
         self.assertIn("function renderInteractionTimeline", html_text)
@@ -2296,7 +2318,9 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(".column-chart-card {", html_text)
         self.assertIn('cardClass: "chart-card-plain"', html_text)
         self.assertIn("function renderAudienceGroupDrill", html_text)
-        self.assertIn("renderAudiencePreferenceCard(selectedName)", html_text)
+        self.assertIn("renderAudiencePreferenceCard(selectedName, metricKey)", html_text)
+        self.assertIn("preferencesByMetric[metricKey]", html_text)
+        self.assertIn("`${metricLabels[metricKey] || \"人群\"}占比 ${formatNumber(item.audiencePercentage)}%`", html_text)
         self.assertIn("function renderAudienceDashboardOverview", html_text)
         self.assertIn("点击八大人群柱可查看该人群 TOP3 素材", html_text)
         self.assertIn("返回八大人群分布", html_text)

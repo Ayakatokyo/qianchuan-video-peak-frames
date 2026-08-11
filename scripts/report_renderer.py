@@ -332,5 +332,13 @@ def render_html_report(
     return (
         template.replace(REPORT_STYLE_PLACEHOLDER, style)
         .replace(REPORT_SCRIPT_PLACEHOLDER, script)
+        .replace(
+            '<link rel="stylesheet" href="../assets/report/unified-report.css" data-template-preview-style="true" />\n',
+            ""
+        )
+        .replace(
+            '<link\n    rel="stylesheet"\n    href="../assets/report/unified-report.css"\n    data-template-preview-style="true"\n  />\n',
+            ""
+        )
         .replace(REPORT_DATA_PLACEHOLDER, json_for_html_script(template_data))
     )

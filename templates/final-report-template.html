@@ -4,6 +4,11 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>千川 TOP 素材池商业诊断报告</title>
+  <link
+    rel="stylesheet"
+    href="../assets/report/unified-report.css"
+    data-template-preview-style="true"
+  />
   <style>
     :root {
       --bg: #120b08;
@@ -1798,7 +1803,7 @@ function element(tag, className, content) {
   return node;
 }
 
-function createCollapseToggle(target, defaultExpanded = true) {
+function createCollapseToggle(target, label = "数据", defaultExpanded = true) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "collapsible-toggle";
@@ -1807,7 +1812,7 @@ function createCollapseToggle(target, defaultExpanded = true) {
   let expanded = Boolean(defaultExpanded);
   function sync() {
     button.setAttribute("aria-expanded", String(expanded));
-    action.textContent = expanded ? "收起数据" : "展开数据";
+    action.textContent = expanded ? `收起${label}` : `展开${label}`;
     target.hidden = !expanded;
   }
   button.addEventListener("click", () => {
@@ -1818,23 +1823,24 @@ function createCollapseToggle(target, defaultExpanded = true) {
   return button;
 }
 
-function appendCollapsibleHead(root, title, target) {
+function appendCollapsibleHead(root, title, target, toggleLabel = "数据") {
   const head = element("div", "collapsible-head");
-  target.prepend(element("b", "collapsible-body-title", title));
-  head.append(createCollapseToggle(target));
+  if (title) target.prepend(element("b", "collapsible-body-title", title));
+  head.append(createCollapseToggle(target, toggleLabel));
   root.append(head);
 }
 
-function createCollapsibleDataCard(title) {
+function createCollapsibleDataCard(title = "", toggleLabel = "数据") {
   const card = element("div", "raw-fact-card dashboard-data-card");
   const body = element("div", "collapsible-body");
-  appendCollapsibleHead(card, title, body);
+  appendCollapsibleHead(card, title, body, toggleLabel);
   card.append(body);
   return { card, body };
 }
 
 function resetCollapsibleBody(body, title, ...nodes) {
-  body.replaceChildren(element("b", "collapsible-body-title", title), ...nodes);
+  const titleNodes = title ? [element("b", "collapsible-body-title", title)] : [];
+  body.replaceChildren(...titleNodes, ...nodes);
 }
 
 function getScriptDashboardBody(title) {
@@ -2260,13 +2266,21 @@ function renderAudiencePreferences() {
   root.replaceChildren();
 }
 
-function renderAudiencePreferenceCard(audienceGroup) {
-  const preferences = Array.isArray(reportData.audience?.preferences)
+function renderAudiencePreferenceCard(audienceGroup, metricKey = "SHOW_COUNT") {
+  const preferencesByMetric = reportData.audience?.preferencesByMetric || {};
+  const preferences = Array.isArray(preferencesByMetric[metricKey])
+    ? preferencesByMetric[metricKey]
+    : Array.isArray(reportData.audience?.preferences)
     ? reportData.audience.preferences : [];
   const card = element("div", "preference-card");
   const groupName = text(audienceGroup);
   const preference = preferences.find((item) => text(item.audienceGroup) === groupName);
   card.append(element("h3", "", "核心人群偏好 TOP3 素材"));
+  card.append(element(
+    "p",
+    "preference-rule-note",
+    "入选规则：先用本批素材整体人群占比作为基准；单个素材在该人群上的占比高于基准才进入候选池；候选素材再按素材总消耗从高到低取 TOP3，不做补位。"
+  ));
   const group = element("section", "preference-group");
   group.append(element("h4", "", groupName || "未选择人群"));
   const materials = Array.isArray(preference?.topMaterials) ? preference.topMaterials : [];
@@ -2286,7 +2300,7 @@ function renderAudiencePreferenceCard(audienceGroup) {
       element(
         "span",
         "preference-metric",
-        `人群占比 ${formatNumber(item.audiencePercentage)}%`
+        `${metricLabels[metricKey] || "人群"}占比 ${formatNumber(item.audiencePercentage)}%`
       ),
       element(
         "span",
@@ -2325,7 +2339,7 @@ function renderAudienceGroupDrill(root, buckets, selectedBucket, metricKey, sour
     plot,
     element("span", "muted", `${metricLabels[metricKey] || metricKey}占比 ${formatNumber(selectedBucket?.metricPercentage ?? selectedBucket?.value)}%`)
   );
-  panel.append(renderAudiencePreferenceCard(selectedName));
+  panel.append(renderAudiencePreferenceCard(selectedName, metricKey));
   layout.append(primary, panel);
   detail.append(layout);
   view.append(control, detail);
@@ -2336,8 +2350,6 @@ function renderAudienceGroupDrill(root, buckets, selectedBucket, metricKey, sour
 
 function renderAudienceDashboardOverview(root, buckets, metricKey, options = {}) {
   const view = element("div", "script-drill-view");
-  const control = element("div", "script-dashboard-control");
-  control.append(element("p", "script-dashboard-hint", "点击八大人群柱可查看该人群 TOP3 素材"));
   const chartGrid = element("div", "chart-grid script-dashboard-overview");
   chartGrid.append(renderColumnChart("八大人群分布", buckets, null, {
     tooltipFormatter: (bucket) => `占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`,
@@ -2345,7 +2357,7 @@ function renderAudienceDashboardOverview(root, buckets, metricKey, options = {})
     bucketDataKey: "audienceGroup",
     onBucketClick: (bucket, item) => renderAudienceGroupDrill(root, buckets, bucket, metricKey, item),
   }));
-  view.append(control, chartGrid);
+  view.append(chartGrid);
   root.replaceChildren(view);
   if (options.selectedName) {
     const targetItem = Array.from(chartGrid.querySelectorAll("[data-audience-group]")).find((item) => item.dataset.audienceGroup === options.selectedName);
@@ -2376,11 +2388,19 @@ function renderAudienceDashboard() {
     root.append(element("p", "muted", "暂无人群汇总数据"));
     return;
   }
-  const { card, body } = createCollapsibleDataCard("人群汇总数据");
+  const { card, body } = createCollapsibleDataCard("", "人群汇总数据");
   const switcher = element("div", "metric-switch");
   switcher.append(element("span", "", "展示指标："));
   const chartGrid = element("div", "chart-grid");
-  body.append(switcher, chartGrid);
+  const controls = document.createElement("div");
+  controls.className = "audience-dashboard-controls";
+  const hint = element(
+    "p",
+    "script-dashboard-hint audience-dashboard-hint",
+    "点击八大人群柱可查看该人群 TOP3 素材"
+  );
+  controls.append(switcher, hint);
+  body.append(controls, chartGrid);
   root.append(card);
 
   function renderMetric(metricKey) {

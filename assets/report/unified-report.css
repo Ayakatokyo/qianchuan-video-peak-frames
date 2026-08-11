@@ -463,6 +463,13 @@ body.unified-report {
   padding: 0;
 }
 
+.unified-report .preference-rule-note {
+  color: var(--muted-text);
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 6px 0 14px;
+}
+
 .unified-qianchuan :is(#audience-primary, #script-primary) {
   display: grid;
   gap: var(--unified-feature-card-gap);
@@ -532,6 +539,17 @@ body.unified-report {
 .unified-yuntu .brand-panels {
   max-height: none;
   overflow: visible;
+}
+
+@media (max-width: 680px) {
+  .unified-report .audience-dashboard-controls {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .unified-report .audience-dashboard-hint {
+    text-align: left;
+  }
 }
 
 @media (max-width: 760px) {
@@ -842,6 +860,22 @@ body.unified-report {
   grid-column: 1 / -1;
 }
 
+.unified-report .audience-dashboard-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 18px;
+}
+
+.unified-report .audience-dashboard-controls .metric-switch {
+  flex: 0 1 auto;
+}
+
+.unified-report .audience-dashboard-hint {
+  margin: 0;
+  text-align: right;
+}
+
 .unified-report .material-body .raw-fact-card .metric-switch {
   flex-wrap: nowrap;
   gap: 6px;
@@ -963,6 +997,16 @@ body.unified-report {
   white-space: nowrap;
   writing-mode: vertical-rl;
   text-orientation: mixed;
+}
+
+.unified-report .region-card .column-plot {
+  overflow: visible !important;
+}
+
+.unified-report .region-card .column-item:first-child .chart-tooltip {
+  right: auto;
+  left: 0;
+  transform: translateX(0);
 }
 
 .unified-report .highlight-dashboard-tabs {

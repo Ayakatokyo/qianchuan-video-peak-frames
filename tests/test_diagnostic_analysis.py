@@ -62,7 +62,7 @@ def write_diagnosis_csv(path, records):
 
 
 class DiagnosticAnalysisAudienceTests(unittest.TestCase):
-    def test_builds_preference_top3_from_unique_show_count_leaders(self):
+    def test_builds_preference_top_materials_above_batch_baseline_by_total_cost(self):
         top_payload = {
             "materials": [
                 {
@@ -94,29 +94,35 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
         records_by_material = {
             "m-1": [
                 crowd_record(
-                    "m-1", "SHOW_COUNT", "user_group_label_name", "新锐白领", 40
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "新锐白领", 60
                 ),
                 crowd_record(
-                    "m-1", "SHOW_COUNT", "user_group_label_name", "新锐白领", 20
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "资深中产", 30
                 ),
                 crowd_record(
-                    "m-1", "SHOW_COUNT", "user_group_label_name", "资深中产", 40
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 10
                 ),
             ],
             "m-2": [
                 crowd_record(
-                    "m-2", "SHOW_COUNT", "user_group_label_name", "新锐白领", 60
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "新锐白领", 70
                 ),
                 crowd_record(
-                    "m-2", "SHOW_COUNT", "user_group_label_name", "资深中产", 40
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "资深中产", 20
+                ),
+                crowd_record(
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 10
                 ),
             ],
             "m-3": [
                 crowd_record(
-                    "m-3", "SHOW_COUNT", "user_group_label_name", "新锐白领", 55
+                    "m-3", "SHOW_COUNT", "user_group_label_name", "新锐白领", 50
                 ),
                 crowd_record(
-                    "m-3", "SHOW_COUNT", "user_group_label_name", "资深中产", 45
+                    "m-3", "SHOW_COUNT", "user_group_label_name", "资深中产", 10
+                ),
+                crowd_record(
+                    "m-3", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 40
                 ),
             ],
             "m-4": [
@@ -124,7 +130,138 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
                     "m-4", "SHOW_COUNT", "user_group_label_name", "新锐白领", 50
                 ),
                 crowd_record(
-                    "m-4", "SHOW_COUNT", "user_group_label_name", "资深中产", 50
+                    "m-4", "SHOW_COUNT", "user_group_label_name", "资深中产", 25
+                ),
+                crowd_record(
+                    "m-4", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 25
+                ),
+            ],
+        }
+
+        preferences = build_diagnostic_analysis(top_payload, records_by_material)[
+            "audience"
+        ]["preferences"]
+        preferences_by_group = {
+            group["audienceGroup"]: group["topMaterials"] for group in preferences
+        }
+
+        self.assertEqual(
+            [item["materialId"] for item in preferences_by_group["新锐白领"]],
+            ["m-2", "m-1"],
+        )
+        self.assertEqual(
+            [item["materialId"] for item in preferences_by_group["资深中产"]],
+            ["m-4", "m-1"],
+        )
+        self.assertEqual(
+            [item["materialId"] for item in preferences_by_group["精致妈妈"]],
+            ["m-4", "m-3"],
+        )
+        self.assertEqual(
+            preferences_by_group["资深中产"][0],
+            {
+                "rank": 1,
+                "materialId": "m-4",
+                "materialName": "素材四",
+                "preferenceMetric": "SHOW_COUNT",
+                "audiencePercentage": 25.0,
+                "audienceMetricValue": 25.0,
+                "audienceBaselinePercentage": 21.25,
+                "preferenceDeltaPercentage": 3.75,
+                "preferenceLift": 1.176471,
+                "audienceShowCount": 25.0,
+                "totalCost": 999.0,
+            },
+        )
+
+    def test_preference_omits_groups_not_above_baseline(self):
+        top_payload = {
+            "materials": [
+                {
+                    "rank": 1,
+                    "materialId": "m-1",
+                    "materialName": "素材一",
+                    "totalCost": 100,
+                },
+                {
+                    "rank": 2,
+                    "materialId": "m-2",
+                    "materialName": "素材二",
+                    "totalCost": 200,
+                },
+            ]
+        }
+        records_by_material = {
+            "m-1": [
+                crowd_record(
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 40
+                ),
+                crowd_record(
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "新锐白领", 60
+                ),
+            ],
+            "m-2": [
+                crowd_record(
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 10
+                ),
+                crowd_record(
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "新锐白领", 90
+                ),
+            ],
+        }
+
+        preferences = build_diagnostic_analysis(top_payload, records_by_material)[
+            "audience"
+        ]["preferences"]
+        preferences_by_group = {
+            group["audienceGroup"]: group["topMaterials"] for group in preferences
+        }
+
+        self.assertIn("精致妈妈", preferences_by_group)
+        self.assertEqual(
+            preferences_by_group["精致妈妈"],
+            [
+                {
+                    "rank": 1,
+                    "materialId": "m-1",
+                    "materialName": "素材一",
+                    "preferenceMetric": "SHOW_COUNT",
+                    "audiencePercentage": 40.0,
+                    "audienceMetricValue": 40.0,
+                    "audienceBaselinePercentage": 25.0,
+                    "preferenceDeltaPercentage": 15.0,
+                    "preferenceLift": 1.6,
+                    "audienceShowCount": 40.0,
+                    "totalCost": 100.0,
+                }
+            ],
+        )
+        self.assertNotIn("m-2", [
+            item["materialId"] for item in preferences_by_group["精致妈妈"]
+        ])
+
+    def test_preference_omits_groups_when_no_material_is_above_baseline(self):
+        top_payload = {
+            "materials": [
+                {"rank": 1, "materialId": "m-1", "materialName": "素材一"},
+                {"rank": 2, "materialId": "m-2", "materialName": "素材二"},
+            ]
+        }
+        records_by_material = {
+            "m-1": [
+                crowd_record(
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 40
+                ),
+                crowd_record(
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "新锐白领", 60
+                ),
+            ],
+            "m-2": [
+                crowd_record(
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "精致妈妈", 40
+                ),
+                crowd_record(
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "新锐白领", 60
                 ),
             ],
         }
@@ -133,40 +270,75 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
             "audience"
         ]["preferences"]
 
-        self.assertEqual(
-            preferences,
-            [
+        self.assertEqual(preferences, [])
+
+    def test_builds_metric_specific_preference_top_materials(self):
+        top_payload = {
+            "materials": [
                 {
-                    "audienceGroup": "新锐白领",
-                    "topMaterials": [
-                        {
-                            "rank": 1,
-                            "materialId": "m-2",
-                            "materialName": "素材二",
-                            "audiencePercentage": 60.0,
-                            "audienceShowCount": 60.0,
-                            "totalCost": 200.0,
-                        },
-                        {
-                            "rank": 2,
-                            "materialId": "m-1",
-                            "materialName": "素材一",
-                            "audiencePercentage": 60.0,
-                            "audienceShowCount": 60.0,
-                            "totalCost": 100.0,
-                        },
-                        {
-                            "rank": 3,
-                            "materialId": "m-3",
-                            "materialName": "素材三",
-                            "audiencePercentage": 55.0,
-                            "audienceShowCount": 55.0,
-                            "totalCost": 50.0,
-                        },
-                    ],
-                }
+                    "rank": 1,
+                    "materialId": "m-1",
+                    "materialName": "素材一",
+                    "totalCost": 100,
+                },
+                {
+                    "rank": 2,
+                    "materialId": "m-2",
+                    "materialName": "素材二",
+                    "totalCost": 200,
+                },
+            ]
+        }
+        records_by_material = {
+            "m-1": [
+                crowd_record(
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "新锐白领", 80
+                ),
+                crowd_record(
+                    "m-1", "SHOW_COUNT", "user_group_label_name", "资深中产", 20
+                ),
+                crowd_record(
+                    "m-1", "CLICK_COUNT", "user_group_label_name", "新锐白领", 20
+                ),
+                crowd_record(
+                    "m-1", "CLICK_COUNT", "user_group_label_name", "资深中产", 80
+                ),
             ],
-        )
+            "m-2": [
+                crowd_record(
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "新锐白领", 40
+                ),
+                crowd_record(
+                    "m-2", "SHOW_COUNT", "user_group_label_name", "资深中产", 60
+                ),
+                crowd_record(
+                    "m-2", "CLICK_COUNT", "user_group_label_name", "新锐白领", 70
+                ),
+                crowd_record(
+                    "m-2", "CLICK_COUNT", "user_group_label_name", "资深中产", 30
+                ),
+            ],
+        }
+
+        audience = build_diagnostic_analysis(top_payload, records_by_material)["audience"]
+        preferences_by_metric = audience["preferencesByMetric"]
+
+        self.assertEqual(audience["preferences"], preferences_by_metric["SHOW_COUNT"])
+        show_preferences = {
+            group["audienceGroup"]: group["topMaterials"]
+            for group in preferences_by_metric["SHOW_COUNT"]
+        }
+        click_preferences = {
+            group["audienceGroup"]: group["topMaterials"]
+            for group in preferences_by_metric["CLICK_COUNT"]
+        }
+
+        self.assertEqual(show_preferences["新锐白领"][0]["materialId"], "m-1")
+        self.assertEqual(click_preferences["新锐白领"][0]["materialId"], "m-2")
+        self.assertEqual(show_preferences["资深中产"][0]["materialId"], "m-2")
+        self.assertEqual(click_preferences["资深中产"][0]["materialId"], "m-1")
+        self.assertEqual(click_preferences["资深中产"][0]["preferenceMetric"], "CLICK_COUNT")
+        self.assertEqual(click_preferences["资深中产"][0]["audienceMetricValue"], 80.0)
 
     def test_materials_include_video_metadata_from_retained_material_info(self):
         top_payload = {
