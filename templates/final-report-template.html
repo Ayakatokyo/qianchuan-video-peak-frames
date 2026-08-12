@@ -921,7 +921,7 @@ function renderScriptDashboard(options = {}) {
   }
 }
 
-function renderFrames(material) {
+function renderFrames(material, selection = null) {
   const grid = element("div", "frame-grid");
   const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
   if (frames.length === 0) {
@@ -941,8 +941,27 @@ function renderFrames(material) {
     image.loading = "lazy";
     image.decoding = "async";
     button.append(image);
-    button.addEventListener("click", () => openFrameLightbox(text(frame.framePath), captionText));
+    const reference = `highlight:${text(material.materialId)}:${text(frame.rankType)}`;
+    figure.dataset.frameRef = reference;
     const caption = element("figcaption", "", captionText);
+    if (selection) {
+      const choice = element("label", "highlight-frame-choice");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.setAttribute("aria-label", `选择高光帧：${captionText}`);
+      input.addEventListener("change", () => selection.set(reference, input.checked));
+      choice.append(input);
+      figure._selectionInput = input;
+      caption.append(choice);
+      selection.register(figure, reference);
+      caption.addEventListener("click", (event) => {
+        if (event.target.closest(".highlight-frame-choice")) return;
+        selection.set(reference, !figure._selectionInput.checked);
+      });
+      button.addEventListener("click", () => openFrameLightbox(text(frame.framePath), captionText));
+    } else {
+      button.addEventListener("click", () => openFrameLightbox(text(frame.framePath), captionText));
+    }
     figure.append(button, caption);
     grid.append(figure);
   });
@@ -1214,7 +1233,7 @@ function renderInteractionTimeline(material) {
   }
   const body = element("div", "collapsible-body");
   appendCollapsibleHead(card, "", body, "互动时序分析数据");
-  const switcher = element("div", "metric-switch");
+  const switcher = element("div", "metric-switch interaction-timeline-switcher");
   const chartMount = element("div", "");
   const scaleMount = element("div", "");
   const peakNote = element("p", "timeline-peak");
@@ -1605,7 +1624,7 @@ function renderScriptAnalysis(material) {
     return card;
   }
   const body = element("div", "collapsible-body");
-  appendCollapsibleHead(card, "脚本分析数据", body);
+  appendCollapsibleHead(card, "脚本分析数据", body, "脚本数据");
   const panel = element("div", "script-analysis-panel");
   const colorByKey = new Map();
   formula.forEach((item, index) => {
@@ -1657,7 +1676,7 @@ function renderVideoPreview(material) {
   return video;
 }
 
-function renderVisualStrip(material) {
+function renderVisualStrip(material, selection = null) {
   const strip = element("div", "visual-strip");
   const videoPanel = element("div", "video-panel");
   const videoPreview = renderVideoPreview(material);
@@ -1666,7 +1685,7 @@ function renderVisualStrip(material) {
   } else {
     videoPanel.append(element("p", "muted", "暂无真实视频"));
   }
-  strip.append(videoPanel, renderFrames(material));
+  strip.append(videoPanel, renderFrames(material, selection));
   return strip;
 }
 
@@ -1719,51 +1738,110 @@ function materialWorkspacePanel(material, key, label, active) {
 function renderHighlightWorkspace(material) {
   const analysis = material.analysis || {};
   const root = element("div", "material-highlight-workspace");
-  const controls = element("div", "highlight-selection-controls");
   const observations = element("div", "material-highlight-observations");
   const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
   const selectedRefs = new Set(frames.map((frame) => `highlight:${text(material.materialId)}:${text(frame.rankType)}`));
-  const checkboxes = [];
+  const framesByReference = new Map(frames.map((frame) => [
+    `highlight:${text(material.materialId)}:${text(frame.rankType)}`,
+    frame,
+  ]));
+  const frameNodes = [];
+  const selectionActions = element("div", "highlight-selection-actions");
+  const selectionHint = element("p", "highlight-selection-hint", "被选中的高光帧对应的说明会出现在下方。");
+  const selectAll = element("button", "highlight-selection-button", "全选高光帧");
+  const selectNone = element("button", "highlight-selection-button", "全不选高光帧");
+  selectAll.type = "button";
+  selectNone.type = "button";
 
   function renderObservations() {
     observations.replaceChildren(renderHighlightFormula(
       Array.isArray(analysis.highlightAnalyses)
         ? analysis.highlightAnalyses.filter((item) => selectedRefs.has(text(item.frameRef)))
-        : []
+        : [],
+      framesByReference
     ));
   }
   function syncSelection() {
-    checkboxes.forEach(({ checkbox, reference }) => { checkbox.checked = selectedRefs.has(reference); });
+    frameNodes.forEach(({ figure, reference }) => {
+      const selected = selectedRefs.has(reference);
+      figure.classList.toggle("is-selected", selected);
+      figure._selectionInput.checked = selected;
+    });
+    selectAll.disabled = selectedRefs.size === framesByReference.size;
+    selectNone.disabled = selectedRefs.size === 0;
     renderObservations();
   }
-  const selectAll = element("button", "highlight-selection-button", "全选高光帧");
-  selectAll.type = "button";
-  selectAll.addEventListener("click", () => {
-    frames.forEach((frame) => selectedRefs.add(`highlight:${text(material.materialId)}:${text(frame.rankType)}`));
-    syncSelection();
-  });
-  const clearAll = element("button", "highlight-selection-button", "取消全选");
-  clearAll.type = "button";
-  clearAll.addEventListener("click", () => { selectedRefs.clear(); syncSelection(); });
-  controls.append(selectAll, clearAll);
-  const selector = element("div", "highlight-frame-selector");
-  frames.forEach((frame) => {
-    const reference = `highlight:${text(material.materialId)}:${text(frame.rankType)}`;
-    const label = element("label", "highlight-frame-choice");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = true;
-    checkbox.addEventListener("change", () => {
-      if (checkbox.checked) selectedRefs.add(reference);
+  const selection = {
+    register: (figure, reference) => frameNodes.push({ figure, reference }),
+    set: (reference, selected) => {
+      if (selected) selectedRefs.add(reference);
       else selectedRefs.delete(reference);
       syncSelection();
-    });
-    label.append(checkbox, document.createTextNode(`${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`));
-    checkboxes.push({ checkbox, reference });
-    selector.append(label);
+    }
+  };
+  selectAll.addEventListener("click", () => {
+    framesByReference.forEach((_, reference) => selectedRefs.add(reference));
+    syncSelection();
   });
-  root.append(controls, selector, renderVisualStrip(material), observations, renderFrameCoverageNote(analysis.frameCoverageNote));
+  selectNone.addEventListener("click", () => {
+    selectedRefs.clear();
+    syncSelection();
+  });
+  selectionActions.append(selectionHint, selectAll, selectNone);
+  root.append(selectionActions, renderVisualStrip(material, selection), observations, renderFrameCoverageNote(analysis.frameCoverageNote));
   renderObservations();
+  syncSelection();
+  return root;
+}
+
+function materialInteractionSummary(timeline) {
+  const metrics = Array.isArray(timeline?.metrics) ? timeline.metrics : [];
+  const clicks = metrics.find((metric) => text(metric.metric) === "CLICK_COUNT");
+  if (!clicks?.peak) return "暂无可用于判断的互动时序数据。";
+  const points = Array.isArray(clicks.points) ? clicks.points : [];
+  const first = points[0] || {};
+  const peak = clicks.peak;
+  const trend = Number(peak.value) > Number(first.value) ? "高于开场水平" : "未高于开场水平";
+  return `整体点击次数在 ${formatNumber(peak.second)} 秒达到 ${formatNumber(peak.value)} 次峰值，${trend}；建议重点复盘峰值前后的画面、利益点与行动引导，并用下方曲线验证后续素材的复现效果。`;
+}
+
+function renderMaterialAudienceDashboard(material) {
+  const root = element("div", "material-audience-dashboard");
+  const metrics = material.materialAudience?.metrics || {};
+  const metricKeys = ["SHOW_COUNT", "TRANSACTION_AMOUNT", "CLICK_COUNT"].filter((key) => metrics[key]?.dimensions && Object.keys(metrics[key].dimensions).length);
+  if (metricKeys.length === 0) {
+    root.append(element("p", "muted", "暂无该素材的人群数据"));
+    return root;
+  }
+  const { card, body } = createCollapsibleDataCard("", "人群数据");
+  const switcher = element("div", "metric-switch");
+  switcher.append(element("span", "", "展示指标："));
+  const chartGrid = element("div", "chart-grid");
+  body.append(switcher, chartGrid);
+  function renderMetric(metricKey) {
+    switcher.querySelectorAll("button").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.metric === metricKey)));
+    const dimensions = metrics[metricKey].dimensions || {};
+    const regionCard = element("div", "chart-card chart-card-full region-card");
+    renderRegionChart(regionCard, dimensions);
+    chartGrid.replaceChildren(
+      renderColumnChart("八大人群分布", topBuckets(dimensions.user_group_label_name), null, {
+        tooltipLines: (bucket) => [`占比 ${formatNumber(bucket.metricPercentage)}%`],
+      }),
+      renderPieChart("年龄分布", topBuckets(dimensions.age, 6)),
+      renderPieChart("性别分布", topBuckets(dimensions.gender, 4)),
+      regionCard
+    );
+  }
+  metricKeys.forEach((metricKey, index) => {
+    const button = element("button", "", metricLabels[metricKey] || metricKey);
+    button.type = "button";
+    button.dataset.metric = metricKey;
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.addEventListener("click", () => renderMetric(metricKey));
+    switcher.append(button);
+  });
+  renderMetric(metricKeys[0]);
+  root.append(card);
   return root;
 }
 
@@ -1812,14 +1890,14 @@ function renderMaterialWorkspace(material) {
   });
   workspacePanels.get("highlight").append(renderHighlightWorkspace(material));
   workspacePanels.get("interaction").append(
-    renderFormula("AI 互动时序判断", [text(analysis.interactionConclusion, "暂无互动时序 AI 判断，请结合下方真实数据分析。")]),
+    renderFormula("互动时序分析", [text(analysis.interactionConclusion, materialInteractionSummary(material.interactionTimeline))]),
     renderInteractionTimeline(material)
   );
   workspacePanels.get("audience").append(
-    renderFormula("AI 人群判断", [analysis.audienceConclusion]),
-    renderFormula("人群数据说明", ["当前素材判断基于已保留的真实诊断事实；组合层八大人群分布请参阅 02｜人群洞察。"])
+    renderFormula("人群分析", [analysis.audienceConclusion]),
+    renderMaterialAudienceDashboard(material)
   );
-  workspacePanels.get("script").append(renderFormula("AI 脚本判断", [analysis.scriptConclusion]), renderScriptAnalysis(material));
+  workspacePanels.get("script").append(renderFormula("脚本分析", [analysis.scriptConclusion]), renderScriptAnalysis(material));
   workspacePanels.get("decision").append(renderFormula("综合判断与下一步", [
     analysis.integratedConclusion,
     `素材决策：${materialDecisionLabel(analysis.decision)}`,
@@ -1852,17 +1930,19 @@ function renderFrameCoverageNote(note) {
   return card;
 }
 
-function renderHighlightFormula(highlights) {
+function renderHighlightFormula(highlights, framesByReference = new Map()) {
   const card = element("div", "formula");
   card.append(element("b", "", "高光帧观察"));
   if (!Array.isArray(highlights) || highlights.length === 0) {
     card.append(element("p", "", "暂无高光帧观察。"));
     return card;
   }
-  highlights.forEach((item, index) => {
+  highlights.forEach((item) => {
+    const frame = framesByReference.get(text(item.frameRef)) || {};
+    const timingLabel = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
     const paragraph = element("p", "highlight-note");
     paragraph.append(
-      element("b", "", `${index + 1}：`),
+      element("b", "", `${timingLabel}：`),
       renderTextWithMaterialLinks(item.visualObservation),
       document.createElement("br"),
       elementWithMaterialLinks("small", "", item.commercialInterpretation)

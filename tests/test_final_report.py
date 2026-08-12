@@ -661,6 +661,15 @@ class FinalReportDataTests(unittest.TestCase):
                 interaction_record("m-1", "COMMENT_COUNT", 1, 1),
                 interaction_record("m-1", "SHARE_COUNT", 1, 3),
                 interaction_record("m-1", "NEW_FOLLOWER_COUNT", 1, 4),
+                {
+                    "recordType": "crowd_analysis",
+                    "materialId": "m-1",
+                    "displayMetric": "CLICK_COUNT",
+                    "dimensionKey": "age",
+                    "dimensionName": "年龄",
+                    "dimensionValue": "24-30",
+                    "metricValue": 12,
+                },
                 script_record("m-1"),
             ]
         }
@@ -704,6 +713,10 @@ class FinalReportDataTests(unittest.TestCase):
             ],
         )
         self.assertEqual(click_metric["peak"], {"second": 1.0, "value": 9.0})
+        self.assertEqual(
+            card["materialAudience"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"],
+            [{"bucket": "24-30", "metricValue": 12.0, "metricPercentage": 100.0, "sourceMaterialIds": ["m-1"]}],
+        )
         script = card["scriptAnalysis"]
         self.assertEqual(script["materialUri"], "uri-m-1")
         self.assertEqual(script["text"], "早餐可以不碰碳水，但鲜炖燕窝一定要坚持吃。")
@@ -1920,8 +1933,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(".unified-report .material-body .raw-fact-card .metric-switch {", css_text)
         self.assertIn("flex-wrap: nowrap;", css_text)
         self.assertIn(".unified-report .material-body .raw-fact-card .metric-switch button {", css_text)
-        self.assertIn("font-size: 12px;", css_text)
-        self.assertIn("padding: 5px 7px;", css_text)
+        self.assertIn("font-size: 10px;", css_text)
+        self.assertIn("padding: 3px 5px;", css_text)
         self.assertIn(".unified-report .highlight-frame-grid {", css_text)
         self.assertIn("grid-template-columns: repeat(6, minmax(0, 1fr));", css_text)
         self.assertIn("grid-auto-rows: minmax(0, auto);", css_text)
@@ -1949,6 +1962,7 @@ class FinalReportRenderTests(unittest.TestCase):
             template,
         )
         self.assertNotIn('`秒点 ${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`', template)
+        self.assertNotIn('`${index + 1}：`', template)
         small_start = css_text.index(".unified-report .highlight-frame-meta small {")
         small_end = css_text.index("}", small_start)
         small_rules = css_text[small_start:small_end]
@@ -1973,6 +1987,42 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(".unified-report .dashboard-data-card .chart-grid > .chart-card:nth-child(3) .pie-legend {", css_text)
         self.assertIn("align-content: center;", css_text)
         self.assertIn("min-height: 96px;", css_text)
+        self.assertIn(".unified-report .material-audience-dashboard .chart-grid > .chart-card:nth-child(2) .pie-legend {", css_text)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", css_text)
+
+    def test_material_timeline_metrics_stay_compact(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(encoding="utf-8")
+        self.assertIn('element("div", "metric-switch interaction-timeline-switcher")', template)
+        self.assertIn(".unified-report .interaction-timeline-switcher {", css_text)
+        self.assertIn("grid-template-columns: repeat(6, minmax(0, 1fr));", css_text)
+        self.assertIn("min-height: 30px !important;", css_text)
+        self.assertIn("font-size: 11px;", css_text)
+        self.assertIn("padding: 4px 3px;", css_text)
+
+    def test_material_analysis_uses_named_script_toggle_and_compact_chart_controls(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(encoding="utf-8")
+
+        self.assertIn('element("p", "highlight-selection-hint", "被选中的高光帧对应的说明会出现在下方。")', template)
+        self.assertIn('appendCollapsibleHead(card, "脚本分析数据", body, "脚本数据");', template)
+        self.assertIn(".unified-report .material-audience-dashboard .column-chart {", css_text)
+        self.assertIn("min-height: 250px;", css_text)
+        self.assertIn(".unified-report .material-audience-dashboard .column-item {", css_text)
+        self.assertIn("height: 180px;", css_text)
+        self.assertIn("min-height: 38px;", css_text)
+
+    def test_highlight_selection_uses_full_frame_card_hit_area(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(encoding="utf-8")
+
+        self.assertIn('button.setAttribute("aria-label", `查看大图：${captionText}`)', template)
+        self.assertIn('caption.addEventListener("click", (event) => {', template)
+        self.assertIn('selection.set(reference, !figure._selectionInput.checked);', template)
+        self.assertIn('if (event.target.closest(".highlight-frame-choice")) return;', template)
+        self.assertIn('font-size: 14px;', css_text)
+        self.assertIn("width: 16px;", css_text)
+        self.assertIn("height: 16px;", css_text)
 
     def test_unified_report_applies_latest_visual_comment_tweaks(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
@@ -2875,8 +2925,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("脚本分析数据", html_text)
         self.assertIn('"interactionTimeline"', html_text)
         self.assertIn('"scriptAnalysis"', html_text)
-        self.assertIn("AI 人群判断", html_text)
-        self.assertIn("AI 脚本判断", html_text)
+        self.assertIn("人群分析", html_text)
+        self.assertIn("脚本分析", html_text)
         self.assertIn("高光帧观察", html_text)
         self.assertIn("综合判断与下一步", html_text)
         self.assertIn("高光帧观察", html_text)
@@ -2892,9 +2942,15 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('".material-workspace-panel:not([hidden]) [data-timeline-ready=\'false\']"', html_text)
         self.assertIn('素材 ID：${text(material.materialId)}', html_text)
         self.assertIn('全选高光帧', html_text)
-        self.assertIn('取消全选', html_text)
+        self.assertIn('全不选高光帧', html_text)
         self.assertIn('"互动时序分析数据"', html_text)
         self.assertIn('displayMaterialName(material.materialName, materialId)', html_text)
+        self.assertIn('"materialAudience"', html_text)
+        self.assertIn('function renderMaterialAudienceDashboard(material)', html_text)
+        self.assertIn('function materialInteractionSummary(timeline)', html_text)
+        self.assertIn('highlight-frame-choice', html_text)
+        self.assertIn('input.type = "checkbox";', html_text)
+        self.assertIn('`${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`', html_text)
         self.assertNotIn("data:video/", html_text)
         self.assertIn('tab.dataset.materialId = materialId', html_text)
         self.assertIn('setAttribute("aria-selected", String(selected))', html_text)
@@ -3078,7 +3134,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("`${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`", html_text)
         self.assertNotIn("${text(frame.rankType)} ·", html_text)
         self.assertIn('element("p", "highlight-note")', html_text)
-        self.assertIn('element("b", "", `${index + 1}：`)', html_text)
+        self.assertIn('element("b", "", `${timingLabel}：`)', html_text)
         self.assertIn(".highlight-note b {", html_text)
         self.assertNotIn("humanizeEvidenceRef(item.frameRef)", html_text)
         self.assertIn('element("p", "eyebrow", `#${text(material.rank)}`)', html_text)

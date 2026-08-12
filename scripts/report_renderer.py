@@ -267,6 +267,7 @@ def report_data_for_template(
                 "highlightFrameCount": material.get("highlightFrameCount"),
                 "highlightFrames": highlight_frames,
                 "interactionTimeline": material.get("interactionTimeline", {"metrics": []}),
+                "materialAudience": material.get("materialAudience", {"metrics": {}}),
                 "scriptAnalysis": material.get(
                     "scriptAnalysis",
                     {"materialUri": "", "formula": [], "labels": [], "evidence": [], "text": ""},

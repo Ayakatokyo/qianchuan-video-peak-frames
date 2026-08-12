@@ -13,6 +13,7 @@ from asset_metrics_lib import (
 
 from diagnostic_analysis_lib import (
     build_diagnostic_analysis,
+    build_material_audience,
     load_retained_diagnosis_records,
 )
 from report_renderer import (
@@ -874,6 +875,9 @@ def _material_card(material, summary, analysis, records=None, script_analysis=No
         "missingFrames": missing_frames if isinstance(missing_frames, list) else [],
         "analysis": analysis or _empty_material_analysis(material["materialId"]),
         "interactionTimeline": _material_interaction_timeline(material_records),
+        "materialAudience": build_material_audience(
+            material_records, material["materialId"]
+        ),
         "scriptAnalysis": script_analysis or _empty_script_analysis(),
         "video": _material_video_metadata(material_records),
     }

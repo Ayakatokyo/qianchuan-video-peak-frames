@@ -290,6 +290,20 @@ def _aggregate_audience_metric(records_by_material, selected_ids, metric):
     return {"dimensions": normalized_dimensions, "missingMaterialIds": missing_material_ids}
 
 
+def build_material_audience(records, material_id):
+    """Build the same audience fact shape used by the report, scoped to one material."""
+    material_id = _text(material_id)
+    records_by_material = {material_id: records if isinstance(records, list) else []}
+    return {
+        "metrics": {
+            metric: _aggregate_audience_metric(
+                records_by_material, [material_id], metric
+            )
+            for metric in AUDIENCE_METRICS
+        }
+    }
+
+
 def _aggregate_audience_preferences(records_by_material, materials, metric=PREFERENCE_METRIC):
     material_buckets = {}
     baseline_buckets = {}
