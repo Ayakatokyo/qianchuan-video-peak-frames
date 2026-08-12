@@ -2299,20 +2299,12 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('image.decoding = "async"', html_text)
         self.assertNotIn("const visualNodes = [renderFrames(material)];", html_text)
         self.assertNotIn("panel.append(head, ...visualNodes, body);", html_text)
-        self.assertIn(
-            "body.append(\n"
-            "    renderHighlightFormula(analysis.highlightAnalyses),\n"
-            "    renderInteractionTimeline(material),",
-            html_text,
-        )
-        self.assertIn(
-            "body.append(\n"
-            "    renderHighlightFormula(analysis.highlightAnalyses),\n"
-            "    renderInteractionTimeline(material),\n"
-            "    renderFormula(\"人群与脚本证据\", [analysis.audienceConclusion, analysis.scriptConclusion]),\n"
-            "    renderScriptAnalysis(material),",
-            html_text,
-        )
+        self.assertIn("function renderMaterialWorkspace(material)", html_text)
+        self.assertIn("function renderHighlightWorkspace(material)", html_text)
+        self.assertIn('workspacePanels.get("interaction").append(', html_text)
+        self.assertIn('workspacePanels.get("audience").append(', html_text)
+        self.assertIn('workspacePanels.get("script").append(', html_text)
+        self.assertIn('workspacePanels.get("decision").append(', html_text)
         self.assertIn("function renderHighlightDashboard", html_text)
         self.assertNotIn("data:video/", html_text)
         self.assertIn("八大人群分布", html_text)
@@ -2883,9 +2875,26 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("脚本分析数据", html_text)
         self.assertIn('"interactionTimeline"', html_text)
         self.assertIn('"scriptAnalysis"', html_text)
-        self.assertIn("人群与脚本证据", html_text)
+        self.assertIn("AI 人群判断", html_text)
+        self.assertIn("AI 脚本判断", html_text)
         self.assertIn("高光帧观察", html_text)
         self.assertIn("综合判断与下一步", html_text)
+        self.assertIn("高光帧观察", html_text)
+        self.assertIn("互动时序分析", html_text)
+        self.assertIn("人群分析", html_text)
+        self.assertIn("脚本分析", html_text)
+        self.assertIn("综合判断与下一步", html_text)
+        self.assertIn('element("div", "material-workspace-tabs")', html_text)
+        self.assertIn('data-workspace-tab', html_text)
+        self.assertIn('container.querySelectorAll("#material-tab-list [role=\'tab\']")', html_text)
+        self.assertIn('container.querySelectorAll(".material-panels > [role=\'tabpanel\']")', html_text)
+        self.assertIn('tabs.querySelectorAll("[data-workspace-tab]")', html_text)
+        self.assertIn('".material-workspace-panel:not([hidden]) [data-timeline-ready=\'false\']"', html_text)
+        self.assertIn('素材 ID：${text(material.materialId)}', html_text)
+        self.assertIn('全选高光帧', html_text)
+        self.assertIn('取消全选', html_text)
+        self.assertIn('"互动时序分析数据"', html_text)
+        self.assertIn('displayMaterialName(material.materialName, materialId)', html_text)
         self.assertNotIn("data:video/", html_text)
         self.assertIn('tab.dataset.materialId = materialId', html_text)
         self.assertIn('setAttribute("aria-selected", String(selected))', html_text)
@@ -3029,7 +3038,7 @@ class FinalReportRenderTests(unittest.TestCase):
             html_text = html_path.read_text(encoding="utf-8")
 
         self.assertNotIn("数据口径证据", html_text)
-        for label in ("组合总述", "人群结论", "脚本结论", "高光帧结论"):
+        for label in ("组合总述", "高光帧结论"):
             self.assertNotIn(label, html_text)
         self.assertNotIn("第一部分：", html_text)
         self.assertNotIn("第二部分：", html_text)
@@ -3059,8 +3068,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("insights.forEach((insight, index) => {", html_text)
         self.assertIn('elementWithMaterialLinks("p", "", insight.conclusion)', html_text)
         self.assertIn('elementWithMaterialLinks("p", "", paragraph)', html_text)
-        self.assertIn("displayStatus(material.extractionStatus)", html_text)
-        self.assertIn('succeeded: "已完成"', html_text)
+        self.assertIn('`素材 ID：${text(material.materialId)}`', html_text)
+        self.assertNotIn('状态 ${displayStatus(material.extractionStatus)}', html_text)
         self.assertNotIn("`状态 ${text(material.extractionStatus)}`", html_text)
         self.assertNotIn('class="score"', html_text)
         self.assertNotIn(".score {", html_text)

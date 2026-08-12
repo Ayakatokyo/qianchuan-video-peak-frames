@@ -1213,7 +1213,7 @@ function renderInteractionTimeline(material) {
     return card;
   }
   const body = element("div", "collapsible-body");
-  appendCollapsibleHead(card, "互动时序分析", body);
+  appendCollapsibleHead(card, "", body, "互动时序分析数据");
   const switcher = element("div", "metric-switch");
   const chartMount = element("div", "");
   const scaleMount = element("div", "");
@@ -1671,7 +1671,7 @@ function renderVisualStrip(material) {
 }
 
 function hydrateMaterialPanel(panel) {
-  const timeline = panel.querySelector("[data-timeline-ready='false']");
+  const timeline = panel.querySelector(".material-workspace-panel:not([hidden]) [data-timeline-ready='false']");
   if (!timeline || !Array.isArray(timeline._timelineMetrics) || timeline._timelineMetrics.length === 0) {
     return;
   }
@@ -1681,6 +1681,7 @@ function hydrateMaterialPanel(panel) {
 
 function renderMaterialPanel(material, selected) {
   const analysis = material.analysis || {};
+  const materialId = text(material.materialId);
   const panel = element("article", "material-card");
   panel.id = `panel-${safeId(material.materialId)}`;
   panel.setAttribute("role", "tabpanel");
@@ -1692,26 +1693,155 @@ function renderMaterialPanel(material, selected) {
   const titleBlock = document.createElement("div");
   titleBlock.append(
     element("p", "eyebrow", `#${text(material.rank)}`),
-    element("h3", "", displayText(material.materialName)),
-    element("p", "muted", `状态 ${displayStatus(material.extractionStatus)}`)
+    element("h3", "", displayMaterialName(material.materialName, materialId)),
+    element("p", "material-id", `素材 ID：${text(material.materialId)}`)
   );
   head.append(titleBlock);
 
-  const body = element("div", "material-body");
-  body.append(
-    renderHighlightFormula(analysis.highlightAnalyses),
-    renderInteractionTimeline(material),
-    renderFormula("人群与脚本证据", [analysis.audienceConclusion, analysis.scriptConclusion]),
-    renderScriptAnalysis(material),
-    renderFrameCoverageNote(analysis.frameCoverageNote),
-    renderFormula("综合判断与下一步", [analysis.integratedConclusion, `下一步：${text(analysis.nextAction)}`])
-  );
-
-  panel.append(head, renderVisualStrip(material), body);
+  panel.append(head, renderMaterialWorkspace(material));
   if (selected) {
     hydrateMaterialPanel(panel);
   }
   return panel;
+}
+
+function materialWorkspacePanel(material, key, label, active) {
+  const panel = element("section", "material-workspace-panel");
+  const materialId = text(material.materialId);
+  panel.id = `workspace-${safeId(materialId)}-${key}`;
+  panel.dataset.workspacePanel = key;
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", `workspace-tab-${safeId(materialId)}-${key}`);
+  panel.hidden = !active;
+  return panel;
+}
+
+function renderHighlightWorkspace(material) {
+  const analysis = material.analysis || {};
+  const root = element("div", "material-highlight-workspace");
+  const controls = element("div", "highlight-selection-controls");
+  const observations = element("div", "material-highlight-observations");
+  const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
+  const selectedRefs = new Set(frames.map((frame) => `highlight:${text(material.materialId)}:${text(frame.rankType)}`));
+  const checkboxes = [];
+
+  function renderObservations() {
+    observations.replaceChildren(renderHighlightFormula(
+      Array.isArray(analysis.highlightAnalyses)
+        ? analysis.highlightAnalyses.filter((item) => selectedRefs.has(text(item.frameRef)))
+        : []
+    ));
+  }
+  function syncSelection() {
+    checkboxes.forEach(({ checkbox, reference }) => { checkbox.checked = selectedRefs.has(reference); });
+    renderObservations();
+  }
+  const selectAll = element("button", "highlight-selection-button", "全选高光帧");
+  selectAll.type = "button";
+  selectAll.addEventListener("click", () => {
+    frames.forEach((frame) => selectedRefs.add(`highlight:${text(material.materialId)}:${text(frame.rankType)}`));
+    syncSelection();
+  });
+  const clearAll = element("button", "highlight-selection-button", "取消全选");
+  clearAll.type = "button";
+  clearAll.addEventListener("click", () => { selectedRefs.clear(); syncSelection(); });
+  controls.append(selectAll, clearAll);
+  const selector = element("div", "highlight-frame-selector");
+  frames.forEach((frame) => {
+    const reference = `highlight:${text(material.materialId)}:${text(frame.rankType)}`;
+    const label = element("label", "highlight-frame-choice");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = true;
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedRefs.add(reference);
+      else selectedRefs.delete(reference);
+      syncSelection();
+    });
+    label.append(checkbox, document.createTextNode(`${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`));
+    checkboxes.push({ checkbox, reference });
+    selector.append(label);
+  });
+  root.append(controls, selector, renderVisualStrip(material), observations, renderFrameCoverageNote(analysis.frameCoverageNote));
+  renderObservations();
+  return root;
+}
+
+function materialDecisionLabel(decision) {
+  return { scale: "建议放量", iterate: "建议迭代", hold: "建议观察", stop: "建议暂停" }[text(decision)] || "待判断";
+}
+
+function renderMaterialWorkspace(material) {
+  const analysis = material.analysis || {};
+  const root = element("div", "material-workspace");
+  const tabs = element("div", "material-workspace-tabs");
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "单素材分析维度");
+  const panels = element("div", "material-workspace-panels");
+  const definitions = [
+    ["highlight", "高光帧观察"], ["interaction", "互动时序分析"], ["audience", "人群分析"],
+    ["script", "脚本分析"], ["decision", "综合判断与下一步"]
+  ];
+  const workspacePanels = new Map();
+  definitions.forEach(([key, label], index) => {
+    const tab = element("button", "", label);
+    tab.type = "button";
+    tab.id = `workspace-tab-${safeId(material.materialId)}-${key}`;
+    tab.dataset.workspaceTab = key;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", `workspace-${safeId(material.materialId)}-${key}`);
+    tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    const workspacePanel = materialWorkspacePanel(material, key, label, index === 0);
+    workspacePanels.set(key, workspacePanel);
+    tab.addEventListener("click", () => activateMaterialWorkspace(tab));
+    tabs.append(tab);
+    panels.append(workspacePanel);
+  });
+  Array.from(tabs.querySelectorAll("[data-workspace-tab]")).forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateMaterialWorkspace(allTabs[nextIndex]);
+    });
+  });
+  workspacePanels.get("highlight").append(renderHighlightWorkspace(material));
+  workspacePanels.get("interaction").append(
+    renderFormula("AI 互动时序判断", [text(analysis.interactionConclusion, "暂无互动时序 AI 判断，请结合下方真实数据分析。")]),
+    renderInteractionTimeline(material)
+  );
+  workspacePanels.get("audience").append(
+    renderFormula("AI 人群判断", [analysis.audienceConclusion]),
+    renderFormula("人群数据说明", ["当前素材判断基于已保留的真实诊断事实；组合层八大人群分布请参阅 02｜人群洞察。"])
+  );
+  workspacePanels.get("script").append(renderFormula("AI 脚本判断", [analysis.scriptConclusion]), renderScriptAnalysis(material));
+  workspacePanels.get("decision").append(renderFormula("综合判断与下一步", [
+    analysis.integratedConclusion,
+    `素材决策：${materialDecisionLabel(analysis.decision)}`,
+    `下一步：${text(analysis.nextAction)}`
+  ]));
+  root.append(tabs, panels);
+  return root;
+}
+
+function activateMaterialWorkspace(tab) {
+  const workspace = tab.closest(".material-workspace");
+  workspace.querySelectorAll("[data-workspace-tab]").forEach((item) => {
+    const active = item === tab;
+    item.setAttribute("aria-selected", String(active));
+    item.tabIndex = active ? 0 : -1;
+  });
+  workspace.querySelectorAll("[data-workspace-panel]").forEach((panel) => {
+    const active = panel.dataset.workspacePanel === tab.dataset.workspaceTab;
+    panel.hidden = !active;
+    if (active && panel.dataset.workspacePanel === "interaction") hydrateMaterialPanel(panel.closest(".material-card"));
+  });
+  tab.focus();
 }
 
 function renderFrameCoverageNote(note) {
@@ -1992,12 +2122,12 @@ function renderHighlightDashboard() {
 
 function activateMaterialTab(tab) {
   const container = tab.closest("[data-material-tabs]");
-  container.querySelectorAll('[role="tab"]').forEach((item) => {
+  container.querySelectorAll("#material-tab-list [role='tab']").forEach((item) => {
     const selected = item === tab;
     item.setAttribute("aria-selected", String(selected));
     item.tabIndex = selected ? 0 : -1;
   });
-  container.querySelectorAll('[role="tabpanel"]').forEach((panel) => {
+  container.querySelectorAll(".material-panels > [role='tabpanel']").forEach((panel) => {
     const selected = panel.dataset.materialId === tab.dataset.materialId;
     panel.hidden = !selected;
     if (selected) {
@@ -2024,7 +2154,7 @@ function renderMaterialTabs() {
     tab.setAttribute("aria-selected", String(selected));
     tab.setAttribute("aria-controls", `panel-${safeId(materialId)}`);
     tab.tabIndex = selected ? 0 : -1;
-    tab.textContent = `#${text(material.rank)} ${text(material.materialName, materialId)}`;
+    tab.textContent = `#${text(material.rank)} ${displayMaterialName(material.materialName, materialId)}`;
     tab.addEventListener("click", () => activateMaterialTab(tab));
     tabs.append(tab);
     panels.append(renderMaterialPanel(material, selected));

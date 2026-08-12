@@ -942,6 +942,20 @@
 
     .material-head {
       display: block;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .material-head h3 {
+      margin-bottom: 5px;
+      font-size: 20px;
+      line-height: 1.3;
+    }
+
+    .material-id {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
     }
 
     .visual-strip {
@@ -1020,6 +1034,93 @@
       grid-template-columns: 1fr;
       gap: 14px;
       align-items: stretch;
+    }
+
+    .material-workspace {
+      display: grid;
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .material-workspace-tabs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .material-workspace-tabs button {
+      flex: 0 0 auto;
+      border: 0;
+      border-bottom: 3px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      padding: 9px 10px 8px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .material-workspace-tabs button[aria-selected="true"] {
+      border-bottom-color: #9b6a37;
+      color: var(--ink);
+    }
+
+    .material-workspace-tabs button:focus-visible,
+    .highlight-selection-button:focus-visible,
+    .highlight-frame-choice input:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .material-workspace-panel {
+      min-width: 0;
+    }
+
+    .material-highlight-workspace {
+      display: grid;
+      gap: 14px;
+    }
+
+    .highlight-selection-controls,
+    .highlight-frame-selector {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .highlight-selection-button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      padding: 7px 10px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .highlight-frame-choice {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff8ec;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .material-highlight-observations {
+      display: grid;
+      gap: 12px;
     }
 
     .formula {
