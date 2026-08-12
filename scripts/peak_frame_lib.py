@@ -522,6 +522,7 @@ def build_summary(
     video_source=None,
     expected_peaks=None,
     missing_frames=None,
+    additional_warnings=None,
 ):
     """Build the JSON-compatible result shared by both summary formats."""
     if len(selected_peaks) != len(frame_paths):
@@ -531,7 +532,7 @@ def build_summary(
     peak_count = sum(
         peak.rank_type.startswith("peak_top_") for peak in expected
     )
-    warnings = []
+    warnings = list(additional_warnings or [])
     if peak_count < 5:
         warnings.append(
             f"click curve has {peak_count} local peak(s); up to 5 are targeted"
@@ -791,6 +792,14 @@ def process_records(
     video_duration = probe_video_duration(
         ffmpeg, video, timeout_sec=timeout_sec
     )
+    out_of_range_peaks = [
+        peak for peak in selected_peaks
+        if peak.duration_sec < 0 or peak.duration_sec >= video_duration
+    ]
+    selected_peaks = [
+        peak for peak in selected_peaks
+        if 0 <= peak.duration_sec < video_duration
+    ]
     validate_timestamps(selected_peaks, video_duration)
 
     summary_material_id = material_id or video.stem
@@ -872,6 +881,10 @@ def process_records(
         video_source=video_source,
         expected_peaks=selected_peaks,
         missing_frames=missing_frames,
+        additional_warnings=[
+            "excluded %s curve peak(s) outside video duration %.6g seconds"
+            % (len(out_of_range_peaks), video_duration)
+        ] if out_of_range_peaks else None,
     )
     json_path, markdown_path = write_summaries(summary, result_dir)
     return result_dir, json_path, markdown_path

@@ -2199,6 +2199,42 @@ class ProcessingPipelineTests(unittest.TestCase):
 
         self.assertEqual([peak.rank_type for peak in selected], ["zero_second"])
 
+    def test_process_records_skips_curve_peaks_outside_video_duration(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 9, 0, 8, 0, 7, 0, 6, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def write_frame(_ffmpeg, _video, _timestamp, output, **_kwargs):
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=7.5
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=write_frame
+            ):
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records, "records.json", video, root / "output"
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["zero_second", "peak_top_1", "peak_top_2", "peak_top_3"],
+        )
+        self.assertEqual(summary["frameCoverage"]["expectedPeakCount"], 3)
+        self.assertIn(
+            "click curve has 3 local peak(s); up to 5 are targeted",
+            summary["warnings"],
+        )
+
     def test_process_records_keeps_later_frames_after_expected_peak_failure(self):
         records = [
             click_record(second, value)
@@ -4691,7 +4727,7 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(summary["missingFrames"], [])
 
-    def test_local_cli_rejects_peak_at_video_duration(self):
+    def test_local_cli_skips_peak_at_video_duration(self):
         ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4704,8 +4740,20 @@ class CliTests(unittest.TestCase):
                 input_json, video, root / "out", ffmpeg
             )
 
-            self.assertEqual(completed.returncode, 2)
-            self.assertIn("video duration", completed.stderr)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(
+                (root / "out" / "m-123" / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                [frame["rankType"] for frame in summary["frames"]],
+                ["zero_second"],
+            )
+            self.assertIn(
+                "excluded 1 curve peak(s) outside video duration 2 seconds",
+                summary["warnings"],
+            )
 
 if __name__ == "__main__":
     unittest.main()

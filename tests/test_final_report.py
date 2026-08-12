@@ -1915,7 +1915,7 @@ class FinalReportRenderTests(unittest.TestCase):
         )
 
         self.assertIn("for (let index = pageRefs.length; index < HIGHLIGHT_FRAMES_PER_PAGE; index += 1)", template)
-        self.assertIn("const HIGHLIGHT_FRAMES_PER_PAGE = 10;", template)
+        self.assertIn("const HIGHLIGHT_FRAMES_PER_PAGE = 12;", template)
         self.assertIn('element("div", "highlight-frame-card highlight-frame-placeholder")', template)
         self.assertIn(".unified-report .material-body .raw-fact-card .metric-switch {", css_text)
         self.assertIn("flex-wrap: nowrap;", css_text)
@@ -1923,13 +1923,45 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("font-size: 12px;", css_text)
         self.assertIn("padding: 5px 7px;", css_text)
         self.assertIn(".unified-report .highlight-frame-grid {", css_text)
-        self.assertIn("grid-template-columns: repeat(5, minmax(0, 1fr));", css_text)
-        self.assertIn("grid-auto-rows: minmax(214px, auto);", css_text)
-        self.assertIn("min-height: 440px;", css_text)
+        self.assertIn("grid-template-columns: repeat(6, minmax(0, 1fr));", css_text)
+        self.assertIn("grid-auto-rows: minmax(0, auto);", css_text)
+        self.assertIn("min-height: 0;", css_text)
         self.assertIn(".unified-report .highlight-frame-preview {", css_text)
         self.assertIn("aspect-ratio: 9 / 16;", css_text)
         self.assertIn(".unified-report .highlight-frame-placeholder {", css_text)
         self.assertIn("visibility: hidden;", css_text)
+        self.assertNotIn('element("div", "highlight-category-head")', template)
+
+    def test_highlight_dashboard_uses_approved_category_and_card_labels(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('portrait: "人像画面"', template)
+        self.assertIn('product: "产品画面"', template)
+        self.assertIn('other: "其他画面"', template)
+        self.assertIn('`点击 Top${peakRank} 波峰画面`', template)
+        self.assertIn(
+            '`${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`',
+            template,
+        )
+        self.assertNotIn('`秒点 ${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`', template)
+        small_start = css_text.index(".unified-report .highlight-frame-meta small {")
+        small_end = css_text.index("}", small_start)
+        small_rules = css_text[small_start:small_end]
+        timing_start = css_text.index(".unified-report .highlight-frame-timing {")
+        timing_end = css_text.index("}", timing_start)
+        timing_rules = css_text[timing_start:timing_end]
+        self.assertIn("text-align: center;", small_rules)
+        self.assertIn("font-size: 11px;", small_rules)
+        self.assertIn("font-size: 11px;", timing_rules)
+        self.assertIn("openFrameLightbox(text(frame.framePath), caption)", template)
+        self.assertIn("activateMaterialById(materialId)", template)
+        self.assertNotIn("startSec", template)
+        self.assertNotIn("endSec", template)
 
     def test_audience_pie_legends_use_fixed_dashboard_layouts(self):
         css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(

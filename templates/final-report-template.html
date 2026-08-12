@@ -1743,11 +1743,11 @@ function renderHighlightFormula(highlights) {
 }
 
 const highlightCategoryLabels = {
-  portrait: "人像高光洞察",
-  product: "产品高光洞察",
-  other: "其他高光画面洞察",
+  portrait: "人像画面",
+  product: "产品画面",
+  other: "其他画面",
 };
-const HIGHLIGHT_FRAMES_PER_PAGE = 10;
+const HIGHLIGHT_FRAMES_PER_PAGE = 12;
 
 function highFrameFactsByReference() {
   const facts = new Map();
@@ -1763,12 +1763,23 @@ function highFrameFactsByReference() {
   return facts;
 }
 
+function displayMaterialName(value, fallback) {
+  return displayText(text(value, fallback).replace(/\.mp4$/i, ""));
+}
+
+function displayPeakRank(rankType) {
+  const match = /^peak_top_(\d+)$/.exec(text(rankType));
+  return match ? match[1] : "";
+}
+
 function renderDashboardFrame(reference, fact) {
   const { material, frame } = fact;
   const materialId = text(material.materialId);
-  const materialName = displayText(material.materialName, materialId);
-  const rankLabel = frameLabels[text(frame.rankType)] || text(frame.rankType);
-  const caption = `${rankLabel} · ${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
+  const materialName = displayMaterialName(material.materialName, materialId);
+  const peakRank = displayPeakRank(frame.rankType);
+  const rankLabel = peakRank ? `点击 Top${peakRank} 波峰画面` : (frameLabels[text(frame.rankType)] || text(frame.rankType));
+  const timingLabel = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
+  const caption = `${rankLabel} · ${timingLabel}`;
   const card = element("article", "highlight-frame-card");
   card.dataset.frameRef = reference;
   const figure = document.createElement("figure");
@@ -1790,7 +1801,7 @@ function renderDashboardFrame(reference, fact) {
   source.type = "button";
   source.title = "跳转到单素材深度分析";
   source.addEventListener("click", () => activateMaterialById(materialId));
-  meta.append(element("small", "", rankLabel), element("span", "", `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`), source);
+  meta.append(element("small", "", rankLabel), element("span", "highlight-frame-timing", timingLabel), source);
   card.append(figure, meta);
   return card;
 }
@@ -1879,11 +1890,6 @@ function renderHighlightDashboard() {
       ? dimensionHighlight.evidenceRefs
       : [];
     const categoryRoot = element("section", "highlight-category");
-    const head = element("div", "highlight-category-head");
-    head.append(
-      element("h3", "", "组合高光画面结论"),
-      element("span", "highlight-category-count", `${refs.length} 帧证据`)
-    );
     const grid = element("div", "highlight-frame-grid");
     refs.forEach((reference) => {
       const fact = factsByReference.get(text(reference));
@@ -1894,7 +1900,6 @@ function renderHighlightDashboard() {
       element("b", "", "共性结论"),
       elementWithMaterialLinks("p", "", dimensionHighlight.conclusion)
     );
-    categoryRoot.append(head);
     if (grid.childElementCount > 0) categoryRoot.append(grid);
     categoryRoot.append(common);
     root.append(categoryRoot);
@@ -1932,11 +1937,6 @@ function renderHighlightDashboard() {
     categoryRoot.setAttribute("role", "tabpanel");
     categoryRoot.setAttribute("aria-labelledby", tab.id);
     categoryRoot.hidden = index !== 0;
-    const head = element("div", "highlight-category-head");
-    head.append(
-      element("h3", "", highlightCategoryLabels[category]),
-      element("span", "highlight-category-count", `${frameRefs.length} 帧`)
-    );
     const grid = element("div", "highlight-frame-grid");
     const common = element("div", "highlight-analysis-copy");
     common.append(
@@ -1946,7 +1946,6 @@ function renderHighlightDashboard() {
     const directions = Array.isArray(group.derivativeDirections)
       ? group.derivativeDirections
       : [];
-    categoryRoot.append(head);
     if (directions.length === 0) {
       categoryRoot.append(common);
       if (frameRefs.length > 0) categoryRoot.append(grid, renderHighlightPagination(categoryRoot, frameRefs.length));
