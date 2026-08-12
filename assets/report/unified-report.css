@@ -1104,3 +1104,98 @@ body.unified-report {
   font-variant-numeric: tabular-nums;
   text-align: center;
 }
+
+/* Keep the script drill-down pie and its legend on one compact desktop row. */
+.unified-report #script-dashboard .pie-layout {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.unified-report #script-dashboard .pie-chart {
+  width: 200px !important;
+}
+
+.unified-report #script-dashboard .pie-legend {
+  display: grid;
+  grid-template-columns: repeat(2, max-content);
+  justify-content: start;
+  gap: 6px 12px;
+}
+
+.unified-report #script-dashboard .pie-legend .legend-item {
+  padding: 2px 0;
+  font-size: 13px;
+}
+
+.unified-report #script-dashboard .script-drill-layout > .chart-card {
+  min-height: 0;
+  padding: 12px;
+}
+
+/* Keep the audience overview and its selected-group detail compact. */
+.unified-report #audience-dashboard .script-dashboard-overview .column-chart {
+  min-height: 240px;
+}
+
+.unified-report #audience-dashboard .script-dashboard-overview .column-item {
+  height: 180px;
+}
+
+.unified-report #audience-dashboard .script-dashboard-overview,
+.unified-report #audience-dashboard .script-drill-detail {
+  min-height: 0;
+}
+
+.unified-report #audience-dashboard .script-drill-primary {
+  grid-template-rows: auto 150px auto;
+  padding: 12px;
+}
+
+.unified-report #audience-dashboard .audience-drill-panel {
+  padding: 12px;
+}
+
+.unified-report #audience-dashboard .preference-rule-note {
+  margin: 4px 0 10px;
+}
+
+.unified-report #audience-dashboard .preference-group {
+  padding-top: 8px;
+}
+
+.unified-report #audience-dashboard .preference-list {
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.unified-report #audience-dashboard .preference-item {
+  line-height: 1.35;
+}
+
+.unified-report #audience-dashboard .pie-legend .legend-item > span:nth-child(2) {
+  font-weight: 800;
+}
+
+.unified-report #audience-dashboard .pie-legend .legend-item > span:nth-child(3) {
+  font-weight: 400;
+}
+
+@media (max-width: 640px) {
+  .unified-report #script-dashboard .pie-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .unified-report #script-dashboard .pie-chart {
+    width: min(200px, 100%) !important;
+  }
+
+  .unified-report #script-dashboard .pie-legend {
+    justify-content: center;
+  }
+
+  .unified-report #audience-dashboard .script-drill-primary {
+    grid-template-rows: auto 120px auto;
+  }
+}

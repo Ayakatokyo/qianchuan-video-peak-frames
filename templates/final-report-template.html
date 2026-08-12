@@ -325,6 +325,10 @@
       align-items: center;
     }
 
+    #script-dashboard .script-dashboard-control {
+      min-height: 44px;
+    }
+
     .script-dashboard-hint {
       color: var(--muted);
       font-size: 16px;
@@ -351,6 +355,45 @@
     .script-dashboard-overview {
       min-height: 388px;
       transition: opacity 260ms ease;
+    }
+
+    #script-dashboard .script-drill-detail,
+    #script-dashboard .script-dashboard-overview {
+      min-height: 332px;
+    }
+
+    #script-dashboard .column-chart {
+      min-height: 260px;
+    }
+
+    #script-dashboard .script-drill-detail {
+      min-height: 0;
+    }
+
+    #script-dashboard .script-drill-layout {
+      gap: 12px;
+    }
+
+    #script-dashboard .script-drill-primary {
+      grid-template-rows: auto 160px auto;
+      padding: 12px;
+    }
+
+    #script-dashboard .script-drill-primary > b {
+      font-size: 18px;
+      line-height: 1.35;
+    }
+
+    #script-dashboard .pie-layout {
+      grid-template-columns: 200px minmax(0, .75fr);
+    }
+
+    #script-dashboard .pie-chart {
+      width: 200px;
+    }
+
+    #script-dashboard .script-drill-layout > .chart-card {
+      padding: 12px;
     }
 
     .script-drill-detail.is-entering,
@@ -428,6 +471,10 @@
       }
 
       .script-drill-primary {
+        grid-template-rows: auto 120px auto;
+      }
+
+      #script-dashboard .script-drill-primary {
         grid-template-rows: auto 120px auto;
       }
 
@@ -1843,11 +1890,11 @@ function resetCollapsibleBody(body, title, ...nodes) {
   body.replaceChildren(...titleNodes, ...nodes);
 }
 
-function getScriptDashboardBody(title) {
+function getScriptDashboardBody() {
   const root = document.getElementById("script-dashboard");
   let body = root.querySelector(":scope > .dashboard-data-card > .collapsible-body");
   if (body) return body;
-  const { card, body: nextBody } = createCollapsibleDataCard(title);
+  const { card, body: nextBody } = createCollapsibleDataCard("", "脚本汇总数据");
   root.replaceChildren(card);
   return nextBody;
 }
@@ -2491,7 +2538,7 @@ function animateScriptDrill(transition, targetBar) {
 }
 
 function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
-  const body = getScriptDashboardBody("脚本汇总数据");
+  const body = getScriptDashboardBody();
   const transition = captureScriptBarTransition(sourceItem);
   const level2 = {};
   summary.forEach((item) => {
@@ -2539,7 +2586,7 @@ function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
   );
   detail.append(layout);
   view.append(control, detail);
-  resetCollapsibleBody(body, "脚本汇总数据", view);
+  resetCollapsibleBody(body, "", view);
   window.setTimeout(() => detail.classList.add("is-visible"), 0);
   animateScriptDrill(transition, bar);
 }
@@ -2593,7 +2640,7 @@ function buildScriptDashboard() {
 function renderScriptDashboard(options = {}) {
   const root = document.getElementById("script-dashboard");
   const { control, chartGrid } = buildScriptDashboard();
-  const { card, body } = createCollapsibleDataCard("脚本汇总数据");
+  const { card, body } = createCollapsibleDataCard("", "脚本汇总数据");
   body.append(control, chartGrid);
   root.replaceChildren(card);
   if (options.level1) {
