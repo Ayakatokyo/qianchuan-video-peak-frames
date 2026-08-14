@@ -2674,6 +2674,26 @@ body.unified-report {
   border-left: 1px solid var(--unified-line);
 }
 
+.unified-report #next-actions .strategy-card .strategy-action {
+  margin: 0;
+}
+
+.unified-report #next-actions .strategy-card .strategy-validation-label {
+  display: block;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.unified-report #next-actions .strategy-card .strategy-validation {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
 .unified-report .region-card {
   padding: 16px;
 }

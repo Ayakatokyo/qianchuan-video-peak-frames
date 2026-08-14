@@ -33,6 +33,7 @@ ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_PRIORITIES = {"high", "medium", "low"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script"}
 PORTFOLIO_DIMENSION_TOPICS = ("commercial", "audience", "script", "highlight")
+PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION = PORTFOLIO_DIMENSION_TOPICS + ("interaction",)
 HIGHLIGHT_DASHBOARD_CATEGORIES = ("portrait", "product", "other")
 HIGHLIGHT_DASHBOARD_MINIMUMS = {
     "commonConclusion": 20,
@@ -149,12 +150,20 @@ def _validate_next_action(raw, index):
         raise FinalReportError(f"nextActions[{index}] must be an object")
     title = _text(raw.get("title"))
     body = _text(raw.get("body"))
+    action = _text(raw.get("action"))
+    validation = _text(raw.get("validation"))
     priority = _text(raw.get("priority")) or "medium"
     if not title or not body:
         raise FinalReportError(f"nextActions[{index}] requires title and body")
     if priority not in ALLOWED_PRIORITIES:
         raise FinalReportError(f"nextActions[{index}].priority is unsupported")
-    return {"title": title, "body": body, "priority": priority}
+    return {
+        "title": title,
+        "body": body,
+        "action": action or body,
+        "validation": validation,
+        "priority": priority,
+    }
 
 
 def _iter_strings(value):
@@ -481,6 +490,32 @@ def _normalize_v4_conclusion(payload):
     }
 
 
+def _normalize_v5_conclusion(payload):
+    normalized = _normalize_v2_conclusion(payload)
+    dimensions = payload.get("portfolioDimensionConclusions")
+    if not isinstance(dimensions, dict) or set(dimensions) != set(
+        PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION
+    ):
+        raise FinalReportError(
+            "portfolioDimensionConclusions must contain exactly "
+            + ", ".join(PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION)
+        )
+    legacy_payload = dict(payload)
+    legacy_payload["portfolioDimensionConclusions"] = {
+        topic: dimensions[topic] for topic in PORTFOLIO_DIMENSION_TOPICS
+    }
+    return {
+        **normalized,
+        "schemaVersion": 5,
+        "overallConclusion": _text(payload.get("overallConclusion")),
+        "portfolioDimensionConclusions": {
+            topic: _validate_dimension_conclusion(dimensions[topic], topic)
+            for topic in PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION
+        },
+        "highlightDashboard": _normalize_v4_conclusion(legacy_payload)["highlightDashboard"],
+    }
+
+
 def normalize_conclusion_analysis(payload):
     if not isinstance(payload, dict):
         raise FinalReportError("conclusion analysis must be an object")
@@ -493,6 +528,8 @@ def normalize_conclusion_analysis(payload):
         return _normalize_v3_conclusion(payload)
     if schema_version == 4:
         return _normalize_v4_conclusion(payload)
+    if schema_version == 5:
+        return _normalize_v5_conclusion(payload)
     raise FinalReportError("unsupported conclusion schemaVersion")
 
 
@@ -561,7 +598,7 @@ def _empty_material_analysis(material_id):
 def _analyses_by_material(conclusion):
     if not conclusion:
         return {}
-    if conclusion.get("schemaVersion") in {2, 3, 4}:
+    if conclusion.get("schemaVersion") in {2, 3, 4, 5}:
         return {
             item["materialId"]: item
             for item in conclusion.get("materialAnalyses", [])
@@ -581,7 +618,7 @@ def _batch_insights(conclusion):
     result = {topic: [] for topic in ALLOWED_INSIGHT_TOPICS}
     if not conclusion:
         return result
-    if conclusion.get("schemaVersion") in {2, 3, 4}:
+    if conclusion.get("schemaVersion") in {2, 3, 4, 5}:
         for insight in conclusion.get("batchInsights", []):
             result[insight["topic"]].append(insight)
         return result
@@ -1021,13 +1058,16 @@ def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
                     refs.add(f"highlight:{material_id}:{rank_type}")
     if top_material_roi.get("source") == "verifiedAssetFacts":
         refs.update(COMMERCIAL_EVIDENCE_REFS)
+    for metric, metric_data in diagnostic.get("interaction", {}).get("metrics", {}).items():
+        for bucket in metric_data.get("buckets", []):
+            refs.add(f"interaction:{metric}:{bucket['label']}")
     return refs
 
 
 def _validate_v2_evidence(
     conclusion, diagnostic, summaries_by_material, material_cards, top_material_roi
 ):
-    if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4}:
+    if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4, 5}:
         return
     known_refs = _known_evidence_refs(
         diagnostic, summaries_by_material, top_material_roi
@@ -1070,7 +1110,7 @@ def _validate_v2_evidence(
             "missing material analysis for succeeded material: "
             + ", ".join(missing_ids)
         )
-    if conclusion.get("schemaVersion") not in {3, 4}:
+    if conclusion.get("schemaVersion") not in {3, 4, 5}:
         return
 
     dimensions = conclusion["portfolioDimensionConclusions"]
@@ -1080,7 +1120,12 @@ def _validate_v2_evidence(
             " ".join(insight["conclusion"].split())
         )
     seen_dimension_texts = set()
-    for topic in PORTFOLIO_DIMENSION_TOPICS:
+    dimension_topics = (
+        PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION
+        if conclusion.get("schemaVersion") == 5
+        else PORTFOLIO_DIMENSION_TOPICS
+    )
+    for topic in dimension_topics:
         dimension = dimensions[topic]
         dimension_text = " ".join(dimension["conclusion"].split())
         if dimension_text in seen_dimension_texts:
@@ -1110,7 +1155,7 @@ def _validate_v2_evidence(
                 "portfolioDimensionConclusions.commercial must not reference " + term
             )
 
-    if conclusion.get("schemaVersion") != 4:
+    if conclusion.get("schemaVersion") not in {4, 5}:
         return
 
     expected_frame_refs = {
@@ -1158,13 +1203,13 @@ def _repeated_values(items, field_name):
 
 
 def _validate_v2_analysis_quality(conclusion, material_cards):
-    if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4}:
+    if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4, 5}:
         return
 
     failures = []
     minimums = AI_QUALITY_MINIMUMS
     if (
-        conclusion.get("schemaVersion") == 2
+        conclusion.get("schemaVersion") in {2, 5}
         and len(conclusion["overallConclusion"]) < minimums["overallConclusion"]
     ):
         failures.append(
@@ -1172,7 +1217,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
             f"{minimums['overallConclusion']} characters"
         )
 
-    if conclusion.get("schemaVersion") in {3, 4}:
+    if conclusion.get("schemaVersion") in {3, 4, 5}:
         for topic, dimension in conclusion["portfolioDimensionConclusions"].items():
             if len(dimension["conclusion"]) < minimums["materialConclusion"]:
                 failures.append(
@@ -1379,6 +1424,7 @@ def build_final_report_data(
         "batchInsights": insights,
         "audience": diagnostic["audience"],
         "scripts": diagnostic["scripts"],
+        "interaction": diagnostic["interaction"],
         "delivery": diagnostic["delivery"],
         "conclusion": conclusion
         or {

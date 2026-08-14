@@ -37,7 +37,6 @@
   <section class="section" id="top-material-combination">
     <header class="section-header"><h2>01｜TOP 素材组合结论</h2></header>
     <div class="insight-layout">
-      <div class="top-roi-grid" id="top-material-roi"></div>
       <div class="top-dimension-conclusions" id="top-dimension-conclusions"></div>
       <div class="primary-summary" id="overall-conclusion-card">
         <p id="overall-conclusion"></p>
@@ -2116,7 +2115,7 @@ function renderHighlightDashboard() {
     return;
   }
 
-  if (conclusion.schemaVersion !== 4 || groups.length === 0) {
+  if (![4, 5].includes(conclusion.schemaVersion) || groups.length === 0) {
     root.append(element("p", "muted", "暂无可用的高光画面分类汇总。"));
     return;
   }
@@ -2266,16 +2265,19 @@ function renderNextActions() {
     return;
   }
   actions.forEach((action) => {
-    const item = element("li", "rec-card");
-    item.append(elementWithMaterialLinks("b", "", action.title), elementWithMaterialLinks("p", "", action.body));
+    const item = element("li", "rec-card strategy-card");
+    item.append(
+      elementWithMaterialLinks("b", "", action.title),
+      elementWithMaterialLinks("p", "strategy-action", action.action || action.body)
+    );
+    if (text(action.validation)) {
+      item.append(
+        element("span", "strategy-validation-label", "验证口径"),
+        elementWithMaterialLinks("p", "strategy-validation", action.validation)
+      );
+    }
     list.append(item);
   });
-}
-
-function renderTopMaterialRoi() {
-  const root = document.getElementById("top-material-roi");
-  root.replaceChildren();
-  root.hidden = true;
 }
 
 function renderTopDimensionConclusions() {
@@ -2287,10 +2289,11 @@ function renderTopDimensionConclusions() {
     ["commercial", "经营表现"],
     ["audience", "人群"],
     ["script", "脚本"],
-    ["highlight", "高光画面"]
+    ["highlight", "高光画面"],
+    ["interaction", "互动时序"]
   ];
   root.replaceChildren();
-  if (![3, 4].includes(conclusion.schemaVersion) || !labels.every(([key]) => dimensions[key])) {
+  if (conclusion.schemaVersion !== 5 || !labels.every(([key]) => dimensions[key])) {
     root.hidden = true;
     fallback.hidden = false;
     document.getElementById("overall-conclusion").replaceChildren(
@@ -2299,7 +2302,10 @@ function renderTopDimensionConclusions() {
     return;
   }
   root.hidden = false;
-  fallback.hidden = true;
+  fallback.hidden = false;
+  document.getElementById("overall-conclusion").replaceChildren(
+    renderTextWithMaterialLinks(conclusion.overallConclusion || "汇总分析待补充：请提供包含五维结论的 diagnostic-ai-analysis.json 后重新渲染。")
+  );
   labels.forEach(([key, label]) => {
     const card = element("article", "top-dimension-card");
     card.append(
@@ -2325,7 +2331,6 @@ document.addEventListener("keydown", (event) => {
 function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
-  renderTopMaterialRoi();
   renderTopDimensionConclusions();
   renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");
   renderAudiencePreferences();

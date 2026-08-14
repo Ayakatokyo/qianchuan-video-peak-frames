@@ -108,6 +108,32 @@ class FinalReportArchiveTests(unittest.TestCase):
 
 
 class FinalReportConclusionTests(unittest.TestCase):
+    def test_next_actions_preserve_explicit_action_and_validation_with_body_fallback(self):
+        conclusion = normalize_conclusion_analysis(
+            {
+                "schemaVersion": 1,
+                "overallConclusion": "",
+                "keyInsights": [],
+                "materialRecommendations": [],
+                "nextActions": [
+                    {
+                        "title": "显式策略",
+                        "body": "历史正文",
+                        "action": "将利益点前置到开场。",
+                        "validation": "比较 CTR 与净成交 ROI。",
+                        "priority": "high",
+                    },
+                    {"title": "历史策略", "body": "保留原始正文。", "priority": "low"},
+                ],
+                "warnings": [],
+            }
+        )
+
+        self.assertEqual(conclusion["nextActions"][0]["action"], "将利益点前置到开场。")
+        self.assertEqual(conclusion["nextActions"][0]["validation"], "比较 CTR 与净成交 ROI。")
+        self.assertEqual(conclusion["nextActions"][1]["action"], "保留原始正文。")
+        self.assertEqual(conclusion["nextActions"][1]["validation"], "")
+
     def test_v2_conclusion_requires_frame_coverage_note_for_missing_frames(self):
         top_payload = {"materials": [material("m-1")]}
         summaries = {
@@ -186,6 +212,33 @@ class FinalReportConclusionTests(unittest.TestCase):
 
 
 class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
+    def test_template_renders_five_top_dimensions_then_overall_summary_without_roi(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('["interaction", "互动时序"]', template)
+        self.assertIn("conclusion.schemaVersion !== 5", template)
+        self.assertIn('root.hidden = true;', template)
+        self.assertIn('fallback.hidden = false;', template)
+        self.assertNotIn('root.append(element("article", "top-roi-card")', template)
+
+    def test_template_renders_strategy_action_and_validation_without_priority_label(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"rec-card strategy-card"', template)
+        self.assertIn('"strategy-action"', template)
+        self.assertIn('"strategy-validation-label", "验证口径"', template)
+        self.assertIn('"strategy-validation"', template)
+        self.assertNotIn("action.priority", template)
+        self.assertIn("#next-actions .strategy-card .strategy-validation", css)
+        self.assertIn("overflow-wrap: anywhere", css)
+
     def test_template_renders_frame_coverage_note_inside_material_panel(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
@@ -382,14 +435,9 @@ class TopMaterialRoiReportTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('id="top-material-roi"', template)
-        self.assertIn("function renderTopMaterialRoi", template)
-        self.assertIn("root.hidden = true;", template)
+        self.assertNotIn('id="top-material-roi"', template)
+        self.assertNotIn("function renderTopMaterialRoi", template)
         self.assertNotIn('const card = element("div", "top-roi-card");', template)
-        self.assertLess(
-            template.index('id="top-material-roi"'),
-            template.index('id="overall-conclusion"'),
-        )
 
     def test_report_data_formats_available_roi_to_two_decimal_places(self):
         top_payload = {
@@ -1434,6 +1482,79 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
             result["conclusion"]["highlightDashboard"]["groups"][0]["category"],
             "portrait",
         )
+
+    def test_accepts_v5_with_interaction_dimension_and_visible_overall_conclusion(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["overallConclusion"] = "五个维度共同指向先验证开场吸引力，再观察成交承接。"
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击与流失的相对时段分布可用于判断开场和中段的节奏风险，并应与素材改写后的净成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:0-10%"],
+        }
+        conclusion["batchInsights"] = [
+            {
+                "topic": "audience",
+                "title": "人群洞察",
+                "conclusion": "女性人群表现值得继续验证。",
+                "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
+            },
+            {
+                "topic": "script",
+                "title": "脚本洞察",
+                "conclusion": "价格机制值得继续验证。",
+                "evidenceRefs": ["script:m-1:价格优惠:降价/折扣"],
+            },
+        ]
+        self.records_by_material["m-1"].append(
+            {
+                "recordType": "interaction_series",
+                "interactionMetric": "CLICK_COUNT",
+                "durationSec": 1,
+                "metricValue": 3,
+            }
+        )
+        normalized = normalize_conclusion_analysis(conclusion)
+        self.assertEqual(normalized["schemaVersion"], 5)
+        self.assertEqual(
+            list(normalized["portfolioDimensionConclusions"]),
+            ["commercial", "audience", "script", "highlight", "interaction"],
+        )
+        self.assertEqual(normalized["overallConclusion"], conclusion["overallConclusion"])
+
+    def test_v5_batch_insights_are_distributed_to_audience_and_script_sections(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["overallConclusion"] = "五个维度共同指向开场优化和成交承接验证。"
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击与流失的相对时段分布可用于判断开场和中段的节奏风险，并应与素材改写后的净成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:0-10%"],
+        }
+        conclusion["batchInsights"] = [
+            {
+                "topic": "audience",
+                "title": "人群洞察",
+                "conclusion": "女性人群表现值得继续验证。",
+                "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"],
+            },
+            {
+                "topic": "script",
+                "title": "脚本洞察",
+                "conclusion": "价格机制值得继续验证。",
+                "evidenceRefs": ["script:m-1:价格优惠:降价/折扣"],
+            },
+        ]
+        self.records_by_material["m-1"].append(
+            {
+                "recordType": "interaction_series",
+                "interactionMetric": "CLICK_COUNT",
+                "durationSec": 1,
+                "metricValue": 3,
+            }
+        )
+        result = self._build_data(conclusion)
+
+        self.assertEqual(len(result["batchInsights"]["audience"]), 1)
+        self.assertEqual(len(result["batchInsights"]["script"]), 1)
 
     def test_rejects_v4_dashboard_with_duplicate_or_missing_frame_reference(self):
         duplicate = self._conclusion()
@@ -2490,7 +2611,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("04｜高光画面洞察", prompt_text)
         self.assertIn("05｜单素材深度分析", prompt_text)
         self.assertIn("06｜下一轮策略", prompt_text)
-        self.assertIn('"schemaVersion": 4', prompt_text)
+        self.assertIn('"schemaVersion": 5', prompt_text)
+        self.assertIn("互动时序", prompt_text)
         self.assertIn("highlightDashboard", prompt_text)
         self.assertIn("portrait", prompt_text)
         self.assertIn("product", prompt_text)
@@ -3145,7 +3267,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("function renderNextActions", html_text)
         self.assertIn('id="next-actions"', html_text)
         self.assertIn('elementWithMaterialLinks("b", "", action.title)', html_text)
-        self.assertIn('elementWithMaterialLinks("p", "", action.body)', html_text)
+        self.assertIn('elementWithMaterialLinks("p", "strategy-action", action.action || action.body)', html_text)
+        self.assertIn('elementWithMaterialLinks("p", "strategy-validation", action.validation)', html_text)
         self.assertNotIn('element("small", "", text(action.priority, "medium"))', html_text)
         self.assertIn("内容公式一级标签分布", html_text)
         self.assertNotIn("脚本标签分组", html_text)

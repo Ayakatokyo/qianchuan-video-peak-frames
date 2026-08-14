@@ -62,6 +62,31 @@ def write_diagnosis_csv(path, records):
 
 
 class DiagnosticAnalysisAudienceTests(unittest.TestCase):
+    def test_builds_relative_interaction_summary_for_selected_materials(self):
+        top_payload = {
+            "materials": [
+                {"materialId": "m-1", "totalCost": 10},
+                {"materialId": "m-2", "totalCost": 20},
+            ]
+        }
+        records_by_material = {
+            "m-1": [
+                {"recordType": "interaction_series", "interactionMetric": "CLICK_COUNT", "durationSec": 0, "metricValue": 10},
+                {"recordType": "interaction_series", "interactionMetric": "CLICK_COUNT", "durationSec": 10, "metricValue": 0},
+            ],
+            "m-2": [
+                {"recordType": "interaction_series", "interactionMetric": "CLICK_COUNT", "durationSec": 0, "metricValue": 5},
+                {"recordType": "interaction_series", "interactionMetric": "CLICK_COUNT", "durationSec": 20, "metricValue": 5},
+            ],
+        }
+
+        result = build_diagnostic_analysis(top_payload, records_by_material)
+
+        summary = result["interaction"]["metrics"]["CLICK_COUNT"]
+        self.assertEqual(summary["sampleMaterialCount"], 2)
+        self.assertEqual(summary["buckets"][0]["materialCount"], 2)
+        self.assertEqual(summary["buckets"][0]["share"], 0.75)
+
     def test_builds_preference_top_materials_above_batch_baseline_by_total_cost(self):
         top_payload = {
             "materials": [

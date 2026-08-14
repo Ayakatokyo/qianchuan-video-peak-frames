@@ -11,6 +11,15 @@ from path_safety import artifact_path, validate_material_id
 
 SCHEMA_VERSION = 1
 AUDIENCE_METRICS = ("SHOW_COUNT", "CLICK_COUNT", "TRANSACTION_AMOUNT")
+INTERACTION_METRICS = (
+    "CLICK_COUNT",
+    "LOSE_COUNT",
+    "LIKE_COUNT",
+    "COMMENT_COUNT",
+    "SHARE_COUNT",
+    "NEW_FOLLOWER_COUNT",
+)
+INTERACTION_BUCKETS = ((0.0, 0.1), (0.1, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0))
 PREFERENCE_METRIC = "SHOW_COUNT"
 PREFERENCE_DIMENSION = "user_group_label_name"
 PREFERENCE_LIMIT = 3
@@ -95,6 +104,59 @@ def _period(top_payload):
         "actualStartDate": _text(top_payload.get("actualStartDate")),
         "actualEndDate": _text(top_payload.get("actualEndDate")),
     }
+
+
+def _aggregate_interaction(records_by_material, selected_ids):
+    """Aggregate per-material interaction curves by relative video position."""
+    per_metric = {metric: [] for metric in INTERACTION_METRICS}
+    for material_id in selected_ids:
+        records = records_by_material.get(material_id, [])
+        points = {metric: [] for metric in INTERACTION_METRICS}
+        max_second = 0.0
+        for record in records:
+            if not isinstance(record, dict) or record.get("recordType") != "interaction_series":
+                continue
+            metric = _text(record.get("interactionMetric"))
+            second = _finite_number(record.get("durationSec"))
+            value = _finite_number(record.get("metricValue"))
+            if metric not in points or second is None or value is None or second < 0 or value < 0:
+                continue
+            points[metric].append((second, value))
+            max_second = max(max_second, second)
+        for metric, metric_points in points.items():
+            if not metric_points:
+                continue
+            totals = [0.0] * len(INTERACTION_BUCKETS)
+            total = 0.0
+            for second, value in metric_points:
+                relative = second / max_second if max_second else 0.0
+                bucket_index = next(
+                    (index for index, (_, upper) in enumerate(INTERACTION_BUCKETS) if relative <= upper),
+                    len(INTERACTION_BUCKETS) - 1,
+                )
+                totals[bucket_index] += value
+                total += value
+            per_metric[metric].append((totals, total))
+
+    result = {}
+    for metric, material_values in per_metric.items():
+        if not material_values:
+            result[metric] = {"available": False, "sampleMaterialCount": 0, "buckets": []}
+            continue
+        buckets = []
+        for index, (lower, upper) in enumerate(INTERACTION_BUCKETS):
+            shares = [values[index] / total for values, total in material_values if total > 0]
+            buckets.append({
+                "label": f"{int(lower * 100)}-{int(upper * 100)}%",
+                "share": round(sum(shares) / len(shares), 6) if shares else 0.0,
+                "materialCount": len(shares),
+            })
+        result[metric] = {
+            "available": True,
+            "sampleMaterialCount": len(material_values),
+            "buckets": buckets,
+        }
+    return {"available": any(item["available"] for item in result.values()), "metrics": result}
 
 
 def _selected_materials(top_payload):
@@ -792,6 +854,7 @@ def build_diagnostic_analysis(top_payload, records_by_material, commercial=None)
             "preferencesByMetric": preferences_by_metric,
         },
         "scripts": _build_scripts(records_by_material, selected_ids, warnings),
+        "interaction": _aggregate_interaction(records_by_material, selected_ids),
         "delivery": {"materials": _build_delivery(records_by_material, selected_ids)},
         "commercial": commercial if commercial is not None else {
             "available": False, "totals": {}, "metrics": []
