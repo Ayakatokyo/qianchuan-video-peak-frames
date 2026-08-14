@@ -212,16 +212,30 @@ class FinalReportConclusionTests(unittest.TestCase):
 
 
 class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
-    def test_template_renders_five_top_dimensions_then_overall_summary_without_roi(self):
+    def test_top_dimension_conclusions_render_as_tabs(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
         )
+        css = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
 
+        self.assertIn('>汇总结论<', template)
+        self.assertIn('"top-dimension-tabs"', template)
+        self.assertIn('"top-dimension-panel"', template)
+        self.assertIn("function activateTopDimensionTab", template)
+        self.assertIn('tab.dataset.dimensionKey = key;', template)
+        self.assertIn('String(index === 0)', template)
         self.assertIn('["interaction", "互动时序"]', template)
         self.assertIn("conclusion.schemaVersion !== 5", template)
         self.assertIn('root.hidden = true;', template)
         self.assertIn('fallback.hidden = false;', template)
         self.assertNotIn('root.append(element("article", "top-roi-card")', template)
+        self.assertIn(".unified-report .top-dimension-tabs", css)
+        self.assertIn(".unified-report .highlight-dashboard-tabs", css)
+        self.assertIn("border-bottom-color: #9b6a37;", css)
+        self.assertIn(".unified-report .top-overall-heading", css)
+        self.assertIn("font-size: 16px;\n  font-weight: 800;", css)
 
     def test_template_renders_strategy_action_and_validation_without_priority_label(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(

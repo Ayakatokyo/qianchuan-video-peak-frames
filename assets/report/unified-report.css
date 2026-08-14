@@ -2915,9 +2915,82 @@ body.unified-report {
 }
 
 .unified-report .highlight-dashboard-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
   border: 0;
   background: transparent;
-  padding: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.unified-report .top-dimension-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--line);
+}
+
+.unified-report :is(.top-dimension-tabs button, .highlight-dashboard-tabs button) {
+  flex: 0 0 auto;
+  min-height: 0;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 9px 10px 8px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.unified-report :is(.top-dimension-tabs button:hover, .highlight-dashboard-tabs button:hover) {
+  border-color: transparent;
+  border-bottom-color: var(--unified-accent-dark);
+  background: transparent;
+  color: var(--unified-accent-dark);
+}
+
+.unified-report :is(.top-dimension-tabs button[aria-selected="true"], .highlight-dashboard-tabs button[aria-selected="true"]) {
+  border-color: transparent;
+  border-bottom-color: #9b6a37;
+  background: transparent;
+  color: var(--ink);
+}
+
+.unified-report :is(.top-dimension-tabs button:focus-visible, .highlight-dashboard-tabs button:focus-visible) {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.unified-report .top-dimension-conclusions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.unified-report .top-dimension-panel {
+  min-width: 0;
+}
+
+.unified-report .top-dimension-panel > p,
+.unified-report .primary-summary > #overall-conclusion {
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.72;
+}
+
+.unified-report .top-overall-heading {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.4;
 }
 
 .unified-report .highlight-frame-grid {
