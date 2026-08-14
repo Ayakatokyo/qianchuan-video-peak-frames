@@ -8,6 +8,14 @@
 
 将结果写入单独的 `diagnostic-ai-analysis.json`。只输出合法 JSON，不要用 Markdown 代码块包裹。
 
+## 生成前门禁自检
+
+在写入 JSON 前先完成一次契约自检，不要边生成边试错：
+
+- 读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，严格按其中的枚举与字符数范围构造字段；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
+- 从事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
+- 确认所有 `frameRef`、`evidenceRefs` 都逐字来自事实包，确认 dashboard 只输出实际存在且非空的分类；自检未通过前不要写入 `diagnostic-ai-analysis.json`，也不要调用 `finalize`。
+
 ## 证据与归因规则
 
 - 不得虚构事实，不得将相关性或峰值同时性表述为因果关系。

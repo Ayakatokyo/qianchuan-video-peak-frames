@@ -83,6 +83,21 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("不得手写 `missingRanks`", skill)
         self.assertIn("run_standard_analysis.py status", runbook)
 
+    def test_skill_requires_a_single_ai_handoff_preflight(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("AI 交接前置检查", skill)
+        self.assertIn("不得连续执行临时 jq 探查", skill)
+        self.assertIn("素材数、成功帧数和 missingFrames", skill)
+
+    def test_prompt_requires_contract_preflight_before_generation(self):
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("生成前门禁自检", prompt)
+        self.assertIn("decision 只能使用", prompt)
+        self.assertIn("每张成功高光帧恰好一条", prompt)
+        self.assertIn("final_report_lib.py", prompt)
+
     def test_skill_distinguishes_missing_live_progress_from_missing_rpa_data(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

@@ -40,6 +40,10 @@ python scripts/run_standard_analysis.py status \
 
 只有 `prepare` 成功且状态为 `analysis_pending` 时，才可进入 AI 分析；此时必须同时使用 `diagnostic-analysis/diagnostic-analysis-data.json` 和 `diagnostic-analysis/diagnostic-analysis-prompt.md`。不得从 `top_materials.json`、`top_materials_rpa_ready.json` 或其他候选清单自行构造事实，也不得手写 `missingRanks`。最终素材清单只包含后处理成功的素材；候选池、RPA 波次、失败重试、串行补偿和验证均由标准入口自动处理。
 
+#### AI 交接前置检查
+
+进入 AI 分析后固定按以下顺序执行一次：读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，核对素材数、成功帧数和 missingFrames，再按事实包中的 `framePath` 开始查看 JPEG。不得连续执行临时 jq 探查来理解字段结构，也不要从其他产物拼接第二份事实；只有发现文件不完整或字段不一致时，才进行针对性排查。
+
 ### 运行可观测性与中断
 
 `prepare` 是包含外部 RPA 的长耗时同步任务。未看到实时进度不等于 RPA 未产出数据；在命令仍运行时，不得仅因终端静默或 Agent 尚未观察到 CSV 而中止任务、推断素材失败或启动第二个运行。运行环境允许只读观察时，可以检查运行目录的时间戳和审计产物，但这些观察不能替代 `prepare` 的退出结果，也不能改变执行中的批次。
@@ -51,6 +55,8 @@ python scripts/run_standard_analysis.py status \
 ### 2. 生成 AI 二次分析
 
 当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 4`；第 01 部分必须分别输出经营表现、人群、脚本和高光画面四条组合层结论。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`：将每个成功高光帧按 `portrait`、`product`、`other` 的固定顺序归类一次且仅一次，并为实际存在的分类填写共同画面结论与可验证的裂变方向。不得把帧秒数宣称为对应某句脚本话术。
+
+生成 JSON 前必须先完成一次门禁自检：读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，确认 `decision` 枚举、字段字符数、素材/高光帧覆盖和 dashboard 分类规则；自检未通过前不得写入 JSON 或调用 `finalize`。生成后只做一次本地校验，失败时按报错字段修正 AI JSON，不重新执行 RPA 或事实包准备。
 
 结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。标准 `finalize` 只接受 schema v4；v3 仅用于历史报告兼容，允许降级渲染组合层高光结论，但不承诺人像、产品、其他分类 dashboard。
 
