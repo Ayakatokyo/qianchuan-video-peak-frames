@@ -8,6 +8,14 @@ RUNBOOK_PATH = ROOT / "references" / "qianchuan-operations-runbook.md"
 RPA_CONTRACT_PATH = ROOT / "references" / "rpa-output-contract.md"
 DIAGNOSTIC_PROMPT_PATH = ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md"
 OPENAI_CONFIG_PATH = ROOT / "agents" / "openai.yaml"
+FACTS_CLI_PATH = ROOT / "scripts" / "prepare_diagnostic_analysis.py"
+REPORT_CLI_PATH = ROOT / "scripts" / "render_final_report.py"
+ACTIVE_OPERATIONAL_DOCUMENTS = (
+    SKILL_PATH,
+    RUNBOOK_PATH,
+    RPA_CONTRACT_PATH,
+    ROOT / "docs" / "skill-flow.md",
+)
 
 
 class StandardWorkflowSkillContractTests(unittest.TestCase):
@@ -116,6 +124,18 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("不重新调用 RPA", runbook)
         self.assertNotIn("--material-id", runbook)
 
+    def test_active_workflow_does_not_expose_removed_cli_wrappers(self):
+        self.assertFalse(FACTS_CLI_PATH.exists())
+        self.assertFalse(REPORT_CLI_PATH.exists())
+        for document_path in ACTIVE_OPERATIONAL_DOCUMENTS:
+            document = document_path.read_text(encoding="utf-8")
+            self.assertNotIn("python scripts/prepare_diagnostic_analysis.py", document)
+            self.assertNotIn("python scripts/render_final_report.py", document)
+
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+        self.assertIn("extract_peak_frames.py", runbook)
+        self.assertIn("repair_manifest.py", runbook)
+
     def test_prompt_retains_business_analysis_and_evidence_contract(self):
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -151,7 +171,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("postprocessSucceededCount", contract)
         self.assertIn("CSV -> records", contract)
         self.assertIn("records -> 后处理", contract)
-        self.assertIn("render_final_report.py --copy-assets", contract)
+        self.assertIn("run_standard_analysis.py finalize", contract)
         self.assertIn("final-report.zip", contract)
         self.assertIn("Video bytes must never be downloaded", contract)
     def test_rpa_contract_documents_only_wave_top_n_execution(self):

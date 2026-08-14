@@ -1329,9 +1329,9 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
 
 
 def _validate_standard_ai_quality(conclusion, material_cards):
-    if not conclusion or conclusion.get("schemaVersion") != 4:
+    if not conclusion or conclusion.get("schemaVersion") not in {4, 5}:
         raise FinalReportError(
-            "AI quality gate requires schemaVersion 4 with highlightDashboard"
+            "AI quality gate requires schemaVersion 4 or 5 with highlightDashboard"
         )
     _validate_v2_analysis_quality(conclusion, material_cards)
 

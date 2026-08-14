@@ -15,10 +15,10 @@ from final_report_lib import (  # noqa: E402
     build_final_report_data,
     load_conclusion_analysis,
     normalize_conclusion_analysis,
+    _validate_standard_ai_quality,
     _validate_v2_analysis_quality,
 )
 from final_report_lib import generate_final_report  # noqa: E402
-import render_final_report  # noqa: E402
 import report_renderer  # noqa: E402
 from report_renderer import create_report_archive, report_data_for_template  # noqa: E402
 
@@ -1653,6 +1653,34 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
 
 
 class FinalReportQualityGateTests(unittest.TestCase):
+    def test_standard_quality_gate_accepts_v5_analysis_with_dashboard(self):
+        long_dimension = "该维度包含可验证的素材事实与下一轮策略判断，应结合商业结果持续观察并按变量进行对照测试。" * 3
+        long_insight = "该洞察包含可核验的指标事实、谨慎的业务判断和下一轮验证方向，不能把单次互动变化直接视为商业因果，应以成交结果复核。" * 4
+        long_action = "保持投放对象与观察周期一致，只改变一个创意变量，比较点击、成交金额和 ROI 的共同变化。若只有互动指标改善而交易效率不变，应停止扩大该版本并回收预算。" * 3
+        conclusion = {
+            "schemaVersion": 5,
+            "overallConclusion": long_insight * 3,
+            "portfolioDimensionConclusions": {
+                topic: {"conclusion": long_dimension, "evidenceRefs": [f"{topic}:ref"]}
+                for topic in ("commercial", "audience", "script", "highlight", "interaction")
+            },
+            "highlightDashboard": {"groups": []},
+            "batchInsights": [
+                {"topic": "audience", "title": "人群洞察", "conclusion": long_insight, "evidenceRefs": ["ref"]},
+                {"topic": "audience", "title": "人群洞察二", "conclusion": long_insight + "一", "evidenceRefs": ["ref"]},
+                {"topic": "audience", "title": "人群洞察三", "conclusion": long_insight + "二", "evidenceRefs": ["ref"]},
+                {"topic": "script", "title": "脚本洞察", "conclusion": long_insight + "三", "evidenceRefs": ["ref"]},
+                {"topic": "script", "title": "脚本洞察二", "conclusion": long_insight + "四", "evidenceRefs": ["ref"]},
+            ],
+            "materialAnalyses": [],
+            "nextActions": [
+                {"title": f"策略{index}", "body": long_action, "priority": "high"}
+                for index in range(4)
+            ],
+        }
+
+        _validate_standard_ai_quality(conclusion, [])
+
     def test_standard_quality_gate_requires_v4_highlight_dashboard(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -3309,105 +3337,3 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("object-fit: contain;", html_text)
         self.assertIn(".material-body {", html_text)
         self.assertIn("grid-template-columns: 1fr;", html_text)
-
-
-class FinalReportCliTests(unittest.TestCase):
-    def test_cli_copies_assets_without_embedding_images(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            top_path = root / "top_materials.json"
-            records_dir = root / "diagnosis-records"
-            peak_dir = root / "peak-frames"
-            output_dir = root / "final-report"
-            write_json(
-                top_path,
-                {
-                    "actualStartDate": "2026-06-01",
-                    "actualEndDate": "2026-06-02",
-                    "materials": [material("m-1")],
-                },
-            )
-            write_json(records_dir / "m-1.json", [click_record("m-1", 1, 9)])
-            material_dir = peak_dir / "m-1"
-            material_dir.mkdir(parents=True)
-            frame_path = material_dir / "first_peak_0001s_9.jpg"
-            frame_path.write_bytes(b"\xff\xd8fake-jpeg\xff\xd9")
-            write_json(
-                material_dir / "summary.json",
-                {
-                    "frames": [
-                        {
-                            "rankType": "first_peak",
-                            "durationSec": 1,
-                            "metricValue": 9,
-                            "framePath": frame_path.name,
-                        }
-                    ],
-                    "warnings": [],
-                },
-            )
-
-            result = render_final_report.main(
-                [
-                    "--top-materials-json",
-                    str(top_path),
-                    "--peak-output-dir",
-                    str(peak_dir),
-                    "--diagnosis-records-dir",
-                    str(records_dir),
-                    "--copy-assets",
-                    "--output-dir",
-                    str(output_dir),
-                ]
-            )
-
-            html_text = (output_dir / "final-report.html").read_text(encoding="utf-8")
-            copied_frame_exists = (
-                output_dir
-                / "assets"
-                / "highlight-frames"
-                / "m-1"
-                / "first_peak_0001s_9.jpg"
-            ).is_file()
-
-        self.assertEqual(result, 0)
-        self.assertTrue(copied_frame_exists)
-        self.assertIn("assets/highlight-frames/m-1/first_peak_0001s_9.jpg", html_text)
-        self.assertNotIn("data:image/", html_text)
-
-    def test_cli_rejects_invalid_analysis_json(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            top_path = root / "top_materials.json"
-            records_dir = root / "diagnosis-records"
-            peak_dir = root / "peak-frames"
-            output_dir = root / "final-report"
-            analysis_path = root / "bad.json"
-            write_json(
-                top_path,
-                {
-                    "actualStartDate": "2026-06-01",
-                    "actualEndDate": "2026-06-30",
-                    "materials": [material("m-1")],
-                },
-            )
-            records_dir.mkdir()
-            peak_dir.mkdir()
-            write_json(analysis_path, {"schemaVersion": 2})
-
-            result = render_final_report.main(
-                [
-                    "--top-materials-json",
-                    str(top_path),
-                    "--peak-output-dir",
-                    str(peak_dir),
-                    "--diagnosis-records-dir",
-                    str(records_dir),
-                    "--analysis-json",
-                    str(analysis_path),
-                    "--output-dir",
-                    str(output_dir),
-                ]
-            )
-
-        self.assertEqual(result, 2)
