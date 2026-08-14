@@ -42,7 +42,7 @@ python scripts/run_standard_analysis.py status \
 
 #### AI 交接前置检查
 
-进入 AI 分析后固定按以下顺序执行一次：读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，核对素材数、成功帧数和 missingFrames，再按事实包中的 `framePath` 开始查看 JPEG。不得连续执行临时 jq 探查来理解字段结构，也不要从其他产物拼接第二份事实；只有发现文件不完整或字段不一致时，才进行针对性排查。
+进入 AI 分析后固定按以下顺序执行一次：读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，核对素材数、成功帧数和 missingFrames，再按事实包中的 `framePath` 开始查看 JPEG。每批不超过 6 帧；若某批被策略或 guardrail 拒绝，继续拆分该批并重试，直至完成事实包内全部 JPEG 的查看，不得跳过任何帧。不得连续执行临时 jq 探查来理解字段结构，也不要从其他产物拼接第二份事实；只有发现文件不完整或字段不一致时，才进行针对性排查。
 
 ### 运行可观测性与中断
 
@@ -54,11 +54,11 @@ python scripts/run_standard_analysis.py status \
 
 ### 2. 生成 AI 二次分析
 
-当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 4`；第 01 部分必须分别输出经营表现、人群、脚本和高光画面四条组合层结论。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`：将每个成功高光帧按 `portrait`、`product`、`other` 的固定顺序归类一次且仅一次，并为实际存在的分类填写共同画面结论与可验证的裂变方向。不得把帧秒数宣称为对应某句脚本话术。
+当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 5`；第 01 部分必须分别输出经营表现、人群、脚本、高光画面和互动时序五条组合层结论。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`：将每个成功高光帧按 `portrait`、`product`、`other` 的固定顺序归类一次且仅一次，并为实际存在的分类填写共同画面结论与可验证的裂变方向。不得把帧秒数宣称为对应某句脚本话术。
 
 生成 JSON 前必须先完成一次门禁自检：读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，确认 `decision` 枚举、字段字符数、素材/高光帧覆盖和 dashboard 分类规则；自检未通过前不得写入 JSON 或调用 `finalize`。生成后只做一次本地校验，失败时按报错字段修正 AI JSON，不重新执行 RPA 或事实包准备。
 
-结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。标准 `finalize` 只接受 schema v4；v3 仅用于历史报告兼容，允许降级渲染组合层高光结论，但不承诺人像、产品、其他分类 dashboard。
+结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。标准输出使用 schema v5；v4 仅用于历史报告兼容，允许降级渲染组合层高光结论，但不承诺人像、产品、其他分类 dashboard。
 
 ### 3. 校验并交付报告
 

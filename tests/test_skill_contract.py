@@ -57,10 +57,13 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("实际查看", skill)
         self.assertIn("JPEG", skill)
         self.assertIn("diagnostic-ai-analysis.json", skill)
-        self.assertIn("schemaVersion: 4", skill)
+        self.assertIn("schemaVersion: 5", skill)
         self.assertIn("highlightDashboard", skill)
-        self.assertIn("v3 仅用于历史报告兼容", skill)
-        self.assertIn("经营表现、人群、脚本和高光画面", skill)
+        self.assertIn("v4 仅用于历史报告兼容", skill)
+        self.assertIn("不超过 6 帧", skill)
+        self.assertIn("策略或 guardrail 拒绝", skill)
+        self.assertIn("不得跳过任何帧", skill)
+        self.assertIn("经营表现、人群、脚本、高光画面和互动时序", skill)
 
     def test_skill_delivers_only_a_complete_standard_report(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
