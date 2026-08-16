@@ -1627,10 +1627,18 @@ def generate_final_report(
         _validate_standard_ai_quality(conclusion, data["materials"])
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"
+    presentation_path = output_root / "presentation-report.json"
     html_path = output_root / "final-report.html"
+    from qianchuan_presentation import build_presentation_report
+
+    presentation = build_presentation_report(data)
     _atomic_write_text(
         data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )
+    _atomic_write_text(
+        presentation_path, json.dumps(presentation, ensure_ascii=False, indent=2) + "\n"
+    )
+    data["presentation"] = presentation
     _atomic_write_text(
         html_path,
         _render_html_report(

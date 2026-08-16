@@ -2762,6 +2762,9 @@ class FinalReportRenderTests(unittest.TestCase):
             )
 
             html_text = html_path.read_text(encoding="utf-8")
+            self.assertTrue((output_dir / "presentation-report.json").is_file())
+            presentation = json.loads((output_dir / "presentation-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(presentation["presentationSchemaVersion"], 1)
         self.assertEqual(data_path.name, "final-report-data.json")
         self.assertEqual(html_path.name, "final-report.html")
         self.assertEqual(data["status"], "complete")

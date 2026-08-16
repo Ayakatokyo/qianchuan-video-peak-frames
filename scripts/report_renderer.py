@@ -1,6 +1,7 @@
 """Asset handling and HTML rendering for the final report."""
 
 import base64
+from copy import deepcopy
 import json
 import mimetypes
 import os
@@ -239,6 +240,42 @@ def report_data_for_template(
     copy_assets=False,
     contains_execution_process_term=None,
 ):
+    def presentation_for_template(presentation):
+        if not isinstance(presentation, dict):
+            return presentation
+        result = deepcopy(presentation)
+        chapters = result.get("chapters") if isinstance(result.get("chapters"), dict) else {}
+        chapter04 = chapters.get("chapter04") if isinstance(chapters.get("chapter04"), dict) else {}
+        groups = chapter04.get("groups") if isinstance(chapter04.get("groups"), dict) else {}
+        for group in groups.values():
+            if not isinstance(group, dict):
+                continue
+            for frame in group.get("frames", []):
+                if isinstance(frame, dict):
+                    frame["framePath"] = html_asset_src(
+                        frame.get("framePath", ""),
+                        asset_base_dir,
+                        embed_assets,
+                        copy_assets,
+                        frame.get("materialId", ""),
+                    )
+        chapter05 = chapters.get("chapter05") if isinstance(chapters.get("chapter05"), dict) else {}
+        for material in chapter05.get("materials", []):
+            if not isinstance(material, dict):
+                continue
+            material_id = material.get("materialId", "")
+            highlight = material.get("highlight") if isinstance(material.get("highlight"), dict) else {}
+            for frame in highlight.get("frames", []):
+                if isinstance(frame, dict):
+                    frame["framePath"] = html_asset_src(
+                        frame.get("framePath", ""),
+                        asset_base_dir,
+                        embed_assets,
+                        copy_assets,
+                        material_id,
+                    )
+        return result
+
     materials = []
     for material in data.get("materials", []):
         material_id = material.get("materialId")
@@ -288,6 +325,7 @@ def report_data_for_template(
     ]
     return {
         "schemaVersion": data.get("schemaVersion"),
+        "presentation": presentation_for_template(data.get("presentation")),
         "generatedAt": data.get("generatedAt"),
         "runId": data.get("runId")
         or (data.get("pipelineSummary") or {}).get("runId"),

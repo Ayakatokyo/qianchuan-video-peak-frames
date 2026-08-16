@@ -93,6 +93,39 @@
 
 <script>
 const reportData = JSON.parse(document.getElementById("report-data").textContent);
+const presentation = reportData.presentation?.presentationSchemaVersion === 1
+  ? reportData.presentation
+  : null;
+
+function chapter04Groups() {
+  if (presentation?.chapters?.chapter04?.groups) {
+    return Object.values(presentation.chapters.chapter04.groups);
+  }
+  const groups = reportData.conclusion?.highlightDashboard?.groups;
+  return Array.isArray(groups) ? groups : [];
+}
+
+function chapter05Materials() {
+  const projected = presentation?.chapters?.chapter05?.materials;
+  if (!Array.isArray(projected)) {
+    return Array.isArray(reportData.materials) ? reportData.materials : [];
+  }
+  const catalog = new Map((presentation.materials || []).map((item) => [text(item.materialId), item]));
+  return projected.map((item) => {
+    const catalogItem = catalog.get(text(item.materialId)) || {};
+    return {
+      materialId: item.materialId,
+      materialName: item.materialName || catalogItem.materialName,
+      rank: catalogItem.rank,
+      highlightFrames: item.highlight?.frames || [],
+      materialAudience: item.audience || {},
+      scriptAnalysis: item.script || {},
+      interactionTimeline: item.interaction || {},
+      analysis: { ...(item.analysis || {}), highlightAnalyses: item.highlight?.analyses || [] },
+      video: item.video || {},
+    };
+  });
+}
 
 function text(value, fallback = "") {
   if (value === null || value === undefined) return fallback;
@@ -1961,12 +1994,12 @@ const HIGHLIGHT_FRAMES_PER_PAGE = 12;
 
 function highFrameFactsByReference() {
   const facts = new Map();
-  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
+  const materials = chapter05Materials();
   materials.forEach((material) => {
     const materialId = text(material.materialId);
     const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
     frames.forEach((frame) => {
-      const reference = `highlight:${materialId}:${text(frame.rankType)}`;
+      const reference = text(frame.frameRef) || `highlight:${materialId}:${text(frame.rankType)}`;
       facts.set(reference, { material, frame });
     });
   });
@@ -2088,9 +2121,7 @@ function activateHighlightCategoryTab(tab) {
 function renderHighlightDashboard() {
   const root = document.getElementById("highlight-dashboard");
   const conclusion = reportData.conclusion || {};
-  const groups = Array.isArray(conclusion.highlightDashboard?.groups)
-    ? conclusion.highlightDashboard.groups
-    : [];
+  const groups = chapter04Groups();
   root.replaceChildren();
 
   const dimensionHighlight = conclusion.portfolioDimensionConclusions?.highlight;
@@ -2116,7 +2147,7 @@ function renderHighlightDashboard() {
     return;
   }
 
-  if (![4, 5].includes(conclusion.schemaVersion) || groups.length === 0) {
+  if ((!presentation && ![4, 5].includes(conclusion.schemaVersion)) || groups.length === 0) {
     root.append(element("p", "muted", "暂无可用的高光画面分类汇总。"));
     return;
   }
@@ -2220,7 +2251,7 @@ function activateMaterialTab(tab) {
 function renderMaterialTabs() {
   const tabs = document.getElementById("material-tab-list");
   const panels = document.getElementById("material-panels");
-  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
+  const materials = chapter05Materials();
   tabs.replaceChildren();
   panels.replaceChildren();
   materials.forEach((material, index) => {
