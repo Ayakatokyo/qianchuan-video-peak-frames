@@ -44,7 +44,77 @@ def sample_data():
     }
 
 
+def complete_presentation_data():
+    data = sample_data()
+    data.update({
+        "topMaterialRoi": {"source": "verifiedAssetFacts", "metrics": [{"key": "netSettlementRoi", "value": "1.20"}]},
+        "audience": {
+            "metrics": {
+                "CLICK_COUNT": {
+                    "dimensions": {"age": {"buckets": [{"bucket": "24-30", "metricValue": 12, "sourceMaterialIds": ["m-1"]}]}}
+                }
+            },
+            "preferences": [{"dimension": "age", "bucket": "24-30", "sourceMaterialIds": ["m-1"]}],
+        },
+        "scripts": {
+            "labelSummary": [{
+                "level1": "商品卖点", "level2": "适用场景", "occurrenceCount": 1,
+                "materialIds": ["m-1"], "evidence": ["早餐场景"],
+            }]
+        },
+    })
+    data["conclusion"].update({
+        "portfolioDimensionConclusions": {
+            topic: {"conclusion": f"{topic} 组合结论", "evidenceRefs": [f"{topic}:m-1"]}
+            for topic in ("commercial", "audience", "script", "highlight", "interaction")
+        },
+        "batchInsights": [{"topic": "audience", "title": "人群洞察", "conclusion": "24-30 岁值得继续验证", "evidenceRefs": ["audience:m-1"]}],
+        "nextActions": [{
+            "title": "优先测试开场", "body": "将利益点前置到前 3 秒", "action": "改写开场", "validation": "比较 CTR", "priority": "high",
+            "evidenceRefs": ["audience:m-1"], "materialIds": ["m-1"],
+        }],
+    })
+    return data
+
+
 class PresentationTests(unittest.TestCase):
+    def test_projects_new_chapter_contracts_with_stable_material_references(self):
+        report = build_presentation_report(complete_presentation_data())
+        self.assertEqual(report["report"]["sections"], [f"chapter0{index}" for index in range(1, 7)])
+        self.assertEqual([tab["id"] for tab in report["chapters"]["chapter01"]["tabs"]], ["commercial", "audience", "script", "highlight", "interaction"])
+        bucket = report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"][0]
+        self.assertEqual(bucket["sourceMaterialIds"], ["m-1"])
+        group = report["chapters"]["chapter03"]["groups"][0]
+        self.assertEqual((group["level1"], group["labels"][0]["level2"]), ("商品卖点", "适用场景"))
+        action = report["chapters"]["chapter06"]["actions"][0]
+        self.assertEqual((action["priority"], action["materialIds"]), ("high", ["m-1"]))
+
+    def test_validation_rejects_invalid_projected_references_and_priorities(self):
+        report = build_presentation_report(complete_presentation_data())
+        report["chapters"]["chapter06"]["actions"][0]["priority"] = "urgent"
+        with self.assertRaisesRegex(ValueError, "priority"):
+            validate_presentation_report(report)
+        report = build_presentation_report(complete_presentation_data())
+        report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"][0]["sourceMaterialIds"] = ["missing"]
+        with self.assertRaisesRegex(ValueError, "materialId"):
+            validate_presentation_report(report)
+        report = build_presentation_report(complete_presentation_data())
+        report["chapters"]["chapter03"]["groups"][0]["labels"][0]["materialIds"] = ["missing"]
+        with self.assertRaisesRegex(ValueError, "materialId"):
+            validate_presentation_report(report)
+        report = build_presentation_report(complete_presentation_data())
+        report["chapters"]["chapter06"]["actions"][0]["materialIds"] = ["missing"]
+        with self.assertRaisesRegex(ValueError, "materialId"):
+            validate_presentation_report(report)
+
+    def test_missing_new_chapter_data_stays_renderable(self):
+        report = build_presentation_report(sample_data())
+        for chapter in ("chapter01", "chapter02", "chapter03", "chapter06"):
+            self.assertIn(report["chapters"][chapter]["availability"], ("partial", "unavailable"))
+        self.assertEqual(report["chapters"]["chapter02"]["metrics"], {})
+        self.assertEqual(report["chapters"]["chapter03"]["groups"], [])
+        self.assertEqual(report["chapters"]["chapter06"]["actions"], [])
+
     def test_projects_chapters_with_stable_refs_and_tabs(self):
         report = build_presentation_report(sample_data())
         self.assertEqual(report["presentationSchemaVersion"], 1)

@@ -5,6 +5,9 @@ from copy import deepcopy
 
 CATEGORIES = ("portrait", "product", "other")
 TABS = ("highlight", "interaction", "audience", "script", "decision")
+CHAPTER01_TABS = ("commercial", "audience", "script", "highlight", "interaction")
+CHAPTER_SECTIONS = tuple(f"chapter0{index}" for index in range(1, 7))
+ACTION_PRIORITIES = ("high", "medium", "low")
 
 
 def _text(value):
@@ -26,6 +29,135 @@ def _materials(data):
         item["materialId"] = _text(item["materialId"])
         result.append(item)
     return result
+
+
+def _mapping(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _list(value):
+    return value if isinstance(value, list) else []
+
+
+def _material_refs(value, material_ids):
+    return [ref for ref in (_text(item) for item in _list(value)) if ref in material_ids]
+
+
+def _availability(has_content, has_evidence=True):
+    if not has_content:
+        return "unavailable"
+    return "available" if has_evidence else "partial"
+
+
+def _dimension(conclusion, topic):
+    raw = _mapping(_mapping(conclusion).get("portfolioDimensionConclusions")).get(topic)
+    if isinstance(raw, dict):
+        return _text(raw.get("conclusion")), [_text(ref) for ref in _list(raw.get("evidenceRefs")) if _text(ref)]
+    return _text(raw), []
+
+
+def _chapter01(data):
+    conclusion = _mapping(data.get("conclusion"))
+    facts = {
+        "commercial": _mapping(data.get("topMaterialRoi")),
+        "audience": _mapping(data.get("audience")),
+        "script": _mapping(data.get("scripts")),
+        "highlight": _mapping(conclusion.get("highlightDashboard")),
+        "interaction": _mapping(data.get("interaction")),
+    }
+    labels = {"commercial": "商业表现", "audience": "人群", "script": "脚本", "highlight": "高光画面", "interaction": "互动时序"}
+    tabs = []
+    evidence_refs = []
+    for topic in CHAPTER01_TABS:
+        text, refs = _dimension(conclusion, topic)
+        evidence_refs.extend(refs)
+        has_facts = bool(facts[topic])
+        tabs.append({
+            "id": topic,
+            "label": labels[topic],
+            "operatingFacts": deepcopy(facts[topic]),
+            "conclusion": text,
+            "evidenceRefs": refs,
+            "source": f"facts.{topic} + ai.portfolioDimensionConclusions.{topic}",
+            "availability": _availability(has_facts or bool(text), has_facts and bool(text) and bool(refs)),
+        })
+    return {
+        "id": "chapter01", "title": "五维经营结论", "tabs": tabs,
+        "overallConclusion": _text(conclusion.get("overallConclusion")),
+        "source": "facts + ai.portfolioDimensionConclusions", "evidenceRefs": evidence_refs,
+        "availability": _availability(any(tab["availability"] != "unavailable" for tab in tabs), all(tab["availability"] == "available" for tab in tabs)),
+    }
+
+
+def _chapter02(data, material_ids):
+    audience = _mapping(data.get("audience"))
+    metrics = deepcopy(_mapping(audience.get("metrics")))
+    preferences = deepcopy(_list(audience.get("preferences")))
+    has_refs = False
+    for metric in metrics.values():
+        for dimension in _mapping(metric).get("dimensions", {}).values():
+            for bucket in _list(_mapping(dimension).get("buckets")):
+                if isinstance(bucket, dict):
+                    bucket["sourceMaterialIds"] = _material_refs(bucket.get("sourceMaterialIds"), material_ids)
+                    has_refs = has_refs or bool(bucket["sourceMaterialIds"])
+    for preference in preferences:
+        if isinstance(preference, dict):
+            preference["sourceMaterialIds"] = _material_refs(preference.get("sourceMaterialIds"), material_ids)
+            has_refs = has_refs or bool(preference["sourceMaterialIds"])
+    has_content = bool(metrics or preferences)
+    return {
+        "id": "chapter02", "title": "人群洞察", "metrics": metrics, "preferences": preferences,
+        "source": "facts.audience", "evidenceRefs": [],
+        "availability": _availability(has_content, has_refs),
+    }
+
+
+def _chapter03(data, material_ids):
+    summary = _list(_mapping(data.get("scripts")).get("labelSummary"))
+    groups = []
+    by_level1 = {}
+    for raw in summary:
+        if not isinstance(raw, dict) or not _text(raw.get("level1")) or not _text(raw.get("level2")):
+            continue
+        level1 = _text(raw.get("level1"))
+        group = by_level1.setdefault(level1, {"level1": level1, "labels": []})
+        group["labels"].append({
+            "level2": _text(raw.get("level2")), "occurrenceCount": raw.get("occurrenceCount", 0),
+            "materialIds": _material_refs(raw.get("materialIds"), material_ids),
+            "evidence": deepcopy(_list(raw.get("evidence"))),
+        })
+    for level1 in sorted(by_level1):
+        group = by_level1[level1]
+        group["labels"].sort(key=lambda item: item["level2"])
+        groups.append(group)
+    evidence_refs = [item for group in groups for label in group["labels"] for item in label["evidence"] if _text(item)]
+    has_refs = any(label["materialIds"] for group in groups for label in group["labels"])
+    return {
+        "id": "chapter03", "title": "脚本洞察", "groups": groups,
+        "source": "facts.scripts.labelSummary", "evidenceRefs": evidence_refs,
+        "availability": _availability(bool(groups), bool(evidence_refs) and has_refs),
+    }
+
+
+def _chapter06(data, material_ids):
+    actions = []
+    for raw in _list(_mapping(data.get("conclusion")).get("nextActions")):
+        if not isinstance(raw, dict):
+            continue
+        refs = [_text(ref) for ref in _list(raw.get("evidenceRefs")) if _text(ref)]
+        actions.append({
+            "title": _text(raw.get("title")), "body": _text(raw.get("body")),
+            "action": _text(raw.get("action")) or _text(raw.get("body")), "validation": _text(raw.get("validation")),
+            "priority": _text(raw.get("priority")) or "medium", "evidenceRefs": refs,
+            "materialIds": _material_refs(raw.get("materialIds"), material_ids),
+        })
+    actions.sort(key=lambda item: (ACTION_PRIORITIES.index(item["priority"]) if item["priority"] in ACTION_PRIORITIES else len(ACTION_PRIORITIES), item["title"]))
+    has_evidence = all(action["evidenceRefs"] and action["materialIds"] for action in actions)
+    return {
+        "id": "chapter06", "title": "下一步行动", "actions": actions,
+        "source": "ai.nextActions", "evidenceRefs": [ref for action in actions for ref in action["evidenceRefs"]],
+        "availability": _availability(bool(actions), has_evidence),
+    }
 
 
 def _frame_index(materials):
@@ -136,12 +268,19 @@ def _chapter05(materials, ai_schema_version):
 
 
 def build_presentation_report(data):
-    materials = _materials(data if isinstance(data, dict) else {})
+    data = data if isinstance(data, dict) else {}
+    materials = _materials(data)
+    material_ids = {item["materialId"] for item in materials}
     report = {
         "presentationSchemaVersion": 1,
-        "report": {"title": "千川素材分析报告", "runId": data.get("runId"), "period": deepcopy(data.get("period", {})), "status": data.get("status"), "sections": ["chapter04", "chapter05"]},
+        "report": {"title": "千川素材分析报告", "runId": data.get("runId"), "period": deepcopy(data.get("period", {})), "status": data.get("status"), "sections": list(CHAPTER_SECTIONS)},
         "materials": [{"materialId": item["materialId"], "materialName": item.get("materialName", ""), "rank": item.get("rank"), "source": "facts.materials"} for item in materials],
-        "chapters": {"chapter01": {"availability": "unavailable"}, "chapter02": {"availability": "unavailable"}, "chapter03": {"availability": "unavailable"}, "chapter04": _chapter04(data, materials), "chapter05": _chapter05(materials, (data.get("conclusion") or {}).get("schemaVersion"))},
+        "chapters": {
+            "chapter01": _chapter01(data), "chapter02": _chapter02(data, material_ids),
+            "chapter03": _chapter03(data, material_ids), "chapter04": _chapter04(data, materials),
+            "chapter05": _chapter05(materials, (data.get("conclusion") or {}).get("schemaVersion")),
+            "chapter06": _chapter06(data, material_ids),
+        },
         "interactions": {"source": "facts.interaction", "availability": "available" if data.get("interaction") else "unavailable"},
         "extensions": {"qianchuan": {"aiSchemaVersion": (data.get("conclusion") or {}).get("schemaVersion")}},
     }
@@ -158,14 +297,42 @@ def validate_presentation_report(report):
     ids = [item.get("materialId") for item in materials if isinstance(item, dict)]
     if len(ids) != len(set(ids)) or any(not _text(item) for item in ids):
         raise ValueError("materials must have unique materialId")
-    chapter04 = report.get("chapters", {}).get("chapter04", {})
+    if report.get("report", {}).get("sections") != list(CHAPTER_SECTIONS):
+        raise ValueError("report sections must use fixed chapter order")
+    chapters = report.get("chapters", {})
+    chapter01 = chapters.get("chapter01", {})
+    if [tab.get("id") for tab in chapter01.get("tabs", [])] != list(CHAPTER01_TABS):
+        raise ValueError("chapter01 tabs must use fixed order")
+    chapter04 = chapters.get("chapter04", {})
     if list(chapter04.get("groups", {})) != list(CATEGORIES):
         raise ValueError("chapter04 groups must use fixed category order")
-    chapter05 = report.get("chapters", {}).get("chapter05", {})
+    chapter05 = chapters.get("chapter05", {})
     material_ids = {item.get("materialId") for item in materials}
     for item in chapter05.get("materials", []):
         if item.get("materialId") not in material_ids:
             raise ValueError("chapter05 materialId must exist in materials")
         if [tab.get("id") for tab in item.get("tabs", [])] != list(TABS):
             raise ValueError("chapter05 tabs must use fixed order")
+    _validate_material_references(chapters.get("chapter02", {}), material_ids)
+    _validate_material_references(chapters.get("chapter03", {}), material_ids)
+    chapter06 = chapters.get("chapter06", {})
+    for action in chapter06.get("actions", []):
+        if action.get("priority") not in ACTION_PRIORITIES:
+            raise ValueError("chapter06 action priority is unsupported")
+    _validate_material_references(chapter06, material_ids)
     return report
+
+
+def _validate_material_references(value, material_ids):
+    if isinstance(value, list):
+        for item in value:
+            _validate_material_references(item, material_ids)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key == "materialId" and _text(item) not in material_ids:
+                raise ValueError("projected materialId must exist in materials")
+            if key in {"materialIds", "sourceMaterialIds"}:
+                for material_id in _list(item):
+                    if _text(material_id) not in material_ids:
+                        raise ValueError("projected materialId must exist in materials")
+            _validate_material_references(item, material_ids)
