@@ -49,6 +49,22 @@ def _availability(has_content, has_evidence=True):
     return "available" if has_evidence else "partial"
 
 
+def _preferences(value, material_ids):
+    projected = []
+    for preference in _list(value):
+        if not isinstance(preference, dict):
+            continue
+        item = deepcopy(preference)
+        item["topMaterials"] = [
+            deepcopy(candidate)
+            for candidate in _list(item.get("topMaterials"))
+            if isinstance(candidate, dict) and _text(candidate.get("materialId")) in material_ids
+        ]
+        item["sourceMaterialIds"] = [candidate["materialId"] for candidate in item["topMaterials"]]
+        projected.append(item)
+    return projected
+
+
 def _dimension(conclusion, topic):
     raw = _mapping(_mapping(conclusion).get("portfolioDimensionConclusions")).get(topic)
     if isinstance(raw, dict):
@@ -58,6 +74,7 @@ def _dimension(conclusion, topic):
 
 def _chapter01(data):
     conclusion = _mapping(data.get("conclusion"))
+    batch_insights = deepcopy(_list(conclusion.get("batchInsights")))
     facts = {
         "commercial": _mapping(data.get("topMaterialRoi")),
         "audience": _mapping(data.get("audience")),
@@ -84,6 +101,7 @@ def _chapter01(data):
     return {
         "id": "chapter01", "title": "五维经营结论", "tabs": tabs,
         "overallConclusion": _text(conclusion.get("overallConclusion")),
+        "batchInsights": batch_insights,
         "source": "facts + ai.portfolioDimensionConclusions", "evidenceRefs": evidence_refs,
         "availability": _availability(any(tab["availability"] != "unavailable" for tab in tabs), all(tab["availability"] == "available" for tab in tabs)),
     }
@@ -92,21 +110,28 @@ def _chapter01(data):
 def _chapter02(data, material_ids):
     audience = _mapping(data.get("audience"))
     metrics = deepcopy(_mapping(audience.get("metrics")))
-    preferences = deepcopy(_list(audience.get("preferences")))
+    preferences = _preferences(audience.get("preferences"), material_ids)
+    preferences_by_metric = {
+        _text(metric): _preferences(items, material_ids)
+        for metric, items in _mapping(audience.get("preferencesByMetric")).items()
+        if _text(metric)
+    }
     has_refs = False
-    for metric in metrics.values():
-        for dimension in _mapping(metric).get("dimensions", {}).values():
+    for metric_key, metric in metrics.items():
+        for dimension_key, dimension in _mapping(metric).get("dimensions", {}).items():
             for bucket in _list(_mapping(dimension).get("buckets")):
                 if isinstance(bucket, dict):
                     bucket["sourceMaterialIds"] = _material_refs(bucket.get("sourceMaterialIds"), material_ids)
+                    bucket["evidenceRefs"] = [
+                        f"audience:{metric_key}:{dimension_key}:{_text(bucket.get('bucket'))}"
+                    ] if _text(bucket.get("bucket")) else []
                     has_refs = has_refs or bool(bucket["sourceMaterialIds"])
-    for preference in preferences:
-        if isinstance(preference, dict):
-            preference["sourceMaterialIds"] = _material_refs(preference.get("sourceMaterialIds"), material_ids)
-            has_refs = has_refs or bool(preference["sourceMaterialIds"])
-    has_content = bool(metrics or preferences)
+    for preference in preferences + [item for items in preferences_by_metric.values() for item in items]:
+        has_refs = has_refs or bool(preference["sourceMaterialIds"])
+    has_content = bool(metrics or preferences or preferences_by_metric)
     return {
         "id": "chapter02", "title": "人群洞察", "metrics": metrics, "preferences": preferences,
+        "preferencesByMetric": preferences_by_metric,
         "source": "facts.audience", "evidenceRefs": [],
         "availability": _availability(has_content, has_refs),
     }
@@ -121,16 +146,18 @@ def _chapter03(data, material_ids):
             continue
         level1 = _text(raw.get("level1"))
         group = by_level1.setdefault(level1, {"level1": level1, "labels": []})
+        refs = [
+            f"script:{material_id}:{level1}:{_text(raw.get('level2'))}"
+            for material_id in _material_refs(raw.get("materialIds"), material_ids)
+        ]
         group["labels"].append({
             "level2": _text(raw.get("level2")), "occurrenceCount": raw.get("occurrenceCount", 0),
             "materialIds": _material_refs(raw.get("materialIds"), material_ids),
-            "evidence": deepcopy(_list(raw.get("evidence"))),
+            "evidenceRefs": refs,
         })
-    for level1 in sorted(by_level1):
-        group = by_level1[level1]
-        group["labels"].sort(key=lambda item: item["level2"])
+    for group in by_level1.values():
         groups.append(group)
-    evidence_refs = [item for group in groups for label in group["labels"] for item in label["evidence"] if _text(item)]
+    evidence_refs = [item for group in groups for label in group["labels"] for item in label["evidenceRefs"]]
     has_refs = any(label["materialIds"] for group in groups for label in group["labels"])
     return {
         "id": "chapter03", "title": "脚本洞察", "groups": groups,
@@ -150,6 +177,7 @@ def _chapter06(data, material_ids):
             "action": _text(raw.get("action")) or _text(raw.get("body")), "validation": _text(raw.get("validation")),
             "priority": _text(raw.get("priority")) or "medium", "evidenceRefs": refs,
             "materialIds": _material_refs(raw.get("materialIds"), material_ids),
+            "availability": _availability(bool(_text(raw.get("title")) and _text(raw.get("body"))), bool(refs and _material_refs(raw.get("materialIds"), material_ids))),
         })
     actions.sort(key=lambda item: (ACTION_PRIORITIES.index(item["priority"]) if item["priority"] in ACTION_PRIORITIES else len(ACTION_PRIORITIES), item["title"]))
     has_evidence = all(action["evidenceRefs"] and action["materialIds"] for action in actions)

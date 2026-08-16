@@ -55,6 +55,9 @@ def complete_presentation_data():
                 }
             },
             "preferences": [{"dimension": "age", "bucket": "24-30", "sourceMaterialIds": ["m-1"]}],
+            "preferencesByMetric": {
+                "CLICK_COUNT": [{"audienceGroup": "24-30", "topMaterials": [{"materialId": "m-1"}]}]
+            },
         },
         "scripts": {
             "labelSummary": [{
@@ -82,12 +85,20 @@ class PresentationTests(unittest.TestCase):
         report = build_presentation_report(complete_presentation_data())
         self.assertEqual(report["report"]["sections"], [f"chapter0{index}" for index in range(1, 7)])
         self.assertEqual([tab["id"] for tab in report["chapters"]["chapter01"]["tabs"]], ["commercial", "audience", "script", "highlight", "interaction"])
+        self.assertEqual(report["chapters"]["chapter01"]["batchInsights"][0]["title"], "人群洞察")
         bucket = report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"][0]
         self.assertEqual(bucket["sourceMaterialIds"], ["m-1"])
+        self.assertEqual(bucket["evidenceRefs"], ["audience:CLICK_COUNT:age:24-30"])
+        self.assertEqual(
+            report["chapters"]["chapter02"]["preferencesByMetric"]["CLICK_COUNT"][0]["topMaterials"][0]["materialId"],
+            "m-1",
+        )
         group = report["chapters"]["chapter03"]["groups"][0]
         self.assertEqual((group["level1"], group["labels"][0]["level2"]), ("商品卖点", "适用场景"))
+        self.assertEqual(group["labels"][0]["evidenceRefs"], ["script:m-1:商品卖点:适用场景"])
         action = report["chapters"]["chapter06"]["actions"][0]
         self.assertEqual((action["priority"], action["materialIds"]), ("high", ["m-1"]))
+        self.assertEqual(action["availability"], "available")
 
     def test_validation_rejects_invalid_projected_references_and_priorities(self):
         report = build_presentation_report(complete_presentation_data())
@@ -173,6 +184,12 @@ class PresentationTests(unittest.TestCase):
     def test_template_passes_presentation_video_to_material_workspace(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
         self.assertIn("video: item.video || {},", template)
+
+    def test_template_prefers_presentation_chapters_with_legacy_fallback(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        self.assertIn("function presentationChapter(id)", template)
+        for chapter in ("chapter01", "chapter02", "chapter03", "chapter06"):
+            self.assertIn(f'presentationChapter("{chapter}")', template)
 
 
 if __name__ == "__main__":

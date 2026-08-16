@@ -97,6 +97,23 @@ const presentation = reportData.presentation?.presentationSchemaVersion === 1
   ? reportData.presentation
   : null;
 
+function presentationChapter(id) {
+  const chapter = presentation?.chapters?.[id];
+  return ["available", "partial"].includes(chapter?.availability) ? chapter : null;
+}
+
+function chapter01Insights(topic) {
+  const insights = presentationChapter("chapter01")?.batchInsights;
+  if (Array.isArray(insights)) return insights.filter((item) => item.topic === topic);
+  return reportData.batchInsights?.[topic];
+}
+
+function chapter03Summary() {
+  const groups = presentationChapter("chapter03")?.groups;
+  if (!Array.isArray(groups)) return reportData.scripts?.labelSummary;
+  return groups.flatMap((group) => (group.labels || []).map((label) => ({ ...label, level1: group.level1 })));
+}
+
 function chapter04Groups() {
   if (presentation?.chapters?.chapter04?.groups) {
     return Object.values(presentation.chapters.chapter04.groups);
@@ -616,9 +633,12 @@ function renderAudiencePreferences() {
 }
 
 function renderAudiencePreferenceCard(audienceGroup, metricKey = "SHOW_COUNT") {
-  const preferencesByMetric = reportData.audience?.preferencesByMetric || {};
+  const chapter02 = presentationChapter("chapter02");
+  const preferencesByMetric = chapter02?.preferencesByMetric || reportData.audience?.preferencesByMetric || {};
   const preferences = Array.isArray(preferencesByMetric[metricKey])
     ? preferencesByMetric[metricKey]
+    : Array.isArray(chapter02?.preferences)
+    ? chapter02.preferences
     : Array.isArray(reportData.audience?.preferences)
     ? reportData.audience.preferences : [];
   const card = element("div", "preference-card");
@@ -730,7 +750,7 @@ function returnToAudienceOverview(root, buckets, selectedName, metricKey) {
 
 function renderAudienceDashboard() {
   const root = document.getElementById("audience-dashboard");
-  const metrics = reportData.audience?.metrics || {};
+  const metrics = presentationChapter("chapter02")?.metrics || reportData.audience?.metrics || {};
   const metricKeys = ["SHOW_COUNT", "TRANSACTION_AMOUNT", "CLICK_COUNT"].filter((key) => metrics[key]);
   root.replaceChildren();
   if (metricKeys.length === 0) {
@@ -906,8 +926,9 @@ function returnToScriptOverview(level1) {
 }
 
 function buildScriptDashboard() {
-  const summary = Array.isArray(reportData.scripts?.labelSummary)
-    ? reportData.scripts.labelSummary
+  const projectedSummary = chapter03Summary();
+  const summary = Array.isArray(projectedSummary)
+    ? projectedSummary
     : [];
   if (summary.length === 0) {
     return {
@@ -2287,7 +2308,10 @@ function renderMaterialTabs() {
 function renderNextActions() {
   const list = document.getElementById("next-actions");
   const priorityOrder = { high: 0, medium: 1, low: 2 };
-  const actions = Array.isArray(reportData.conclusion?.nextActions) ? [...reportData.conclusion.nextActions] : [];
+  const projectedActions = presentationChapter("chapter06")?.actions;
+  const actions = Array.isArray(projectedActions)
+    ? [...projectedActions]
+    : Array.isArray(reportData.conclusion?.nextActions) ? [...reportData.conclusion.nextActions] : [];
   actions.sort((left, right) => (priorityOrder[left.priority] ?? 1) - (priorityOrder[right.priority] ?? 1));
   list.replaceChildren();
   if (actions.length === 0) {
@@ -2316,7 +2340,10 @@ function renderTopDimensionConclusions() {
   const root = document.getElementById("top-dimension-conclusions");
   const fallback = document.getElementById("overall-conclusion-card");
   const conclusion = reportData.conclusion || {};
-  const dimensions = conclusion.portfolioDimensionConclusions || {};
+  const chapter01 = presentationChapter("chapter01");
+  const dimensions = chapter01
+    ? Object.fromEntries((chapter01.tabs || []).map((tab) => [tab.id, tab]))
+    : conclusion.portfolioDimensionConclusions || {};
   const labels = [
     ["commercial", "经营表现"],
     ["audience", "人群"],
@@ -2325,18 +2352,18 @@ function renderTopDimensionConclusions() {
     ["interaction", "互动时序"]
   ];
   root.replaceChildren();
-  if (conclusion.schemaVersion !== 5 || !labels.every(([key]) => dimensions[key])) {
+  if (!chapter01 && (conclusion.schemaVersion !== 5 || !labels.every(([key]) => dimensions[key]))) {
     root.hidden = true;
     fallback.hidden = false;
     document.getElementById("overall-conclusion").replaceChildren(
-      renderTextWithMaterialLinks(conclusion.overallConclusion || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
+    renderTextWithMaterialLinks((chapter01?.overallConclusion || conclusion.overallConclusion) || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
     );
     return;
   }
   root.hidden = false;
   fallback.hidden = false;
   document.getElementById("overall-conclusion").replaceChildren(
-    renderTextWithMaterialLinks(conclusion.overallConclusion || "汇总分析待补充：请提供包含五维结论的 diagnostic-ai-analysis.json 后重新渲染。")
+    renderTextWithMaterialLinks((chapter01?.overallConclusion || conclusion.overallConclusion) || "汇总分析待补充：请提供包含五维结论的 diagnostic-ai-analysis.json 后重新渲染。")
   );
   const tabList = element("div", "top-dimension-tabs");
   tabList.setAttribute("role", "tablist");
@@ -2407,10 +2434,10 @@ function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
   renderTopDimensionConclusions();
-  renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");
+  renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");
   renderAudiencePreferences();
   renderAudienceDashboard();
-  renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");
+  renderInsightList("script-primary", chapter01Insights("script"), "暂无脚本洞察");
   renderScriptDashboard();
   renderHighlightDashboard();
   renderMaterialTabs();

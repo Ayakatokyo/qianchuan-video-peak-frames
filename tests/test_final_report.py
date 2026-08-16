@@ -76,6 +76,9 @@ class FinalReportArchiveTests(unittest.TestCase):
                 '{"video":{"src":"https://video.example/m-1.mp4"}}',
                 encoding="utf-8",
             )
+            (report_dir / "presentation-report.json").write_text(
+                '{"presentationSchemaVersion":1}', encoding="utf-8"
+            )
 
             archive_path = create_report_archive(report_dir)
 
@@ -86,6 +89,7 @@ class FinalReportArchiveTests(unittest.TestCase):
                         "final-report/assets/highlight-frames/m-1/peak.jpg",
                         "final-report/final-report-data.json",
                         "final-report/final-report.html",
+                        "final-report/presentation-report.json",
                     ],
                 )
                 self.assertEqual(
@@ -102,8 +106,21 @@ class FinalReportArchiveTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (report_dir / "final-report-data.json").write_text("{}", encoding="utf-8")
+            (report_dir / "presentation-report.json").write_text(
+                '{"presentationSchemaVersion":1}', encoding="utf-8"
+            )
 
             with self.assertRaisesRegex(FinalReportError, "referenced report image"):
+                create_report_archive(report_dir)
+
+    def test_rejects_archive_without_presentation_report(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_dir = Path(temp_dir) / "final-report"
+            report_dir.mkdir()
+            (report_dir / "final-report.html").write_text("<main></main>", encoding="utf-8")
+            (report_dir / "final-report-data.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(report_renderer.ReportRenderingError, "required files"):
                 create_report_archive(report_dir)
 
 
@@ -2371,16 +2388,16 @@ class FinalReportRenderTests(unittest.TestCase):
             html_text,
         )
         self.assertIn(
-            'renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");',
+            'renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");',
             html_text,
         )
         self.assertIn("function renderAudiencePreferences", html_text)
         self.assertIn(
-            'renderInsightList("audience-primary", reportData.batchInsights?.audience, "暂无人群洞察");\n  renderAudiencePreferences();\n  renderAudienceDashboard();',
+            'renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");\n  renderAudiencePreferences();\n  renderAudienceDashboard();',
             html_text,
         )
         self.assertIn(
-            'renderInsightList("script-primary", reportData.batchInsights?.script, "暂无脚本洞察");',
+            'renderInsightList("script-primary", chapter01Insights("script"), "暂无脚本洞察");',
             html_text,
         )
         self.assertNotIn("function renderPrimaryInsight", html_text)
@@ -2604,7 +2621,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("tooltipLines: (bucket) => [`占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`]", html_text)
         self.assertIn("const axisTicks = Array.isArray(options.axisTicks) && options.axisTicks.length > 0", html_text)
         self.assertIn("axisTicks.forEach((value) => {", html_text)
-        self.assertIn('const summary = Array.isArray(reportData.scripts?.labelSummary)', html_text)
+        self.assertIn("const projectedSummary = chapter03Summary();", html_text)
         self.assertIn('onBucketClick: (bucket, item) => renderScriptDrill(', html_text)
         self.assertIn('renderPieChart(`${level1} 二级标签分布`', html_text)
         self.assertIn('button.className = "script-drill-back"', html_text)

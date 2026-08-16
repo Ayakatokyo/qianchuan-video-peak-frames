@@ -97,6 +97,7 @@ def _validate_report_archive(archive_path, report_name, references):
     required = {
         f"{prefix}final-report.html",
         f"{prefix}final-report-data.json",
+        f"{prefix}presentation-report.json",
         *(f"{prefix}{reference}" for reference in references),
     }
     try:
@@ -112,7 +113,13 @@ def create_report_archive(report_dir, archive_path=None):
     root = Path(report_dir).resolve()
     html_path = root / "final-report.html"
     data_path = root / "final-report-data.json"
-    if not root.is_dir() or not html_path.is_file() or not data_path.is_file():
+    presentation_path = root / "presentation-report.json"
+    if (
+        not root.is_dir()
+        or not html_path.is_file()
+        or not data_path.is_file()
+        or not presentation_path.is_file()
+    ):
         raise ReportRenderingError("report directory is missing required files")
 
     target = (
