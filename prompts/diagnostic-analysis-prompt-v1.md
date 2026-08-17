@@ -40,21 +40,18 @@
 - 每条 `batchInsights.conclusion` 必须为 180-280 个中文字符，包含具体指标名称和至少 2 个可核验事实点；事实点之后必须给出分析含义、投放判断和可验证假设，并填写至少一个合法 `evidenceRefs`。
 - 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
 - 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
-- 每条 `nextActions[*].body` 必须为 140-220 个中文字符，说明行动依据来自哪类数据、要验证的假设、执行方向和成功/失败后的判断口径；`priority` 只用于排序，最终页面策略卡片不展示 priority。
 - 必须输出至少 3 条 audience、2 条 script 洞察；`audience` 洞察需覆盖展现次数、点击次数、成交金额三个角度，事实不足时仍需给出下一步补充或验证方向。不得为了填充 TOP 组合结论而输出 `batchInsights.topic=integrated`。
 - `script` 洞察固定输出 2 条且按以下顺序：第一条标题以“`一二级内容公式：`”开头，分析一级/二级标签的高频结构、组合方式和差异；第二条标题以“`脚本文案：`”开头，分析真实文案中的利益点、表达方式与证据句。两条都必须引用对应的 `script:*` 证据，且不能只复述标签或原句。
-- 必须输出至少 4 条 nextActions，覆盖放量、改写、验证、风险控制或素材复用中的不同动作，不要输出同义重复策略。
 
 ## 页面结构映射
 
-最终 HTML 页面保留以下 6 个 section，输出字段必须围绕这些 section 收缩：
+最终 HTML 页面保留以下 5 个 section，输出字段必须围绕这些 section 收缩：
 
 - `01｜TOP 素材组合结论`：使用 `portfolioDimensionConclusions.commercial`、`audience`、`script`、`highlight`、`interaction`，按该顺序展示。`overallConclusion` 是五维之后可见的汇总分析，必须参考全部可用维度，但不重复五维结论全文；当前阶段不展示 ROI 指标卡。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
 - `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用已查看 JPEG 的共同可见信号写至少 20 个字符的 `commonConclusion`，再给出至少一条正文不少于 20 个字符的可验证 `derivativeDirections`；不得把峰值同时性写成因果。
 - `05｜单素材深度分析`：页面会先展示确定性的 `互动时序分析` 和 `脚本分析数据`，再展示 `materialAnalyses` 中的 AI 二次总结。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
-- `nextActions` 对应 `06｜下一轮策略`：策略卡片只展示 title 和 body，不展示 priority。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧只允许作为 `portfolioDimensionConclusions.highlight`、`materialAnalyses[*].highlightAnalyses` 和 `highlightDashboard` 的证据来源。
 
@@ -131,9 +128,6 @@
       "nextAction": "具体行动",
       "evidenceRefs": ["事实包中已有的引用"]
     }
-  ],
-  "nextActions": [
-    {"title": "行动标题", "body": "行动说明", "priority": "high"}
   ]
 }
 ```

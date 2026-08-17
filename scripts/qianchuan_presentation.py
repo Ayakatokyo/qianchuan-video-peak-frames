@@ -1,14 +1,12 @@
 """PresentationReport v1 projection for the Qianchuan report."""
 
 from copy import deepcopy
-import re
 
 
 CATEGORIES = ("portrait", "product", "other")
 TABS = ("highlight", "interaction", "audience", "script", "decision")
 CHAPTER01_TABS = ("commercial", "audience", "script", "highlight", "interaction")
-CHAPTER_SECTIONS = tuple(f"chapter0{index}" for index in range(1, 7))
-ACTION_PRIORITIES = ("high", "medium", "low")
+CHAPTER_SECTIONS = tuple(f"chapter0{index}" for index in range(1, 6))
 
 
 def _text(value):
@@ -178,52 +176,6 @@ def _chapter03(data, material_ids):
     }
 
 
-def _chapter06(data, material_ids):
-    actions = []
-    for raw in _list(_mapping(data.get("conclusion")).get("nextActions")):
-        if not isinstance(raw, dict):
-            continue
-        action_text = " ".join(
-            _text(raw.get(key)) for key in ("title", "body", "action", "validation")
-        )
-        refs = [_text(ref) for ref in _list(raw.get("evidenceRefs")) if _text(ref)]
-        action_material_ids = _material_refs(raw.get("materialIds"), material_ids)
-        for material_id in sorted(material_ids):
-            if material_id not in action_material_ids and re.search(
-                rf"(?<![A-Za-z0-9_-]){re.escape(material_id)}(?![A-Za-z0-9_-])",
-                action_text,
-            ):
-                action_material_ids.append(material_id)
-        inferred_refs = [f"material:{material_id}" for material_id in action_material_ids]
-        audience = _mapping(data.get("audience"))
-        for metric_key, metric in _mapping(audience.get("metrics")).items():
-            for dimension_key, dimension in _mapping(metric).get("dimensions", {}).items():
-                for bucket in _list(_mapping(dimension).get("buckets")):
-                    bucket_name = _text(_mapping(bucket).get("bucket"))
-                    if bucket_name and bucket_name in action_text:
-                        inferred_refs.append(
-                            f"audience:{metric_key}:{dimension_key}:{bucket_name}"
-                        )
-        refs = list(dict.fromkeys(refs + inferred_refs))
-        actions.append({
-            "title": _text(raw.get("title")), "body": _text(raw.get("body")),
-            "action": _text(raw.get("action")) or _text(raw.get("body")), "validation": _text(raw.get("validation")),
-            "priority": _text(raw.get("priority")) or "medium", "evidenceRefs": refs,
-            "materialIds": action_material_ids,
-            "evidenceSource": "ai" if not inferred_refs else "facts-resolved",
-            "availability": _availability(
-                bool(_text(raw.get("title")) and _text(raw.get("body"))), bool(refs)
-            ),
-        })
-    actions.sort(key=lambda item: (ACTION_PRIORITIES.index(item["priority"]) if item["priority"] in ACTION_PRIORITIES else len(ACTION_PRIORITIES), item["title"]))
-    has_evidence = all(action["evidenceRefs"] for action in actions)
-    return {
-        "id": "chapter06", "title": "下一步行动", "actions": actions,
-        "source": "ai.nextActions", "evidenceRefs": [ref for action in actions for ref in action["evidenceRefs"]],
-        "availability": _availability(bool(actions), has_evidence),
-    }
-
-
 def _frame_index(materials):
     index = {}
     for material in materials:
@@ -348,7 +300,6 @@ def build_presentation_report(data):
             "chapter01": _chapter01(data), "chapter02": _chapter02(data, material_ids),
             "chapter03": _chapter03(data, material_ids), "chapter04": _chapter04(data, materials),
             "chapter05": _chapter05(materials, (data.get("conclusion") or {}).get("schemaVersion")),
-            "chapter06": _chapter06(data, material_ids),
         },
         "interactions": {"source": "facts.interaction", "availability": "available" if data.get("interaction") else "unavailable"},
         "extensions": {"qianchuan": {"aiSchemaVersion": (data.get("conclusion") or {}).get("schemaVersion")}},
@@ -390,11 +341,6 @@ def validate_presentation_report(report):
             raise ValueError("chapter05 tabs must use fixed order")
     _validate_material_references(chapters.get("chapter02", {}), material_ids)
     _validate_material_references(chapters.get("chapter03", {}), material_ids)
-    chapter06 = chapters.get("chapter06", {})
-    for action in chapter06.get("actions", []):
-        if action.get("priority") not in ACTION_PRIORITIES:
-            raise ValueError("chapter06 action priority is unsupported")
-    _validate_material_references(chapter06, material_ids)
     return report
 
 

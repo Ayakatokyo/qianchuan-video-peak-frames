@@ -30,7 +30,6 @@
       <a href="#script-insights">03｜脚本洞察</a>
       <a href="#highlight-dashboard-section">04｜高光画面洞察</a>
       <a href="#material-analysis">05｜单素材深度分析</a>
-      <a href="#next-actions-section">06｜下一轮策略</a>
     </nav>
     <div class="report-content" id="report-content">
 
@@ -75,10 +74,6 @@
     </div>
   </section>
 
-  <section class="section" id="next-actions-section">
-    <header class="section-header"><h2>06｜下一轮策略</h2></header>
-    <ul class="rec-list" id="next-actions"></ul>
-  </section>
     </div>
   </div>
 
@@ -2313,37 +2308,6 @@ function renderMaterialTabs() {
   });
 }
 
-function renderNextActions() {
-  const list = document.getElementById("next-actions");
-  const priorityOrder = { high: 0, medium: 1, low: 2 };
-  const projectedActions = presentationChapter("chapter06")?.actions;
-  const actions = Array.isArray(projectedActions)
-    ? [...projectedActions]
-    : Array.isArray(reportData.conclusion?.nextActions) ? [...reportData.conclusion.nextActions] : [];
-  actions.sort((left, right) => (priorityOrder[left.priority] ?? 1) - (priorityOrder[right.priority] ?? 1));
-  list.replaceChildren();
-  if (actions.length === 0) {
-    const item = element("li", "rec-card");
-    item.append(element("b", "", "暂无下一轮策略"), element("p", "", "请补充结构化结论后重新渲染。"));
-    list.append(item);
-    return;
-  }
-  actions.forEach((action) => {
-    const item = element("li", "rec-card strategy-card");
-    item.append(
-      elementWithMaterialLinks("b", "", action.title),
-      elementWithMaterialLinks("p", "strategy-action", action.action || action.body)
-    );
-    if (text(action.validation)) {
-      item.append(
-        element("span", "strategy-validation-label", "验证口径"),
-        elementWithMaterialLinks("p", "strategy-validation", action.validation)
-      );
-    }
-    list.append(item);
-  });
-}
-
 function renderTopDimensionConclusions() {
   const root = document.getElementById("top-dimension-conclusions");
   const fallback = document.getElementById("overall-conclusion-card");
@@ -2449,7 +2413,6 @@ function renderReport() {
   renderScriptDashboard();
   renderHighlightDashboard();
   renderMaterialTabs();
-  renderNextActions();
 }
 
 renderReport();

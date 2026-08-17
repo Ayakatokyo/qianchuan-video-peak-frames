@@ -150,7 +150,6 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
             "03｜脚本洞察",
             "04｜高光画面洞察",
             "05｜单素材深度分析",
-            "06｜下一轮策略",
         ):
             self.assertIn(section, prompt)
         self.assertIn("不得分析执行过程", prompt)

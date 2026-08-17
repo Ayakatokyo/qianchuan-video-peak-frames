@@ -127,7 +127,7 @@ class FinalReportArchiveTests(unittest.TestCase):
 
 
 class FinalReportConclusionTests(unittest.TestCase):
-    def test_next_actions_preserve_explicit_action_and_validation_with_body_fallback(self):
+    def test_top_level_next_actions_are_ignored(self):
         conclusion = normalize_conclusion_analysis(
             {
                 "schemaVersion": 1,
@@ -148,10 +148,7 @@ class FinalReportConclusionTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(conclusion["nextActions"][0]["action"], "将利益点前置到开场。")
-        self.assertEqual(conclusion["nextActions"][0]["validation"], "比较 CTR 与净成交 ROI。")
-        self.assertEqual(conclusion["nextActions"][1]["action"], "保留原始正文。")
-        self.assertEqual(conclusion["nextActions"][1]["validation"], "")
+        self.assertNotIn("nextActions", conclusion)
 
     def test_v2_conclusion_requires_frame_coverage_note_for_missing_frames(self):
         top_payload = {"materials": [material("m-1")]}
@@ -256,7 +253,7 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
         self.assertIn(".unified-report .top-overall-heading", css)
         self.assertIn("font-size: 16px;\n  font-weight: 800;", css)
 
-    def test_template_renders_strategy_action_and_validation_without_priority_label(self):
+    def test_template_removes_strategy_section_assets(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
         )
@@ -264,13 +261,10 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('"rec-card strategy-card"', template)
-        self.assertIn('"strategy-action"', template)
-        self.assertIn('"strategy-validation-label", "验证口径"', template)
-        self.assertIn('"strategy-validation"', template)
-        self.assertNotIn("action.priority", template)
-        self.assertIn("#next-actions .strategy-card .strategy-validation", css)
-        self.assertIn("overflow-wrap: anywhere", css)
+        self.assertNotIn('"rec-card strategy-card"', template)
+        self.assertNotIn('"strategy-action"', template)
+        self.assertNotIn('"strategy-validation"', template)
+        self.assertNotIn("#next-actions", css)
 
     def test_template_renders_frame_coverage_note_inside_material_panel(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
@@ -1292,12 +1286,12 @@ class FinalReportV2ConclusionTests(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["conclusion"]["schemaVersion"], 2)
 
-    def test_rejects_v2_conclusion_without_next_actions(self):
+    def test_accepts_v2_conclusion_without_next_actions(self):
         conclusion = self._conclusion()
         conclusion.pop("nextActions")
 
-        with self.assertRaisesRegex(FinalReportError, "nextActions is required"):
-            self._build_data(conclusion)
+        result = self._build_data(conclusion)
+        self.assertEqual(result["status"], "complete")
 
     def test_rejects_v2_highlight_batch_insight(self):
         conclusion = self._conclusion()
@@ -2071,14 +2065,13 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("千川 TOP 素材池商业诊断报告", template)
         self.assertIn('class="report-shell"', template)
         self.assertIn('class="report-nav" aria-label="报告目录"', template)
-        self.assertEqual(template.count('class="section-header"'), 6)
+        self.assertEqual(template.count('class="section-header"'), 5)
         for section_id in (
             "top-material-combination",
             "audience-insights",
             "script-insights",
             "highlight-dashboard-section",
             "material-analysis",
-            "next-actions-section",
         ):
             self.assertIn(f'id="{section_id}"', template)
 
@@ -2258,10 +2251,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(".unified-report .report-nav a {", css_text)
         self.assertIn("white-space: nowrap;", css_text)
         self.assertNotIn(".unified-report .report-nav a:first-of-type", css_text)
-        self.assertIn(".unified-report #next-actions {", css_text)
-        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr));", css_text)
-        self.assertIn(".unified-report #next-actions .rec-card:nth-child(2n)::before", css_text)
-        self.assertIn("left: calc(var(--unified-content-gap) / -2);", css_text)
+        self.assertNotIn("#next-actions", css_text)
         self.assertIn(".unified-report .audience-drill-panel .preference-card {", css_text)
         self.assertIn("background: transparent;", css_text)
         self.assertIn("padding: 0;", css_text)
@@ -2706,7 +2696,7 @@ class FinalReportRenderTests(unittest.TestCase):
 
         self.assertIn("04｜高光画面洞察", prompt_text)
         self.assertIn("05｜单素材深度分析", prompt_text)
-        self.assertIn("06｜下一轮策略", prompt_text)
+        self.assertNotIn("06｜下一轮策略", prompt_text)
         self.assertIn('"schemaVersion": 5', prompt_text)
         self.assertIn("互动时序", prompt_text)
         self.assertIn("highlightDashboard", prompt_text)
@@ -2731,7 +2721,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("必须输出至少 3 条 audience、2 条 script 洞察", prompt_text)
         self.assertIn("一二级内容公式：", prompt_text)
         self.assertIn("脚本文案：", prompt_text)
-        self.assertIn("必须输出至少 4 条 nextActions", prompt_text)
+        self.assertNotIn("必须输出至少 4 条 nextActions", prompt_text)
 
     def test_generates_html_with_required_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2832,13 +2822,11 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("03｜脚本洞察", html_text)
         self.assertIn("04｜高光画面洞察", html_text)
         self.assertIn("05｜单素材深度分析", html_text)
-        self.assertIn("06｜下一轮策略", html_text)
+        self.assertNotIn("06｜下一轮策略", html_text)
         self.assertNotIn("07｜数据质量与执行口径", html_text)
         self.assertNotIn('id="report-cover"', html_text)
         self.assertNotIn("renderWarnings", html_text)
-        self.assertIn('id="next-actions"', html_text)
-        self.assertIn("扩展礼赠脚本", html_text)
-        self.assertIn("围绕送礼对象拆分。", html_text)
+        self.assertNotIn('id="next-actions"', html_text)
         self.assertIn("礼赠素材可以继续放量。", html_text)
         self.assertIn(
             '"framePath":"../peak-frames/m-1/first_peak_0001s_3.jpg"',
@@ -3134,7 +3122,6 @@ class FinalReportRenderTests(unittest.TestCase):
             "03｜脚本洞察",
             "04｜高光画面洞察",
             "05｜单素材深度分析",
-            "06｜下一轮策略",
         ):
             self.assertIn(heading, html_text)
         self.assertIn("function renderHighlightDashboard", html_text)
@@ -3365,12 +3352,12 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("renderAudienceDashboard();", html_text)
         self.assertIn("renderScriptDashboard();", html_text)
         self.assertIn("renderHighlightDashboard();", html_text)
-        self.assertIn("renderNextActions();", html_text)
-        self.assertIn("function renderNextActions", html_text)
-        self.assertIn('id="next-actions"', html_text)
-        self.assertIn('elementWithMaterialLinks("b", "", action.title)', html_text)
-        self.assertIn('elementWithMaterialLinks("p", "strategy-action", action.action || action.body)', html_text)
-        self.assertIn('elementWithMaterialLinks("p", "strategy-validation", action.validation)', html_text)
+        self.assertNotIn("renderNextActions();", html_text)
+        self.assertNotIn("function renderNextActions", html_text)
+        self.assertNotIn('id="next-actions"', html_text)
+        self.assertNotIn('elementWithMaterialLinks("b", "", action.title)', html_text)
+        self.assertNotIn('elementWithMaterialLinks("p", "strategy-action", action.action || action.body)', html_text)
+        self.assertNotIn('elementWithMaterialLinks("p", "strategy-validation", action.validation)', html_text)
         self.assertNotIn('element("small", "", text(action.priority, "medium"))', html_text)
         self.assertIn("内容公式一级标签分布", html_text)
         self.assertNotIn("脚本标签分组", html_text)

@@ -86,7 +86,8 @@ def complete_presentation_data():
 class PresentationTests(unittest.TestCase):
     def test_projects_new_chapter_contracts_with_stable_material_references(self):
         report = build_presentation_report(complete_presentation_data())
-        self.assertEqual(report["report"]["sections"], [f"chapter0{index}" for index in range(1, 7)])
+        self.assertEqual(report["report"]["sections"], [f"chapter0{index}" for index in range(1, 6)])
+        self.assertNotIn("chapter06", report["chapters"])
         self.assertEqual([tab["id"] for tab in report["chapters"]["chapter01"]["tabs"]], ["commercial", "audience", "script", "highlight", "interaction"])
         self.assertEqual(report["chapters"]["chapter01"]["batchInsights"][0]["title"], "人群洞察")
         bucket = report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"][0]
@@ -107,35 +108,10 @@ class PresentationTests(unittest.TestCase):
             report["chapters"]["chapter03"]["insights"][0]["summary"],
             "原始 AI 标题",
         )
-        action = report["chapters"]["chapter06"]["actions"][0]
-        self.assertEqual((action["priority"], action["materialIds"]), ("high", ["m-1"]))
-        self.assertEqual(action["availability"], "available")
-
-    def test_derives_next_action_references_from_existing_fact_mentions(self):
-        data = complete_presentation_data()
-        data["conclusion"]["nextActions"] = [{
-            "title": "优化人群定向",
-            "body": "围绕女性 24-30 岁人群优化投放，并复用 m-1 的有效表达。",
-            "priority": "high",
-        }]
-        action = build_presentation_report(data)["chapters"]["chapter06"]["actions"][0]
-        self.assertEqual(action["materialIds"], ["m-1"])
-        self.assertIn("material:m-1", action["evidenceRefs"])
-        self.assertIn("audience:CLICK_COUNT:age:24-30", action["evidenceRefs"])
-        self.assertEqual(action["availability"], "available")
-        data["conclusion"]["nextActions"] = [{
-            "title": "优化人群定向",
-            "body": "围绕 24-30 岁人群优化投放。",
-            "priority": "high",
-        }]
-        report = build_presentation_report(data)
-        self.assertEqual(report["chapters"]["chapter06"]["availability"], "available")
+        self.assertNotIn("nextActions", report["chapters"])
 
     def test_validation_rejects_invalid_projected_references_and_priorities(self):
         report = build_presentation_report(complete_presentation_data())
-        report["chapters"]["chapter06"]["actions"][0]["priority"] = "urgent"
-        with self.assertRaisesRegex(ValueError, "priority"):
-            validate_presentation_report(report)
         report = build_presentation_report(complete_presentation_data())
         report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"][0]["sourceMaterialIds"] = ["missing"]
         with self.assertRaisesRegex(ValueError, "materialId"):
@@ -144,18 +120,14 @@ class PresentationTests(unittest.TestCase):
         report["chapters"]["chapter03"]["groups"][0]["labels"][0]["materialIds"] = ["missing"]
         with self.assertRaisesRegex(ValueError, "materialId"):
             validate_presentation_report(report)
-        report = build_presentation_report(complete_presentation_data())
-        report["chapters"]["chapter06"]["actions"][0]["materialIds"] = ["missing"]
-        with self.assertRaisesRegex(ValueError, "materialId"):
-            validate_presentation_report(report)
 
     def test_missing_new_chapter_data_stays_renderable(self):
         report = build_presentation_report(sample_data())
-        for chapter in ("chapter01", "chapter02", "chapter03", "chapter06"):
+        for chapter in ("chapter01", "chapter02", "chapter03"):
             self.assertIn(report["chapters"][chapter]["availability"], ("partial", "unavailable"))
         self.assertEqual(report["chapters"]["chapter02"]["metrics"], {})
         self.assertEqual(report["chapters"]["chapter03"]["groups"], [])
-        self.assertEqual(report["chapters"]["chapter06"]["actions"], [])
+        self.assertEqual(list(report["chapters"]), ["chapter01", "chapter02", "chapter03", "chapter04", "chapter05"])
 
     def test_projects_chapters_with_stable_refs_and_tabs(self):
         report = build_presentation_report(sample_data())
@@ -233,7 +205,7 @@ class PresentationTests(unittest.TestCase):
     def test_template_prefers_presentation_chapters_with_legacy_fallback(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
         self.assertIn("function presentationChapter(id)", template)
-        for chapter in ("chapter01", "chapter02", "chapter03", "chapter06"):
+        for chapter in ("chapter01", "chapter02", "chapter03"):
             self.assertIn(f'presentationChapter("{chapter}")', template)
 
 

@@ -31,7 +31,6 @@ FinalReportError = ReportRenderingError
 
 
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
-ALLOWED_PRIORITIES = {"high", "medium", "low"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script"}
 PORTFOLIO_DIMENSION_TOPICS = ("commercial", "audience", "script", "highlight")
 PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION = PORTFOLIO_DIMENSION_TOPICS + ("interaction",)
@@ -51,7 +50,6 @@ COMMERCIAL_SOURCE_TERMS = ("资产表", "数据来源")
 AI_QUALITY_MINIMUMS = {
     "overallConclusion": 420,
     "batchInsight": 180,
-    "nextAction": 140,
     "materialConclusion": 120,
     "materialNextAction": 100,
     "visualObservation": 40,
@@ -146,27 +144,6 @@ def _validate_recommendation(raw, index):
     }
 
 
-def _validate_next_action(raw, index):
-    if not isinstance(raw, dict):
-        raise FinalReportError(f"nextActions[{index}] must be an object")
-    title = _text(raw.get("title"))
-    body = _text(raw.get("body"))
-    action = _text(raw.get("action"))
-    validation = _text(raw.get("validation"))
-    priority = _text(raw.get("priority")) or "medium"
-    if not title or not body:
-        raise FinalReportError(f"nextActions[{index}] requires title and body")
-    if priority not in ALLOWED_PRIORITIES:
-        raise FinalReportError(f"nextActions[{index}].priority is unsupported")
-    return {
-        "title": title,
-        "body": body,
-        "action": action or body,
-        "validation": validation,
-        "priority": priority,
-    }
-
-
 def _iter_strings(value):
     if isinstance(value, str):
         yield value
@@ -202,13 +179,10 @@ def _reject_execution_process_narrative(payload):
 def _normalize_v1_conclusion(payload):
     insights = payload.get("keyInsights", [])
     recommendations = payload.get("materialRecommendations", [])
-    next_actions = payload.get("nextActions", [])
     if not isinstance(insights, list):
         raise FinalReportError("keyInsights must be a list")
     if not isinstance(recommendations, list):
         raise FinalReportError("materialRecommendations must be a list")
-    if not isinstance(next_actions, list):
-        raise FinalReportError("nextActions must be a list")
     return {
         "schemaVersion": 1,
         "overallConclusion": _text(payload.get("overallConclusion")),
@@ -218,10 +192,6 @@ def _normalize_v1_conclusion(payload):
         "materialRecommendations": [
             _validate_recommendation(item, index)
             for index, item in enumerate(recommendations)
-        ],
-        "nextActions": [
-            _validate_next_action(item, index)
-            for index, item in enumerate(next_actions)
         ],
         "warnings": _string_list(payload.get("warnings", []), "warnings"),
     }
@@ -314,18 +284,15 @@ def _validate_v2_material_analysis(raw, index):
 
 def _normalize_v2_conclusion(payload):
     _reject_execution_process_narrative(payload)
-    for field_name in ("batchInsights", "materialAnalyses", "nextActions"):
+    for field_name in ("batchInsights", "materialAnalyses"):
         if field_name not in payload:
             raise FinalReportError(f"{field_name} is required for schemaVersion 2")
     insights = payload.get("batchInsights", [])
     material_analyses = payload.get("materialAnalyses", [])
-    next_actions = payload.get("nextActions", [])
     if not isinstance(insights, list):
         raise FinalReportError("batchInsights must be a list")
     if not isinstance(material_analyses, list):
         raise FinalReportError("materialAnalyses must be a list")
-    if not isinstance(next_actions, list):
-        raise FinalReportError("nextActions must be a list")
     normalized_materials = [
         _validate_v2_material_analysis(item, index)
         for index, item in enumerate(material_analyses)
@@ -340,10 +307,6 @@ def _normalize_v2_conclusion(payload):
             _validate_v2_insight(item, index) for index, item in enumerate(insights)
         ],
         "materialAnalyses": normalized_materials,
-        "nextActions": [
-            _validate_next_action(item, index)
-            for index, item in enumerate(next_actions)
-        ],
     }
 
 
@@ -1288,15 +1251,6 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
                 f"batchInsights requires at least {required_count} {topic} insights"
             )
 
-    if len(conclusion["nextActions"]) < 4:
-        failures.append("nextActions requires at least 4 actions")
-    for index, action in enumerate(conclusion["nextActions"]):
-        if len(action["body"]) < minimums["nextAction"]:
-            failures.append(
-                f"nextActions[{index}].body must contain at least "
-                f"{minimums['nextAction']} characters"
-            )
-
     analyses = {
         analysis["materialId"]: analysis
         for analysis in conclusion["materialAnalyses"]
@@ -1499,7 +1453,6 @@ def build_final_report_data(
             "overallConclusion": "",
             "keyInsights": [],
             "materialRecommendations": [],
-            "nextActions": [],
             "warnings": [],
         },
         "batchVerification": batch_verification or {},
