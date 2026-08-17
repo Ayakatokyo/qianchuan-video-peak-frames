@@ -1,6 +1,7 @@
 """PresentationReport v1 projection for the Qianchuan report."""
 
 from copy import deepcopy
+import re
 
 
 CATEGORIES = ("portrait", "product", "other")
@@ -159,8 +160,19 @@ def _chapter03(data, material_ids):
         groups.append(group)
     evidence_refs = [item for group in groups for label in group["labels"] for item in label["evidenceRefs"]]
     has_refs = any(label["materialIds"] for group in groups for label in group["labels"])
+    title_overrides = ("一二级内容公式", "脚本文案")
+    insights = []
+    for raw in _list(_mapping(data.get("conclusion")).get("batchInsights")):
+        if not isinstance(raw, dict) or _text(raw.get("topic")) != "script":
+            continue
+        insight = deepcopy(raw)
+        index = len(insights)
+        if index < len(title_overrides):
+            insight["summary"] = _text(insight.get("title"))
+            insight["title"] = title_overrides[index]
+        insights.append(insight)
     return {
-        "id": "chapter03", "title": "脚本洞察", "groups": groups,
+        "id": "chapter03", "title": "脚本洞察", "groups": groups, "insights": insights,
         "source": "facts.scripts.labelSummary", "evidenceRefs": evidence_refs,
         "availability": _availability(bool(groups), bool(evidence_refs) and has_refs),
     }
@@ -171,16 +183,40 @@ def _chapter06(data, material_ids):
     for raw in _list(_mapping(data.get("conclusion")).get("nextActions")):
         if not isinstance(raw, dict):
             continue
+        action_text = " ".join(
+            _text(raw.get(key)) for key in ("title", "body", "action", "validation")
+        )
         refs = [_text(ref) for ref in _list(raw.get("evidenceRefs")) if _text(ref)]
+        action_material_ids = _material_refs(raw.get("materialIds"), material_ids)
+        for material_id in sorted(material_ids):
+            if material_id not in action_material_ids and re.search(
+                rf"(?<![A-Za-z0-9_-]){re.escape(material_id)}(?![A-Za-z0-9_-])",
+                action_text,
+            ):
+                action_material_ids.append(material_id)
+        inferred_refs = [f"material:{material_id}" for material_id in action_material_ids]
+        audience = _mapping(data.get("audience"))
+        for metric_key, metric in _mapping(audience.get("metrics")).items():
+            for dimension_key, dimension in _mapping(metric).get("dimensions", {}).items():
+                for bucket in _list(_mapping(dimension).get("buckets")):
+                    bucket_name = _text(_mapping(bucket).get("bucket"))
+                    if bucket_name and bucket_name in action_text:
+                        inferred_refs.append(
+                            f"audience:{metric_key}:{dimension_key}:{bucket_name}"
+                        )
+        refs = list(dict.fromkeys(refs + inferred_refs))
         actions.append({
             "title": _text(raw.get("title")), "body": _text(raw.get("body")),
             "action": _text(raw.get("action")) or _text(raw.get("body")), "validation": _text(raw.get("validation")),
             "priority": _text(raw.get("priority")) or "medium", "evidenceRefs": refs,
-            "materialIds": _material_refs(raw.get("materialIds"), material_ids),
-            "availability": _availability(bool(_text(raw.get("title")) and _text(raw.get("body"))), bool(refs and _material_refs(raw.get("materialIds"), material_ids))),
+            "materialIds": action_material_ids,
+            "evidenceSource": "ai" if not inferred_refs else "facts-resolved",
+            "availability": _availability(
+                bool(_text(raw.get("title")) and _text(raw.get("body"))), bool(refs)
+            ),
         })
     actions.sort(key=lambda item: (ACTION_PRIORITIES.index(item["priority"]) if item["priority"] in ACTION_PRIORITIES else len(ACTION_PRIORITIES), item["title"]))
-    has_evidence = all(action["evidenceRefs"] and action["materialIds"] for action in actions)
+    has_evidence = all(action["evidenceRefs"] for action in actions)
     return {
         "id": "chapter06", "title": "下一步行动", "actions": actions,
         "source": "ai.nextActions", "evidenceRefs": [ref for action in actions for ref in action["evidenceRefs"]],
@@ -229,6 +265,11 @@ def _chapter04(data, materials):
             if card.get("availability") == "available":
                 available_refs += 1
             cards.append(card)
+        group_availability = (
+            "unavailable" if not cards
+            else "available" if available_refs == len(cards)
+            else "partial"
+        )
         groups[category] = {
             "id": f"chapter04-{category}",
             "category": category,
@@ -238,7 +279,7 @@ def _chapter04(data, materials):
             "derivativeDirections": deepcopy(raw.get("derivativeDirections", [])) if isinstance(raw.get("derivativeDirections"), list) else [],
             "source": "ai.highlightDashboard",
             "evidenceRefs": refs,
-            "availability": "available" if cards else "unavailable",
+            "availability": group_availability,
         }
     availability = "available" if total_refs and available_refs == total_refs else ("partial" if available_refs else "unavailable")
     return {
@@ -334,6 +375,12 @@ def validate_presentation_report(report):
     chapter04 = chapters.get("chapter04", {})
     if list(chapter04.get("groups", {})) != list(CATEGORIES):
         raise ValueError("chapter04 groups must use fixed category order")
+    frame_refs = []
+    for category in CATEGORIES:
+        group = chapter04.get("groups", {}).get(category, {})
+        frame_refs.extend(group.get("frameRefs", []))
+    if len(frame_refs) != len(set(frame_refs)):
+        raise ValueError("frameRef must belong to only one category")
     chapter05 = chapters.get("chapter05", {})
     material_ids = {item.get("materialId") for item in materials}
     for item in chapter05.get("materials", []):

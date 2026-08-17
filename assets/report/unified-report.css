@@ -2788,15 +2788,15 @@ body.unified-report {
 .unified-report .interaction-timeline-switcher {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 2px;
+  gap: 6px;
   overflow: visible;
 }
 
 .unified-report .interaction-timeline-switcher button {
   min-width: 0;
-  min-height: 30px !important;
-  padding: 4px 3px;
-  font-size: 11px;
+  min-height: 38px !important;
+  padding: 6px 5px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0;
   overflow: hidden;

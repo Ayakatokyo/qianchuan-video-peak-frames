@@ -71,7 +71,10 @@ def complete_presentation_data():
             topic: {"conclusion": f"{topic} 组合结论", "evidenceRefs": [f"{topic}:m-1"]}
             for topic in ("commercial", "audience", "script", "highlight", "interaction")
         },
-        "batchInsights": [{"topic": "audience", "title": "人群洞察", "conclusion": "24-30 岁值得继续验证", "evidenceRefs": ["audience:m-1"]}],
+        "batchInsights": [
+            {"topic": "audience", "title": "人群洞察", "conclusion": "24-30 岁值得继续验证", "evidenceRefs": ["audience:m-1"]},
+            {"topic": "script", "title": "原始 AI 标题", "conclusion": "脚本结论", "evidenceRefs": ["script:m-1:商品卖点:适用场景"]},
+        ],
         "nextActions": [{
             "title": "优先测试开场", "body": "将利益点前置到前 3 秒", "action": "改写开场", "validation": "比较 CTR", "priority": "high",
             "evidenceRefs": ["audience:m-1"], "materialIds": ["m-1"],
@@ -96,9 +99,37 @@ class PresentationTests(unittest.TestCase):
         group = report["chapters"]["chapter03"]["groups"][0]
         self.assertEqual((group["level1"], group["labels"][0]["level2"]), ("商品卖点", "适用场景"))
         self.assertEqual(group["labels"][0]["evidenceRefs"], ["script:m-1:商品卖点:适用场景"])
+        self.assertEqual(
+            [item["title"] for item in report["chapters"]["chapter03"]["insights"]],
+            ["一二级内容公式"],
+        )
+        self.assertEqual(
+            report["chapters"]["chapter03"]["insights"][0]["summary"],
+            "原始 AI 标题",
+        )
         action = report["chapters"]["chapter06"]["actions"][0]
         self.assertEqual((action["priority"], action["materialIds"]), ("high", ["m-1"]))
         self.assertEqual(action["availability"], "available")
+
+    def test_derives_next_action_references_from_existing_fact_mentions(self):
+        data = complete_presentation_data()
+        data["conclusion"]["nextActions"] = [{
+            "title": "优化人群定向",
+            "body": "围绕女性 24-30 岁人群优化投放，并复用 m-1 的有效表达。",
+            "priority": "high",
+        }]
+        action = build_presentation_report(data)["chapters"]["chapter06"]["actions"][0]
+        self.assertEqual(action["materialIds"], ["m-1"])
+        self.assertIn("material:m-1", action["evidenceRefs"])
+        self.assertIn("audience:CLICK_COUNT:age:24-30", action["evidenceRefs"])
+        self.assertEqual(action["availability"], "available")
+        data["conclusion"]["nextActions"] = [{
+            "title": "优化人群定向",
+            "body": "围绕 24-30 岁人群优化投放。",
+            "priority": "high",
+        }]
+        report = build_presentation_report(data)
+        self.assertEqual(report["chapters"]["chapter06"]["availability"], "available")
 
     def test_validation_rejects_invalid_projected_references_and_priorities(self):
         report = build_presentation_report(complete_presentation_data())
@@ -144,6 +175,20 @@ class PresentationTests(unittest.TestCase):
         report = build_presentation_report(data)
         self.assertEqual(report["chapters"]["chapter04"]["availability"], "unavailable")
         self.assertEqual(report["chapters"]["chapter05"]["materials"][0]["availability"], "partial")
+
+    def test_missing_highlight_reference_degrades_only_its_category(self):
+        data = sample_data()
+        data["conclusion"]["highlightDashboard"]["groups"][0]["frameRefs"].append("highlight:m-1:missing")
+        report = build_presentation_report(data)
+        group = report["chapters"]["chapter04"]["groups"]["portrait"]
+        self.assertEqual(group["availability"], "partial")
+        self.assertEqual(report["chapters"]["chapter04"]["availability"], "partial")
+
+    def test_validation_rejects_highlight_frame_assigned_to_multiple_categories(self):
+        report = build_presentation_report(sample_data())
+        report["chapters"]["chapter04"]["groups"]["product"]["frameRefs"] = ["highlight:m-1:peak_top_1"]
+        with self.assertRaisesRegex(ValueError, "frameRef"):
+            validate_presentation_report(report)
 
     def test_validation_rejects_duplicate_material_ids(self):
         report = build_presentation_report(sample_data())

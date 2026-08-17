@@ -22,8 +22,10 @@ def write_rendered_report(root):
     report_dir = root / "final-report"
     report_dir.mkdir(exist_ok=True)
     data_path = report_dir / "final-report-data.json"
+    presentation_path = report_dir / "presentation-report.json"
     html_path = report_dir / "final-report.html"
     data_path.write_text("{}", encoding="utf-8")
+    presentation_path.write_text("{}", encoding="utf-8")
     html_path.write_text("<main>report</main>", encoding="utf-8")
     return data_path, html_path, {}
 

@@ -114,6 +114,11 @@ function chapter03Summary() {
   return groups.flatMap((group) => (group.labels || []).map((label) => ({ ...label, level1: group.level1 })));
 }
 
+function chapter03Insights() {
+  const insights = presentationChapter("chapter03")?.insights;
+  return Array.isArray(insights) ? insights : chapter01Insights("script");
+}
+
 function chapter04Groups() {
   if (presentation?.chapters?.chapter04?.groups) {
     return Object.values(presentation.chapters.chapter04.groups);
@@ -353,8 +358,11 @@ function renderInsightList(targetId, insightItems, emptyTitle) {
   }
   insights.forEach((insight, index) => {
     const card = element("article", `insight-card${index === 0 ? " insight-card-primary" : ""}`);
+    const title = text(insight.summary)
+      ? insight.title + "：" + text(insight.summary)
+      : insight.title || `洞察 ${index + 1}`;
     card.append(
-      elementWithMaterialLinks("b", "", insight.title || `洞察 ${index + 1}`),
+      elementWithMaterialLinks("b", "", title),
       elementWithMaterialLinks("p", "", insight.conclusion)
     );
     target.append(card);
@@ -2437,7 +2445,7 @@ function renderReport() {
   renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");
   renderAudiencePreferences();
   renderAudienceDashboard();
-  renderInsightList("script-primary", chapter01Insights("script"), "暂无脚本洞察");
+  renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");
   renderScriptDashboard();
   renderHighlightDashboard();
   renderMaterialTabs();

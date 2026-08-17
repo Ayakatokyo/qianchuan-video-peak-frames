@@ -1613,7 +1613,7 @@ def generate_final_report(
     batch_manifest = load_batch_manifest(peak_output_dir)
     top_material_roi = load_top_material_roi_facts(peak_output_dir)
     conclusion = load_conclusion_analysis(analysis_json) if analysis_json else None
-    data = build_final_report_data(
+    legacy_data = build_final_report_data(
         top_payload,
         records_by_material,
         summaries_by_material,
@@ -1624,21 +1624,21 @@ def generate_final_report(
         top_material_roi=top_material_roi,
     )
     if require_ai_quality:
-        _validate_standard_ai_quality(conclusion, data["materials"])
+        _validate_standard_ai_quality(conclusion, legacy_data["materials"])
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"
     presentation_path = output_root / "presentation-report.json"
     html_path = output_root / "final-report.html"
     from qianchuan_presentation import build_presentation_report
 
-    presentation = build_presentation_report(data)
+    presentation = build_presentation_report(legacy_data)
+    data = {"presentation": presentation, **legacy_data}
     _atomic_write_text(
         data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )
     _atomic_write_text(
         presentation_path, json.dumps(presentation, ensure_ascii=False, indent=2) + "\n"
     )
-    data["presentation"] = presentation
     _atomic_write_text(
         html_path,
         _render_html_report(

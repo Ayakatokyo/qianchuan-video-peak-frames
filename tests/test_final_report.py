@@ -2176,9 +2176,10 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('element("div", "metric-switch interaction-timeline-switcher")', template)
         self.assertIn(".unified-report .interaction-timeline-switcher {", css_text)
         self.assertIn("grid-template-columns: repeat(6, minmax(0, 1fr));", css_text)
-        self.assertIn("min-height: 30px !important;", css_text)
-        self.assertIn("font-size: 11px;", css_text)
-        self.assertIn("padding: 4px 3px;", css_text)
+        self.assertIn("gap: 6px;", css_text)
+        self.assertIn("min-height: 38px !important;", css_text)
+        self.assertIn("font-size: 12px;", css_text)
+        self.assertIn("padding: 6px 5px;", css_text)
 
     def test_material_analysis_uses_named_script_toggle_and_compact_chart_controls(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
@@ -2397,7 +2398,7 @@ class FinalReportRenderTests(unittest.TestCase):
             html_text,
         )
         self.assertIn(
-            'renderInsightList("script-primary", chapter01Insights("script"), "暂无脚本洞察");',
+            'renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");',
             html_text,
         )
         self.assertNotIn("function renderPrimaryInsight", html_text)
@@ -2782,6 +2783,9 @@ class FinalReportRenderTests(unittest.TestCase):
             self.assertTrue((output_dir / "presentation-report.json").is_file())
             presentation = json.loads((output_dir / "presentation-report.json").read_text(encoding="utf-8"))
             self.assertEqual(presentation["presentationSchemaVersion"], 1)
+            persisted_data = json.loads((output_dir / "final-report-data.json").read_text(encoding="utf-8"))
+            self.assertEqual(persisted_data["presentation"], presentation)
+            self.assertEqual(next(iter(persisted_data)), "presentation")
         self.assertEqual(data_path.name, "final-report-data.json")
         self.assertEqual(html_path.name, "final-report.html")
         self.assertEqual(data["status"], "complete")
@@ -3339,7 +3343,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("复制内容公式", html_text)
         self.assertIn("本视频脚本", html_text)
         self.assertIn("复制脚本", html_text)
-        self.assertNotIn("脚本文案", html_text)
+        self.assertIn('chapter03Insights()', html_text)
+        self.assertIn('insight.title + "：" + text(insight.summary)', html_text)
         self.assertNotIn("高光帧类型分布", html_text)
         self.assertNotIn("highlight-all-grid", html_text)
         self.assertNotIn("script-summary-grid", html_text)
