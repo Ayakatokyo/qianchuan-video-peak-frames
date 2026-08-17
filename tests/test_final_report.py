@@ -17,6 +17,8 @@ from final_report_lib import (  # noqa: E402
     normalize_conclusion_analysis,
     _validate_standard_ai_quality,
     _validate_v2_analysis_quality,
+    _duplicate_highlight_observations,
+    _duplicate_highlight_interpretations,
 )
 from final_report_lib import generate_final_report  # noqa: E402
 import report_renderer  # noqa: E402
@@ -1670,6 +1672,40 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
 
 
 class FinalReportQualityGateTests(unittest.TestCase):
+    def test_duplicate_highlight_observations_are_detected_per_material(self):
+        highlights = [
+            {
+                "frameRef": "highlight:m-1:peak_top_1",
+                "visualObservation": "人物与产品罐体同框，字幕位于下方。当前帧为 peak_top_1。",
+            },
+            {
+                "frameRef": "highlight:m-1:peak_top_2",
+                "visualObservation": "人物与产品罐体同框，字幕位于下方。当前帧为 peak_top_2。",
+            },
+        ]
+
+        self.assertEqual(
+            _duplicate_highlight_observations("m-1", highlights),
+            [("highlight:m-1:peak_top_1", "highlight:m-1:peak_top_2")],
+        )
+
+    def test_duplicate_highlight_interpretations_are_detected_per_material(self):
+        highlights = [
+            {
+                "frameRef": "highlight:m-1:peak_top_1",
+                "commercialInterpretation": "该画面与点击峰值同时出现，待通过素材对照验证。",
+            },
+            {
+                "frameRef": "highlight:m-1:peak_top_2",
+                "commercialInterpretation": "该画面与点击峰值同时出现，待通过素材对照验证。",
+            },
+        ]
+
+        self.assertEqual(
+            _duplicate_highlight_interpretations("m-1", highlights),
+            [("highlight:m-1:peak_top_1", "highlight:m-1:peak_top_2")],
+        )
+
     def test_standard_quality_gate_accepts_v5_analysis_with_dashboard(self):
         long_dimension = "该维度包含可验证的素材事实与下一轮策略判断，应结合商业结果持续观察并按变量进行对照测试。" * 3
         long_insight = "该洞察包含可核验的指标事实、谨慎的业务判断和下一轮验证方向，不能把单次互动变化直接视为商业因果，应以成交结果复核。" * 4

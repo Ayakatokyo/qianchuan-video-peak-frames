@@ -3,6 +3,7 @@ import json
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone
 import math
+import re
 from pathlib import Path
 from batch_runtime import stage_counts
 from asset_metrics_lib import (
@@ -1202,6 +1203,52 @@ def _repeated_values(items, field_name):
     return [material_ids for material_ids in values.values() if len(material_ids) > 1]
 
 
+def _duplicate_highlight_observations(material_id, highlights):
+    """Return frame-reference pairs whose observations only differ by frame labels."""
+    by_observation = {}
+    for highlight in highlights:
+        observation = " ".join(_text(highlight.get("visualObservation")).split())
+        observation = re.sub(
+            r"(?:当前帧(?:为|是)?\s*)?(?:zero_second|peak_top_[1-5])",
+            "<frame>",
+            observation,
+            flags=re.IGNORECASE,
+        )
+        frame_ref = _text(highlight.get("frameRef"))
+        if observation and frame_ref:
+            by_observation.setdefault(observation, []).append(frame_ref)
+    duplicates = []
+    for frame_refs in by_observation.values():
+        if len(frame_refs) > 1:
+            first = frame_refs[0]
+            duplicates.extend((first, other) for other in frame_refs[1:])
+    return duplicates
+
+
+def _duplicate_highlight_interpretations(material_id, highlights):
+    """Return frame-reference pairs with repeated commercial interpretations."""
+    by_interpretation = {}
+    for highlight in highlights:
+        interpretation = " ".join(
+            _text(highlight.get("commercialInterpretation")).split()
+        )
+        interpretation = re.sub(
+            r"(?:当前帧(?:为|是)?\s*)?(?:zero_second|peak_top_[1-5])",
+            "<frame>",
+            interpretation,
+            flags=re.IGNORECASE,
+        )
+        frame_ref = _text(highlight.get("frameRef"))
+        if interpretation and frame_ref:
+            by_interpretation.setdefault(interpretation, []).append(frame_ref)
+    duplicates = []
+    for frame_refs in by_interpretation.values():
+        if len(frame_refs) > 1:
+            first = frame_refs[0]
+            duplicates.extend((first, other) for other in frame_refs[1:])
+    return duplicates
+
+
 def _validate_v2_analysis_quality(conclusion, material_cards):
     if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4, 5}:
         return
@@ -1310,6 +1357,27 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
                     "commercialInterpretation must contain at least "
                     f"{minimums['commercialInterpretation']} characters"
                 )
+        duplicate_frames = _duplicate_highlight_observations(
+            material_id, analysis["highlightAnalyses"]
+        )
+        if duplicate_frames:
+            failures.append(
+                f"materialAnalyses[{material_id}].highlightAnalyses has repeated "
+                "visualObservation for frames "
+                + ", ".join(f"{first}/{second}" for first, second in duplicate_frames)
+            )
+        duplicate_interpretations = _duplicate_highlight_interpretations(
+            material_id, analysis["highlightAnalyses"]
+        )
+        if duplicate_interpretations:
+            failures.append(
+                f"materialAnalyses[{material_id}].highlightAnalyses has repeated "
+                "commercialInterpretation for frames "
+                + ", ".join(
+                    f"{first}/{second}"
+                    for first, second in duplicate_interpretations
+                )
+            )
 
     for field_name in (
         "audienceConclusion",
