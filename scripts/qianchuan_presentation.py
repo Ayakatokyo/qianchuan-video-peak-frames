@@ -161,7 +161,11 @@ def _chapter03(data, material_ids):
         if not isinstance(raw, dict) or not _text(raw.get("level1")) or not _text(raw.get("level2")):
             continue
         level1 = _text(raw.get("level1"))
-        group = by_level1.setdefault(level1, {"level1": level1, "labels": []})
+        group = by_level1.setdefault(level1, {
+            "level1": level1,
+            "labels": [],
+            "source": "facts.scripts.labelSummary",
+        })
         refs = [
             f"script:{material_id}:{level1}:{_text(raw.get('level2'))}"
             for material_id in _material_refs(raw.get("materialIds"), material_ids)
@@ -181,10 +185,12 @@ def _chapter03(data, material_ids):
             continue
         # Script insight titles are AI-generated and already carry their dimension prefix.
         # Keep them intact so the renderer does not repeat the prefix via summary.
-        insights.append(deepcopy(raw))
+        insight = deepcopy(raw)
+        insight["source"] = "ai.batchInsights[script]"
+        insights.append(insight)
     return {
         "id": "chapter03", "title": "脚本洞察", "groups": groups, "insights": insights,
-        "source": "facts.scripts.labelSummary", "evidenceRefs": evidence_refs,
+        "source": "facts.scripts + ai.batchInsights[script]", "evidenceRefs": evidence_refs,
         "availability": _availability(bool(groups), bool(evidence_refs) and has_refs),
     }
 
@@ -217,6 +223,7 @@ def _chapter04(data, materials):
     raw_groups = dashboard.get("groups") if isinstance(dashboard.get("groups"), list) else []
     by_category = {group.get("category"): group for group in raw_groups if isinstance(group, dict)}
     frames = _frame_index(materials)
+    conclusion_text, conclusion_refs = _dimension(conclusion, "highlight")
     groups = {}
     total_refs = 0
     available_refs = 0
@@ -242,7 +249,7 @@ def _chapter04(data, materials):
             "frames": cards,
             "commonConclusion": _text(raw.get("commonConclusion")),
             "derivativeDirections": deepcopy(raw.get("derivativeDirections", [])) if isinstance(raw.get("derivativeDirections"), list) else [],
-            "source": "ai.highlightDashboard",
+            "source": "facts.materials.highlightFrames + ai.highlightDashboard",
             "evidenceRefs": refs,
             "availability": group_availability,
         }
@@ -253,7 +260,13 @@ def _chapter04(data, materials):
         "availability": availability,
         "categoryOrder": list(CATEGORIES),
         "groups": groups,
-        "conclusion": _text((conclusion.get("portfolioDimensionConclusions") or {}).get("highlight")),
+        "conclusion": {
+            "text": conclusion_text,
+            "evidenceRefs": conclusion_refs,
+            "source": "ai.portfolioDimensionConclusions.highlight",
+            "availability": _availability(bool(conclusion_text), bool(conclusion_refs)),
+        },
+        "source": "facts.materials.highlightFrames + ai.highlightDashboard",
         "evidenceRefs": [ref for group in groups.values() for ref in group["frameRefs"]],
     }
 
@@ -289,7 +302,14 @@ def _chapter05(materials, ai_schema_version):
             "highlight": {"frames": frames, "analyses": deepcopy(analysis.get("highlightAnalyses", []))},
             "interaction": deepcopy(material.get("interactionTimeline", {})),
             "video": deepcopy(material.get("video", {})),
-            "analysis": {key: deepcopy(analysis.get(key)) for key in ("audienceConclusion", "scriptConclusion", "interactionConclusion", "integratedConclusion", "decision", "nextAction", "frameCoverageNote", "evidenceRefs") if key in analysis},
+            "analysis": {
+                **{
+                    key: deepcopy(analysis.get(key))
+                    for key in ("audienceConclusion", "scriptConclusion", "interactionConclusion", "integratedConclusion", "decision", "nextAction", "frameCoverageNote", "evidenceRefs")
+                    if key in analysis
+                },
+                "source": "ai.materialAnalyses",
+            },
             "source": "facts.materials + ai.materialAnalyses",
             "evidenceRefs": deepcopy(analysis.get("evidenceRefs", [])) if isinstance(analysis.get("evidenceRefs"), list) else [],
             "availability": "available" if (
@@ -298,7 +318,14 @@ def _chapter05(materials, ai_schema_version):
                 and analysis.get("evidenceRefs")
             ) else "partial",
         })
-    return {"id": "chapter05", "title": "单素材深度分析", "materials": projected, "defaultMaterialId": projected[0]["materialId"] if projected else None, "availability": "available" if projected else "unavailable"}
+    return {
+        "id": "chapter05",
+        "title": "单素材深度分析",
+        "materials": projected,
+        "defaultMaterialId": projected[0]["materialId"] if projected else None,
+        "source": "facts.materials + ai.materialAnalyses",
+        "availability": "available" if projected else "unavailable",
+    }
 
 
 def build_presentation_report(data):

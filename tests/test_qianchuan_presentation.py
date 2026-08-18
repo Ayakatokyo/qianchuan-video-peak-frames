@@ -114,11 +114,22 @@ class PresentationTests(unittest.TestCase):
         group = report["chapters"]["chapter03"]["groups"][0]
         self.assertEqual((group["level1"], group["labels"][0]["level2"]), ("商品卖点", "适用场景"))
         self.assertEqual(group["labels"][0]["evidenceRefs"], ["script:m-1:商品卖点:适用场景"])
+        chapter03 = report["chapters"]["chapter03"]
+        self.assertEqual(chapter03["source"], "facts.scripts + ai.batchInsights[script]")
+        self.assertEqual(group["source"], "facts.scripts.labelSummary")
         self.assertEqual(
-            [item["title"] for item in report["chapters"]["chapter03"]["insights"]],
+            [item["title"] for item in chapter03["insights"]],
             ["一二级内容公式：原始 AI 标题"],
         )
-        self.assertNotIn("summary", report["chapters"]["chapter03"]["insights"][0])
+        self.assertEqual(chapter03["insights"][0]["source"], "ai.batchInsights[script]")
+        self.assertNotIn("summary", chapter03["insights"][0])
+        chapter04 = report["chapters"]["chapter04"]
+        self.assertEqual(chapter04["source"], "facts.materials.highlightFrames + ai.highlightDashboard")
+        self.assertEqual(chapter04["conclusion"]["source"], "ai.portfolioDimensionConclusions.highlight")
+        self.assertEqual(chapter04["conclusion"]["evidenceRefs"], ["highlight:m-1"])
+        chapter05 = report["chapters"]["chapter05"]
+        self.assertEqual(chapter05["source"], "facts.materials + ai.materialAnalyses")
+        self.assertEqual(chapter05["materials"][0]["analysis"]["source"], "ai.materialAnalyses")
         self.assertNotIn("nextActions", report["chapters"])
 
     def test_validation_rejects_invalid_projected_references_and_priorities(self):

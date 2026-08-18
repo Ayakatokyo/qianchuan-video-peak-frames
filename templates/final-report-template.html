@@ -120,15 +120,29 @@ function chapter03Insights() {
 }
 
 function chapter04Groups() {
-  if (presentation?.chapters?.chapter04?.groups) {
-    return Object.values(presentation.chapters.chapter04.groups);
+  const chapter = presentationChapter("chapter04");
+  if (chapter?.groups) {
+    return Object.values(chapter.groups);
   }
   const groups = reportData.conclusion?.highlightDashboard?.groups;
   return Array.isArray(groups) ? groups : [];
 }
 
+function chapter04Conclusion() {
+  const chapter = presentationChapter("chapter04");
+  const projected = chapter?.conclusion;
+  if (projected && typeof projected === "object") {
+    return {
+      conclusion: projected.text,
+      evidenceRefs: projected.evidenceRefs,
+    };
+  }
+  return reportData.conclusion?.portfolioDimensionConclusions?.highlight || {};
+}
+
 function chapter05Materials() {
-  const projected = presentation?.chapters?.chapter05?.materials;
+  const chapter = presentationChapter("chapter05");
+  const projected = chapter?.materials;
   if (!Array.isArray(projected)) {
     return Array.isArray(reportData.materials) ? reportData.materials : [];
   }
@@ -147,6 +161,11 @@ function chapter05Materials() {
       video: item.video || {},
     };
   });
+}
+
+function chapter05DefaultMaterialId() {
+  const chapter = presentationChapter("chapter05");
+  return text(chapter?.defaultMaterialId || reportData.defaultMaterialId);
 }
 
 function text(value, fallback = "") {
@@ -2149,12 +2168,12 @@ function activateHighlightCategoryTab(tab) {
 
 function renderHighlightDashboard() {
   const root = document.getElementById("highlight-dashboard");
-  const conclusion = reportData.conclusion || {};
+  const legacyConclusion = reportData.conclusion || {};
   const groups = chapter04Groups();
   root.replaceChildren();
 
-  const dimensionHighlight = conclusion.portfolioDimensionConclusions?.highlight;
-  if (conclusion.schemaVersion === 3 && dimensionHighlight?.conclusion) {
+  const dimensionHighlight = chapter04Conclusion();
+  if (!presentation && legacyConclusion.schemaVersion === 3 && dimensionHighlight?.conclusion) {
     const factsByReference = highFrameFactsByReference();
     const refs = Array.isArray(dimensionHighlight.evidenceRefs)
       ? dimensionHighlight.evidenceRefs
@@ -2176,7 +2195,7 @@ function renderHighlightDashboard() {
     return;
   }
 
-  if ((!presentation && ![4, 5].includes(conclusion.schemaVersion)) || groups.length === 0) {
+  if ((!presentation && ![4, 5].includes(legacyConclusion.schemaVersion)) || groups.length === 0) {
     root.append(element("p", "muted", "暂无可用的高光画面分类汇总。"));
     return;
   }
@@ -2281,11 +2300,12 @@ function renderMaterialTabs() {
   const tabs = document.getElementById("material-tab-list");
   const panels = document.getElementById("material-panels");
   const materials = chapter05Materials();
+  const defaultMaterialId = chapter05DefaultMaterialId();
   tabs.replaceChildren();
   panels.replaceChildren();
   materials.forEach((material, index) => {
     const materialId = text(material.materialId);
-    const selected = materialId === text(reportData.defaultMaterialId) || (!reportData.defaultMaterialId && index === 0);
+    const selected = materialId === defaultMaterialId || (!defaultMaterialId && index === 0);
     const tab = document.createElement("button");
     tab.type = "button";
     tab.id = `tab-${safeId(materialId)}`;

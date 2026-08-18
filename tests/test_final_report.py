@@ -2478,6 +2478,11 @@ class FinalReportRenderTests(unittest.TestCase):
             'renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");',
             html_text,
         )
+        self.assertIn("function chapter04Conclusion()", html_text)
+        self.assertIn('const chapter = presentationChapter("chapter04");', html_text)
+        self.assertIn("function chapter05DefaultMaterialId()", html_text)
+        self.assertIn('const chapter = presentationChapter("chapter05");', html_text)
+        self.assertIn("const defaultMaterialId = chapter05DefaultMaterialId();", html_text)
         self.assertNotIn("function renderPrimaryInsight", html_text)
         self.assertIn('id="highlight-dashboard"', html_text)
         self.assertIn("function renderHighlightDashboard", html_text)
