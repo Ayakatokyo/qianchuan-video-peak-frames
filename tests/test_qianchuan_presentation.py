@@ -75,7 +75,7 @@ def complete_presentation_data():
             {"topic": "audience", "title": "展现结构：生活场景扩大覆盖", "conclusion": "展现次数主要集中在成熟女性与新锐白领，下一轮验证生活场景入口是否能稳定扩大覆盖。", "evidenceRefs": ["audience:SHOW_COUNT:user_group_label_name:新锐白领"]},
             {"topic": "audience", "title": "点击结构：问题前置更值得验证", "conclusion": "点击次数在女性与核心年龄段占比更高，下一轮拆分问题前置与产品特写验证点击变化。", "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"]},
             {"topic": "audience", "title": "成交结构：价值解释需要匹配", "conclusion": "成交金额的集中人群与展现口径不同，下一轮分别验证价格、规格和品质解释的成交承接。", "evidenceRefs": ["audience:TRANSACTION_AMOUNT:gender:女"]},
-            {"topic": "script", "title": "原始 AI 标题", "conclusion": "脚本结论", "evidenceRefs": ["script:m-1:商品卖点:适用场景"]},
+            {"topic": "script", "title": "一二级内容公式：原始 AI 标题", "conclusion": "脚本结论", "evidenceRefs": ["script:m-1:商品卖点:适用场景"]},
         ],
         "nextActions": [{
             "title": "优先测试开场", "body": "将利益点前置到前 3 秒", "action": "改写开场", "validation": "比较 CTR", "priority": "high",
@@ -116,12 +116,9 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(group["labels"][0]["evidenceRefs"], ["script:m-1:商品卖点:适用场景"])
         self.assertEqual(
             [item["title"] for item in report["chapters"]["chapter03"]["insights"]],
-            ["一二级内容公式"],
+            ["一二级内容公式：原始 AI 标题"],
         )
-        self.assertEqual(
-            report["chapters"]["chapter03"]["insights"][0]["summary"],
-            "原始 AI 标题",
-        )
+        self.assertNotIn("summary", report["chapters"]["chapter03"]["insights"][0])
         self.assertNotIn("nextActions", report["chapters"])
 
     def test_validation_rejects_invalid_projected_references_and_priorities(self):

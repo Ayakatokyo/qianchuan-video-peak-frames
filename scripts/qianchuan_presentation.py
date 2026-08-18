@@ -175,17 +175,13 @@ def _chapter03(data, material_ids):
         groups.append(group)
     evidence_refs = [item for group in groups for label in group["labels"] for item in label["evidenceRefs"]]
     has_refs = any(label["materialIds"] for group in groups for label in group["labels"])
-    title_overrides = ("一二级内容公式", "脚本文案")
     insights = []
     for raw in _list(_mapping(data.get("conclusion")).get("batchInsights")):
         if not isinstance(raw, dict) or _text(raw.get("topic")) != "script":
             continue
-        insight = deepcopy(raw)
-        index = len(insights)
-        if index < len(title_overrides):
-            insight["summary"] = _text(insight.get("title"))
-            insight["title"] = title_overrides[index]
-        insights.append(insight)
+        # Script insight titles are AI-generated and already carry their dimension prefix.
+        # Keep them intact so the renderer does not repeat the prefix via summary.
+        insights.append(deepcopy(raw))
     return {
         "id": "chapter03", "title": "脚本洞察", "groups": groups, "insights": insights,
         "source": "facts.scripts.labelSummary", "evidenceRefs": evidence_refs,
