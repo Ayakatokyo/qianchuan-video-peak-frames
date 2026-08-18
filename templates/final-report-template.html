@@ -37,10 +37,10 @@
     <header class="section-header"><h2>01｜TOP 素材组合结论</h2></header>
     <div class="insight-layout">
       <div class="primary-summary" id="overall-conclusion-card">
-        <b class="top-overall-heading">汇总结论</b>
+        <b class="top-overall-heading">组合结论</b>
         <p id="overall-conclusion"></p>
       </div>
-      <div class="top-dimension-conclusions" id="top-dimension-conclusions"></div>
+      <div class="combination-conclusion" id="combination-conclusion"></div>
     </div>
   </section>
 
@@ -2308,23 +2308,26 @@ function renderMaterialTabs() {
   });
 }
 
-function renderTopDimensionConclusions() {
-  const root = document.getElementById("top-dimension-conclusions");
+function renderCombinationConclusion() {
+  const root = document.getElementById("combination-conclusion");
   const fallback = document.getElementById("overall-conclusion-card");
   const conclusion = reportData.conclusion || {};
   const chapter01 = presentationChapter("chapter01");
-  const dimensions = chapter01
-    ? Object.fromEntries((chapter01.tabs || []).map((tab) => [tab.id, tab]))
-    : conclusion.portfolioDimensionConclusions || {};
-  const labels = [
-    ["commercial", "经营表现"],
-    ["audience", "人群"],
-    ["script", "脚本"],
-    ["highlight", "高光画面"],
-    ["interaction", "互动时序"]
-  ];
+  const points = Array.isArray(chapter01?.points)
+    ? chapter01.points
+    : [
+      ["commercial", "从经营表现数据来看："],
+      ["audience", "从人群数据来看："],
+      ["script", "从脚本数据来看："],
+      ["highlight", "从高光画面数据来看："],
+      ["interaction", "从互动时序数据来看："],
+    ].map(([id, leadIn]) => ({
+      id,
+      leadIn,
+      conclusion: conclusion.portfolioDimensionConclusions?.[id]?.conclusion,
+    }));
   root.replaceChildren();
-  if (!chapter01 && (conclusion.schemaVersion !== 5 || !labels.every(([key]) => dimensions[key]))) {
+  if (!chapter01 && (conclusion.schemaVersion !== 5 || !points.every((point) => point.conclusion))) {
     root.hidden = true;
     fallback.hidden = false;
     document.getElementById("overall-conclusion").replaceChildren(
@@ -2335,59 +2338,18 @@ function renderTopDimensionConclusions() {
   root.hidden = false;
   fallback.hidden = false;
   document.getElementById("overall-conclusion").replaceChildren(
-    renderTextWithMaterialLinks((chapter01?.overallConclusion || conclusion.overallConclusion) || "汇总分析待补充：请提供包含五维结论的 diagnostic-ai-analysis.json 后重新渲染。")
+    renderTextWithMaterialLinks((chapter01?.overallConclusion || conclusion.overallConclusion) || "组合结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
   );
-  const tabList = element("div", "top-dimension-tabs");
-  tabList.setAttribute("role", "tablist");
-  tabList.setAttribute("aria-label", "TOP 素材组合结论维度");
-  const panelRoot = element("div", "top-dimension-panels");
-  labels.forEach(([key, label], index) => {
-    const tab = element("button", "", label);
-    tab.type = "button";
-    tab.id = `top-dimension-tab-${key}`;
-    tab.dataset.dimensionKey = key;
-    tab.setAttribute("role", "tab");
-    tab.setAttribute("aria-controls", `top-dimension-panel-${key}`);
-    tab.setAttribute("aria-selected", String(index === 0));
-    tab.tabIndex = index === 0 ? 0 : -1;
-    tab.addEventListener("click", () => activateTopDimensionTab(tab));
-    tabList.append(tab);
-
-    const panel = element("section", "top-dimension-panel");
-    panel.id = `top-dimension-panel-${key}`;
-    panel.dataset.dimensionKey = key;
-    panel.setAttribute("role", "tabpanel");
-    panel.setAttribute("aria-labelledby", tab.id);
-    panel.hidden = index !== 0;
-    panel.append(elementWithMaterialLinks("p", "", dimensions[key].conclusion));
-    panelRoot.append(panel);
+  const pointList = element("ol", "combination-points");
+  points.filter((point) => text(point?.conclusion)).forEach((point) => {
+    const item = element("li", "combination-point");
+    item.append(
+      element("strong", "combination-point-lead", point.leadIn),
+      renderTextWithMaterialLinks(point.conclusion),
+    );
+    pointList.append(item);
   });
-  Array.from(tabList.querySelectorAll('[role="tab"]')).forEach((tab, index, allTabs) => {
-    tab.addEventListener("keydown", (event) => {
-      let nextIndex = index;
-      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
-      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
-      else if (event.key === "Home") nextIndex = 0;
-      else if (event.key === "End") nextIndex = allTabs.length - 1;
-      else return;
-      event.preventDefault();
-      activateTopDimensionTab(allTabs[nextIndex]);
-    });
-  });
-  root.append(tabList, panelRoot);
-}
-
-function activateTopDimensionTab(tab) {
-  const root = document.getElementById("top-dimension-conclusions");
-  root.querySelectorAll(".top-dimension-tabs [role='tab']").forEach((item) => {
-    const selected = item === tab;
-    item.setAttribute("aria-selected", String(selected));
-    item.tabIndex = selected ? 0 : -1;
-  });
-  root.querySelectorAll(".top-dimension-panel[role='tabpanel']").forEach((panel) => {
-    panel.hidden = panel.dataset.dimensionKey !== tab.dataset.dimensionKey;
-  });
-  tab.focus();
+  root.append(pointList);
 }
 
 document.querySelector(".frame-lightbox-close").addEventListener("click", closeFrameLightbox);
@@ -2405,7 +2367,7 @@ document.addEventListener("keydown", (event) => {
 function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
-  renderTopDimensionConclusions();
+  renderCombinationConclusion();
   renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");
   renderAudiencePreferences();
   renderAudienceDashboard();

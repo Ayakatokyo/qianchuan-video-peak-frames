@@ -88,7 +88,15 @@ class PresentationTests(unittest.TestCase):
         report = build_presentation_report(complete_presentation_data())
         self.assertEqual(report["report"]["sections"], [f"chapter0{index}" for index in range(1, 6)])
         self.assertNotIn("chapter06", report["chapters"])
-        self.assertEqual([tab["id"] for tab in report["chapters"]["chapter01"]["tabs"]], ["commercial", "audience", "script", "highlight", "interaction"])
+        chapter01 = report["chapters"]["chapter01"]
+        self.assertEqual(chapter01["title"], "组合结论")
+        self.assertNotIn("tabs", chapter01)
+        self.assertEqual(
+            [point["id"] for point in chapter01["points"]],
+            ["commercial", "audience", "script", "highlight", "interaction"],
+        )
+        self.assertEqual(chapter01["points"][0]["leadIn"], "从素材列表数据来看：")
+        self.assertEqual(chapter01["points"][0]["evidenceRefs"], ["commercial:m-1"])
         self.assertEqual(report["chapters"]["chapter01"]["batchInsights"][0]["title"], "人群洞察")
         bucket = report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"][0]
         self.assertEqual(bucket["sourceMaterialIds"], ["m-1"])

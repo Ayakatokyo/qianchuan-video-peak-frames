@@ -47,8 +47,10 @@ COMMERCIAL_EVIDENCE_REFS = {
     "commercial:overallPaymentRoi",
 }
 COMMERCIAL_SOURCE_TERMS = ("资产表", "数据来源")
+AUDIENCE_NONCANONICAL_TERMS = ("触达", "响应")
 AI_QUALITY_MINIMUMS = {
-    "overallConclusion": 420,
+    "overallConclusion": 100,
+    "combinationPoint": 60,
     "batchInsight": 180,
     "materialConclusion": 120,
     "materialNextAction": 100,
@@ -103,6 +105,14 @@ def _string_list(value, field_name):
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise FinalReportError(f"{field_name} must be a list of strings")
     return [_text(item) for item in value if _text(item)]
+
+
+def _reject_noncanonical_audience_terms(text, field_name):
+    for term in AUDIENCE_NONCANONICAL_TERMS:
+        if term in text:
+            raise FinalReportError(
+                f"{field_name}包含非标准人群指标表述：{term}；请使用展现次数、点击次数或成交金额"
+            )
 
 
 def _validate_insight(raw, index):
@@ -1023,6 +1033,8 @@ def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
     if top_material_roi.get("source") == "verifiedAssetFacts":
         refs.update(COMMERCIAL_EVIDENCE_REFS)
     for metric, metric_data in diagnostic.get("interaction", {}).get("metrics", {}).items():
+        if metric_data.get("available") and metric_data.get("totalMetricValue") is not None:
+            refs.add(f"interaction:{metric}:total")
         for bucket in metric_data.get("buckets", []):
             refs.add(f"interaction:{metric}:{bucket['label']}")
     return refs
@@ -1049,9 +1061,17 @@ def _validate_v2_evidence(
             raise FinalReportError(f"unknown evidence reference: {reference}")
 
     for insight in conclusion["batchInsights"]:
+        if insight.get("topic") == "audience":
+            _reject_noncanonical_audience_terms(
+                insight["conclusion"], "batchInsights audience conclusion"
+            )
         for reference in insight["evidenceRefs"]:
             require_known(reference)
     for material_analysis in conclusion["materialAnalyses"]:
+        _reject_noncanonical_audience_terms(
+            material_analysis["audienceConclusion"],
+            f"materialAnalyses[{material_analysis['materialId']}].audienceConclusion",
+        )
         material_id = material_analysis["materialId"]
         if material_id not in selected_ids:
             raise FinalReportError(f"unknown material analysis: {material_id}")
@@ -1097,6 +1117,10 @@ def _validate_v2_evidence(
                 "portfolioDimensionConclusions duplicates another dimension conclusion"
             )
         seen_dimension_texts.add(dimension_text)
+        if topic == "audience":
+            _reject_noncanonical_audience_terms(
+                dimension_text, "portfolioDimensionConclusions.audience.conclusion"
+            )
         if not dimension["evidenceRefs"]:
             raise FinalReportError(
                 f"portfolioDimensionConclusions.{topic}.evidenceRefs must not be empty"
@@ -1229,10 +1253,10 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
 
     if conclusion.get("schemaVersion") in {3, 4, 5}:
         for topic, dimension in conclusion["portfolioDimensionConclusions"].items():
-            if len(dimension["conclusion"]) < minimums["materialConclusion"]:
+            if len(dimension["conclusion"]) < minimums["combinationPoint"]:
                 failures.append(
                     f"portfolioDimensionConclusions.{topic}.conclusion must contain at least "
-                    f"{minimums['materialConclusion']} characters"
+                    f"{minimums['combinationPoint']} characters"
                 )
 
     insights_by_topic = {topic: [] for topic in ALLOWED_INSIGHT_TOPICS}

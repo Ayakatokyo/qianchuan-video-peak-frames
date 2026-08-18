@@ -228,7 +228,7 @@ class FinalReportConclusionTests(unittest.TestCase):
 
 
 class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
-    def test_top_dimension_conclusions_render_as_tabs(self):
+    def test_top_dimension_conclusions_render_as_continuous_points(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
         )
@@ -236,18 +236,19 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('>汇总结论<', template)
-        self.assertIn('"top-dimension-tabs"', template)
-        self.assertIn('"top-dimension-panel"', template)
-        self.assertIn("function activateTopDimensionTab", template)
-        self.assertIn('tab.dataset.dimensionKey = key;', template)
-        self.assertIn('String(index === 0)', template)
-        self.assertIn('["interaction", "互动时序"]', template)
-        self.assertIn("conclusion.schemaVersion !== 5", template)
+        self.assertIn('>组合结论<', template)
+        self.assertIn('"combination-points"', template)
+        self.assertIn('"combination-point-lead"', template)
+        self.assertNotIn('"top-dimension-tabs"', template)
+        self.assertNotIn('"top-dimension-panel"', template)
+        self.assertNotIn("function activateTopDimensionTab", template)
+        self.assertIn('["interaction", "从互动时序数据来看："]', template)
+        self.assertIn("chapter01?.points", template)
         self.assertIn('root.hidden = true;', template)
         self.assertIn('fallback.hidden = false;', template)
         self.assertNotIn('root.append(element("article", "top-roi-card")', template)
-        self.assertIn(".unified-report .top-dimension-tabs", css)
+        self.assertIn(".combination-points", css)
+        self.assertNotIn(".unified-report .top-dimension-tabs", css)
         self.assertIn(".unified-report .highlight-dashboard-tabs", css)
         self.assertIn("border-bottom-color: #9b6a37;", css)
         self.assertIn(".unified-report .top-overall-heading", css)
@@ -506,13 +507,13 @@ class TopMaterialRoiReportTests(unittest.TestCase):
             ["1.20", "2.35"],
         )
 
-    def test_template_has_v3_dimension_conclusion_container(self):
+    def test_template_has_combination_conclusion_container(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('id="top-dimension-conclusions"', template)
-        self.assertIn("function renderTopDimensionConclusions", template)
+        self.assertIn('id="combination-conclusion"', template)
+        self.assertIn("function renderCombinationConclusion", template)
 
 
 def material(material_id, rank=1, cost=100.0):
@@ -1516,7 +1517,7 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
         conclusion["overallConclusion"] = "五个维度共同指向先验证开场吸引力，再观察成交承接。"
         conclusion["portfolioDimensionConclusions"]["interaction"] = {
             "conclusion": "点击与流失的相对时段分布可用于判断开场和中段的节奏风险，并应与素材改写后的净成交表现共同验证。",
-            "evidenceRefs": ["interaction:CLICK_COUNT:0-10%"],
+            "evidenceRefs": ["interaction:CLICK_COUNT:total"],
         }
         conclusion["batchInsights"] = [
             {
@@ -1547,6 +1548,34 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
             ["commercial", "audience", "script", "highlight", "interaction"],
         )
         self.assertEqual(normalized["overallConclusion"], conclusion["overallConclusion"])
+        result = self._build_data(normalized)
+        self.assertEqual(
+            result["conclusion"]["portfolioDimensionConclusions"]["interaction"]["evidenceRefs"],
+            ["interaction:CLICK_COUNT:total"],
+        )
+
+    def test_rejects_noncanonical_audience_metric_terms(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["overallConclusion"] = "五个维度共同指向先验证开场吸引力，再观察成交承接。"
+        conclusion["portfolioDimensionConclusions"]["audience"]["conclusion"] = (
+            "触达人群集中在 24-30 岁，建议继续验证素材表达。"
+        )
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击的相对时段分布可用于判断开场节奏风险，并应与素材改写后的净成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:0-10%"],
+        }
+        self.records_by_material["m-1"].append(
+            {
+                "recordType": "interaction_series",
+                "interactionMetric": "CLICK_COUNT",
+                "durationSec": 1,
+                "metricValue": 3,
+            }
+        )
+
+        with self.assertRaisesRegex(FinalReportError, "非标准人群指标表述"):
+            self._build_data(normalize_conclusion_analysis(conclusion))
 
     def test_v5_batch_insights_are_distributed_to_audience_and_script_sections(self):
         conclusion = self._conclusion()
@@ -1701,14 +1730,15 @@ class FinalReportQualityGateTests(unittest.TestCase):
         )
 
     def test_standard_quality_gate_accepts_v5_analysis_with_dashboard(self):
-        long_dimension = "该维度包含可验证的素材事实与下一轮策略判断，应结合商业结果持续观察并按变量进行对照测试。" * 3
+        concise_dimension = "该维度保留一个可核验事实，给出谨慎判断，并明确下一轮只改变一个创意变量进行验证。" * 2
+        concise_overall = "组合素材应保留已验证的内容结构，以高效素材为母版分别测试人群、利益点和画面变量；观察成交与 ROI 是否同步改善，再决定是否扩量。" * 2
         long_insight = "该洞察包含可核验的指标事实、谨慎的业务判断和下一轮验证方向，不能把单次互动变化直接视为商业因果，应以成交结果复核。" * 4
         long_action = "保持投放对象与观察周期一致，只改变一个创意变量，比较点击、成交金额和 ROI 的共同变化。若只有互动指标改善而交易效率不变，应停止扩大该版本并回收预算。" * 3
         conclusion = {
             "schemaVersion": 5,
-            "overallConclusion": long_insight * 3,
+            "overallConclusion": concise_overall,
             "portfolioDimensionConclusions": {
-                topic: {"conclusion": long_dimension, "evidenceRefs": [f"{topic}:ref"]}
+                topic: {"conclusion": concise_dimension + topic, "evidenceRefs": [f"{topic}:ref"]}
                 for topic in ("commercial", "audience", "script", "highlight", "interaction")
             },
             "highlightDashboard": {"groups": []},
@@ -2013,7 +2043,7 @@ class FinalReportRenderTests(unittest.TestCase):
         )
 
         self.assertIn("--unified-text-card: #f7ead8;", css)
-        self.assertIn(".top-dimension-card", css)
+        self.assertIn(".combination-point", css)
         self.assertIn(".highlight-summary", css)
         self.assertIn(".tab-list button", css)
         self.assertIn("background: var(--unified-text-card);", css)
@@ -2088,15 +2118,11 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("border-bottom: 0;", css_text)
         self.assertIn(".unified-report .insight-layout {", css_text)
         self.assertIn("border-top: 0;", css_text)
-        self.assertIn(".unified-report .top-roi-grid + .top-dimension-conclusions {", css_text)
-        self.assertIn("border-top: 1px solid var(--unified-line);", css_text)
-        self.assertIn(".unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card:nth-child(n + 3)", css_text)
-        self.assertIn("border-top: 1px solid var(--unified-line);", css_text)
-        self.assertIn("border-bottom: 0;", css_text)
-        self.assertIn(".unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card:nth-child(2n)::before", css_text)
-        self.assertIn("top: 18px;", css_text)
-        self.assertIn("bottom: 18px;", css_text)
-        self.assertNotIn(".top-dimension-card:nth-child(2n) {\n  padding-left: var(--unified-content-gap);\n  border-left: 1px solid var(--unified-line);", css_text)
+        self.assertIn(".combination-points {", css_text)
+        self.assertIn("padding-left: 22px;", css_text)
+        self.assertIn(".combination-point-lead {", css_text)
+        self.assertNotIn("top-dimension-card", css_text)
+        self.assertNotIn("top-dimension-tabs", css_text)
 
     def test_batch_data_dashboards_use_collapsible_raw_fact_shells(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
@@ -2709,9 +2735,11 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("AI 二次总结", prompt_text)
         self.assertIn("不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句", prompt_text)
         self.assertIn("解释这些事实为什么影响素材放量、改写或保留判断", prompt_text)
-        self.assertIn("少量关键事实锚点 + 多句分析判断", prompt_text)
-        self.assertIn("每条先用少量事实锚定，再给出判断、边界和下一轮验证方向", prompt_text)
-        self.assertIn("优先输出组合公式、机会判断、风险边界和下一轮验证方向", prompt_text)
+        self.assertIn("少量关键事实锚点 + 判断 + 建议", prompt_text)
+        self.assertIn("每条必须包含事实、判断和建议", prompt_text)
+        self.assertIn("不得写成数据复述或长段分析", prompt_text)
+        self.assertIn("100-180 个中文字符", prompt_text)
+        self.assertIn("60-120 个中文字符", prompt_text)
         self.assertIn("每条 `batchInsights.conclusion` 必须为 180-280 个中文字符", prompt_text)
         self.assertIn(
             "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符",

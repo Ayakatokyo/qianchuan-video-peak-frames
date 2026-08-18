@@ -141,7 +141,12 @@ def _aggregate_interaction(records_by_material, selected_ids):
     result = {}
     for metric, material_values in per_metric.items():
         if not material_values:
-            result[metric] = {"available": False, "sampleMaterialCount": 0, "buckets": []}
+            result[metric] = {
+                "available": False,
+                "sampleMaterialCount": 0,
+                "totalMetricValue": None,
+                "buckets": [],
+            }
             continue
         buckets = []
         for index, (lower, upper) in enumerate(INTERACTION_BUCKETS):
@@ -154,6 +159,7 @@ def _aggregate_interaction(records_by_material, selected_ids):
         result[metric] = {
             "available": True,
             "sampleMaterialCount": len(material_values),
+            "totalMetricValue": round(sum(total for _, total in material_values), 6),
             "buckets": buckets,
         }
     return {"available": any(item["available"] for item in result.values()), "metrics": result}

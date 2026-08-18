@@ -83,8 +83,25 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
 
         summary = result["interaction"]["metrics"]["CLICK_COUNT"]
         self.assertEqual(summary["sampleMaterialCount"], 2)
+        self.assertEqual(summary["totalMetricValue"], 20.0)
         self.assertEqual(summary["buckets"][0]["materialCount"], 2)
         self.assertEqual(summary["buckets"][0]["share"], 0.75)
+
+    def test_prompt_requires_full_chapter01_fact_coverage(self):
+        prompt = DEFAULT_PROMPT_PATH.read_text(encoding="utf-8")
+        for interaction_fact in (
+            "整体点击次数",
+            "整体流失数",
+            "整体点赞次数",
+            "整体评论次数",
+            "整体转发次数",
+            "整体新增粉丝数",
+        ):
+            self.assertIn(interaction_fact, prompt)
+        for audience_dimension in ("八大人群", "年龄", "性别", "地域"):
+            self.assertIn(audience_dimension, prompt)
+        self.assertIn("一二级内容公式", prompt)
+        self.assertIn("脚本文案", prompt)
 
     def test_builds_preference_top_materials_above_batch_baseline_by_total_cost(self):
         top_payload = {

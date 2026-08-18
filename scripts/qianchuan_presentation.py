@@ -5,7 +5,7 @@ from copy import deepcopy
 
 CATEGORIES = ("portrait", "product", "other")
 TABS = ("highlight", "interaction", "audience", "script", "decision")
-CHAPTER01_TABS = ("commercial", "audience", "script", "highlight", "interaction")
+CHAPTER01_POINTS = ("commercial", "audience", "script", "highlight", "interaction")
 CHAPTER_SECTIONS = tuple(f"chapter0{index}" for index in range(1, 6))
 
 
@@ -81,28 +81,41 @@ def _chapter01(data):
         "highlight": _mapping(conclusion.get("highlightDashboard")),
         "interaction": _mapping(data.get("interaction")),
     }
-    labels = {"commercial": "商业表现", "audience": "人群", "script": "脚本", "highlight": "高光画面", "interaction": "互动时序"}
-    tabs = []
+    points = []
     evidence_refs = []
-    for topic in CHAPTER01_TABS:
-        text, refs = _dimension(conclusion, topic)
+    labels = {
+        "commercial": ("素材列表", "从素材列表数据来看："),
+        "audience": ("人群", "从人群数据来看："),
+        "script": ("脚本", "从脚本数据来看："),
+        "highlight": ("高光画面", "从高光画面数据来看："),
+        "interaction": ("互动时序", "从互动时序数据来看："),
+    }
+    for topic in CHAPTER01_POINTS:
+        conclusion_text, refs = _dimension(conclusion, topic)
         evidence_refs.extend(refs)
         has_facts = bool(facts[topic])
-        tabs.append({
+        label, lead_in = labels[topic]
+        points.append({
             "id": topic,
-            "label": labels[topic],
-            "operatingFacts": deepcopy(facts[topic]),
-            "conclusion": text,
+            "label": label,
+            "leadIn": lead_in,
+            "conclusion": conclusion_text,
             "evidenceRefs": refs,
             "source": f"facts.{topic} + ai.portfolioDimensionConclusions.{topic}",
-            "availability": _availability(has_facts or bool(text), has_facts and bool(text) and bool(refs)),
+            "availability": _availability(
+                has_facts or bool(conclusion_text),
+                has_facts and bool(conclusion_text) and bool(refs),
+            ),
         })
     return {
-        "id": "chapter01", "title": "五维经营结论", "tabs": tabs,
+        "id": "chapter01", "title": "组合结论", "points": points,
         "overallConclusion": _text(conclusion.get("overallConclusion")),
         "batchInsights": batch_insights,
         "source": "facts + ai.portfolioDimensionConclusions", "evidenceRefs": evidence_refs,
-        "availability": _availability(any(tab["availability"] != "unavailable" for tab in tabs), all(tab["availability"] == "available" for tab in tabs)),
+        "availability": _availability(
+            any(point["availability"] != "unavailable" for point in points),
+            all(point["availability"] == "available" for point in points),
+        ),
     }
 
 
@@ -321,8 +334,8 @@ def validate_presentation_report(report):
         raise ValueError("report sections must use fixed chapter order")
     chapters = report.get("chapters", {})
     chapter01 = chapters.get("chapter01", {})
-    if [tab.get("id") for tab in chapter01.get("tabs", [])] != list(CHAPTER01_TABS):
-        raise ValueError("chapter01 tabs must use fixed order")
+    if [point.get("id") for point in chapter01.get("points", [])] != list(CHAPTER01_POINTS):
+        raise ValueError("chapter01 points must use fixed order")
     chapter04 = chapters.get("chapter04", {})
     if list(chapter04.get("groups", {})) != list(CATEGORIES):
         raise ValueError("chapter04 groups must use fixed category order")

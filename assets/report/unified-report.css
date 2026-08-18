@@ -169,29 +169,25 @@
       font-size: 13px;
     }
 
-    .top-dimension-conclusions {
+    .combination-conclusion {
+      min-width: 0;
+    }
+
+    .combination-points {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
+      margin: 0;
+      padding-left: 22px;
     }
 
-    .top-dimension-card {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
-      padding: 16px;
-    }
-
-    .top-dimension-card b {
-      display: block;
-      margin-bottom: 8px;
-      font-size: 16px;
-      line-height: 1.4;
-    }
-
-    .top-dimension-card p {
+    .combination-point {
+      padding-left: 4px;
       font-size: 15px;
       line-height: 1.72;
+    }
+
+    .combination-point-lead {
+      font-weight: 800;
     }
 
     .insight-stack {
@@ -1823,7 +1819,6 @@
 
       .insight-layout,
       .top-roi-grid,
-      .top-dimension-conclusions,
       .rec-list,
       .chart-grid,
       .side-tabs,
@@ -2072,7 +2067,6 @@ body.unified-report {
 .unified-report :is(
   .chart-card,
   .top-roi-card,
-  .top-dimension-card,
   .insight-card,
   .rec-card,
   .formula,
@@ -2305,7 +2299,7 @@ body.unified-report {
   .insight-layout,
   .insight-stack,
   .top-roi-grid,
-  .top-dimension-conclusions,
+  .combination-points,
   .audience-preferences,
   .preference-card,
   .preference-groups,
@@ -2517,7 +2511,6 @@ body.unified-report {
 }
 
 .unified-report :is(
-  .top-dimension-card,
   .insight-card,
   .rec-card,
   .formula,
@@ -2612,36 +2605,6 @@ body.unified-report {
 
 .unified-report .insight-layout {
   border-top: 0;
-}
-
-.unified-report .top-roi-grid + .top-dimension-conclusions {
-  padding-top: var(--unified-content-gap);
-  border-top: 1px solid var(--unified-line);
-}
-
-.unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card {
-  position: relative;
-  padding: 0 0 var(--unified-content-gap);
-  border-top: 0;
-  border-bottom: 0;
-}
-
-.unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card:nth-child(n + 3) {
-  padding-top: var(--unified-content-gap);
-  border-top: 1px solid var(--unified-line);
-}
-
-.unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card:nth-child(2n) {
-  padding-left: var(--unified-content-gap);
-}
-
-.unified-report .top-roi-grid + .top-dimension-conclusions .top-dimension-card:nth-child(2n)::before {
-  content: "";
-  position: absolute;
-  top: 18px;
-  bottom: 18px;
-  left: calc(var(--unified-content-gap) / -2);
-  border-left: 1px solid var(--unified-line);
 }
 
 .unified-report .region-card {
@@ -2876,15 +2839,7 @@ body.unified-report {
   border-radius: 0;
 }
 
-.unified-report .top-dimension-tabs {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  border-bottom: 1px solid var(--line);
-}
-
-.unified-report :is(.top-dimension-tabs button, .highlight-dashboard-tabs button) {
+.unified-report .highlight-dashboard-tabs button {
   flex: 0 0 auto;
   min-height: 0;
   border: 0;
@@ -2899,36 +2854,25 @@ body.unified-report {
   line-height: 1.35;
 }
 
-.unified-report :is(.top-dimension-tabs button:hover, .highlight-dashboard-tabs button:hover) {
+.unified-report .highlight-dashboard-tabs button:hover {
   border-color: transparent;
   border-bottom-color: var(--unified-accent-dark);
   background: transparent;
   color: var(--unified-accent-dark);
 }
 
-.unified-report :is(.top-dimension-tabs button[aria-selected="true"], .highlight-dashboard-tabs button[aria-selected="true"]) {
+.unified-report .highlight-dashboard-tabs button[aria-selected="true"] {
   border-color: transparent;
   border-bottom-color: #9b6a37;
   background: transparent;
   color: var(--ink);
 }
 
-.unified-report :is(.top-dimension-tabs button:focus-visible, .highlight-dashboard-tabs button:focus-visible) {
+.unified-report .highlight-dashboard-tabs button:focus-visible {
   outline: 3px solid var(--gold);
   outline-offset: 2px;
 }
 
-.unified-report .top-dimension-conclusions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
-}
-
-.unified-report .top-dimension-panel {
-  min-width: 0;
-}
-
-.unified-report .top-dimension-panel > p,
 .unified-report .primary-summary > #overall-conclusion {
   font-size: 15px;
   font-weight: 400;
