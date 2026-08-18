@@ -103,6 +103,11 @@ function chapter01Insights(topic) {
   return reportData.batchInsights?.[topic];
 }
 
+function chapter02Insights() {
+  const insights = presentationChapter("chapter02")?.insights;
+  return Array.isArray(insights) ? insights : reportData.batchInsights?.audience;
+}
+
 function chapter03Summary() {
   const groups = presentationChapter("chapter03")?.groups;
   if (!Array.isArray(groups)) return reportData.scripts?.labelSummary;
@@ -2368,7 +2373,7 @@ function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
   renderCombinationConclusion();
-  renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");
+  renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");
   renderAudiencePreferences();
   renderAudienceDashboard();
   renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");

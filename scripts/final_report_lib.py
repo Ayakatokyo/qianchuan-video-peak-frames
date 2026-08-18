@@ -1236,6 +1236,15 @@ def _duplicate_highlight_interpretations(material_id, highlights):
     return duplicates
 
 
+def _audience_insight_metrics(insight):
+    metrics = set()
+    for reference in insight.get("evidenceRefs", []):
+        parts = _text(reference).split(":", 2)
+        if len(parts) == 3 and parts[0] == "audience":
+            metrics.add(parts[1])
+    return metrics
+
+
 def _validate_v2_analysis_quality(conclusion, material_cards):
     if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4, 5}:
         return
@@ -1274,6 +1283,36 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
             failures.append(
                 f"batchInsights requires at least {required_count} {topic} insights"
             )
+    audience_metrics = set()
+    expected_audience_metrics = {
+        "SHOW_COUNT",
+        "CLICK_COUNT",
+        "TRANSACTION_AMOUNT",
+    }
+    for index, insight in enumerate(insights_by_topic["audience"]):
+        metrics = _audience_insight_metrics(insight)
+        if not metrics:
+            continue
+        if len(metrics) != 1:
+            failures.append(
+                f"batchInsights audience insight {index} must use a single metric"
+            )
+            continue
+        metric = next(iter(metrics))
+        if metric not in expected_audience_metrics:
+            failures.append(
+                f"batchInsights audience insight {index} uses unsupported metric {metric}"
+            )
+            continue
+        audience_metrics.add(metric)
+    if audience_metrics and audience_metrics != expected_audience_metrics:
+        failures.append(
+            "batchInsights audience insights must cover SHOW_COUNT, CLICK_COUNT, and TRANSACTION_AMOUNT"
+        )
+    if audience_metrics and len(insights_by_topic["audience"]) != 3:
+        failures.append(
+            "batchInsights audience insights must contain exactly 3 metric insights"
+        )
 
     analyses = {
         analysis["materialId"]: analysis

@@ -72,7 +72,9 @@ def complete_presentation_data():
             for topic in ("commercial", "audience", "script", "highlight", "interaction")
         },
         "batchInsights": [
-            {"topic": "audience", "title": "人群洞察", "conclusion": "24-30 岁值得继续验证", "evidenceRefs": ["audience:m-1"]},
+            {"topic": "audience", "title": "展现结构：生活场景扩大覆盖", "conclusion": "展现次数主要集中在成熟女性与新锐白领，下一轮验证生活场景入口是否能稳定扩大覆盖。", "evidenceRefs": ["audience:SHOW_COUNT:user_group_label_name:新锐白领"]},
+            {"topic": "audience", "title": "点击结构：问题前置更值得验证", "conclusion": "点击次数在女性与核心年龄段占比更高，下一轮拆分问题前置与产品特写验证点击变化。", "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"]},
+            {"topic": "audience", "title": "成交结构：价值解释需要匹配", "conclusion": "成交金额的集中人群与展现口径不同，下一轮分别验证价格、规格和品质解释的成交承接。", "evidenceRefs": ["audience:TRANSACTION_AMOUNT:gender:女"]},
             {"topic": "script", "title": "原始 AI 标题", "conclusion": "脚本结论", "evidenceRefs": ["script:m-1:商品卖点:适用场景"]},
         ],
         "nextActions": [{
@@ -97,7 +99,11 @@ class PresentationTests(unittest.TestCase):
         )
         self.assertEqual(chapter01["points"][0]["leadIn"], "从素材列表数据来看：")
         self.assertEqual(chapter01["points"][0]["evidenceRefs"], ["commercial:m-1"])
-        self.assertEqual(report["chapters"]["chapter01"]["batchInsights"][0]["title"], "人群洞察")
+        self.assertNotIn("batchInsights", report["chapters"]["chapter01"])
+        self.assertEqual(
+            [item["title"] for item in report["chapters"]["chapter02"]["insights"]],
+            ["展现结构：生活场景扩大覆盖", "点击结构：问题前置更值得验证", "成交结构：价值解释需要匹配"],
+        )
         bucket = report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]["buckets"][0]
         self.assertEqual(bucket["sourceMaterialIds"], ["m-1"])
         self.assertEqual(bucket["evidenceRefs"], ["audience:CLICK_COUNT:age:24-30"])

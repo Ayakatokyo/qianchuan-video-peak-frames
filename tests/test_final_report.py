@@ -1758,6 +1758,28 @@ class FinalReportQualityGateTests(unittest.TestCase):
 
         _validate_standard_ai_quality(conclusion, [])
 
+    def test_quality_gate_requires_one_metric_per_audience_insight(self):
+        long_insight = "该洞察包含可核验的指标事实、谨慎的业务判断和下一轮验证方向，不能把单次互动变化直接视为商业因果，应以成交结果复核。" * 4
+        conclusion = {
+            "schemaVersion": 5,
+            "overallConclusion": "组合素材应保留已验证的内容结构，以高效素材为母版分别测试人群、利益点和画面变量；观察成交与 ROI 是否同步改善，再决定是否扩量。" * 2,
+            "portfolioDimensionConclusions": {
+                topic: {"conclusion": "该维度保留一个可核验事实，给出谨慎判断，并明确下一轮只改变一个创意变量进行验证。" * 2, "evidenceRefs": [f"{topic}:ref"]}
+                for topic in ("commercial", "audience", "script", "highlight", "interaction")
+            },
+            "highlightDashboard": {"groups": []},
+            "batchInsights": [
+                {"topic": "audience", "title": "AI 生成标题一", "conclusion": long_insight, "evidenceRefs": ["audience:SHOW_COUNT:user_group_label_name:新锐白领", "audience:CLICK_COUNT:age:24-30"]},
+                {"topic": "audience", "title": "AI 生成标题二", "conclusion": long_insight, "evidenceRefs": ["audience:CLICK_COUNT:age:24-30"]},
+                {"topic": "audience", "title": "AI 生成标题三", "conclusion": long_insight, "evidenceRefs": ["audience:TRANSACTION_AMOUNT:gender:女"]},
+                {"topic": "script", "title": "脚本洞察", "conclusion": long_insight, "evidenceRefs": ["ref"]},
+                {"topic": "script", "title": "脚本洞察二", "conclusion": long_insight, "evidenceRefs": ["ref"]},
+            ],
+            "materialAnalyses": [],
+        }
+        with self.assertRaisesRegex(FinalReportError, "audience insight.*single metric"):
+            _validate_standard_ai_quality(conclusion, [])
+
     def test_standard_quality_gate_requires_v4_highlight_dashboard(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -2440,13 +2462,16 @@ class FinalReportRenderTests(unittest.TestCase):
             'renderInsightList("integrated-insights", reportData.batchInsights?.integrated, "暂无组合洞察");',
             html_text,
         )
+        self.assertIn("function chapter02Insights()", html_text)
+        self.assertIn('presentationChapter("chapter02")?.insights', html_text)
+        self.assertIn("reportData.batchInsights?.audience", html_text)
         self.assertIn(
-            'renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");',
+            'renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");',
             html_text,
         )
         self.assertIn("function renderAudiencePreferences", html_text)
         self.assertIn(
-            'renderInsightList("audience-primary", chapter01Insights("audience"), "暂无人群洞察");\n  renderAudiencePreferences();\n  renderAudienceDashboard();',
+            'renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");\n  renderAudiencePreferences();\n  renderAudienceDashboard();',
             html_text,
         )
         self.assertIn(
@@ -2747,6 +2772,10 @@ class FinalReportRenderTests(unittest.TestCase):
         )
         self.assertIn("不得输出 `batchInsights.topic=integrated`", prompt_text)
         self.assertIn("必须输出至少 3 条 audience、2 条 script 洞察", prompt_text)
+        self.assertIn("portfolioDimensionConclusions.audience", prompt_text)
+        self.assertIn("batchInsights[topic=audience]", prompt_text)
+        self.assertIn("标题不是固定文案", prompt_text)
+        self.assertIn("不得复用第 01 章人群组合结论", prompt_text)
         self.assertIn("一二级内容公式：", prompt_text)
         self.assertIn("脚本文案：", prompt_text)
         self.assertNotIn("必须输出至少 4 条 nextActions", prompt_text)

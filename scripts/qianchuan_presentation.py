@@ -73,7 +73,6 @@ def _dimension(conclusion, topic):
 
 def _chapter01(data):
     conclusion = _mapping(data.get("conclusion"))
-    batch_insights = deepcopy(_list(conclusion.get("batchInsights")))
     facts = {
         "commercial": _mapping(data.get("topMaterialRoi")),
         "audience": _mapping(data.get("audience")),
@@ -110,7 +109,6 @@ def _chapter01(data):
     return {
         "id": "chapter01", "title": "组合结论", "points": points,
         "overallConclusion": _text(conclusion.get("overallConclusion")),
-        "batchInsights": batch_insights,
         "source": "facts + ai.portfolioDimensionConclusions", "evidenceRefs": evidence_refs,
         "availability": _availability(
             any(point["availability"] != "unavailable" for point in points),
@@ -121,6 +119,11 @@ def _chapter01(data):
 
 def _chapter02(data, material_ids):
     audience = _mapping(data.get("audience"))
+    insights = [
+        deepcopy(insight)
+        for insight in _list(_mapping(data.get("conclusion")).get("batchInsights"))
+        if isinstance(insight, dict) and _text(insight.get("topic")) == "audience"
+    ]
     metrics = deepcopy(_mapping(audience.get("metrics")))
     preferences = _preferences(audience.get("preferences"), material_ids)
     preferences_by_metric = {
@@ -142,9 +145,10 @@ def _chapter02(data, material_ids):
         has_refs = has_refs or bool(preference["sourceMaterialIds"])
     has_content = bool(metrics or preferences or preferences_by_metric)
     return {
-        "id": "chapter02", "title": "人群洞察", "metrics": metrics, "preferences": preferences,
+        "id": "chapter02", "title": "人群洞察", "insights": insights,
+        "metrics": metrics, "preferences": preferences,
         "preferencesByMetric": preferences_by_metric,
-        "source": "facts.audience", "evidenceRefs": [],
+        "source": "facts.audience + ai.batchInsights[audience]", "evidenceRefs": [],
         "availability": _availability(has_content, has_refs),
     }
 
