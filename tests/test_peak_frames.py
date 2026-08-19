@@ -25,6 +25,7 @@ from peak_frame_lib import (  # noqa: E402
     SeriesPoint,
     build_summary,
     extract_frame,
+    extract_frames_batch,
     find_local_peaks,
     format_frame_filename,
     format_seconds_token,
@@ -1417,6 +1418,58 @@ class FrameExtractionTests(unittest.TestCase):
 
             self.assertEqual(len(set(production_blobs)), 4)
 
+    def test_batch_extracts_multiple_exact_timestamps_in_one_ffmpeg_call(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video_path = root / "video.mp4"
+            video_path.touch()
+            outputs = [root / "zero.jpg", root / "peak.jpg"]
+            commands = []
+
+            def batch_success(command, **_kwargs):
+                commands.append(command)
+                for argument in command:
+                    if argument.endswith(".jpg") and str(root) in argument:
+                        Path(argument).write_bytes(DECODABLE_JPEG)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("peak_frame_lib.subprocess.run", side_effect=batch_success):
+                result = extract_frames_batch(
+                    "ffmpeg", video_path,
+                    [(0.0, outputs[0]), (3.5, outputs[1])],
+                    timeout_sec=10,
+                )
+
+        self.assertEqual(result, outputs)
+        self.assertEqual(len(commands), 1)
+        filter_graph = commands[0][commands[0].index("-filter_complex") + 1]
+        self.assertIn("trim=start=0.0", filter_graph)
+        self.assertIn("trim=start=3.5", filter_graph)
+
+    def test_real_batch_frames_match_exact_single_frame_extraction(self):
+        ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+        with tempfile.TemporaryDirectory(prefix="batch exact ") as temp_dir:
+            root = Path(temp_dir)
+            video_path = root / "video.mp4"
+            generated = subprocess.run(
+                [
+                    ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "testsrc2=s=64x64:r=25:d=4",
+                    "-c:v", "mpeg4", "-y", str(video_path),
+                ], capture_output=True, text=True, check=False, timeout=30,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            batch_outputs = [root / "batch-0.jpg", root / "batch-3.jpg"]
+            exact_outputs = [root / "exact-0.jpg", root / "exact-3.jpg"]
+            extract_frames_batch(
+                ffmpeg_bin, video_path,
+                [(0.0, batch_outputs[0]), (3.0, batch_outputs[1])],
+            )
+            extract_frame(ffmpeg_bin, video_path, 0.0, exact_outputs[0])
+            extract_frame(ffmpeg_bin, video_path, 3.0, exact_outputs[1])
+            self.assertEqual(batch_outputs[0].read_bytes(), exact_outputs[0].read_bytes())
+            self.assertEqual(batch_outputs[1].read_bytes(), exact_outputs[1].read_bytes())
+
     def test_real_ffmpeg_accepts_plain_decimal_submicrosecond_timestamp(self):
         ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
         with tempfile.TemporaryDirectory(prefix="tiny timestamp ") as temp_dir:
@@ -2255,6 +2308,8 @@ class ProcessingPipelineTests(unittest.TestCase):
             ), patch(
                 "peak_frame_lib.probe_video_duration", return_value=6.0
             ), patch(
+                "peak_frame_lib.extract_frames_batch", side_effect=FfmpegError("batch failed")
+            ), patch(
                 "peak_frame_lib.extract_frame", side_effect=extract_one_frame
             ) as extract:
                 _result_dir, summary_path, _markdown_path = process_records(
@@ -2971,7 +3026,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(saw_postprocess_before_release, [True])
 
-    def test_wave_starts_next_wave_after_csv_before_prior_postprocess_finishes(self):
+    def test_wave_waits_for_prior_postprocess_before_starting_next_wave(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -2999,7 +3054,7 @@ class CliTests(unittest.TestCase):
             def postprocess(args, entry):
                 if entry["materialId"] == "m-1":
                     first_postprocess_started.set()
-                    first_postprocess_release.wait(timeout=1)
+                    first_postprocess_release.wait()
                 return self._wave_postprocess(output, args, entry)
 
             def run_batch():
@@ -3031,15 +3086,16 @@ class CliTests(unittest.TestCase):
             self.assertEqual(set(starts), {"m-1", "m-2"})
             second_csv_release.set()
             deadline = time.monotonic() + 1
-            while "m-3" not in starts and time.monotonic() < deadline:
+            while time.monotonic() < deadline:
                 time.sleep(0.01)
-            self.assertIn("m-3", starts)
+            self.assertNotIn("m-3", starts)
             self.assertFalse(first_postprocess_release.is_set())
             first_postprocess_release.set()
             runner.join(timeout=2)
 
         self.assertFalse(runner.is_alive())
         self.assertEqual(result, [0])
+        self.assertIn("m-3", starts)
 
     def test_wave_rebuilds_selected_order_after_out_of_order_rpa(self):
         with tempfile.TemporaryDirectory() as temp_dir:

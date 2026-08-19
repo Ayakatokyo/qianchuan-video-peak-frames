@@ -58,6 +58,8 @@ This example selects second 0 as the fixed opening frame, then seconds 3, 7, and
 
 Online mode reads the `material_info` record field `videoUrl`, downloads it to a temporary local video file, and then reuses the same local processing pipeline. `videoDuration` may be present in the connector output, but FFmpeg remains the source of truth for frame timestamp bounds. The target is `zero_second` plus up to three local peaks. 少于 3 个局部峰值 is a curve characteristic, not a technical failure. Postprocessing succeeds when `zero_second` exists and, if peaks were expected, at least one peak frame exists (至少一张峰值帧). A failed expected frame is retained in `summary.json.missingFrames` and must be disclosed in that material's 单素材深度分析. Signal-terminated FFmpeg extraction receives one local 低资源重试 and never triggers an RPA refetch.
 
+For performance, all selected timestamps for one material are extracted in one FFmpeg process using a split filter graph with output-side accurate `trim` branches. The input is bounded through the latest requested timestamp; input-side `-ss` and `-noaccurate_seek` are forbidden because frames must remain tied to the original `CLICK_COUNT` seconds. If the batch command or any staged JPEG fails validation, the material falls back to the existing per-frame accurate extractor and preserves the normal missing-frame and success rules.
+
 Downloads are bounded before and during transfer. Diagnostic CSV files default to a 100 MiB
 maximum, videos default to a 1 GiB maximum, and each download has a 600 second wall-clock
 deadline. A declared or observed size over the limit, or a deadline overrun, is classified as
@@ -70,13 +72,13 @@ Downstream report preparation keeps `material_info` as structured facts: `diagno
 
 ## Wave RPA Batch
 
-Top-N batch mode treats asset-table `top_materials.json` as a rank-ordered candidate pool, not a complete RPA request list. The default candidate limit is three times targetTopN. `rpaConcurrency` is the maximum request count in one RPA wave. The default `waveBarrier=true` scheduler submits candidates from the head as one wave and waits until the 当前波次全部完成 before submitting the next wave; a candidate becomes selected only when:
+Top-N batch mode treats asset-table `top_materials.json` as a rank-ordered candidate pool, not a complete RPA request list. The default candidate limit is three times targetTopN. `rpaConcurrency` is the maximum request count in one RPA wave. The default `waveBarrier=true` scheduler submits candidates from the head as one wave and waits until the 当前波次的 RPA 与后处理全部进入终态 before submitting the next wave; a candidate becomes selected only when:
 
 - the connector call returns parseable diagnosis records;
 - the record list contains the target material's `material_info`;
 - `material_info.videoUrl` is a non-empty string.
 
-RPA success writes normalized records before postprocessing starts. Video download, FFmpeg extraction, and summary generation immediately follow selection on a separate bounded channel. The coordinator collects and checkpoints completed postprocess futures while RPA waits, but postprocess completion never opens the next RPA wave. A wave completes only after every submitted request reaches `available` or `final_failed`; a transport failure first enters result-pending recovery and is not a deletion verdict.
+RPA success writes normalized records before postprocessing starts. Video download, FFmpeg extraction, and summary generation immediately follow selection on a separate bounded channel. The coordinator checkpoints completed postprocess futures while the current wave RPA waits; a wave completes only after every submitted request reaches `available` or `final_failed` and every selected material's postprocess reaches a terminal result. A transport failure first enters result-pending recovery and is not a deletion verdict.
 
 Failure reasons:
 
@@ -92,6 +94,8 @@ For a retryable `rpa_request_failed` that returns in less than 60 seconds, the n
 - `target_satisfied`: a candidate was never submitted because `postprocessSucceededCount >= targetTopN`.
 
 `submitted` alone proves only that the local client started an invocation. It is not evidence of platform failure or success. The local receipt can reconcile a downloaded CSV or persisted records, but cannot retrieve a platform-completed task if the invocation failed before the client received a CSV URL. That requires a platform query API keyed by a client or platform request identifier.
+
+With `waveBarrier=true`, the scheduler requires both RPA and postprocess terminality before it opens the next RPA wave. Every current-wave RPA request must reach `available` or `final_failed`; every selected current-wave material must then finish download, frame extraction, and summary generation, either successfully or after its local retries are exhausted. A terminal postprocess failure releases the next wave so that a ranked candidate can be submitted as a backfill. The batch is not ready for downstream facts or reporting until the required postprocess futures have completed successfully and verification passes.
 
 The wave scheduler writes:
 

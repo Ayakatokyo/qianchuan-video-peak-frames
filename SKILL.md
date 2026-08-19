@@ -50,6 +50,10 @@ python scripts/run_standard_analysis.py status \
 
 进度口径必须分层记录：`rpaRequestCount` 是提交数，`recordsPersistedCount`/本地 CSV 数是诊断结果落盘数，`postprocessSucceededCount` 是截帧与 summary 均完成数；提交数绝不等于成功数。只有 `prepare` 正常退出、状态为 `analysis_pending` 且事实包完整时才可进入 AI 分析。
 
+波次口径必须明确：`waveBarrier=true` 的“上一批结束”要求该批所有 RPA 请求已进入 `available` 或 `final_failed`，且所有已选素材的下载、截帧与 summary 后处理均已进入终态。只有此时才能接入下一批 RPA；后处理成功或重试耗尽后的失败都属于终态，失败不会阻断下一批 RPA 补位。最终进入事实包前仍必须等待并校验所有目标素材的后处理完成。
+
+高光帧后处理按素材批量解码：同一素材的 `zero_second` 与峰值帧在一次 FFmpeg 精确时间点提取中输出，避免每帧重复启动并从视频开头解码；不使用输入侧 `-ss` 或 `-noaccurate_seek`，因此 JPEG 仍严格对应原始 `CLICK_COUNT` 秒点。批量 FFmpeg 失败时自动回退逐帧精确提取，并按原有 `missingFrames` 与成功判定记录。
+
 若任务被中断或非零退出，先读取 `run-summary.json` 和 `peak-frames/batch-manifest.json`，再按运维手册处置。manifest 含 `running` 或 `submitted` 时，可能已有诊断 CSV 或 records 落盘而状态尚未回写；`recordsPersistedUnknownCount` 表示持久化状态待核实，不表示数据丢失。不得据此覆盖运行目录、重新发起标准入口或判定数据丢失。排障恢复必须优先核实保留产物，并沿诊断 CSV -> records -> 后处理的链路修复；是否需要恢复、修复或重新调用 RPA 仅按运维手册的条件执行。
 
 `rpa_request_failed` 不等于平台任务失败。manifest 的 `rpaRecoveryAttempts` 会记录每次调用的网关状态码、请求标识、脱敏响应摘要，以及 worker 阶段、子进程退出码或空结果队列等本地证据。只有网关传输、429/5xx、子进程异常或空队列等可重试的快速失败才会在同一波内退避后重试；明确的 4xx、参数和 CSV/records 格式错误不会盲目重试。没有本地 CSV/records 时必须标记为本地远端对账不可用，不能据此断言 RPA 平台失败。

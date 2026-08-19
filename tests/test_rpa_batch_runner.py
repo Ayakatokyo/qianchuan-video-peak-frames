@@ -311,6 +311,37 @@ class WaveBatchRunnerTests(unittest.TestCase):
 
         self.assertFalse(runner.is_alive())
 
+    def test_wave_waits_for_postprocess_terminal_state_before_starting_next_wave(self):
+        rpa_starts = []
+        postprocess_started = threading.Event()
+        release_postprocess = threading.Event()
+
+        def attempt_rpa(_args, entry):
+            rpa_starts.append(entry["materialId"])
+            return self._verified_rpa_success(entry)
+
+        def attempt_postprocess(_args, entry):
+            if entry["materialId"] == "m-1":
+                postprocess_started.set()
+                release_postprocess.wait(timeout=1)
+            return self._success_postprocess(_args, entry)
+
+        runner = threading.Thread(
+            target=self.run_batch,
+            args=(["m-1", "m-2", "m-3", "m-4"], attempt_rpa, attempt_postprocess),
+            kwargs={"args": {"target_top_n": 4, "rpa_concurrency": 2}},
+        )
+        runner.start()
+        self.assertTrue(postprocess_started.wait(timeout=1))
+        time.sleep(0.1)
+        self.assertEqual(rpa_starts, ["m-1", "m-2"])
+        release_postprocess.set()
+        runner.join(timeout=2)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(rpa_starts[:2], ["m-1", "m-2"])
+        self.assertEqual(set(rpa_starts[2:]), {"m-3", "m-4"})
+
     def test_wave_backfills_only_after_terminal_postprocess_failure(self):
         rpa_starts = []
 

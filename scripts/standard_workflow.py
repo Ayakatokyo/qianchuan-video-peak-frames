@@ -207,7 +207,10 @@ def standard_run_status(output_dir):
         "workflowStatus": summary.get("status", "not_started"),
         "activeStage": summary.get("activeStage"),
         "lock": lock,
+        "rpaRequestCount": stage_counts.get("rpaRequestCount", 0),
         "rpaAcceptedCount": stage_counts.get("rpaAcceptedCount", 0),
+        "rpaSelectedCount": stage_counts.get("rpaSelectedCount", 0),
+        "recordsPersistedCount": stage_counts.get("recordsPersistedCount", 0),
         "postprocessSucceededCount": stage_counts.get("postprocessSucceededCount", 0),
         "reportReadyCount": stage_counts.get("reportReadyCount", 0),
     }

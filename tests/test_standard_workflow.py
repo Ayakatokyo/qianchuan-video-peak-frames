@@ -47,6 +47,34 @@ class StandardWorkflowTests(unittest.TestCase):
             "advertiserId": "1770096415226951",
         }
 
+    def test_status_exposes_distinct_rpa_artifact_and_postprocess_counts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            standard_workflow.write_run_summary(
+                root / "run-summary.json", {"status": "running", "activeStage": "diagnosis_batch"}
+            )
+            peak = root / "peak-frames"
+            peak.mkdir()
+            (peak / "batch-manifest.json").write_text(
+                json.dumps({
+                    "stageCounts": {
+                        "rpaRequestCount": 16,
+                        "rpaAcceptedCount": 12,
+                        "rpaSelectedCount": 12,
+                        "recordsPersistedCount": 12,
+                        "postprocessSucceededCount": 7,
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            status = standard_workflow.standard_run_status(root)
+
+        self.assertEqual(status["rpaRequestCount"], 16)
+        self.assertEqual(status["rpaAcceptedCount"], 12)
+        self.assertEqual(status["recordsPersistedCount"], 12)
+        self.assertEqual(status["postprocessSucceededCount"], 7)
+
     def write_ready_materials(self, root, material_ids):
         ready_path = root / "peak-frames" / "top_materials_rpa_ready.json"
         ready_path.parent.mkdir(parents=True, exist_ok=True)

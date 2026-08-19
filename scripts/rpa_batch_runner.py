@@ -462,6 +462,16 @@ def run_wave_batch(
             changed = True
         return changed
 
+    def wave_postprocess_pending(wave):
+        """Return whether this wave still has an active postprocess attempt."""
+        if not wave:
+            return False
+        wave_indices = set(wave.values())
+        return any(
+            index in wave_indices
+            for index in postprocess_futures.values()
+        )
+
     with ThreadPoolExecutor(
         max_workers=args.rpa_concurrency
     ) as rpa_executor, ThreadPoolExecutor(
@@ -476,7 +486,12 @@ def run_wave_batch(
             wave = {}
             while True:
                 checkpoint_interruption()
-                if not pending_wave and interruption is None:
+                if (
+                    not pending_wave
+                    and not wave
+                    and not postprocess_futures
+                    and interruption is None
+                ):
                     capacity = min(args.rpa_concurrency, primary_collection_slots())
                     if capacity and next_index < len(candidates):
                         wave_started_at = elapsed(batch_started_at)
@@ -516,7 +531,7 @@ def run_wave_batch(
                 if pending_wave:
                     pending_wave -= done
                     changed = mark_soft_timeouts(pending_wave) or changed
-                if not pending_wave and wave:
+                if not pending_wave and wave and not wave_postprocess_pending(wave):
                     wave_finished_at = elapsed(batch_started_at)
                     for index in wave.values():
                         entries[index]["waveFinishedAtSec"] = wave_finished_at

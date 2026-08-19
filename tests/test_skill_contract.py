@@ -118,6 +118,15 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("running` 或 `submitted", skill)
         self.assertIn("诊断 CSV -> records -> 后处理", skill)
 
+    def test_skill_requires_rpa_and_postprocess_completion_before_next_wave(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("下一批 RPA", skill)
+        self.assertIn("后处理均已进入终态", skill)
+        self.assertIn("RPA and postprocess terminality", contract)
+        self.assertIn("before it opens the next RPA wave", contract)
+
     def test_runbook_owns_wave_recovery_commands(self):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 

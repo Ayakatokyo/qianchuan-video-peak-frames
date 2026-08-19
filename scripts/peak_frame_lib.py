@@ -449,6 +449,73 @@ def extract_frame(
     return output
 
 
+def extract_frames_batch(
+    ffmpeg_bin,
+    video_path,
+    targets,
+    timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+):
+    """Decode one video stream and emit exact requested timestamps together."""
+    if not targets:
+        return []
+    video = Path(video_path)
+    output_targets = [(float(timestamp), Path(output)) for timestamp, output in targets]
+    staging_paths = []
+    filter_parts = []
+    split_labels = [f"split_{index}" for index in range(len(output_targets))]
+    filter_parts.append(
+        f"[0:v]split={len(output_targets)}" + "".join(f"[{label}]" for label in split_labels)
+    )
+    for index, (timestamp, _output) in enumerate(output_targets):
+        filter_parts.append(
+            f"[{split_labels[index]}]trim=start={timestamp!r},setpts=PTS-STARTPTS[out_{index}]"
+        )
+    max_timestamp = max(timestamp for timestamp, _output in output_targets)
+    for index, (_timestamp, output) in enumerate(output_targets):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staging = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.stage{output.suffix or '.jpg'}")
+        staging_paths.append(staging)
+    command = [
+        str(ffmpeg_bin), "-hide_banner", "-loglevel", "error",
+        "-threads", "1", "-filter_threads", "1",
+        "-t", repr(max_timestamp + 1.0), "-i", str(video),
+        "-filter_complex", ";".join(filter_parts),
+    ]
+    for index, staging in enumerate(staging_paths):
+        command.extend(["-map", f"[out_{index}]", "-frames:v", "1", "-q:v", "2", "-y", str(staging)])
+    try:
+        process = subprocess.run(
+            command, capture_output=True, text=True, check=False, timeout=timeout_sec
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        for staging in staging_paths:
+            staging.unlink(missing_ok=True)
+        raise FfmpegError(f"FFmpeg batch extraction failed for {video}: {exc}") from exc
+    if process.returncode != 0:
+        for staging in staging_paths:
+            staging.unlink(missing_ok=True)
+        raise FfmpegError(
+            f"FFmpeg batch extraction failed for {video}; return code {process.returncode}; "
+            f"stderr excerpt: {_stderr_excerpt(process.stderr)}"
+        )
+    for staging, (_timestamp, output) in zip(staging_paths, output_targets):
+        try:
+            if staging.stat().st_size == 0:
+                raise OSError("empty JPEG")
+            with staging.open("rb") as frame_file:
+                if frame_file.read(2) != b"\xff\xd8":
+                    raise OSError("invalid JPEG start marker")
+                frame_file.seek(-2, os.SEEK_END)
+                if frame_file.read(2) != b"\xff\xd9":
+                    raise OSError("invalid JPEG end marker")
+            os.replace(staging, output)
+        except (OSError, ValueError) as exc:
+            for pending in staging_paths:
+                pending.unlink(missing_ok=True)
+            raise FfmpegError(f"FFmpeg batch output validation failed for {output}: {exc}") from exc
+    return [output for _timestamp, output in output_targets]
+
+
 def validate_timestamps(selected_peaks, video_duration):
     duration, duration_text = _canonical_seconds(
         video_duration, "video duration", InputDataError
@@ -823,34 +890,45 @@ def process_records(
     successful_peaks = []
     frame_paths = []
     missing_frames = []
-    for peak in selected_peaks:
-        frame_path = result_dir / format_frame_filename(
-            peak.rank_type,
-            peak.duration_sec,
-            peak.metric_value,
+    target_paths = [
+        (
+            peak,
+            result_dir / format_frame_filename(
+                peak.rank_type, peak.duration_sec, peak.metric_value
+            ),
         )
-        try:
-            extract_frame(
-                ffmpeg,
-                video,
-                peak.duration_sec,
-                frame_path,
-                timeout_sec=timeout_sec,
-            )
-        except FfmpegError as exc:
-            missing_frames.append(
-                {
-                    "rankType": peak.rank_type,
-                    "durationSec": peak.duration_sec,
-                    "metricValue": peak.metric_value,
-                    "requestedTimestampSec": peak.duration_sec,
-                    "errorType": type(exc).__name__,
-                    "errorMessage": _stderr_excerpt(str(exc)),
-                }
-            )
-        else:
-            successful_peaks.append(peak)
-            frame_paths.append(frame_path)
+        for peak in selected_peaks
+    ]
+    try:
+        extract_frames_batch(
+            ffmpeg,
+            video,
+            [(peak.duration_sec, path) for peak, path in target_paths],
+            timeout_sec=timeout_sec,
+        )
+    except FfmpegError as batch_error:
+        for peak, frame_path in target_paths:
+            try:
+                extract_frame(ffmpeg, video, peak.duration_sec, frame_path, timeout_sec=timeout_sec)
+            except FfmpegError as exc:
+                missing_frames.append(
+                    {
+                        "rankType": peak.rank_type,
+                        "durationSec": peak.duration_sec,
+                        "metricValue": peak.metric_value,
+                        "requestedTimestampSec": peak.duration_sec,
+                        "errorType": type(exc).__name__,
+                        "errorMessage": _stderr_excerpt(str(exc)),
+                    }
+                )
+            else:
+                successful_peaks.append(peak)
+                frame_paths.append(frame_path)
+        if not successful_peaks:
+            missing_frames.append({"errorType": type(batch_error).__name__, "errorMessage": str(batch_error)})
+    else:
+        successful_peaks = [peak for peak, _path in target_paths]
+        frame_paths = [path for _peak, path in target_paths]
 
     cover_succeeded = any(
         peak.rank_type == "zero_second" for peak in successful_peaks
