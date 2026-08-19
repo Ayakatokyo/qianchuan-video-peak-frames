@@ -48,6 +48,8 @@ python scripts/run_standard_analysis.py status \
 
 `prepare` 是包含外部 RPA 的长耗时同步任务。未看到实时进度不等于 RPA 未产出数据；在命令仍运行时，不得仅因终端静默或 Agent 尚未观察到 CSV 而中止任务、推断素材失败或启动第二个运行。运行环境允许只读观察时，可以检查运行目录的时间戳和审计产物，但这些观察不能替代 `prepare` 的退出结果，也不能改变执行中的批次。
 
+进度口径必须分层记录：`rpaRequestCount` 是提交数，`recordsPersistedCount`/本地 CSV 数是诊断结果落盘数，`postprocessSucceededCount` 是截帧与 summary 均完成数；提交数绝不等于成功数。只有 `prepare` 正常退出、状态为 `analysis_pending` 且事实包完整时才可进入 AI 分析。
+
 若任务被中断或非零退出，先读取 `run-summary.json` 和 `peak-frames/batch-manifest.json`，再按运维手册处置。manifest 含 `running` 或 `submitted` 时，可能已有诊断 CSV 或 records 落盘而状态尚未回写；`recordsPersistedUnknownCount` 表示持久化状态待核实，不表示数据丢失。不得据此覆盖运行目录、重新发起标准入口或判定数据丢失。排障恢复必须优先核实保留产物，并沿诊断 CSV -> records -> 后处理的链路修复；是否需要恢复、修复或重新调用 RPA 仅按运维手册的条件执行。
 
 `rpa_request_failed` 不等于平台任务失败。manifest 的 `rpaRecoveryAttempts` 会记录每次调用的网关状态码、请求标识、脱敏响应摘要，以及 worker 阶段、子进程退出码或空结果队列等本地证据。只有网关传输、429/5xx、子进程异常或空队列等可重试的快速失败才会在同一波内退避后重试；明确的 4xx、参数和 CSV/records 格式错误不会盲目重试。没有本地 CSV/records 时必须标记为本地远端对账不可用，不能据此断言 RPA 平台失败。

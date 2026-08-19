@@ -12,7 +12,11 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 ## 运行中断或陈旧批次
 
-先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。恢复已有批次时使用：
+先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。恢复已有批次时，默认先做不触发 RPA 的本地修复；只有用户明确授权重发 RPA 时才使用 `--resume`：
+
+先按三层产物分别盘点并记录数量：`rpaRequestCount`（提交数）→ `recordsPersistedCount`/CSV 数（诊断结果已落盘数）→ `postprocessSucceededCount`（截帧与 summary 均完成数）。提交数不等于成功数；没有本地 CSV/records 时不得声称平台已成功或失败。
+
+若用户未明确授权再次调用 RPA，先运行“修复保留产物”章节的 `repair_manifest.py`。该修复只读取已有 CSV/records 并补做本地后处理，不会发起 RPA；即使 manifest 的 `postprocessStatus` 已写成 `succeeded`，也会以实际 `summary.json`、`summary.md` 和 JPEG 是否完整为准，补跑缺失的截帧。检查 `repair-manifest.json` 的 `rpaCalls` 必须为 `0`，并核对修复后的三层数量。
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -29,6 +33,8 @@ python scripts/extract_peak_frames.py \
 ```
 
 `--resume` 只可用于同一日期、同一候选池和同一店铺的既有批次；它会复用有效 summary 与已落盘 records。
+
+`--resume` 对没有本地 CSV/records 的 `submitted` 素材可能重新提交 RPA。因而只有用户明确授权“恢复并允许重发 RPA”时才可使用；用户要求停止 RPA、或悬空请求尚未完成远端对账时，禁止使用 `--resume`，改用上面的本地 repair 并把悬空素材保留为待对账。
 
 ## 修复保留产物
 

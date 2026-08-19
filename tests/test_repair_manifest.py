@@ -140,6 +140,55 @@ class RepairManifestTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["action"], "records_to_postprocess")
         self.assertEqual(manifest["stageCounts"]["postprocessSucceededCount"], 1)
 
+    def test_repairs_records_when_manifest_status_claims_success_but_summary_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            entry = {
+                "materialId": "m-1",
+                "rank": 1,
+                "rpaStatus": "selected",
+                "postprocessStatus": "succeeded",
+                "postprocessSucceeded": True,
+                "status": "succeeded",
+                "diagnosisRecordsPath": "diagnosis-records/m-1.json",
+                "summaryJson": None,
+                "summaryMd": None,
+            }
+            peak = write_manifest(root, entry)
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            (records_dir / "m-1.json").write_text(
+                json.dumps([{
+                    "recordType": "material_info",
+                    "materialId": "m-1",
+                    "videoUrl": "https://video.example/m-1.mp4",
+                }]),
+                encoding="utf-8",
+            )
+            output = peak / "m-1"
+            output.mkdir()
+            fake_summary = output / "summary.json"
+            fake_markdown = output / "summary.md"
+
+            def local_postprocess(_args, _entry):
+                fake_summary.write_text(
+                    json.dumps({
+                        "materialId": "m-1",
+                        "frames": [{"framePath": "peak.jpg"}],
+                        "warnings": [],
+                    }),
+                    encoding="utf-8",
+                )
+                fake_markdown.write_text("summary\n", encoding="utf-8")
+                (output / "peak.jpg").write_bytes(b"\xff\xd8frame\xff\xd9")
+                return {"summaryJson": str(fake_summary), "summaryMd": str(fake_markdown)}
+
+            result = repair_manifest.repair_batch(peak, postprocess=local_postprocess)
+            manifest = json.loads((peak / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["actions"][0]["action"], "records_to_postprocess")
+        self.assertEqual(manifest["stageCounts"]["postprocessSucceededCount"], 1)
+
     def test_repairs_valid_summary_and_jpeg_into_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

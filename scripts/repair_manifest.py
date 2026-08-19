@@ -211,7 +211,11 @@ def repair_batch(
             entry["recordsPersisted"] = True
             entry["records"] = records
             entry["diagnosisRecordsPath"] = _relative(root, records_path)
-            if entry.get("postprocessStatus") != "succeeded":
+            # An interrupted worker may have checkpointed a successful status
+            # before writing summary/JPEG artifacts. Trust the retained files,
+            # not the status flag, when deciding whether local postprocess is
+            # still required.
+            if not _valid_summary(material_id, entry):
                 try:
                     result = postprocess(args, entry)
                     entry.update(
