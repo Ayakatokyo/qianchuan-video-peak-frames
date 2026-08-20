@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 
+from dependency_bootstrap import DependencyBootstrapError, ensure_prepare_dependencies
 from standard_workflow import (
     StandardWorkflowError,
     WorkflowRequest,
@@ -58,6 +59,7 @@ def main(argv=None):
         return exc.code
     try:
         if args.command == "prepare":
+            ensure_prepare_dependencies()
             summary = prepare_standard_run(
                 WorkflowRequest(
                     start_date=args.start_date,
@@ -81,6 +83,9 @@ def main(argv=None):
             print(f"final_report_zip={_artifact_path(args.output_dir, artifacts['reportArchive'])}")
         else:
             print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
+    except DependencyBootstrapError as exc:
+        print(f"dependencies: {exc}", file=sys.stderr)
+        return 2
     except StandardWorkflowError as exc:
         print(f"{exc.stage}: {exc}", file=sys.stderr)
         return 2

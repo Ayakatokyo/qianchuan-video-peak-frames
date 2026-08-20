@@ -10,6 +10,8 @@ metadata:
 
 用户只需提供分析周期、Top素材数量和广告主id。标准工作流自动完成资产表筛选、候选扩容、波次 RPA、视频下载、峰值帧提取、重试、补位与产物校验；这些执行参数不是业务输入。
 
+首次执行 `prepare` 时，标准入口会检查 `requests` 与 `imageio-ffmpeg`。缺失时会使用当前 Python 解释器执行 `uv pip install --python <当前解释器> -r requirements.txt` 后再进入工作流；依赖已满足时不会安装。
+
 RPA 媒体字段兜底：RPA 已返回诊断记录但 `material_info.videoUrl` 暂时为空时，不立即按失败处理，也不立即跳到下一排名素材。技能会对该素材按恢复次数上限重新发起 RPA 获取；重取后拿到可用 `videoUrl` 才进入视频处理。仅当重取仍无可用地址或达到恢复上限，才按候选排名顺序使用后续素材补足 Top N。这样保留排名顺序，同时优先回收原排名素材的数据。
 
 ## 周期换算
@@ -37,6 +39,14 @@ python scripts/run_standard_analysis.py prepare \
 python scripts/run_standard_analysis.py status \
   --output-dir "/path/to/new-run"
 ```
+
+通过长时 Bash 执行工具提交上述 `prepare` 命令时，工具调用必须附带完成态契约：`max_runtime_seconds: 3600`、`completion_mode: data_collection`、`success_pattern: "run_summary=.*run-summary\\.json"`，以及以下 `verify_command`（将 `/path/to/new-run` 替换为本次运行目录）：
+
+```bash
+python -c "import json; print(json.load(open('/path/to/new-run/run-summary.json', encoding='utf-8'))['status'])"
+```
+
+`completion_mode`、`success_pattern`、`verify_command` 和运行时限是长时执行工具的元数据，不是 `prepare` 的命令行参数，不能追加到 Python 命令中。`verify_command` 的结果必须为 `analysis_pending` 才能进入 AI 分析；工具返回 `GUARDRAIL_ERROR` 时不能据此断定命令未提交或失败，须按下方运行状态规则核验同一运行目录。
 
 只有 `prepare` 成功且状态为 `analysis_pending` 时，才可进入 AI 分析；此时必须同时使用 `diagnostic-analysis/diagnostic-analysis-data.json` 和 `diagnostic-analysis/diagnostic-analysis-prompt.md`。不得从 `top_materials.json`、`top_materials_rpa_ready.json` 或其他候选清单自行构造事实，也不得手写 `missingRanks`。最终素材清单只包含后处理成功的素材；候选池、RPA 波次、失败重试、串行补偿和验证均由标准入口自动处理。
 

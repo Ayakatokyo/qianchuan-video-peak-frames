@@ -590,6 +590,27 @@ class StandardWorkflowCliTests(unittest.TestCase):
         self.assertFalse(hasattr(args, "rpa_concurrency"))
         self.assertFalse(hasattr(args, "resume"))
 
+    def test_prepare_reports_dependency_bootstrap_failures(self):
+        stderr = io.StringIO()
+        with patch.object(
+            run_standard_analysis,
+            "ensure_prepare_dependencies",
+            side_effect=run_standard_analysis.DependencyBootstrapError("uv is unavailable"),
+        ), redirect_stderr(stderr):
+            result = run_standard_analysis.main(
+                [
+                    "prepare",
+                    "--start-date", "2026-07-19",
+                    "--end-date", "2026-07-25",
+                    "--top-n", "9",
+                    "--advertiser-id", "1770096415226951",
+                    "--output-dir", "run",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(stderr.getvalue(), "dependencies: uv is unavailable\n")
+
     def test_finalize_parser_requires_analysis_json(self):
         parser = run_standard_analysis.build_parser()
         with redirect_stderr(io.StringIO()):

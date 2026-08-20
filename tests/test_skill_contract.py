@@ -128,6 +128,14 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("提交结果未知", runbook)
         self.assertIn("不得在未知状态重提 prepare", runbook)
 
+    def test_skill_documents_the_long_task_completion_contract(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("completion_mode: data_collection", skill)
+        self.assertIn("verify_command", skill)
+        self.assertIn("success_pattern", skill)
+        self.assertIn("不是 `prepare` 的命令行参数", skill)
+
     def test_guardrail_recovery_limits_rejected_probe_calls_and_preserves_evidence(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
