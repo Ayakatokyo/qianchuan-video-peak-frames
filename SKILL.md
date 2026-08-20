@@ -42,27 +42,33 @@ python scripts/run_standard_analysis.py status \
 
 #### AI 交接前置检查
 
-进入 AI 分析后固定按以下顺序执行一次：读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，核对素材数、成功帧数和 missingFrames，再按事实包中的 `framePath` 开始查看 JPEG。每批不超过 6 帧；若某批被策略或 guardrail 拒绝，继续拆分该批并重试，直至完成事实包内全部 JPEG 的查看，不得跳过任何帧。不得连续执行临时 jq 探查来理解字段结构，也不要从其他产物拼接第二份事实；只有发现文件不完整或字段不一致时，才进行针对性排查。
+进入 AI 分析后固定按以下顺序执行一次：读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，核对素材数、成功帧数和 missingFrames，再按事实包中的 `framePath` 开始查看 JPEG。每批不超过 6 帧；若图片理解首次被策略拒绝（包括策略或 guardrail 拒绝），立即将 AI 阶段记为 `frame_review_pending`，保留未完成批次和证据白名单，不得继续拆分或逐帧重试，也不得改用 bash、工具检索或其他读取工具绕过拒绝。工具通道恢复后，从未完成批次续接；不得跳过任何帧或事实包内 JPEG。不得连续执行临时 jq 探查来理解字段结构，也不要从其他产物拼接第二份事实；只有发现文件不完整或字段不一致时，才进行针对性排查。
 
 ### 运行可观测性与中断
 
 `prepare` 是包含外部 RPA 的长耗时同步任务。未看到实时进度不等于 RPA 未产出数据；在命令仍运行时，不得仅因终端静默或 Agent 尚未观察到 CSV 而中止任务、推断素材失败或启动第二个运行。运行环境允许只读观察时，可以检查运行目录的时间戳和审计产物，但这些观察不能替代 `prepare` 的退出结果，也不能改变执行中的批次。
 
+长任务提交必须区分调用层和运行层状态：工具返回成功但后台尚未核验时记为 `submitted_unverified`；工具返回 `GUARDRAIL_ERROR`、策略拒绝或 `needs_verifier` 时，只记为 `tool_call_blocked`，若无法确认命令是否已提交则同时记为 `needs_confirmation`，不得因 GUARDRAIL_ERROR 将其改写为 failed。在 `submitted_unverified`/`needs_confirmation` 状态下，运行目录、锁文件和后台任务标识是同一任务的唯一身份；不得换目录、重提 `prepare` 或并发启动第二个任务。只有拿到后台明确终态且退出码、`run-summary.json` 和产物链路相互一致，才能把任务标为 `complete` 或 `failed`。
+
 进度口径必须分层记录：`rpaRequestCount` 是提交数，`recordsPersistedCount`/本地 CSV 数是诊断结果落盘数，`postprocessSucceededCount` 是截帧与 summary 均完成数；提交数绝不等于成功数。只有 `prepare` 正常退出、状态为 `analysis_pending` 且事实包完整时才可进入 AI 分析。
 
 波次口径必须明确：`waveBarrier=true` 的“上一批结束”要求该批所有 RPA 请求已进入 `available` 或 `final_failed`，且所有已选素材的下载、截帧与 summary 后处理均已进入终态。只有此时才能接入下一批 RPA；后处理成功或重试耗尽后的失败都属于终态，失败不会阻断下一批 RPA 补位。最终进入事实包前仍必须等待并校验所有目标素材的后处理完成。
 
-高光帧后处理按素材批量解码：同一素材的 `zero_second` 与峰值帧在一次 FFmpeg 精确时间点提取中输出，避免每帧重复启动并从视频开头解码；不使用输入侧 `-ss` 或 `-noaccurate_seek`，因此 JPEG 仍严格对应原始 `CLICK_COUNT` 秒点。批量 FFmpeg 失败时自动回退逐帧精确提取，并按原有 `missingFrames` 与成功判定记录。
+高光帧后处理按素材批量解码：同一素材的 `zero_second` 与峰值帧在一次 FFmpeg 精确时间点提取中输出，避免每帧重复启动并从视频开头解码；不使用输入侧 `-ss` 或 `-noaccurate_seek`，因此 JPEG 仍严格对应原始 `CLICK_COUNT` 秒点。批量命令失败时按目标时间点集合拆分重试，隔离单个异常帧；只有拆分到单目标仍失败时才回退该目标的逐帧精确提取，不得让一个目标超时触发整素材的六次旧路径重跑。每个目标的失败仍按原有 `missingFrames` 与成功判定记录。
 
 若任务被中断或非零退出，先读取 `run-summary.json` 和 `peak-frames/batch-manifest.json`，再按运维手册处置。manifest 含 `running` 或 `submitted` 时，可能已有诊断 CSV 或 records 落盘而状态尚未回写；`recordsPersistedUnknownCount` 表示持久化状态待核实，不表示数据丢失。不得据此覆盖运行目录、重新发起标准入口或判定数据丢失。排障恢复必须优先核实保留产物，并沿诊断 CSV -> records -> 后处理的链路修复；是否需要恢复、修复或重新调用 RPA 仅按运维手册的条件执行。
 
 `rpa_request_failed` 不等于平台任务失败。manifest 的 `rpaRecoveryAttempts` 会记录每次调用的网关状态码、请求标识、脱敏响应摘要，以及 worker 阶段、子进程退出码或空结果队列等本地证据。只有网关传输、429/5xx、子进程异常或空队列等可重试的快速失败才会在同一波内退避后重试；明确的 4xx、参数和 CSV/records 格式错误不会盲目重试。没有本地 CSV/records 时必须标记为本地远端对账不可用，不能据此断言 RPA 平台失败。
 
+工具调用返回 `GUARDRAIL_ERROR`、策略拒绝或连接器拒绝时，只能将该次调用标记为 `tool_call_blocked`，不能将工作流标记为失败或中止。立即核查后台任务/执行会话状态、`run-summary.json`、`batch-manifest.json`、CSV/records 与素材 summary 的数量；后台仍为 `running` 时保持原任务唯一性并等待终态，后台已为 `complete`/`analysis_pending` 时接续对应阶段。只有后台明确终止且产物链路也不完整时，才报告任务失败；策略层没有返回拒绝原因时必须标注“策略根因待外部日志确认”，不得猜测。
+
+若出现连续策略拒绝，最多保留一次有目的的状态核查；后续不得继续执行 `echo`、`jq`、目录枚举等同类探查，停止同类探查并记录最后一次成功观测、拒绝时间、运行目录和锁文件路径。工具恢复后只读核验恢复期间产生的状态和产物，再按状态机接续；在核验前不得报告“进程中止”，只能报告“后台状态未知/待确认”。
+
 ### 2. 生成 AI 二次分析
 
 当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 5`；第 01 部分必须分别输出经营表现、人群、脚本、高光画面和互动时序五条组合层结论。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`：将每个成功高光帧按 `portrait`、`product`、`other` 的固定顺序归类一次且仅一次，并为实际存在的分类填写共同画面结论与可验证的裂变方向。不得把帧秒数宣称为对应某句脚本话术。
 
-生成 JSON 前必须先完成一次门禁自检：读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，确认 `decision` 枚举、字段字符数、素材/高光帧覆盖和 dashboard 分类规则；自检未通过前不得写入 JSON 或调用 `finalize`。生成后只做一次本地校验，失败时按报错字段修正 AI JSON，不重新执行 RPA 或事实包准备。
+生成 JSON 前必须先完成一次门禁自检：读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，建立合法 `evidenceRefs/frameRef` 白名单与字段字符数预算，确认 `decision` 枚举、素材/高光帧覆盖和 dashboard 分类规则。先在内存中按素材分片（每片不超过 6 张帧）完成观察和结论，再合并为一个完整对象；自检未通过前不得写入 JSON 或调用 `finalize`。写入后只做一次完整本地校验，失败时只按报错字段做一次定向修正并重新校验，不重新执行 RPA、prepare 或事实包准备；禁止通过多轮全文补丁逐步“试到通过”。
 
 结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。标准输出使用 schema v5；v4 仅用于历史报告兼容，允许降级渲染组合层高光结论，但不承诺人像、产品、其他分类 dashboard。
 

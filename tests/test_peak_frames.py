@@ -2328,6 +2328,50 @@ class ProcessingPipelineTests(unittest.TestCase):
             ["peak_top_1"],
         )
 
+    def test_process_records_isolates_a_failed_batch_target_before_legacy_fallback(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def batch_extract(_ffmpeg, _video, targets, **_kwargs):
+                if len(targets) > 1:
+                    raise FfmpegError("batch has one bad target")
+                timestamp, output = targets[0]
+                if timestamp == 2.0:
+                    raise FfmpegError("target decoder killed")
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            def legacy_extract(_ffmpeg, _video, timestamp, output, **_kwargs):
+                self.assertEqual(timestamp, 2.0)
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=6.0
+            ), patch(
+                "peak_frame_lib.extract_frames_batch", side_effect=batch_extract
+            ) as batch, patch(
+                "peak_frame_lib.extract_frame", side_effect=legacy_extract
+            ) as legacy:
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records, "records.json", video, root / "output"
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(legacy.call_count, 1)
+        self.assertGreater(batch.call_count, 1)
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["zero_second", "peak_top_1", "peak_top_2"],
+        )
+
     def test_process_records_passes_configured_timeout_to_probe_and_frames(self):
         records = [
             click_record(second, value)

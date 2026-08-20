@@ -118,6 +118,35 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("running` 或 `submitted", skill)
         self.assertIn("诊断 CSV -> records -> 后处理", skill)
 
+    def test_skill_treats_guardrail_after_long_submit_as_submission_unknown(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("submitted_unverified", skill)
+        self.assertIn("needs_confirmation", skill)
+        self.assertIn("不得因 GUARDRAIL_ERROR 将其改写为 failed", skill)
+        self.assertIn("提交结果未知", runbook)
+        self.assertIn("不得在未知状态重提 prepare", runbook)
+
+    def test_guardrail_recovery_limits_rejected_probe_calls_and_preserves_evidence(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("连续策略拒绝", skill)
+        self.assertIn("停止同类探查", skill)
+        self.assertIn("最后一次成功观测", skill)
+        self.assertIn("锁文件", runbook)
+        self.assertIn("只读核验恢复后", runbook)
+
+    def test_skill_freezes_ai_frame_stage_after_first_guardrail_rejection(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("图片理解首次被策略拒绝", skill)
+        self.assertIn("不得继续拆分或逐帧重试", skill)
+        self.assertIn("frame_review_pending", skill)
+        self.assertIn("从未完成批次续接", runbook)
+
     def test_skill_requires_rpa_and_postprocess_completion_before_next_wave(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")

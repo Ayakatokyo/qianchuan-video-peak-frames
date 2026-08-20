@@ -899,17 +899,32 @@ def process_records(
         )
         for peak in selected_peaks
     ]
-    try:
-        extract_frames_batch(
-            ffmpeg,
-            video,
-            [(peak.duration_sec, path) for peak, path in target_paths],
-            timeout_sec=timeout_sec,
-        )
-    except FfmpegError as batch_error:
-        for peak, frame_path in target_paths:
+    def extract_with_isolated_fallback(targets):
+        """Keep a failed timestamp from forcing the whole material to legacy mode."""
+        if not targets:
+            return
+        try:
+            extract_frames_batch(
+                ffmpeg,
+                video,
+                [(peak.duration_sec, path) for peak, path in targets],
+                timeout_sec=timeout_sec,
+            )
+        except FfmpegError as batch_error:
+            if len(targets) > 1:
+                midpoint = len(targets) // 2
+                extract_with_isolated_fallback(targets[:midpoint])
+                extract_with_isolated_fallback(targets[midpoint:])
+                return
+            peak, frame_path = targets[0]
             try:
-                extract_frame(ffmpeg, video, peak.duration_sec, frame_path, timeout_sec=timeout_sec)
+                extract_frame(
+                    ffmpeg,
+                    video,
+                    peak.duration_sec,
+                    frame_path,
+                    timeout_sec=timeout_sec,
+                )
             except FfmpegError as exc:
                 missing_frames.append(
                     {
@@ -924,11 +939,11 @@ def process_records(
             else:
                 successful_peaks.append(peak)
                 frame_paths.append(frame_path)
-        if not successful_peaks:
-            missing_frames.append({"errorType": type(batch_error).__name__, "errorMessage": str(batch_error)})
-    else:
-        successful_peaks = [peak for peak, _path in target_paths]
-        frame_paths = [path for _peak, path in target_paths]
+            return
+        successful_peaks.extend(peak for peak, _path in targets)
+        frame_paths.extend(path for _peak, path in targets)
+
+    extract_with_isolated_fallback(target_paths)
 
     cover_succeeded = any(
         peak.rank_type == "zero_second" for peak in successful_peaks

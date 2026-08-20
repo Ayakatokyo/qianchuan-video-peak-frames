@@ -10,11 +10,13 @@
 
 ## 生成前门禁自检
 
+图片查看是独立的工具阶段。若图片理解工具首次返回 `GUARDRAIL_ERROR` 或策略拒绝，立即暂停并标记 `frame_review_pending`：保留已查看和未查看的 `framePath` 清单，禁止继续拆分、逐帧重试或改用其他工具绕过拒绝；工具恢复后从未查看批次续接。
+
 在写入 JSON 前先完成一次契约自检，不要边生成边试错：
 
-- 读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，严格按其中的枚举与字符数范围构造字段；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
+- 读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，先建立合法 `frameRef/evidenceRefs` 白名单及字段字符数预算，再严格按其中的枚举与字符数范围构造字段；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
 - 从事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
-- 确认所有 `frameRef`、`evidenceRefs` 都逐字来自事实包，确认 dashboard 只输出实际存在且非空的分类；自检未通过前不要写入 `diagnostic-ai-analysis.json`，也不要调用 `finalize`。
+- 按素材分片查看画面，每片最多 6 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自事实包，确认 dashboard 只输出实际存在且非空的分类。自检未通过前不要写入 `diagnostic-ai-analysis.json`，也不要调用 `finalize`；禁止先写简短草稿、再以多轮全文补丁补足字符数或修正证据。
 
 ## 证据与归因规则
 
