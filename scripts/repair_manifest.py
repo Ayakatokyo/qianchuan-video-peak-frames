@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import extract_peak_frames as pipeline
-from batch_runtime import stage_counts
-from batch_runtime import new_run_id
+from batch_runtime import new_run_id, stage_counts, write_json_atomically
+from batch_verification import material_output_issues
 from rpa_csv_parser import parse_diagnosis_csv
 from path_safety import artifact_path, material_dir, validate_material_id
 
@@ -33,11 +33,7 @@ def _relative(root, path):
 
 
 def _write_records(path, records):
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    staging = target.with_name(f".{target.name}.repair.tmp")
-    staging.write_text(json.dumps(records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(staging, target)
+    return write_json_atomically(path, records)
 
 
 def _normalize_summary_paths(root, entry):
@@ -50,11 +46,12 @@ def _normalize_summary_paths(root, entry):
 def _valid_summary(material_id, entry):
     candidate = dict(entry)
     candidate["status"] = "succeeded"
-    return pipeline._material_success_is_valid(material_id, candidate)
+    errors, _warnings = material_output_issues(material_id, candidate)
+    return not errors
 
 
 def _default_postprocess(args, entry):
-    attempt = pipeline._attempt_stream_postprocess(args, entry)
+    attempt = pipeline._attempt_wave_postprocess(args, entry)
     if attempt["error"] is not None:
         raise attempt["error"]
     _result_dir, summary_json, summary_md = attempt["result"]
@@ -255,7 +252,7 @@ def repair_batch(
         raw_entry.update(entry)
 
     _rebuild_manifest(manifest, materials, base_dir=peak_dir.parent)
-    pipeline._write_json_atomically(manifest_path, manifest)
+    write_json_atomically(manifest_path, manifest)
     receipt = {
         "schemaVersion": 1,
         "manifestPath": str(manifest_path),
@@ -266,7 +263,7 @@ def repair_batch(
         "errors": errors,
         "valid": not errors,
     }
-    pipeline._write_json_atomically(peak_dir / REPAIR_RECEIPT_NAME, receipt)
+    write_json_atomically(peak_dir / REPAIR_RECEIPT_NAME, receipt)
     return receipt
 
 

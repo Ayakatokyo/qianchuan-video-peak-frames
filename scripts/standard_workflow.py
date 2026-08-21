@@ -6,14 +6,19 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import tempfile
 
 import export_top_materials
 import extract_peak_frames
 from diagnostic_analysis_lib import prepare_diagnostic_analysis
 from final_report_lib import generate_final_report
 from report_renderer import create_report_archive
-from batch_runtime import BatchLockError, acquire_run_lock, mark_report_ready, read_json
+from batch_runtime import (
+    BatchLockError,
+    acquire_run_lock,
+    mark_report_ready,
+    read_json,
+    write_json_atomically,
+)
 from top_material_roi_lib import write_top_material_roi_facts
 
 
@@ -86,22 +91,7 @@ def acquire_workflow_lock(request, output_dir, shop_id=None):
         raise WorkflowLockError("workflow", f"workflow already running: {exc}") from exc
 
 
-def write_run_summary(path, payload):
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.stem}.", suffix=".tmp", dir=str(target.parent)
-    )
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-        os.replace(temporary_name, target)
-    except Exception:
-        try:
-            os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
-        raise
+write_run_summary = write_json_atomically
 
 
 def _validate_request(request):

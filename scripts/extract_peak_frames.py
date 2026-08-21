@@ -37,7 +37,13 @@ from rpa_artifact_receipts import (
     load_records_persisted_receipt,
     publish_receipt,
 )
-from batch_runtime import BatchLockError, acquire_run_lock, read_json, stage_counts
+from batch_runtime import (
+    BatchLockError,
+    acquire_run_lock,
+    read_json,
+    stage_counts,
+    write_json_atomically,
+)
 import batch_verification
 from batch_verification import material_output_issues
 import rpa_batch_runner
@@ -220,40 +226,7 @@ def _load_top_materials_payload(path, date_range_type, custom_start_date, custom
 def _write_diagnosis_records_atomically(records, records_dir, material_id):
     target_dir = Path(records_dir)
     target = artifact_path(target_dir, material_id, ".json")
-    target_dir.mkdir(parents=True, exist_ok=True)
-    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.json.tmp")
-    try:
-        staging.write_text(
-            json.dumps(records, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(staging, target)
-    except (OSError, TypeError, ValueError):
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    return target
-
-
-def _write_json_atomically_impl(path, payload):
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.json.tmp")
-    try:
-        staging.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(staging, target)
-    except (OSError, TypeError, ValueError):
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    return target
+    return write_json_atomically(target, records)
 
 
 class RpaPreflightDeadlineExceeded(TimeoutError):
@@ -261,19 +234,11 @@ class RpaPreflightDeadlineExceeded(TimeoutError):
 
 
 
-def _normalise_account_rows(payload):
-    return _normalize_account_rows(payload)
-
-
-def _format_account_rows(accounts):
-    return _format_account_table(accounts)
-
-
 def _list_shop_accounts():
-    accounts = _normalise_account_rows(list_accounts())
+    accounts = _normalize_account_rows(list_accounts())
     print("account\tshop_id")
     if accounts:
-        print(_format_account_rows(accounts))
+        print(_format_account_table(accounts))
     return 0
 
 
@@ -282,7 +247,7 @@ def _resolve_shop_id(args):
     if explicit:
         return explicit
 
-    accounts = _normalise_account_rows(list_accounts())
+    accounts = _normalize_account_rows(list_accounts())
     if not accounts:
         raise RpaAdapterError(
             "no authorized RPA accounts are available for the current credentials"
@@ -290,7 +255,7 @@ def _resolve_shop_id(args):
     if len(accounts) > 1:
         raise RpaAdapterError(
             "multiple authorized RPA accounts were found; pass --shop-id explicitly:\n"
-            + _format_account_rows(accounts)
+            + _format_account_table(accounts)
         )
     return accounts[0]["shop_id"]
 
@@ -299,13 +264,6 @@ def _load_top_materials(path, date_range_type, custom_start_date, custom_end_dat
     return _load_top_materials_payload(
         path, date_range_type, custom_start_date, custom_end_date
     )
-
-
-def _top_material_ids(path, date_range_type, custom_start_date, custom_end_date):
-    _payload, material_ids = _load_top_materials(
-        path, date_range_type, custom_start_date, custom_end_date
-    )
-    return material_ids
 
 
 def _write_diagnosis_records(records, records_dir, material_id):
@@ -357,7 +315,7 @@ def _run_relative_path(args, path):
 
 def _write_json_atomically(path, payload):
     try:
-        return _write_json_atomically_impl(path, payload)
+        return write_json_atomically(path, payload)
     except (OSError, TypeError, ValueError) as exc:
         raise RpaAdapterError(
             f"unable to write batch manifest {path}: {exc}"
@@ -893,7 +851,8 @@ def _existing_wave_summary_entry(args, entry):
                 "summaryMd": str(markdown_path),
             }
         )
-        if _material_success_is_valid(material_id, candidate):
+        material_errors, _warnings = _material_output_issues(material_id, candidate)
+        if not material_errors:
             return candidate
     return None
 
@@ -1366,11 +1325,6 @@ def _acquire_wave_lock(args):
         )
     args.run_id = lock.payload["runId"]
     return lock
-
-
-def _material_success_is_valid(material_id, entry):
-    errors, _warnings = _material_output_issues(material_id, entry)
-    return not errors
 
 
 def _entry_result(entry):

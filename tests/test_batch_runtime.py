@@ -17,6 +17,7 @@ from batch_runtime import (  # noqa: E402
     acquire_run_lock,
     mark_report_ready,
     stage_counts,
+    write_json_atomically,
 )
 from report_renderer import render_html_report  # noqa: E402
 
@@ -92,6 +93,21 @@ class StageCountTests(unittest.TestCase):
             )
         self.assertEqual(counts["recordsPersistedCount"], 0)
         self.assertEqual(counts["recordsPersistedUnknownCount"], 1)
+
+
+class AtomicJsonWriteTests(unittest.TestCase):
+    def test_write_json_atomically_creates_parent_and_replaces_target(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "nested" / "summary.json"
+
+            result = write_json_atomically(target, {"name": "千川", "count": 3})
+
+            self.assertEqual(result, target)
+            self.assertEqual(
+                json.loads(target.read_text(encoding="utf-8")),
+                {"name": "千川", "count": 3},
+            )
+            self.assertEqual(list(target.parent.glob("*.tmp")), [])
 
 
 class BatchLockTests(unittest.TestCase):

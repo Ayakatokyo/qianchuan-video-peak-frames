@@ -51,6 +51,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
 
     def test_skill_requires_ai_to_use_the_fact_package_and_actual_jpegs(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
         self.assertIn("diagnostic-analysis-data.json", skill)
         self.assertIn("diagnostic-analysis-prompt.md", skill)
@@ -61,9 +62,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("highlightDashboard", skill)
         self.assertIn("v4 仅用于历史报告兼容", skill)
         self.assertIn("不超过 6 帧", skill)
-        self.assertIn("策略或 guardrail 拒绝", skill)
         self.assertIn("不得跳过任何帧", skill)
         self.assertIn("经营表现、人群、脚本、高光画面和互动时序", skill)
+        self.assertIn("图片理解工具首次被策略拒绝", runbook)
 
     def test_skill_delivers_only_a_complete_standard_report(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -98,8 +99,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
         self.assertIn("AI 交接前置检查", skill)
-        self.assertIn("不得连续执行临时 jq 探查", skill)
-        self.assertIn("素材数、成功帧数和 missingFrames", skill)
+        self.assertIn("先读取事实包和提示词", skill)
+        self.assertIn("素材数、成功帧数", skill)
+        self.assertIn("missingFrames", skill)
 
     def test_prompt_requires_contract_preflight_before_generation(self):
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
@@ -109,40 +111,63 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("每张成功高光帧恰好一条", prompt)
         self.assertIn("final_report_lib.py", prompt)
 
-    def test_skill_distinguishes_missing_live_progress_from_missing_rpa_data(self):
+    def test_skill_uses_generated_prompt_as_ai_json_contract(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("未看到实时进度不等于 RPA 未产出数据", skill)
-        self.assertIn("recordsPersistedUnknownCount", skill)
-        self.assertIn("不得据此覆盖运行目录、重新发起标准入口或判定数据丢失", skill)
-        self.assertIn("running` 或 `submitted", skill)
-        self.assertIn("诊断 CSV -> records -> 后处理", skill)
+        self.assertIn("以该提示词为 AI JSON 输出契约", skill)
+        self.assertNotIn("HIGHLIGHT_DASHBOARD_MINIMUMS", skill)
+
+    def test_skill_distinguishes_missing_live_progress_from_missing_rpa_data(self):
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("recordsPersistedUnknownCount", contract)
+        self.assertIn("不能直接覆盖目录", runbook)
+        self.assertIn("running` 或 `submitted", runbook)
+        self.assertIn("CSV -> records", runbook)
+        self.assertIn("records -> 后处理", runbook)
 
     def test_skill_treats_guardrail_after_long_submit_as_submission_unknown(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("submitted_unverified", skill)
-        self.assertIn("needs_confirmation", skill)
-        self.assertIn("不得因 GUARDRAIL_ERROR 将其改写为 failed", skill)
+        self.assertIn("运维手册", skill)
+        self.assertIn("submitted_unverified", runbook)
+        self.assertIn("needs_confirmation", runbook)
+        self.assertIn("不得在未知状态将任务改写为 `failed`", runbook)
         self.assertIn("提交结果未知", runbook)
         self.assertIn("不得在未知状态重提 prepare", runbook)
 
     def test_skill_documents_the_long_task_completion_contract(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("completion_mode: data_collection", skill)
-        self.assertIn("verify_command", skill)
-        self.assertIn("success_pattern", skill)
-        self.assertIn("不是 `prepare` 的命令行参数", skill)
+        self.assertIn("长时执行工具的完成态契约", skill)
+        self.assertIn("completion_mode: data_collection", runbook)
+        self.assertIn("verify_command", runbook)
+        self.assertIn("success_pattern", runbook)
+        self.assertIn("不是 `prepare` 的命令行参数", runbook)
+
+    def test_skill_delegates_tool_metadata_to_the_runbook(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("运维手册", skill)
+        self.assertNotIn("这些是工具元数据，不是", skill)
+
+    def test_skill_delegates_long_task_metadata_to_the_runbook(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("长任务元数据", runbook)
+        self.assertNotIn("max_runtime_seconds: 3600", skill)
 
     def test_guardrail_recovery_limits_rejected_probe_calls_and_preserves_evidence(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("连续策略拒绝", skill)
-        self.assertIn("停止同类探查", skill)
-        self.assertIn("最后一次成功观测", skill)
+        self.assertIn("连续策略拒绝", runbook)
+        self.assertIn("停止同类探查", runbook)
+        self.assertIn("最后一次成功观测", runbook)
         self.assertIn("锁文件", runbook)
         self.assertIn("只读核验恢复后", runbook)
 
@@ -150,17 +175,17 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("图片理解首次被策略拒绝", skill)
-        self.assertIn("不得继续拆分或逐帧重试", skill)
-        self.assertIn("frame_review_pending", skill)
+        self.assertIn("冻结并恢复帧审阅", skill)
+        self.assertIn("图片理解工具首次被策略拒绝", runbook)
+        self.assertIn("不得继续拆分批次、逐帧重试", runbook)
+        self.assertIn("frame_review_pending", runbook)
         self.assertIn("从未完成批次续接", runbook)
 
     def test_skill_requires_rpa_and_postprocess_completion_before_next_wave(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("下一批 RPA", skill)
-        self.assertIn("后处理均已进入终态", skill)
+        self.assertIn("RPA 输出契约", skill)
         self.assertIn("RPA and postprocess terminality", contract)
         self.assertIn("before it opens the next RPA wave", contract)
 
@@ -235,12 +260,12 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
             self.assertNotIn(removed_flag, skill)
             self.assertNotIn(removed_flag, contract)
 
-    def test_entry_prompt_keeps_peak_frame_definition(self):
+    def test_entry_prompt_matches_report_workflow(self):
         prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("第 0 秒封面帧", prompt)
-        self.assertIn("按点击数全局排序的 Top 5 局部峰值帧", prompt)
-        self.assertIn("点击数相同按时间较早优先", prompt)
+        self.assertIn('display_name: "千川短视频素材分析"', prompt)
+        self.assertIn("$千川短视频素材分析", prompt)
+        self.assertIn("分析周期是 ____", prompt)
 
 
 if __name__ == "__main__":

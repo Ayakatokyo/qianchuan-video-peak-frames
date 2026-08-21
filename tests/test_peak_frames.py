@@ -4755,6 +4755,8 @@ class CliTests(unittest.TestCase):
             return_value={
                 "data": [
                     {"account": "first@example.com", "shop_id": "shop-1"},
+                    {"account": "ignored@example.com", "shop_id": ""},
+                    "invalid-row",
                     {"account": "second@example.com", "shop_id": "shop-2"},
                 ]
             },
@@ -4767,6 +4769,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("shop-1", stdout.getvalue())
         self.assertIn("second@example.com", stdout.getvalue())
         self.assertIn("shop-2", stdout.getvalue())
+        self.assertNotIn("ignored@example.com", stdout.getvalue())
 
     def test_local_cli_rejects_malformed_json(self):
         ffmpeg = resolve_ffmpeg()

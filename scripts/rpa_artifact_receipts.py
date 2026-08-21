@@ -3,11 +3,10 @@
 from datetime import datetime, timezone
 import hashlib
 import json
-import os
 import stat
-import uuid
 from pathlib import Path
 
+from batch_runtime import write_json_atomically
 from path_safety import artifact_path, validate_material_id
 
 
@@ -63,23 +62,6 @@ def _load_existing(path):
     if not isinstance(payload, dict):
         raise RpaArtifactReceiptError("RPA receipt file must contain an object")
     return payload
-
-
-def _write_atomically(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    staging = path.with_name(f".{path.stem}.{uuid.uuid4().hex}.json.tmp")
-    try:
-        staging.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(staging, path)
-    except (OSError, TypeError, ValueError):
-        try:
-            staging.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
 
 
 def publish_receipt(
@@ -143,7 +125,7 @@ def publish_receipt(
                 "recordsPersistedAt": now,
             }
         )
-    _write_atomically(target, receipt)
+    write_json_atomically(target, receipt)
     return receipt
 
 

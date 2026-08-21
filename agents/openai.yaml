@@ -1,4 +1,4 @@
 interface:
-  display_name: "千川视频点击峰值帧提取"
-  short_description: "提取千川点击峰值对应的视频帧"
-  default_prompt: "使用 $千川视频点击峰值帧提取，从本地千川 RPA JSON 和视频中提取独立的第 0 秒封面帧，以及按点击数全局排序的 Top 5 局部峰值帧（点击数相同按时间较早优先；第 0 秒帧不参与局部峰值排序）。"
+  display_name: "千川短视频素材分析"
+  short_description: "生成千川短视频投放复盘与素材洞察报告"
+  default_prompt: "使用 $千川短视频素材分析，分析周期是 ____，Top素材数量是 ____，广告主id是 ____。"

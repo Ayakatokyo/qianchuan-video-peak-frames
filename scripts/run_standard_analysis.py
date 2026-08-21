@@ -48,10 +48,6 @@ def build_parser():
     return parser
 
 
-def _artifact_path(output_dir, relative_path):
-    return Path(output_dir) / relative_path if relative_path else None
-
-
 def main(argv=None):
     try:
         args = build_parser().parse_args(argv)
@@ -71,16 +67,16 @@ def main(argv=None):
             )
             artifacts = summary["artifacts"]
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
-            print(f"diagnostic_analysis_data={_artifact_path(args.output_dir, artifacts['diagnosticData'])}")
-            print(f"diagnostic_analysis_prompt={_artifact_path(args.output_dir, artifacts['diagnosticPrompt'])}")
+            print(f"diagnostic_analysis_data={Path(args.output_dir) / artifacts['diagnosticData']}")
+            print(f"diagnostic_analysis_prompt={Path(args.output_dir) / artifacts['diagnosticPrompt']}")
         elif args.command == "finalize":
             summary = finalize_standard_run(args.output_dir, args.analysis_json)
             artifacts = summary["artifacts"]
             report_dir = Path(args.output_dir) / "final-report"
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"final_report_data={report_dir / 'final-report-data.json'}")
-            print(f"final_report_html={_artifact_path(args.output_dir, artifacts['report'])}")
-            print(f"final_report_zip={_artifact_path(args.output_dir, artifacts['reportArchive'])}")
+            print(f"final_report_html={Path(args.output_dir) / artifacts['report']}")
+            print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
         else:
             print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
     except DependencyBootstrapError as exc:

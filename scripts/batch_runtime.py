@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import tempfile
 import time
 import uuid
 from html.parser import HTMLParser
@@ -16,6 +17,26 @@ class BatchLockError(RuntimeError):
         super().__init__(message)
         self.stale = stale
         self.payload = payload or {}
+
+
+def write_json_atomically(path, payload):
+    """Write formatted JSON through a same-directory temporary file."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.stem}.", suffix=".tmp", dir=str(target.parent)
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        os.replace(temporary_name, target)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return target
 
 
 def _resolved_artifact_path(raw_path, base_dir=None):

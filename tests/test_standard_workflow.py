@@ -575,6 +575,40 @@ class StandardWorkflowTests(unittest.TestCase):
 
 
 class StandardWorkflowCliTests(unittest.TestCase):
+    def test_prepare_prints_artifact_paths_without_artifact_path_helper(self):
+        stdout = io.StringIO()
+        with patch.object(run_standard_analysis, "ensure_prepare_dependencies"), patch.object(
+            run_standard_analysis,
+            "prepare_standard_run",
+            return_value={
+                "artifacts": {
+                    "diagnosticData": "diagnostic-analysis/diagnostic-analysis-data.json",
+                    "diagnosticPrompt": "diagnostic-analysis/diagnostic-analysis-prompt.md",
+                }
+            },
+        ), redirect_stdout(stdout):
+            result = run_standard_analysis.main(
+                [
+                    "prepare",
+                    "--start-date", "2026-07-19",
+                    "--end-date", "2026-07-25",
+                    "--top-n", "9",
+                    "--advertiser-id", "1770096415226951",
+                    "--output-dir", "/tmp/qianchuan-run",
+                ]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "diagnostic_analysis_data=/tmp/qianchuan-run/diagnostic-analysis/diagnostic-analysis-data.json",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "diagnostic_analysis_prompt=/tmp/qianchuan-run/diagnostic-analysis/diagnostic-analysis-prompt.md",
+            stdout.getvalue(),
+        )
+        self.assertFalse(hasattr(run_standard_analysis, "_artifact_path"))
+
     def test_prepare_parser_accepts_only_business_inputs(self):
         parser = run_standard_analysis.build_parser()
         args = parser.parse_args([

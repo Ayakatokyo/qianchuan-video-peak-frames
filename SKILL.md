@@ -1,28 +1,24 @@
 ---
 name: 千川短视频素材分析
 description: 面向千川短视频投放复盘，帮助识别高消耗素材的表现亮点、内容结构、转化触发点和可复用创意模式，支持素材优劣判断、预算分配复盘、内容迭代方向和投放优化决策。
-argument_hint: 输入分析周期（如 2026-06-01 至 2026-06-15）、Top素材数量（如 9 或 50）和广告主id，生成千川短视频素材分析报告。
 metadata:
+  argument_hint: 输入分析周期（如 2026-06-01 至 2026-06-15）、Top素材数量（如 9 或 50）和广告主id，生成千川短视频素材分析报告。
   pre_input: 帮我生成千川短视频素材分析报告，分析周期是 ____，Top素材数量是 ____，广告主id是 ____。
 ---
 
 # 千川短视频素材分析
 
-用户只需提供分析周期、Top素材数量和广告主id。标准工作流自动完成资产表筛选、候选扩容、波次 RPA、视频下载、峰值帧提取、重试、补位与产物校验；这些执行参数不是业务输入。
-
-首次执行 `prepare` 时，标准入口会检查 `requests` 与 `imageio-ffmpeg`。缺失时会使用当前 Python 解释器执行 `uv pip install --python <当前解释器> -r requirements.txt` 后再进入工作流；依赖已满足时不会安装。
-
-RPA 媒体字段兜底：RPA 已返回诊断记录但 `material_info.videoUrl` 暂时为空时，不立即按失败处理，也不立即跳到下一排名素材。技能会对该素材按恢复次数上限重新发起 RPA 获取；重取后拿到可用 `videoUrl` 才进入视频处理。仅当重取仍无可用地址或达到恢复上限，才按候选排名顺序使用后续素材补足 Top N。这样保留排名顺序，同时优先回收原排名素材的数据。
+收集分析周期、Top 素材数量和广告主 ID 后，按以下流程生成报告。候选扩容、RPA 波次、视频下载、峰值帧提取、重试、补位和产物校验均由标准入口处理，不作为业务输入或手工步骤。
 
 ## 周期换算
 
-相对周期使用 T+2 数据回流口径，最新可用完整自然日是执行日前第 2 天。近七天使用执行日前第 8 天至执行日前第 2 天；近三十天使用执行日前第 31 天至执行日前第 2 天。必须先换算为明确的 `CUSTOM` 闭区间，不得把执行日或前一日传入分析。执行日为 `2026-08-04` 时，近七天固定解析为 `2026-07-27` 至 `2026-08-02`（含首尾）；启动 `prepare` 前必须复核并记录该解析结果。
+相对周期使用 T+2 数据回流口径，先换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天。不得将执行日或前一日纳入分析；例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`（含首尾）。
 
 ## 标准流程
 
 ### 1. 准备事实包
 
-选择新的运行目录，调用标准入口：
+在新的运行目录执行：
 
 ```bash
 python scripts/run_standard_analysis.py prepare \
@@ -33,54 +29,28 @@ python scripts/run_standard_analysis.py prepare \
   --output-dir "/path/to/new-run"
 ```
 
-成功后使用只读状态入口确认结果：
+首次 `prepare` 会自动检查缺失依赖并安装 `requirements.txt`。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。
+
+完成后确认状态：
 
 ```bash
 python scripts/run_standard_analysis.py status \
   --output-dir "/path/to/new-run"
 ```
 
-通过长时 Bash 执行工具提交上述 `prepare` 命令时，工具调用必须附带完成态契约：`max_runtime_seconds: 3600`、`completion_mode: data_collection`、`success_pattern: "run_summary=.*run-summary\\.json"`，以及以下 `verify_command`（将 `/path/to/new-run` 替换为本次运行目录）：
+仅当状态为 `analysis_pending` 时进入 AI 分析。必须使用本次 `prepare` 生成的 `diagnostic-analysis/diagnostic-analysis-data.json` 与 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 或其他候选清单组装事实，也不得手写 `missingRanks`。
 
-```bash
-python -c "import json; print(json.load(open('/path/to/new-run/run-summary.json', encoding='utf-8'))['status'])"
-```
-
-`completion_mode`、`success_pattern`、`verify_command` 和运行时限是长时执行工具的元数据，不是 `prepare` 的命令行参数，不能追加到 Python 命令中。`verify_command` 的结果必须为 `analysis_pending` 才能进入 AI 分析；工具返回 `GUARDRAIL_ERROR` 时不能据此断定命令未提交或失败，须按下方运行状态规则核验同一运行目录。
-
-只有 `prepare` 成功且状态为 `analysis_pending` 时，才可进入 AI 分析；此时必须同时使用 `diagnostic-analysis/diagnostic-analysis-data.json` 和 `diagnostic-analysis/diagnostic-analysis-prompt.md`。不得从 `top_materials.json`、`top_materials_rpa_ready.json` 或其他候选清单自行构造事实，也不得手写 `missingRanks`。最终素材清单只包含后处理成功的素材；候选池、RPA 波次、失败重试、串行补偿和验证均由标准入口自动处理。
-
-#### AI 交接前置检查
-
-进入 AI 分析后固定按以下顺序执行一次：读取 `diagnostic-analysis-data.json` 和 `diagnostic-analysis-prompt.md`，核对素材数、成功帧数和 missingFrames，再按事实包中的 `framePath` 开始查看 JPEG。每批不超过 6 帧；若图片理解首次被策略拒绝（包括策略或 guardrail 拒绝），立即将 AI 阶段记为 `frame_review_pending`，保留未完成批次和证据白名单，不得继续拆分或逐帧重试，也不得改用 bash、工具检索或其他读取工具绕过拒绝。工具通道恢复后，从未完成批次续接；不得跳过任何帧或事实包内 JPEG。不得连续执行临时 jq 探查来理解字段结构，也不要从其他产物拼接第二份事实；只有发现文件不完整或字段不一致时，才进行针对性排查。
-
-### 运行可观测性与中断
-
-`prepare` 是包含外部 RPA 的长耗时同步任务。未看到实时进度不等于 RPA 未产出数据；在命令仍运行时，不得仅因终端静默或 Agent 尚未观察到 CSV 而中止任务、推断素材失败或启动第二个运行。运行环境允许只读观察时，可以检查运行目录的时间戳和审计产物，但这些观察不能替代 `prepare` 的退出结果，也不能改变执行中的批次。
-
-长任务提交必须区分调用层和运行层状态：工具返回成功但后台尚未核验时记为 `submitted_unverified`；工具返回 `GUARDRAIL_ERROR`、策略拒绝或 `needs_verifier` 时，只记为 `tool_call_blocked`，若无法确认命令是否已提交则同时记为 `needs_confirmation`，不得因 GUARDRAIL_ERROR 将其改写为 failed。在 `submitted_unverified`/`needs_confirmation` 状态下，运行目录、锁文件和后台任务标识是同一任务的唯一身份；不得换目录、重提 `prepare` 或并发启动第二个任务。只有拿到后台明确终态且退出码、`run-summary.json` 和产物链路相互一致，才能把任务标为 `complete` 或 `failed`。
-
-进度口径必须分层记录：`rpaRequestCount` 是提交数，`recordsPersistedCount`/本地 CSV 数是诊断结果落盘数，`postprocessSucceededCount` 是截帧与 summary 均完成数；提交数绝不等于成功数。只有 `prepare` 正常退出、状态为 `analysis_pending` 且事实包完整时才可进入 AI 分析。
-
-波次口径必须明确：`waveBarrier=true` 的“上一批结束”要求该批所有 RPA 请求已进入 `available` 或 `final_failed`，且所有已选素材的下载、截帧与 summary 后处理均已进入终态。只有此时才能接入下一批 RPA；后处理成功或重试耗尽后的失败都属于终态，失败不会阻断下一批 RPA 补位。最终进入事实包前仍必须等待并校验所有目标素材的后处理完成。
-
-高光帧后处理按素材批量解码：同一素材的 `zero_second` 与峰值帧在一次 FFmpeg 精确时间点提取中输出，避免每帧重复启动并从视频开头解码；不使用输入侧 `-ss` 或 `-noaccurate_seek`，因此 JPEG 仍严格对应原始 `CLICK_COUNT` 秒点。批量命令失败时按目标时间点集合拆分重试，隔离单个异常帧；只有拆分到单目标仍失败时才回退该目标的逐帧精确提取，不得让一个目标超时触发整素材的六次旧路径重跑。每个目标的失败仍按原有 `missingFrames` 与成功判定记录。
-
-若任务被中断或非零退出，先读取 `run-summary.json` 和 `peak-frames/batch-manifest.json`，再按运维手册处置。manifest 含 `running` 或 `submitted` 时，可能已有诊断 CSV 或 records 落盘而状态尚未回写；`recordsPersistedUnknownCount` 表示持久化状态待核实，不表示数据丢失。不得据此覆盖运行目录、重新发起标准入口或判定数据丢失。排障恢复必须优先核实保留产物，并沿诊断 CSV -> records -> 后处理的链路修复；是否需要恢复、修复或重新调用 RPA 仅按运维手册的条件执行。
-
-`rpa_request_failed` 不等于平台任务失败。manifest 的 `rpaRecoveryAttempts` 会记录每次调用的网关状态码、请求标识、脱敏响应摘要，以及 worker 阶段、子进程退出码或空结果队列等本地证据。只有网关传输、429/5xx、子进程异常或空队列等可重试的快速失败才会在同一波内退避后重试；明确的 4xx、参数和 CSV/records 格式错误不会盲目重试。没有本地 CSV/records 时必须标记为本地远端对账不可用，不能据此断言 RPA 平台失败。
-
-工具调用返回 `GUARDRAIL_ERROR`、策略拒绝或连接器拒绝时，只能将该次调用标记为 `tool_call_blocked`，不能将工作流标记为失败或中止。立即核查后台任务/执行会话状态、`run-summary.json`、`batch-manifest.json`、CSV/records 与素材 summary 的数量；后台仍为 `running` 时保持原任务唯一性并等待终态，后台已为 `complete`/`analysis_pending` 时接续对应阶段。只有后台明确终止且产物链路也不完整时，才报告任务失败；策略层没有返回拒绝原因时必须标注“策略根因待外部日志确认”，不得猜测。
-
-若出现连续策略拒绝，最多保留一次有目的的状态核查；后续不得继续执行 `echo`、`jq`、目录枚举等同类探查，停止同类探查并记录最后一次成功观测、拒绝时间、运行目录和锁文件路径。工具恢复后只读核验恢复期间产生的状态和产物，再按状态机接续；在核验前不得报告“进程中止”，只能报告“后台状态未知/待确认”。
+将 `prepare` 视为单一长任务：不要因没有实时进度而另起运行，也不要手工干预 RPA、波次或后处理。出现中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时，保留运行目录并遵循[运维手册](references/qianchuan-operations-runbook.md)；连接器与波次约束见 [RPA 输出契约](references/rpa-output-contract.md)。
 
 ### 2. 生成 AI 二次分析
 
-当前执行技能的模型必须读取事实包与提示词，并实际查看 `highlights.materials[*].frames[*].framePath` 指向的每张 JPEG。模型在同一运行目录的 `diagnostic-analysis/diagnostic-ai-analysis.json` 写入合法 JSON，使用 `schemaVersion: 5`；第 01 部分必须分别输出经营表现、人群、脚本、高光画面和互动时序五条组合层结论。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`：将每个成功高光帧按 `portrait`、`product`、`other` 的固定顺序归类一次且仅一次，并为实际存在的分类填写共同画面结论与可验证的裂变方向。不得把帧秒数宣称为对应某句脚本话术。
+#### AI 交接前置检查
 
-生成 JSON 前必须先完成一次门禁自检：读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，建立合法 `evidenceRefs/frameRef` 白名单与字段字符数预算，确认 `decision` 枚举、素材/高光帧覆盖和 dashboard 分类规则。先在内存中按素材分片（每片不超过 6 张帧）完成观察和结论，再合并为一个完整对象；自检未通过前不得写入 JSON 或调用 `finalize`。写入后只做一次完整本地校验，失败时只按报错字段做一次定向修正并重新校验，不重新执行 RPA、prepare 或事实包准备；禁止通过多轮全文补丁逐步“试到通过”。
+先读取事实包和提示词，核对素材数、成功帧数与 `missingFrames`，再按 `framePath` 实际查看每张 JPEG；每批不超过 6 帧。策略或 guardrail 拒绝时，立即按[运维手册](references/qianchuan-operations-runbook.md)冻结并恢复帧审阅，不得跳过任何帧或改用其他产物补充事实。
 
-结论只分析人群、脚本、投放明细和高光帧等业务事实；不得分析执行过程、失败、补位、重跑或批次调度。每个成功 JPEG 都必须有对应高光帧分析；若 `missingFrames` 非空，必须在该素材的 `frameCoverageNote` 说明不可用预期帧，并明确视觉结论基于其余成功帧。证据引用必须逐字复用事实包中的引用标识。标准输出使用 schema v5；v4 仅用于历史报告兼容，允许降级渲染组合层高光结论，但不承诺人像、产品、其他分类 dashboard。
+在同一运行目录写入 `diagnostic-analysis/diagnostic-ai-analysis.json`，使用 `schemaVersion: 5`。第 01 部分必须覆盖经营表现、人群、脚本、高光画面和互动时序；第 `04｜高光画面洞察` 必须输出 `highlightDashboard`，将每个成功高光帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次。不得把帧秒数宣称为对应某句脚本话术。
+
+以该提示词为 AI JSON 输出契约：按其中的字段、证据、覆盖、枚举、长度与定向修正规则完成一次完整分析。结论仅分析业务事实；每个成功 JPEG 都要有高光帧分析，`missingFrames` 必须在 `frameCoverageNote` 说明影响，证据引用逐字复用事实包标识。v4 仅用于历史报告兼容。
 
 ### 3. 校验并交付报告
 
@@ -90,14 +60,10 @@ python scripts/run_standard_analysis.py finalize \
   --analysis-json "/path/to/new-run/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-仅当 `run-summary.json` 的状态为 `complete` 时，交付 `final-report.zip`。解压后打开 `final-report/final-report.html`；压缩包包含报告 HTML、数据文件和本地高光帧资产，图片不依赖三方链接。视频仍使用平台返回的 URL，不下载或打包视频文件。
+仅当 `run-summary.json` 状态为 `complete` 时交付 `final-report.zip`。解压后打开 `final-report/final-report.html`；压缩包包含报告 HTML、数据文件和本地高光帧，图片不依赖三方链接，视频仍使用平台返回的 URL。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。交付前在桌面 `1440x1000` 视口检查封面、目录、章节卡片、图表和高光帧，无文本遮挡或正文横向溢出。
 
-报告统一视觉与交互资产位于本技能 `assets/report/`，`finalize` 会通过渲染器将 CSS 和 JavaScript 自动内联到 `final-report.html`，成品不依赖外部样式或脚本文件。不得交付草稿报告，不得手工修改成品 HTML，也不得绕过 AI JSON 的证据校验。交付前只需在桌面 `1440x1000` 视口检查封面、左侧目录、章节卡片、图表和高光帧，确认无文本遮挡或正文横向溢出；本技能不要求移动端验收。
+若状态仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；其余故障按[运维手册](references/qianchuan-operations-runbook.md)恢复。
 
 ## 峰值帧口径
 
-每条素材固定保留第 0 秒封面帧 `zero_second`，并从 `CLICK_COUNT` 曲线的全部局部峰值中按点击数降序、秒数升序取最多五个帧。少于五个局部峰值是曲线特征，不伪造峰值。素材后处理成功要求第 0 秒帧成功，且存在局部峰值时至少一张峰值帧成功。
-
-## 失败处理
-
-标准入口失败时，查看对应运行目录中的 `run-summary.json`，其中包含失败阶段和审计产物位置。若状态仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令。其余中断、陈旧锁、manifest 与保留产物不一致等情形，必须遵循 [运维手册](references/qianchuan-operations-runbook.md)，不得把其中的恢复命令变成常规报告流程。连接器字段与运行时边界见 [RPA 输出契约](references/rpa-output-contract.md)。
+每条素材保留第 0 秒封面帧 `zero_second`，并从 `CLICK_COUNT` 的全部局部峰值中按点击数降序、秒数升序取最多五帧。少于五个局部峰值是曲线特征，不伪造峰值；素材后处理成功要求第 0 秒帧成功，且存在局部峰值时至少一张峰值帧成功。

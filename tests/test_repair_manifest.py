@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,26 @@ def write_manifest(root, entry):
 
 
 class RepairManifestTests(unittest.TestCase):
+    def test_default_postprocess_uses_current_wave_postprocess_contract(self):
+        result_dir = Path("/tmp/peak-frames/m-1")
+        summary_json = result_dir / "summary.json"
+        summary_md = result_dir / "summary.md"
+        args = object()
+        entry = {"materialId": "m-1"}
+        with patch.object(
+            repair_manifest.pipeline,
+            "_attempt_wave_postprocess",
+            return_value={
+                "result": (result_dir, summary_json, summary_md),
+                "error": None,
+            },
+        ) as postprocess:
+            result = repair_manifest._default_postprocess(args, entry)
+
+        postprocess.assert_called_once_with(args, entry)
+        self.assertEqual(result["summaryJson"], str(summary_json))
+        self.assertEqual(result["summaryMd"], str(summary_md))
+
     def test_repairs_csv_to_records_without_rpa_and_recomputes_counts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
