@@ -67,6 +67,10 @@ MATERIAL_TIMING_FIELDS = (
     "rpaFetchSec",
     "diagnosisRecordWriteSec",
     "videoDownloadSec",
+    "videoProbeSec",
+    "ffmpegBatchSec",
+    "ffmpegFallbackSec",
+    "summaryWriteSec",
     "frameExtractionSec",
     "totalSec",
 )
@@ -1190,6 +1194,7 @@ def _attempt_wave_postprocess(args, entry):
                 ffmpeg_bin=args.ffmpeg_bin,
                 ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
                 video_source="rpa-temporary-download",
+                timings=timings,
             )
     except HANDLED_MATERIAL_ERRORS as exc:
         timings["totalSec"] = _elapsed_since(started_at)

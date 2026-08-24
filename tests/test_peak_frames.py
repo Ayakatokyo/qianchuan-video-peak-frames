@@ -2241,6 +2241,40 @@ class SummaryTests(unittest.TestCase):
 
 
 class ProcessingPipelineTests(unittest.TestCase):
+    def test_process_records_reports_stage_timings(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+            timings = {}
+
+            def write_frame(_ffmpeg, _video, _timestamp, output, **_kwargs):
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch("peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"), patch(
+                "peak_frame_lib.probe_video_duration", return_value=6.0
+            ), patch(
+                "peak_frame_lib.extract_frames_batch", side_effect=FfmpegError("batch failed")
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=write_frame
+            ):
+                process_records(records, "records.json", video, root / "output", timings=timings)
+
+        for field in (
+            "videoProbeSec",
+            "ffmpegBatchSec",
+            "ffmpegFallbackSec",
+            "summaryWriteSec",
+        ):
+            self.assertIn(field, timings)
+            self.assertGreaterEqual(timings[field], 0.0)
+        self.assertGreater(timings["ffmpegBatchSec"], 0.0)
+        self.assertGreater(timings["ffmpegFallbackSec"], 0.0)
+
     def test_select_peak_frames_accepts_monotonic_curve_with_only_cover_frame(self):
         selected = select_peak_frames(
             [
@@ -2737,6 +2771,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(manifest["candidateLimit"], 1)
         self.assertEqual(manifest["rpaConcurrency"], 3)
         self.assertEqual(manifest["postprocessConcurrency"], 3)
+        timings = manifest["selectedMaterials"][0]["timingsSec"]
+        self.assertEqual(timings["videoProbeSec"], 0.0)
+        self.assertEqual(timings["ffmpegBatchSec"], 0.0)
+        self.assertEqual(timings["ffmpegFallbackSec"], 0.0)
+        self.assertEqual(timings["summaryWriteSec"], 0.0)
         self.assertEqual(
             [item["materialId"] for item in manifest["submittedMaterials"]], ["m-1"]
         )

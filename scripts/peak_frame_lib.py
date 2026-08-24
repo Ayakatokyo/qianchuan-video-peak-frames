@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from typing import Optional
 
@@ -841,6 +842,7 @@ def process_records(
     ffmpeg_bin=None,
     ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
     video_source=None,
+    timings=None,
 ):
     """Run the peak-frame pipeline with already-loaded RPA records."""
     video = Path(video_path)
@@ -856,9 +858,16 @@ def process_records(
             f"FFmpeg timeout {ffmpeg_timeout_sec!r} must be greater than 0 seconds"
         )
     ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
-    video_duration = probe_video_duration(
-        ffmpeg, video, timeout_sec=timeout_sec
-    )
+    probe_started = time.perf_counter()
+    try:
+        video_duration = probe_video_duration(
+            ffmpeg, video, timeout_sec=timeout_sec
+        )
+    finally:
+        if isinstance(timings, dict):
+            timings["videoProbeSec"] = round(
+                max(0.0, time.perf_counter() - probe_started), 6
+            )
     out_of_range_peaks = [
         peak for peak in selected_peaks
         if peak.duration_sec < 0 or peak.duration_sec >= video_duration
@@ -903,6 +912,7 @@ def process_records(
         """Keep a failed timestamp from forcing the whole material to legacy mode."""
         if not targets:
             return
+        batch_started = time.perf_counter()
         try:
             extract_frames_batch(
                 ffmpeg,
@@ -911,12 +921,19 @@ def process_records(
                 timeout_sec=timeout_sec,
             )
         except FfmpegError as batch_error:
+            if isinstance(timings, dict):
+                timings["ffmpegBatchSec"] = round(
+                    timings.get("ffmpegBatchSec", 0.0)
+                    + max(0.0, time.perf_counter() - batch_started),
+                    6,
+                )
             if len(targets) > 1:
                 midpoint = len(targets) // 2
                 extract_with_isolated_fallback(targets[:midpoint])
                 extract_with_isolated_fallback(targets[midpoint:])
                 return
             peak, frame_path = targets[0]
+            fallback_started = time.perf_counter()
             try:
                 extract_frame(
                     ffmpeg,
@@ -939,9 +956,23 @@ def process_records(
             else:
                 successful_peaks.append(peak)
                 frame_paths.append(frame_path)
+            finally:
+                if isinstance(timings, dict):
+                    timings["ffmpegFallbackSec"] = round(
+                        timings.get("ffmpegFallbackSec", 0.0)
+                        + max(0.0, time.perf_counter() - fallback_started),
+                        6,
+                    )
             return
-        successful_peaks.extend(peak for peak, _path in targets)
-        frame_paths.extend(path for _peak, path in targets)
+        else:
+            if isinstance(timings, dict):
+                timings["ffmpegBatchSec"] = round(
+                    timings.get("ffmpegBatchSec", 0.0)
+                    + max(0.0, time.perf_counter() - batch_started),
+                    6,
+                )
+            successful_peaks.extend(peak for peak, _path in targets)
+            frame_paths.extend(path for _peak, path in targets)
 
     extract_with_isolated_fallback(target_paths)
 
@@ -965,21 +996,28 @@ def process_records(
     stale_frames = previously_owned_frames - current_frames
     _remove_owned_paths(stale_frames, "frame")
 
-    summary = build_summary(
-        summary_material_id,
-        input_label,
-        video,
-        successful_peaks,
-        frame_paths,
-        video_source=video_source,
-        expected_peaks=selected_peaks,
-        missing_frames=missing_frames,
-        additional_warnings=[
-            "excluded %s curve peak(s) outside video duration %.6g seconds"
-            % (len(out_of_range_peaks), video_duration)
-        ] if out_of_range_peaks else None,
-    )
-    json_path, markdown_path = write_summaries(summary, result_dir)
+    summary_started = time.perf_counter()
+    try:
+        summary = build_summary(
+            summary_material_id,
+            input_label,
+            video,
+            successful_peaks,
+            frame_paths,
+            video_source=video_source,
+            expected_peaks=selected_peaks,
+            missing_frames=missing_frames,
+            additional_warnings=[
+                "excluded %s curve peak(s) outside video duration %.6g seconds"
+                % (len(out_of_range_peaks), video_duration)
+            ] if out_of_range_peaks else None,
+        )
+        json_path, markdown_path = write_summaries(summary, result_dir)
+    finally:
+        if isinstance(timings, dict):
+            timings["summaryWriteSec"] = round(
+                max(0.0, time.perf_counter() - summary_started), 6
+            )
     return result_dir, json_path, markdown_path
 
 
