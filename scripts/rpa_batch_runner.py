@@ -35,8 +35,6 @@ def wave_entry(material, rank, empty_timings):
             "diagnosisCsvPath": None,
             "recordsPersisted": False,
             "postprocessSucceeded": False,
-            "rpaSoftTimeoutExceeded": False,
-            "rpaHardTimeoutExceeded": False,
             "postprocessAttemptCount": 0,
             "postprocessPhase": None,
             "postprocessAttempts": [],
@@ -144,7 +142,6 @@ def run_wave_batch(
     postprocess_futures = {}
     next_index = 0
     batch_started_at = clock()
-    rpa_started_at = {}
     records_base_dir = Path(getattr(args, "output_dir", ".")).parent
     interruption = None
 
@@ -237,7 +234,6 @@ def run_wave_batch(
         submitted[index] = entry
         future = executor.submit(attempt_rpa, args, dict(entry))
         rpa_futures[future] = index
-        rpa_started_at[future] = clock()
         return future
 
     def complete_rpa(future, index, postprocess_executor):
@@ -424,36 +420,10 @@ def run_wave_batch(
             - include_rpa,
         )
 
-    def mark_soft_timeouts(futures):
-        now = clock()
-        changed = False
-        threshold = getattr(args, "rpa_preflight_soft_timeout_sec", None)
-        if threshold is None:
-            return changed
-        for future in futures:
-            index = rpa_futures[future]
-            entry = entries[index]
-            if (
-                not entry.get("rpaSoftTimeoutExceeded")
-                and now - rpa_started_at[future] >= threshold
-            ):
-                state_changed_at = elapsed(batch_started_at)
-                entry.update(
-                    {
-                        "rpaSoftTimeoutExceeded": True,
-                        "rpaSoftTimeoutAtSec": state_changed_at,
-                        "lastStateChangedAtSec": state_changed_at,
-                        "lastProgressAtSec": state_changed_at,
-                    }
-                )
-                changed = True
-        return changed
-
     def collect_done(done, postprocess_executor):
         changed = False
         for future in sorted(done & set(rpa_futures), key=lambda item: rpa_futures[item]):
             index = rpa_futures.pop(future)
-            rpa_started_at.pop(future, None)
             complete_rpa(future, index, postprocess_executor)
             changed = True
         for future in sorted(done & set(postprocess_futures), key=lambda item: postprocess_futures[item]):
@@ -530,7 +500,6 @@ def run_wave_batch(
                 checkpoint_interruption()
                 if pending_wave:
                     pending_wave -= done
-                    changed = mark_soft_timeouts(pending_wave) or changed
                 if not pending_wave and wave and not wave_postprocess_pending(wave):
                     wave_finished_at = elapsed(batch_started_at)
                     for index in wave.values():
@@ -566,7 +535,6 @@ def run_wave_batch(
                     wait_for, timeout=poll_interval_sec, return_when=FIRST_COMPLETED
                 )
                 changed = collect_done(done, postprocess_executor)
-                changed = mark_soft_timeouts(set(rpa_futures)) or changed
                 if changed:
                     persist()
 
@@ -635,7 +603,6 @@ def run_wave_batch(
                     return_when=FIRST_COMPLETED,
                 )
                 changed = collect_done(done, postprocess_executor)
-                changed = mark_soft_timeouts(set(rpa_futures)) or changed
                 if changed:
                     persist()
 

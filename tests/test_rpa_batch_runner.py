@@ -26,7 +26,6 @@ class WaveBatchRunnerTests(unittest.TestCase):
             "rpa_concurrency": 3,
             "postprocess_concurrency": 3,
             "rpa_wave_barrier": True,
-            "rpa_preflight_soft_timeout_sec": 480,
         }
         values.update(overrides)
         return SimpleNamespace(**values)
@@ -203,6 +202,82 @@ class WaveBatchRunnerTests(unittest.TestCase):
             [item["materialId"] for item in manifest["selectedMaterials"]],
             ["m-1", "m-3"],
         )
+
+    def test_timeout_releases_next_full_wave_after_first_wave_is_terminal(self):
+        release_timeout = threading.Event()
+        first_two_finished = threading.Event()
+        timeout_ready = threading.Event()
+        timeout_terminal = threading.Event()
+        starts = []
+        early_later_starts = []
+        lock = threading.Lock()
+        first_two = set()
+
+        def attempt_rpa(_args, entry):
+            material_id = entry["materialId"]
+            with lock:
+                starts.append(material_id)
+                if material_id in {"m-4", "m-5", "m-6"} and not timeout_terminal.is_set():
+                    early_later_starts.append(material_id)
+            if material_id in {"m-2", "m-3"}:
+                with lock:
+                    first_two.add(material_id)
+                    if first_two == {"m-2", "m-3"}:
+                        first_two_finished.set()
+                return self._verified_rpa_success(entry)
+            if material_id == "m-1":
+                first_two_finished.wait(timeout=1)
+                timeout_ready.set()
+                release_timeout.wait(timeout=1)
+                timeout_terminal.set()
+                return {
+                    **entry,
+                    "rpaStatus": "rejected",
+                    "rpaResultStatus": "final_failed",
+                    "failureReason": "rpa_request_timeout",
+                    "rpaTimeoutExceeded": True,
+                    "rpaTimeoutSec": 480,
+                    "postprocessStatus": "not_started",
+                }
+            return self._verified_rpa_success(entry)
+
+        outcome = []
+        errors = []
+
+        def run():
+            try:
+                outcome.append(
+                    self.run_batch(
+                        ["m-1", "m-2", "m-3", "m-4", "m-5", "m-6"],
+                        attempt_rpa,
+                        self._success_postprocess,
+                        args={"target_top_n": 6, "rpa_concurrency": 3},
+                        poll_interval_sec=0.01,
+                    )
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        runner = threading.Thread(target=run)
+        runner.start()
+        self.assertTrue(timeout_ready.wait(timeout=1))
+        with lock:
+            self.assertEqual(set(starts), {"m-1", "m-2", "m-3"})
+        release_timeout.set()
+        runner.join(timeout=2)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(early_later_starts, [])
+        self.assertEqual(set(starts[3:]), {"m-4", "m-5", "m-6"})
+        manifest, failures, _ = outcome[0]
+        self.assertTrue(failures)
+        timeout_entry = next(
+            item for item in manifest["rejectedMaterials"] if item["materialId"] == "m-1"
+        )
+        self.assertEqual(timeout_entry["rpaResultStatus"], "final_failed")
+        self.assertTrue(timeout_entry["rpaTimeoutExceeded"])
+        self.assertEqual(timeout_entry["rpaTimeoutSec"], 480)
 
     def test_nonterminal_rpa_result_is_finalized_before_next_wave(self):
         starts = []
@@ -392,48 +467,11 @@ class WaveBatchRunnerTests(unittest.TestCase):
             )
         )
 
-    def test_rpa_soft_timeout_is_checkpointed_without_starting_next_wave(self):
-        release_first_wave = threading.Event()
-        submitted = []
-        manifest_seen = threading.Event()
-        clock_values = iter([0.0, 0.0, 0.0, 0.0, 481.0])
-        current_clock = [0.0]
+    def test_new_wave_entries_omit_legacy_soft_and_hard_timeout_fields(self):
+        entry = self._wave_entry({"materialId": "m-1"}, 1)
 
-        def clock():
-            try:
-                current_clock[0] = next(clock_values)
-            except StopIteration:
-                pass
-            return current_clock[0]
-
-        def attempt_rpa(_args, entry):
-            submitted.append(entry["materialId"])
-            release_first_wave.wait(timeout=1)
-            return self._verified_rpa_success(entry)
-
-        def write_json(path, manifest):
-            if path == "manifest" and any(
-                item["materialId"] == "m-1" and item["rpaSoftTimeoutExceeded"]
-                for item in manifest["materials"]
-            ):
-                manifest_seen.set()
-            self._write_json(path, manifest)
-
-        thread = threading.Thread(
-            target=self.run_batch,
-            args=(["m-1", "m-2", "m-3", "m-4"], attempt_rpa, self._success_postprocess),
-            kwargs={
-                "write_json": write_json,
-                "clock": clock,
-                "poll_interval_sec": 0.01,
-            },
-        )
-        thread.start()
-        self.assertTrue(manifest_seen.wait(timeout=1))
-        self.assertEqual(submitted, ["m-1", "m-2", "m-3"])
-        release_first_wave.set()
-        thread.join(timeout=1)
-        self.assertFalse(thread.is_alive())
+        self.assertNotIn("rpaSoftTimeoutExceeded", entry)
+        self.assertNotIn("rpaHardTimeoutExceeded", entry)
 
     def test_wave_submission_checkpoint_omits_completion_timestamp(self):
         release_wave = threading.Event()
