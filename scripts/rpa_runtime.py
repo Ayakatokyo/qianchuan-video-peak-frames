@@ -73,8 +73,6 @@ def run_isolated_preflight(
     failure_factory,
     persist_records=None,
     publish_receipt=None,
-    soft_timeout_sec=None,
-    late_artifact_grace_sec=0,
 ):
     context = multiprocessing.get_context(multiprocessing_context_name())
     result_queue = context.Queue()
@@ -90,35 +88,23 @@ def run_isolated_preflight(
         ),
     )
     process.start()
-    soft_timeout_exceeded = False
     try:
-        hard_timeout = float(timeout_sec)
-        soft_timeout = hard_timeout if soft_timeout_sec is None else float(soft_timeout_sec)
-        soft_timeout = min(soft_timeout, hard_timeout)
-        process.join(soft_timeout)
-        if process.is_alive() and soft_timeout < hard_timeout:
-            soft_timeout_exceeded = True
-            process.join(hard_timeout - soft_timeout)
-        if process.is_alive() and late_artifact_grace_sec:
-            process.join(max(0.0, float(late_artifact_grace_sec)))
+        timeout_sec = float(timeout_sec)
+        process.join(timeout_sec)
         if process.is_alive():
             process.terminate()
             process.join(1)
             if process.is_alive() and hasattr(process, "kill"):
                 process.kill()
                 process.join(1)
-            failure = failure_factory(params.get("material_id"), "rpa_request_failed")
-            failure["hardTimeoutExceeded"] = True
-            failure["workerStage"] = "hard_timeout"
+            failure = failure_factory(params.get("material_id"), "rpa_request_timeout")
+            failure["timeoutExceeded"] = True
+            failure["timeoutSec"] = timeout_sec
+            failure["workerStage"] = "timeout"
             failure["childExitCode"] = process.exitcode
-            if soft_timeout_sec is not None:
-                failure["softTimeoutExceeded"] = soft_timeout_exceeded
             return failure
         try:
             outcome = result_queue.get(timeout=1)
-            if soft_timeout_sec is not None and isinstance(outcome, dict):
-                outcome = dict(outcome)
-                outcome["softTimeoutExceeded"] = soft_timeout_exceeded
             return outcome
         except queue_module.Empty:
             pass
@@ -134,8 +120,6 @@ def run_isolated_preflight(
         )
         failure["workerStage"] = "result_queue_read"
         failure["resultQueueEmpty"] = True
-        if soft_timeout_sec is not None:
-            failure["softTimeoutExceeded"] = soft_timeout_exceeded
         return failure
     except BaseException:
         if process.is_alive():

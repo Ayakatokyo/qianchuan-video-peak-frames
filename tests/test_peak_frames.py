@@ -3839,32 +3839,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(timings["endToEndSec"], 7.0)
         self.assertEqual(timings["totalSec"], 7.0)
 
-    def test_rpa_preflight_defaults_allow_five_minute_requests(self):
+    def test_rpa_preflight_uses_one_eight_minute_timeout(self):
         args = extract_peak_frames.build_parser().parse_args([])
 
-        self.assertEqual(args.rpa_preflight_timeout_sec, 600)
-        self.assertEqual(args.rpa_preflight_soft_timeout_sec, 480)
+        self.assertEqual(args.rpa_preflight_timeout_sec, 480)
+        self.assertFalse(hasattr(args, "rpa_preflight_soft_timeout_sec"))
         self.assertEqual(args.rpa_late_artifact_grace_sec, 30)
-
-    def test_isolated_rpa_preflight_allows_success_after_soft_timeout(self):
-        def slow_success_worker(_params):
-            time.sleep(0.05)
-            return {
-                "materialId": "m-slow-success",
-                "rpaAvailable": True,
-                "failureReason": None,
-                "videoUrl": "https://video.example/m-slow-success.mp4",
-            }
-
-        result = extract_peak_frames._fetch_material_preflight_isolated(
-            {"material_id": "m-slow-success"},
-            timeout_sec=0.2,
-            soft_timeout_sec=0.01,
-            worker=slow_success_worker,
-        )
-
-        self.assertTrue(result["rpaAvailable"])
-        self.assertTrue(result["softTimeoutExceeded"])
 
     def test_isolated_rpa_preflight_publishes_completed_artifact_receipt(self):
         material_id = "m-receipt"
@@ -4066,7 +4046,6 @@ class CliTests(unittest.TestCase):
                 args.custom_start_date = "2026-07-25"
                 args.custom_end_date = "2026-07-31"
                 args.rpa_preflight_timeout_sec = 1
-                args.rpa_preflight_soft_timeout_sec = 1
                 recovered = extract_peak_frames._fetch_material_preflight_for_cli(
                     args, material_id
                 )

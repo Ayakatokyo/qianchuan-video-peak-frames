@@ -133,8 +133,7 @@ def build_parser():
     parser.add_argument("--batch-manifest")
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
-    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=600)
-    parser.add_argument("--rpa-preflight-soft-timeout-sec", type=_positive_timeout, default=480)
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=480)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
     parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
     parser.add_argument("--rpa-fast-failure-threshold-sec", type=_positive_timeout, default=60)
@@ -540,8 +539,6 @@ def _fetch_material_preflight_isolated(
     params,
     timeout_sec,
     worker=None,
-    soft_timeout_sec=None,
-    late_artifact_grace_sec=0,
 ):
     worker = _fetch_material_preflight_worker if worker is None else worker
     return run_isolated_preflight(
@@ -551,8 +548,6 @@ def _fetch_material_preflight_isolated(
         _preflight_failure,
         persist_records=_write_diagnosis_records,
         publish_receipt=_publish_worker_rpa_receipt,
-        soft_timeout_sec=soft_timeout_sec,
-        late_artifact_grace_sec=late_artifact_grace_sec,
     )
 
 
@@ -606,10 +601,6 @@ def _fetch_material_preflight_for_cli(
         outcome = _fetch_material_preflight_isolated(
             params,
             args.rpa_preflight_timeout_sec,
-            soft_timeout_sec=args.rpa_preflight_soft_timeout_sec,
-            late_artifact_grace_sec=(
-                args.rpa_late_artifact_grace_sec if recover_late_artifacts else 0
-            ),
         )
     if recover_late_artifacts and not outcome.get("rpaAvailable"):
         outcome = _recover_late_rpa_artifacts(

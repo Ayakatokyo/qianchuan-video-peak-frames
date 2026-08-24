@@ -1,6 +1,7 @@
 import queue
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -54,6 +55,25 @@ class RpaRuntimeReceiptTests(unittest.TestCase):
         self.assertEqual(outcome["failureReason"], "rpa_request_failed")
         self.assertEqual(outcome["childExitCode"], 17)
         self.assertTrue(outcome["resultQueueEmpty"])
+
+    def test_isolated_preflight_reports_single_timeout_contract(self):
+        def worker(_params):
+            time.sleep(0.2)
+
+        outcome = run_isolated_preflight(
+            {"material_id": "m-timeout"},
+            timeout_sec=0.01,
+            worker=worker,
+            failure_factory=lambda material_id, reason: {
+                "materialId": material_id,
+                "failureReason": reason,
+            },
+        )
+
+        self.assertEqual(outcome["failureReason"], "rpa_request_timeout")
+        self.assertTrue(outcome["timeoutExceeded"])
+        self.assertEqual(outcome["timeoutSec"], 0.01)
+        self.assertEqual(outcome["workerStage"], "timeout")
 
     def test_worker_publishes_csv_receipt_before_records_receipt(self):
         material_id = "m-1"
