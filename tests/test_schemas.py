@@ -128,6 +128,8 @@ class SchemaNormalizationTests(unittest.TestCase):
                         "materialId": "m-1",
                         "rpaSoftTimeoutExceeded": True,
                         "rpaHardTimeoutExceeded": False,
+                        "rpaTimeoutExceeded": True,
+                        "rpaTimeoutSec": 480,
                         "rpaStartedAtSec": 0.0,
                         "postprocessAttemptCount": 1,
                         "lastStateChangedAtSec": 2.0,
@@ -137,6 +139,22 @@ class SchemaNormalizationTests(unittest.TestCase):
         )
 
         self.assertEqual(manifest["materials"][0]["postprocessAttemptCount"], 1)
+
+    def test_manifest_validates_single_timeout_telemetry(self):
+        invalid_fields = (
+            ("rpaTimeoutExceeded", "true"),
+            ("rpaTimeoutSec", -1),
+            ("rpaTimeoutSec", True),
+        )
+        for field, value in invalid_fields:
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(SchemaError):
+                    validate_manifest(
+                        {
+                            "schemaVersion": 2,
+                            "materials": [{"materialId": "m-1", field: value}],
+                        }
+                    )
 
     def test_manifest_rejects_invalid_lifecycle_progress_fields(self):
         with self.assertRaises(SchemaError):

@@ -62,10 +62,17 @@ def _validate_optional_lifecycle_fields(payload, *, scope):
     for field in (
         "rpaSoftTimeoutExceeded",
         "rpaHardTimeoutExceeded",
+        "rpaTimeoutExceeded",
         "rpaCsvVerified",
     ):
         if field in payload and type(payload[field]) is not bool:
             raise SchemaError(f"{scope} {field} must be a boolean")
+    if "rpaTimeoutSec" in payload and (
+        isinstance(payload["rpaTimeoutSec"], bool)
+        or not isinstance(payload["rpaTimeoutSec"], (int, float))
+        or payload["rpaTimeoutSec"] <= 0
+    ):
+        raise SchemaError(f"{scope} rpaTimeoutSec must be a positive number")
     for field in (
         "rpaStartedAtSec",
         "rpaSoftTimeoutAtSec",
