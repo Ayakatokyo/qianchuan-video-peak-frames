@@ -83,6 +83,7 @@ RPA success writes normalized records before postprocessing starts. Video downlo
 Failure reasons:
 
 - `rpa_request_failed`: gateway, HTTP, network, or configured RPA request failure. Its initial state is `rpaResultStatus: pending` and `retryable: true`.
+- `rpa_request_timeout`: the single local RPA execution deadline expired. It is immediately `final_failed` and not retryable.
 
 The isolated RPA preflight has one 8 分钟 (480 seconds) execution deadline. On expiry, it terminates the local worker and records `failureReason: rpa_request_timeout`, `rpaTimeoutExceeded: true`, `rpaTimeoutSec: 480`, and `rpaResultStatus: final_failed`. A duration timeout is terminal and never retries or consumes a local-artifact grace budget; it releases its local RPA concurrency slot. Existing manifests may retain legacy `rpaSoftTimeoutExceeded` and `rpaHardTimeoutExceeded` fields for read compatibility, but new runs do not write them.
 
