@@ -659,6 +659,18 @@ def _recover_wave_rpa_result(
     )
     attempts = []
 
+    if outcome.get("timeoutExceeded"):
+        outcome = dict(outcome)
+        attempts.append(_rpa_recovery_attempt(1, outcome))
+        outcome.update(
+            {
+                "rpaResultStatus": "final_failed",
+                "retryable": False,
+                "rpaRecoveryAttempts": attempts,
+            }
+        )
+        return outcome
+
     for attempt_number in range(1, max_attempts + 1):
         outcome = dict(outcome)
         if outcome.get("rpaAvailable"):
@@ -1087,10 +1099,15 @@ def _attempt_wave_rpa(args, entry):
                 "httpStatus": outcome.get("httpStatus"),
                 "requestId": outcome.get("requestId"),
                 "responseSummary": outcome.get("responseSummary"),
-                "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
-                "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
             }
         )
+        if outcome.get("timeoutExceeded"):
+            updated.update(
+                {
+                    "rpaTimeoutExceeded": True,
+                    "rpaTimeoutSec": outcome.get("timeoutSec"),
+                }
+            )
         timings["totalSec"] = _elapsed_since(started_at)
         return updated
 
@@ -1149,8 +1166,6 @@ def _attempt_wave_rpa(args, entry):
             "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
             "errorType": outcome.get("errorType"),
             "errorMessage": outcome.get("errorMessage"),
-            "rpaSoftTimeoutExceeded": bool(outcome.get("softTimeoutExceeded")),
-            "rpaHardTimeoutExceeded": bool(outcome.get("hardTimeoutExceeded")),
         }
     )
     timings["totalSec"] = _elapsed_since(started_at)

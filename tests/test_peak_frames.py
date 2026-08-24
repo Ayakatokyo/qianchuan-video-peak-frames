@@ -4234,6 +4234,41 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result.get("errorMessage"), "gateway timed out")
         self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
 
+    def test_wave_attempt_timeout_is_terminal_without_retry(self):
+        material_id = "m-timeout"
+        timeout = {
+            "materialId": material_id,
+            "rpaAvailable": False,
+            "failureReason": "rpa_request_timeout",
+            "rpaResultStatus": "pending",
+            "retryable": True,
+            "timeoutExceeded": True,
+            "timeoutSec": 480,
+            "workerStage": "timeout",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 2,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=timeout,
+            ) as fetch:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        fetch.assert_called_once()
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        self.assertEqual(result["failureReason"], "rpa_request_timeout")
+        self.assertTrue(result["rpaTimeoutExceeded"])
+        self.assertEqual(result["rpaTimeoutSec"], 480)
+
     def test_wave_attempt_backs_off_between_fast_retryable_failures(self):
         material_id = "m-fast-retry"
         failure = {
