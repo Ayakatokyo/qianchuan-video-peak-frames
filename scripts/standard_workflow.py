@@ -287,7 +287,6 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
             ])
             batch_arguments = [
                 "--source", "rpa",
-                "--shop-id", request.shop_id,
                 "--top-materials-json", str(paths["top_materials"]),
                 "--target-top-n", str(request.top_n),
                 "--candidate-top-n", str(candidate_top_n),

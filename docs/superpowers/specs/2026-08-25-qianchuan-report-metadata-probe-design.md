@@ -6,6 +6,8 @@
 
 同时移除已不再被标准工作流使用的资产表取数客户端及其专属测试。
 
+所有技能执行入口必须先完成运行环境依赖门禁。缺少 `requirements.txt` 中的依赖时，先使用当前 `sys.executable` 安装；安装失败立即终止，不发起报表、RPA 或后续分析请求。
+
 ## 命令与运行目录
 
 新增 `python scripts/run_standard_analysis.py fetch-metadata` 子命令，必填参数为：
@@ -22,6 +24,8 @@
 - `run-summary.json`：状态为 `metadata_ready`，包含请求参数与 `sourceData` 的相对路径。
 
 该子命令不下载结果 CSV、不生成 `top_materials.json`、不创建 ROI 事实，也不调用 RPA。
+
+`prepare`、`fetch-metadata`、`status` 和 `finalize` 均先执行依赖检查；CLI 必须在加载会导入 `requests` 或 `imageio_ffmpeg` 的工作流模块前完成该检查，避免缺依赖时在安装逻辑之前导入失败。
 
 ## 实现边界
 
@@ -42,6 +46,8 @@
 - `tests/test_top_materials.py` 中导入该客户端及其专属的发现、SQL、分页、重试与错误处理测试。
 
 保留 `scripts/asset_metrics_lib.py`、`asset-material-facts-v1.json`、字段映射工件及其测试。它们是新报表记录的指标聚合和下游报告兼容契约，不会发起资产表请求。
+
+报表查询使用用户提供的授权店铺 ID；RPA 诊断使用 RPA 授权账户列表返回的千川 ID。这两个 ID 域不可混用。标准工作流不再把报表 `shop_id` 作为 `--shop-id` 传入诊断批处理，交由 `extract_peak_frames._resolve_shop_id()` 从授权列表解析唯一千川 ID；无授权或多授权时以明确错误终止。
 
 ## 错误处理与验证
 

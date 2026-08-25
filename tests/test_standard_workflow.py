@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from contextlib import redirect_stderr, redirect_stdout
 
 
@@ -222,7 +222,7 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(roi_facts["materialIds"], ["m-1", "m-2"])
         self.assertEqual(roi_facts["metrics"][0]["value"], "2")
 
-    def test_prepare_passes_the_same_required_shop_id_to_selection_and_rpa(self):
+    def test_prepare_passes_report_shop_id_to_selection_and_summary(self):
         selection_argv = []
         batch_argv = []
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -248,9 +248,37 @@ class StandardWorkflowTests(unittest.TestCase):
             )
 
         self.assertEqual(selection_argv[selection_argv.index("--shop-id") + 1], "shop-1")
-        self.assertEqual(batch_argv[batch_argv.index("--shop-id") + 1], "shop-1")
+        self.assertNotIn("--shop-id", batch_argv)
         self.assertEqual(summary["request"]["shopId"], "shop-1")
         self.assertEqual(summary["artifacts"]["sourceData"], "source-data")
+
+    def test_prepare_does_not_pass_report_shop_id_to_rpa(self):
+        selection_argv = []
+        batch_argv = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.write_complete_ready_data(root)
+
+            def export_main(argv):
+                selection_argv.extend(argv)
+                return 0
+
+            def extract_main(argv):
+                if "--verify" not in argv:
+                    batch_argv.extend(argv)
+                return 0
+
+            standard_workflow.prepare_standard_run(
+                self.request(), root,
+                export_main=export_main,
+                extract_main=extract_main,
+                prepare_facts=lambda **_kwargs: (
+                    root / "data.json", root / "prompt.md", {}
+                ),
+            )
+
+        self.assertEqual(selection_argv[selection_argv.index("--shop-id") + 1], "shop-1")
+        self.assertNotIn("--shop-id", batch_argv)
 
     def test_fetch_metadata_writes_metadata_ready_summary_without_rpa(self):
         calls = []
@@ -603,13 +631,37 @@ class StandardWorkflowTests(unittest.TestCase):
 
 
 class StandardWorkflowCliTests(unittest.TestCase):
-    def test_fetch_metadata_prints_run_artifacts_without_prepare_or_rpa(self):
-        stdout = io.StringIO()
+    def test_dependency_bootstrap_runs_before_workflow_import(self):
+        events = []
+
+        class FakeWorkflow:
+            def standard_run_status(self, _output_dir):
+                events.append("workflow_call")
+                return {"workflowStatus": "not_started"}
+
         with patch.object(
             run_standard_analysis,
-            "fetch_report_metadata",
-            return_value={"artifacts": {"sourceData": "source-data"}},
-        ) as fetch_metadata, redirect_stdout(stdout):
+            "ensure_prepare_dependencies",
+            side_effect=lambda: events.append("dependencies"),
+        ), patch.object(
+            run_standard_analysis,
+            "_load_workflow",
+            side_effect=lambda: events.append("workflow_import") or FakeWorkflow(),
+        ), redirect_stdout(io.StringIO()):
+            result = run_standard_analysis.main(["status", "--output-dir", "run"])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(events, ["dependencies", "workflow_import", "workflow_call"])
+
+    def test_fetch_metadata_prints_run_artifacts_without_prepare_or_rpa(self):
+        stdout = io.StringIO()
+        fetch_metadata = Mock(return_value={"artifacts": {"sourceData": "source-data"}})
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "fetch_report_metadata": fetch_metadata,
+        })()
+        with patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow), redirect_stdout(stdout):
             result = run_standard_analysis.main([
                 "fetch-metadata",
                 "--start-date", "2026-07-19",
@@ -629,16 +681,18 @@ class StandardWorkflowCliTests(unittest.TestCase):
 
     def test_prepare_prints_artifact_paths_without_artifact_path_helper(self):
         stdout = io.StringIO()
-        with patch.object(run_standard_analysis, "ensure_prepare_dependencies"), patch.object(
-            run_standard_analysis,
-            "prepare_standard_run",
-            return_value={
-                "artifacts": {
-                    "diagnosticData": "diagnostic-analysis/diagnostic-analysis-data.json",
-                    "diagnosticPrompt": "diagnostic-analysis/diagnostic-analysis-prompt.md",
-                }
-            },
-        ), redirect_stdout(stdout):
+        prepare_standard_run = Mock(return_value={
+            "artifacts": {
+                "diagnosticData": "diagnostic-analysis/diagnostic-analysis-data.json",
+                "diagnosticPrompt": "diagnostic-analysis/diagnostic-analysis-prompt.md",
+            }
+        })
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "prepare_standard_run": prepare_standard_run,
+        })()
+        with patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow), redirect_stdout(stdout):
             result = run_standard_analysis.main(
                 [
                     "prepare",
@@ -724,16 +778,18 @@ class StandardWorkflowCliTests(unittest.TestCase):
 
     def test_finalize_prints_final_report_zip_path(self):
         stdout = io.StringIO()
-        with patch.object(
-            run_standard_analysis,
-            "finalize_standard_run",
-            return_value={
-                "artifacts": {
-                    "report": "final-report/final-report.html",
-                    "reportArchive": "final-report.zip",
-                }
-            },
-        ):
+        finalize_standard_run = Mock(return_value={
+            "artifacts": {
+                "report": "final-report/final-report.html",
+                "reportArchive": "final-report.zip",
+            }
+        })
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "finalize_standard_run": finalize_standard_run,
+        })()
+        with patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow):
             with redirect_stdout(stdout):
                 result = run_standard_analysis.main(
                     [

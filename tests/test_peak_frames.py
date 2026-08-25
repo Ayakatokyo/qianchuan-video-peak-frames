@@ -4862,6 +4862,18 @@ class CliTests(unittest.TestCase):
         self.assertIn("shop-2", stdout.getvalue())
         self.assertNotIn("ignored@example.com", stdout.getvalue())
 
+    def test_rpa_batch_resolves_qianchuan_id_when_report_shop_id_is_not_passed(self):
+        import argparse
+
+        with patch(
+            "extract_peak_frames.list_accounts",
+            return_value={"data": [{"account": "1765875532@qq.com", "shop_id": "408IGuUKaf"}]},
+        ) as list_mock:
+            resolved = extract_peak_frames._resolve_shop_id(argparse.Namespace(shop_id=None))
+
+        self.assertEqual(resolved, "408IGuUKaf")
+        list_mock.assert_called_once()
+
     def test_local_cli_rejects_malformed_json(self):
         ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:

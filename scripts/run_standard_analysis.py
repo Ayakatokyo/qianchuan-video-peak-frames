@@ -7,14 +7,13 @@ from pathlib import Path
 import sys
 
 from dependency_bootstrap import DependencyBootstrapError, ensure_prepare_dependencies
-from standard_workflow import (
-    StandardWorkflowError,
-    WorkflowRequest,
-    fetch_report_metadata,
-    finalize_standard_run,
-    prepare_standard_run,
-    standard_run_status,
-)
+
+
+def _load_workflow():
+    """Import workflow modules only after the dependency gate has passed."""
+    import standard_workflow
+
+    return standard_workflow
 
 
 def _positive_int(value):
@@ -62,11 +61,13 @@ def main(argv=None):
         args = build_parser().parse_args(argv)
     except SystemExit as exc:
         return exc.code
+    workflow = None
     try:
+        ensure_prepare_dependencies()
+        workflow = _load_workflow()
         if args.command == "prepare":
-            ensure_prepare_dependencies()
-            summary = prepare_standard_run(
-                WorkflowRequest(
+            summary = workflow.prepare_standard_run(
+                workflow.WorkflowRequest(
                     start_date=args.start_date,
                     end_date=args.end_date,
                     top_n=args.top_n,
@@ -80,8 +81,8 @@ def main(argv=None):
             print(f"diagnostic_analysis_data={Path(args.output_dir) / artifacts['diagnosticData']}")
             print(f"diagnostic_analysis_prompt={Path(args.output_dir) / artifacts['diagnosticPrompt']}")
         elif args.command == "fetch-metadata":
-            fetch_report_metadata(
-                WorkflowRequest(
+            workflow.fetch_report_metadata(
+                workflow.WorkflowRequest(
                     start_date=args.start_date,
                     end_date=args.end_date,
                     top_n=None,
@@ -93,7 +94,7 @@ def main(argv=None):
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"gateway_response={Path(args.output_dir) / 'source-data' / 'gateway-response.json'}")
         elif args.command == "finalize":
-            summary = finalize_standard_run(args.output_dir, args.analysis_json)
+            summary = workflow.finalize_standard_run(args.output_dir, args.analysis_json)
             artifacts = summary["artifacts"]
             report_dir = Path(args.output_dir) / "final-report"
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
@@ -101,12 +102,15 @@ def main(argv=None):
             print(f"final_report_html={Path(args.output_dir) / artifacts['report']}")
             print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
         else:
-            print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
+            print(json.dumps(workflow.standard_run_status(args.output_dir), ensure_ascii=False))
     except DependencyBootstrapError as exc:
         print(f"dependencies: {exc}", file=sys.stderr)
         return 2
-    except StandardWorkflowError as exc:
-        print(f"{exc.stage}: {exc}", file=sys.stderr)
+    except Exception as exc:
+        if workflow is not None and isinstance(exc, workflow.StandardWorkflowError):
+            print(f"{exc.stage}: {exc}", file=sys.stderr)
+        else:
+            print(f"workflow: {exc}", file=sys.stderr)
         return 2
     return 0
 
