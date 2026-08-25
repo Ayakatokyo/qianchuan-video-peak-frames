@@ -24,7 +24,7 @@ metadata:
 
 ### 1. 准备事实包
 
-在技能根目录的 `runs/<run-id>` 创建新的运行目录后执行：
+在当前工作目录的 `$PWD/runs/<run-id>` 创建新的运行目录后执行。平台中 `$PWD` 是当前对话工作空间根目录；本地 Codex 从仓库执行时 `$PWD` 是技能仓库根目录。一次分析使用同一个 `run-id`，并在 `prepare`、`status`、AI 产物写入和 `finalize` 中复用；不得将运行目录设为技能安装目录。
 
 ```bash
 python scripts/run_standard_analysis.py prepare \
@@ -33,7 +33,7 @@ python scripts/run_standard_analysis.py prepare \
   --end-date 2026-07-25 \
   --top-n 9 \
   --advertiser-id "1770096415226951" \
-  --output-dir "<skill-root>/runs/<run-id>"
+  --output-dir "$PWD/runs/<run-id>"
 ```
 
 首次 `prepare` 会自动检查缺失依赖并安装 `requirements.txt`。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。
@@ -42,7 +42,7 @@ python scripts/run_standard_analysis.py prepare \
 
 ```bash
 python scripts/run_standard_analysis.py status \
-  --output-dir "<skill-root>/runs/<run-id>"
+  --output-dir "$PWD/runs/<run-id>"
 ```
 
 只验证报表网关授权与元数据、且不进入 RPA 时，使用同一类运行目录：
@@ -53,7 +53,7 @@ python scripts/run_standard_analysis.py fetch-metadata \
   --start-date 2026-07-19 \
   --end-date 2026-07-25 \
   --advertiser-id "1770096415226951" \
-  --output-dir "<skill-root>/runs/<run-id>"
+  --output-dir "$PWD/runs/<run-id>"
 ```
 
 该命令只落盘 `source-data/gateway-response.json` 和 `run-summary.json`（状态 `metadata_ready`），不下载结果文件、不生成候选素材，也不调用 RPA。完整 `prepare` 在内网可达时会在相同的 `source-data/` 目录保留网关元数据、原始 CSV 与结构化 JSON，并以结构化记录生成候选素材和 ROI 事实。
@@ -78,8 +78,8 @@ RPA 执行只有一个 480 秒截止时间。超过截止时间时，系统终�
 
 ```bash
 python scripts/run_standard_analysis.py finalize \
-  --output-dir "<skill-root>/runs/<run-id>" \
-  --analysis-json "<skill-root>/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
+  --output-dir "$PWD/runs/<run-id>" \
+  --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
 仅当 `run-summary.json` 状态为 `complete` 时交付 `final-report.zip`。解压后打开 `final-report/final-report.html`；压缩包包含报告 HTML、数据文件和本地高光帧，图片不依赖三方链接，视频仍使用平台返回的 URL。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。交付前在桌面 `1440x1000` 视口检查封面、目录、章节卡片、图表和高光帧，无文本遮挡或正文横向溢出。

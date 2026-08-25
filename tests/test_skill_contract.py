@@ -54,6 +54,15 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
 
         self.assertIn("runs/<run-id>", skill)
 
+    def test_skill_scopes_runs_to_the_caller_working_directory(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("$PWD/runs/<run-id>", skill)
+        self.assertIn("$PWD/runs/<run-id>", runbook)
+        self.assertNotIn("<skill-root>/runs", skill)
+        self.assertNotIn(".system/skills", skill)
+
     def test_skill_keeps_t_plus_two_date_conversion(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

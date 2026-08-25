@@ -2,6 +2,10 @@
 
 仅在标准工作流失败且需要排障时使用；不要把这些命令作为常规报告流程。常规报告始终从 `scripts/run_standard_analysis.py prepare` 开始，并以 `finalize` 收口。
 
+## 运行目录
+
+标准运行目录固定为 `$PWD/runs/<run-id>`。平台的 `$PWD` 是当前对话工作空间根目录；本地从技能仓库执行时，`$PWD` 是仓库根目录。`prepare`、`status`、AI 产物、`finalize` 和所有恢复命令必须复用同一个运行目录。本手册中的 `/path/to/run` 均指已创建的 `$PWD/runs/<run-id>`，不得改为技能安装目录。
+
 在启动 AI 分析前，先运行：
 
 ```bash
