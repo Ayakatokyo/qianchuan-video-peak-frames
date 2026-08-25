@@ -2444,6 +2444,44 @@ class ProcessingPipelineTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
 
+    def test_wave_postprocess_passes_timings_to_process_records_once(self):
+        entry = {
+            "materialId": "m-123",
+            "records": [
+                {
+                    "recordType": "material_info",
+                    "materialId": "m-123",
+                    "videoUrl": "https://video.example/m-123.mp4",
+                }
+            ],
+            "timingsSec": {},
+        }
+        args = type(
+            "Args",
+            (),
+            {
+                "output_dir": "/tmp/qianchuan-test-output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+            },
+        )()
+
+        def download_video(_url, target):
+            Path(target).touch()
+
+        with patch.object(
+            extract_peak_frames, "download_video", side_effect=download_video
+        ), patch.object(
+            extract_peak_frames,
+            "process_records",
+            return_value=(Path("result"), Path("summary.json"), Path("summary.md")),
+        ) as process:
+            attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+
+        self.assertIsNone(attempt["error"])
+        process.assert_called_once()
+        self.assertIs(process.call_args.kwargs["timings"], attempt["timingsSec"])
+
     def test_rpa_cli_rejects_removed_compatibility_flags(self):
         parser = extract_peak_frames.build_parser()
         for flag in (

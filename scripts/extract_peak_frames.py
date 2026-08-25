@@ -1354,12 +1354,12 @@ def _elapsed_since(start_time):
     return round(max(0.0, time.perf_counter() - start_time), 6)
 
 
-def _time_call(timings, field, function, *args, **kwargs):
+def _time_call(timing_state, field, function, *args, **kwargs):
     started_at = time.perf_counter()
     try:
         return function(*args, **kwargs)
     finally:
-        timings[field] = _elapsed_since(started_at)
+        timing_state[field] = _elapsed_since(started_at)
 
 
 def _verify_wave_rpa_batch(args, material_ids, manifest):
