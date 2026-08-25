@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Export ranked Qianchuan materials from the read-only asset table."""
+"""Export ranked Qianchuan materials from one live-video report query."""
 
 import argparse
-from datetime import date, timedelta
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -10,23 +10,22 @@ import re
 import sys
 import tempfile
 
-from asset_table_client import AssetTableClient, AssetTableError
 from asset_metrics_lib import (
     AssetMetricsAggregator,
     AssetMetricsError,
     build_asset_facts_payload,
 )
+from qianchuan_report_client import ReportClientError, fetch_material_report
 from top_materials_lib import MaterialAggregator, MaterialDataError, build_output
-
-
-TABLE_NAME = "ods_api_jlqc_uni_overall_roi_live_video_info_du"
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Export top Qianchuan materials by cost.")
+    parser.add_argument("--shop-id", required=True)
     parser.add_argument("--start-date", required=True)
     parser.add_argument("--end-date", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--source-output-dir", required=True)
     parser.add_argument("--asset-facts-output")
     parser.add_argument("--name-regex")
     parser.add_argument("--material-type", action="append", default=[])
@@ -40,13 +39,6 @@ def parse_date(value):
         return date.fromisoformat(value)
     except (TypeError, ValueError) as error:
         raise ValueError("dates must use YYYY-MM-DD") from error
-
-
-def iter_dates(start_date, end_date):
-    current = start_date
-    while current <= end_date:
-        yield current.isoformat()
-        current += timedelta(days=1)
 
 
 def main(argv=None):
@@ -67,31 +59,23 @@ def main(argv=None):
         )
         if asset_facts_output is not None and asset_facts_output.exists():
             raise ValueError("asset facts output path already exists")
-        base_url = os.environ.get("ENV_BACKEND_HOST", "")
-        session_token = os.environ.get("YCSESSIONID") or os.environ.get("YUCE_AUTHORIZATION", "")
-        if not base_url or not session_token:
-            raise ValueError("ENV_BACKEND_HOST and a session environment variable are required")
-
-        client = AssetTableClient(base_url, session_token)
-        physical_table = client.discover_table(TABLE_NAME)
         aggregator = MaterialAggregator(pattern, args.material_type, args.top_n)
         metrics_aggregator = (
             AssetMetricsAggregator(pattern, args.material_type)
             if asset_facts_output is not None else None
         )
-        for partition_date in iter_dates(start_date, end_date):
-            if args.advertiser_id is None:
-                origin_rows = client.iter_origin_data(physical_table, partition_date)
-            else:
-                origin_rows = client.iter_origin_data(
-                    physical_table,
-                    partition_date,
-                    advertiser_id=args.advertiser_id,
-                )
-            for origin_data in origin_rows:
-                aggregator.add_raw_origin_data(origin_data)
-                if metrics_aggregator is not None:
-                    metrics_aggregator.add_raw_origin_data(origin_data)
+        records = fetch_material_report(
+            args.shop_id,
+            args.advertiser_id,
+            start_date.isoformat(),
+            end_date.isoformat(),
+            output_dir=Path(args.source_output_dir),
+        )
+        for record in records:
+            raw_record = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            aggregator.add_raw_origin_data(raw_record)
+            if metrics_aggregator is not None:
+                metrics_aggregator.add_raw_origin_data(raw_record)
         materials, excluded = aggregator.select()
         payload = build_output(
             start_date.isoformat(), end_date.isoformat(), pattern,
@@ -108,7 +92,13 @@ def main(argv=None):
                 metrics_aggregator.facts(),
             )
             _write_atomic_json(asset_facts_output, asset_payload)
-    except (AssetTableError, AssetMetricsError, MaterialDataError, ValueError, re.error) as error:
+    except (
+        AssetMetricsError,
+        MaterialDataError,
+        ReportClientError,
+        ValueError,
+        re.error,
+    ) as error:
         print("top material export failed: %s" % error, file=sys.stderr)
         return 1
     print("top_materials_json=%s" % output)

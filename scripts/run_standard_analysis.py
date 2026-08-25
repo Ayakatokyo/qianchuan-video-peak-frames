@@ -37,6 +37,7 @@ def build_parser():
     prepare.add_argument("--end-date", required=True)
     prepare.add_argument("--top-n", required=True, type=_positive_int)
     prepare.add_argument("--advertiser-id", required=True)
+    prepare.add_argument("--shop-id", required=True)
     prepare.add_argument("--output-dir", required=True)
 
     finalize = commands.add_parser("finalize")
@@ -62,6 +63,7 @@ def main(argv=None):
                     end_date=args.end_date,
                     top_n=args.top_n,
                     advertiser_id=args.advertiser_id,
+                    shop_id=args.shop_id,
                 ),
                 args.output_dir,
             )

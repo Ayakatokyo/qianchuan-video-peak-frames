@@ -666,107 +666,67 @@ class MaterialSelectionTests(unittest.TestCase):
         )
 
 class ExportCliTests(unittest.TestCase):
-    def test_optional_asset_facts_output_preserves_top_materials_payload(self):
-        rows = [
-            origin_data("m-1", cost="3", net_settlement="4", overall_payment="5"),
-            origin_data("m-1", cost="7", net_settlement="8", overall_payment="9"),
+    def test_exports_from_one_report_query_and_preserves_rank_and_facts(self):
+        records = [
+            json.loads(origin_data("m-1", cost="3", net_settlement="4", overall_payment="5")),
+            json.loads(origin_data("m-1", cost="7", net_settlement="8", overall_payment="9")),
+            json.loads(origin_data("m-2", cost="5", net_settlement="6", overall_payment="7")),
         ]
-
-        class Client:
-            def __init__(self, *_args, **_kwargs): pass
-            def discover_table(self, _name): return "material_table"
-            def iter_origin_data(self, _table, _date, advertiser_id=None): return iter(rows)
-
         with tempfile.TemporaryDirectory() as temp_dir:
-            output = Path(temp_dir) / "top_materials.json"
-            baseline_output = Path(temp_dir) / "baseline-top_materials.json"
-            facts_output = Path(temp_dir) / "asset-material-facts-v1.json"
-            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
-            with patch.dict("os.environ", environment, clear=True), patch("export_top_materials.AssetTableClient", Client):
-                self.assertEqual(main([
-                    "--start-date", "2026-05-01", "--end-date", "2026-05-01",
-                    "--advertiser-id", "1765875532", "--output", str(baseline_output),
-                ]), 0)
+            root = Path(temp_dir)
+            output = root / "top_materials.json"
+            facts_output = root / "asset-material-facts-v1.json"
+            with patch(
+                "export_top_materials.fetch_material_report", return_value=records
+            ) as fetch:
                 result = main([
-                    "--start-date", "2026-05-01", "--end-date", "2026-05-01",
-                    "--advertiser-id", "1765875532", "--output", str(output),
+                    "--shop-id", "shop-1",
+                    "--advertiser-id", "1765875532",
+                    "--start-date", "2026-05-01",
+                    "--end-date", "2026-05-07",
+                    "--top-n", "1",
+                    "--output", str(output),
                     "--asset-facts-output", str(facts_output),
+                    "--source-output-dir", str(root / "source-data"),
                 ])
 
             self.assertEqual(result, 0)
-            self.assertEqual(output.read_bytes(), baseline_output.read_bytes())
-            facts = json.loads(facts_output.read_text(encoding="utf-8"))
-            self.assertEqual(facts["filters"]["advertiserId"], "1765875532")
-            self.assertEqual(facts["materials"]["m-1"], {
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(
+                fetch.call_args.args[:4],
+                ("shop-1", "1765875532", "2026-05-01", "2026-05-07"),
+            )
+            self.assertEqual(
+                json.loads(output.read_text(encoding="utf-8"))["materials"][0]["materialId"],
+                "m-1",
+            )
+            self.assertEqual(json.loads(facts_output.read_text(encoding="utf-8"))["materials"]["m-1"], {
                 "stat_cost_for_overall_roi2": "10",
                 "total_order_settle_amount_for_roi2_1h": "12",
                 "total_pay_order_gmv_include_coupon_for_roi2": "14",
             })
 
-    def test_exports_only_after_every_partition_succeeds(self):
-        rows = [origin_data(material_id="m-1", cost="3")]
-
-        class Client:
-            def __init__(self, *_args, **_kwargs): pass
-            def discover_table(self, _name): return "material_table"
-            def iter_origin_data(self, _table, _date): return iter(rows)
+    def test_does_not_publish_when_report_query_fails(self):
+        from qianchuan_report_client import ReportClientError
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            output = Path(temp_dir) / "top_materials.json"
-            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
-            with patch.dict("os.environ", environment, clear=True), patch("export_top_materials.AssetTableClient", Client):
-                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-02", "--output", str(output)]), 0)
-            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["materials"][0]["rank"], 1)
-
-    def test_cli_streams_rows_without_raw_list_selection(self):
-        calls = []
-
-        class Client:
-            def __init__(self, *_args, **_kwargs): pass
-            def discover_table(self, _name): return "material_table"
-            def iter_origin_data(self, table, date, advertiser_id=None):
-                calls.append((table, date, advertiser_id))
-                yield origin_data(material_id=date, cost="3")
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output = Path(temp_dir) / "top_materials.json"
-            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
-            with (
-                patch.dict("os.environ", environment, clear=True),
-                patch("export_top_materials.AssetTableClient", Client),
-                patch(
-                    "export_top_materials.select_materials",
-                    side_effect=MaterialDataError("raw list selection called"),
-                    create=True,
-                ),
+            root = Path(temp_dir)
+            output = root / "top_materials.json"
+            with patch(
+                "export_top_materials.fetch_material_report",
+                side_effect=ReportClientError("unavailable"),
             ):
-                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-03", "--advertiser-id", "1765875532", "--output", str(output)]), 0)
-            payload = json.loads(output.read_text(encoding="utf-8"))
-            self.assertEqual(payload["materialCount"], 3)
-            self.assertEqual(
-                calls,
-                [
-                    ("material_table", "2026-05-01", "1765875532"),
-                    ("material_table", "2026-05-02", "1765875532"),
-                    ("material_table", "2026-05-03", "1765875532"),
-                ],
-            )
-            self.assertEqual(payload["filters"]["advertiserId"], "1765875532")
+                result = main([
+                    "--shop-id", "shop-1",
+                    "--advertiser-id", "1765875532",
+                    "--start-date", "2026-05-01",
+                    "--end-date", "2026-05-07",
+                    "--output", str(output),
+                    "--source-output-dir", str(root / "source-data"),
+                ])
 
-    def test_does_not_publish_when_partition_fails(self):
-        class Client:
-            def __init__(self, *_args, **_kwargs): pass
-            def discover_table(self, _name): return "material_table"
-            def iter_origin_data(self, _table, date):
-                if date == "2026-05-02": raise AssetTableError("unavailable")
-                return iter([origin_data(material_id="m-1", cost="3")])
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            output = Path(temp_dir) / "top_materials.json"
-            environment = {"ENV_BACKEND_HOST": "http://asset.example", "YCSESSIONID": "token"}
-            with patch.dict("os.environ", environment, clear=True), patch("export_top_materials.AssetTableClient", Client):
-                self.assertEqual(main(["--start-date", "2026-05-01", "--end-date", "2026-05-02", "--output", str(output)]), 1)
-            self.assertFalse(output.exists())
+        self.assertEqual(result, 1)
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

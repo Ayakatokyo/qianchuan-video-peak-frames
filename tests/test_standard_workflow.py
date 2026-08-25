@@ -37,6 +37,7 @@ class StandardWorkflowTests(unittest.TestCase):
             end_date="2026-07-25",
             top_n=2,
             advertiser_id="1770096415226951",
+            shop_id="shop-1",
         )
 
     def request_payload(self):
@@ -45,6 +46,7 @@ class StandardWorkflowTests(unittest.TestCase):
             "endDate": "2026-07-25",
             "topN": 2,
             "advertiserId": "1770096415226951",
+            "shopId": "shop-1",
         }
 
     def test_status_exposes_distinct_rpa_artifact_and_postprocess_counts(self):
@@ -220,46 +222,35 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(roi_facts["materialIds"], ["m-1", "m-2"])
         self.assertEqual(roi_facts["metrics"][0]["value"], "2")
 
-    def test_prepare_uses_configured_shop_id_without_exposing_it_in_request(self):
+    def test_prepare_passes_the_same_required_shop_id_to_selection_and_rpa(self):
+        selection_argv = []
         batch_argv = []
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             self.write_complete_ready_data(root)
+
+            def export_main(argv):
+                selection_argv.extend(argv)
+                return 0
 
             def extract_main(argv):
                 if "--verify" not in argv:
                     batch_argv.extend(argv)
                 return 0
 
-            with patch.dict(os.environ, {"QIANCHUAN_RPA_SHOP_ID": "shop-1"}):
-                standard_workflow.prepare_standard_run(
-                    self.request(), root,
-                    export_main=lambda _argv: 0,
-                    extract_main=extract_main,
-                    prepare_facts=lambda **_kwargs: (
-                        root / "data.json", root / "prompt.md", {}
-                    ),
-                )
+            summary = standard_workflow.prepare_standard_run(
+                self.request(), root,
+                export_main=export_main,
+                extract_main=extract_main,
+                prepare_facts=lambda **_kwargs: (
+                    root / "data.json", root / "prompt.md", {}
+                ),
+            )
 
+        self.assertEqual(selection_argv[selection_argv.index("--shop-id") + 1], "shop-1")
         self.assertEqual(batch_argv[batch_argv.index("--shop-id") + 1], "shop-1")
-
-    def test_prepare_omits_shop_id_when_not_configured(self):
-        batch_argv = []
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            self.write_complete_ready_data(root)
-            with patch.dict(os.environ, {}, clear=True):
-                standard_workflow.prepare_standard_run(
-                    self.request(), root,
-                    export_main=lambda _argv: 0,
-                    extract_main=lambda argv: batch_argv.append(argv) or 0,
-                    prepare_facts=lambda **_kwargs: (
-                        root / "data.json", root / "prompt.md", {}
-                    ),
-                )
-
-        self.assertEqual(len(batch_argv), 2)
-        self.assertTrue(all("--shop-id" not in argv for argv in batch_argv))
+        self.assertEqual(summary["request"]["shopId"], "shop-1")
+        self.assertEqual(summary["artifacts"]["sourceData"], "source-data")
 
     def test_prepare_does_not_build_facts_from_partial_ready_materials(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -382,6 +373,7 @@ class StandardWorkflowTests(unittest.TestCase):
             end_date="2026-07-25",
             top_n="2",
             advertiser_id="1770096415226951",
+            shop_id="shop-1",
         )
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -465,6 +457,7 @@ class StandardWorkflowTests(unittest.TestCase):
                         "endDate": "2026-07-25",
                         "topN": 2,
                         "advertiserId": "1770096415226951",
+                        "shopId": "shop-1",
                     },
                     "artifacts": {},
                     "failure": None,
@@ -498,6 +491,7 @@ class StandardWorkflowTests(unittest.TestCase):
                         "endDate": "2026-07-25",
                         "topN": 2,
                         "advertiserId": "1770096415226951",
+                        "shopId": "shop-1",
                     },
                     "artifacts": {},
                     "failure": None,
@@ -535,6 +529,7 @@ class StandardWorkflowTests(unittest.TestCase):
                         "endDate": "2026-07-25",
                         "topN": 2,
                         "advertiserId": "1770096415226951",
+                        "shopId": "shop-1",
                     },
                     "artifacts": {},
                     "failure": None,
@@ -594,6 +589,7 @@ class StandardWorkflowCliTests(unittest.TestCase):
                     "--end-date", "2026-07-25",
                     "--top-n", "9",
                     "--advertiser-id", "1770096415226951",
+                    "--shop-id", "shop-1",
                     "--output-dir", "/tmp/qianchuan-run",
                 ]
             )
@@ -617,6 +613,7 @@ class StandardWorkflowCliTests(unittest.TestCase):
             "--end-date", "2026-07-25",
             "--top-n", "9",
             "--advertiser-id", "1770096415226951",
+            "--shop-id", "shop-1",
             "--output-dir", "run",
         ])
 
@@ -638,6 +635,7 @@ class StandardWorkflowCliTests(unittest.TestCase):
                     "--end-date", "2026-07-25",
                     "--top-n", "9",
                     "--advertiser-id", "1770096415226951",
+                    "--shop-id", "shop-1",
                     "--output-dir", "run",
                 ]
             )

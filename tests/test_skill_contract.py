@@ -19,6 +19,14 @@ ACTIVE_OPERATIONAL_DOCUMENTS = (
 
 
 class StandardWorkflowSkillContractTests(unittest.TestCase):
+    def test_entry_prompt_requires_shop_id_for_report_and_rpa_authorization(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("店铺", skill)
+        self.assertIn("shop-id", skill)
+        self.assertIn("素材视频报表", skill)
+        self.assertNotIn("资产表取数", skill)
+
     def test_entry_prompt_requests_the_three_business_conditions(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

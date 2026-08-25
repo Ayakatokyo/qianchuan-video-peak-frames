@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import date
 import hashlib
 import json
-import os
 from pathlib import Path
 
 import export_top_materials
@@ -32,6 +31,7 @@ class WorkflowRequest:
     end_date: str
     top_n: int
     advertiser_id: str
+    shop_id: str
 
 
 class StandardWorkflowError(RuntimeError):
@@ -48,6 +48,7 @@ def workflow_paths(output_dir):
     root = Path(output_dir)
     return {
         "root": root,
+        "source_data": root / "source-data",
         "top_materials": root / "top_materials.json",
         "asset_facts": root / "asset-material-facts-v1.json",
         "top_material_roi_facts": root / "peak-frames" / "top-material-roi-facts-v1.json",
@@ -77,10 +78,7 @@ def workflow_lock_path(request, output_dir, shop_id):
 
 
 def acquire_workflow_lock(request, output_dir, shop_id=None):
-    resolved_shop_id = (
-        os.environ.get("QIANCHUAN_RPA_SHOP_ID", "").strip()
-        if shop_id is None else shop_id
-    )
+    resolved_shop_id = request.shop_id if shop_id is None else shop_id
     paths = workflow_paths(output_dir)
     try:
         return acquire_run_lock(
@@ -108,6 +106,8 @@ def _validate_request(request):
         raise StandardWorkflowError("request", "top_n must be a positive integer")
     if not str(request.advertiser_id or "").strip():
         raise StandardWorkflowError("request", "advertiser_id is required")
+    if not str(request.shop_id or "").strip():
+        raise StandardWorkflowError("request", "shop_id is required")
 
 
 def _relative(root, path):
@@ -122,6 +122,7 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
         "endDate": request.end_date,
         "topN": request.top_n,
         "advertiserId": request.advertiser_id,
+        "shopId": request.shop_id,
     } if isinstance(request, WorkflowRequest) else None
     return {
         "schemaVersion": 1,
@@ -129,6 +130,7 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
         "activeStage": active_stage,
         "request": request_summary,
         "artifacts": {
+            "sourceData": _relative(root, paths["source_data"]),
             "topMaterials": _relative(root, paths["top_materials"]),
             "assetMaterialFacts": _relative(root, paths["asset_facts"]),
             "topMaterialRoiFacts": _relative(root, paths["top_material_roi_facts"]),
@@ -266,19 +268,21 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
     try:
         _validate_request(request)
         candidate_top_n = request.top_n * 3
-        shop_id = os.environ.get("QIANCHUAN_RPA_SHOP_ID", "").strip()
-        with acquire_workflow_lock(request, output_dir, shop_id):
+        with acquire_workflow_lock(request, output_dir):
             _write_running(request, paths, "selection")
             _run_stage("selection", export_main, [
+                "--shop-id", request.shop_id,
                 "--start-date", request.start_date,
                 "--end-date", request.end_date,
                 "--advertiser-id", request.advertiser_id,
                 "--top-n", str(candidate_top_n),
                 "--output", str(paths["top_materials"]),
                 "--asset-facts-output", str(paths["asset_facts"]),
+                "--source-output-dir", str(paths["source_data"]),
             ])
             batch_arguments = [
                 "--source", "rpa",
+                "--shop-id", request.shop_id,
                 "--top-materials-json", str(paths["top_materials"]),
                 "--target-top-n", str(request.top_n),
                 "--candidate-top-n", str(candidate_top_n),
@@ -288,8 +292,6 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 "--diagnosis-records-dir", str(paths["records"]),
                 "--output-dir", str(paths["peak_frames"]),
             ]
-            if shop_id:
-                batch_arguments.extend(["--shop-id", shop_id])
             _write_running(request, paths, "diagnosis_batch")
             _run_stage("diagnosis_batch", extract_main, batch_arguments)
             _write_running(request, paths, "verification")
@@ -347,6 +349,7 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
         end_date=request_payload.get("endDate", ""),
         top_n=request_payload.get("topN"),
         advertiser_id=request_payload.get("advertiserId", ""),
+        shop_id=request_payload.get("shopId", ""),
     ) if isinstance(request_payload, dict) else None
     try:
         _validate_request(request)
