@@ -10,6 +10,7 @@ import export_top_materials
 import extract_peak_frames
 from diagnostic_analysis_lib import prepare_diagnostic_analysis
 from final_report_lib import generate_final_report
+from qianchuan_report_client import fetch_material_report_metadata
 from report_renderer import create_report_archive
 from batch_runtime import (
     BatchLockError,
@@ -29,7 +30,7 @@ READY_MATERIALS_NAME = "top_materials_rpa_ready.json"
 class WorkflowRequest:
     start_date: str
     end_date: str
-    top_n: int
+    top_n: int | None
     advertiser_id: str
     shop_id: str
 
@@ -92,7 +93,7 @@ def acquire_workflow_lock(request, output_dir, shop_id=None):
 write_run_summary = write_json_atomically
 
 
-def _validate_request(request):
+def _validate_request(request, *, require_top_n=True):
     if not isinstance(request, WorkflowRequest):
         raise StandardWorkflowError("request", "request must be a WorkflowRequest")
     try:
@@ -102,8 +103,12 @@ def _validate_request(request):
         raise StandardWorkflowError("request", "dates must use YYYY-MM-DD") from exc
     if start_date > end_date:
         raise StandardWorkflowError("request", "start_date must not be after end_date")
-    if type(request.top_n) is not int or request.top_n <= 0:
+    if require_top_n and (type(request.top_n) is not int or request.top_n <= 0):
         raise StandardWorkflowError("request", "top_n must be a positive integer")
+    if not require_top_n and request.top_n is not None and (
+        type(request.top_n) is not int or request.top_n <= 0
+    ):
+        raise StandardWorkflowError("request", "top_n must be a positive integer when provided")
     if not str(request.advertiser_id or "").strip():
         raise StandardWorkflowError("request", "advertiser_id is required")
     if not str(request.shop_id or "").strip():
@@ -327,6 +332,40 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
     except Exception as exc:
         _write_failure(request, paths, "facts", str(exc))
         raise StandardWorkflowError("facts", str(exc)) from exc
+
+
+def fetch_report_metadata(
+    request,
+    output_dir,
+    *,
+    fetch_metadata=fetch_material_report_metadata,
+):
+    paths = workflow_paths(output_dir)
+    try:
+        _validate_request(request, require_top_n=False)
+        with acquire_workflow_lock(request, output_dir):
+            _write_running(request, paths, "metadata")
+            try:
+                fetch_metadata(
+                    request.shop_id,
+                    request.advertiser_id,
+                    request.start_date,
+                    request.end_date,
+                    output_dir=paths["source_data"],
+                )
+            except Exception as exc:
+                raise StandardWorkflowError("metadata", str(exc)) from exc
+            summary = _summary(request, paths, status="metadata_ready")
+            write_run_summary(paths["summary"], summary)
+            return summary
+    except WorkflowLockError:
+        raise
+    except StandardWorkflowError as exc:
+        _write_failure(request, paths, exc.stage, str(exc))
+        raise
+    except Exception as exc:
+        _write_failure(request, paths, "metadata", str(exc))
+        raise StandardWorkflowError("metadata", str(exc)) from exc
 
 
 def _read_summary(path):

@@ -252,6 +252,39 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["request"]["shopId"], "shop-1")
         self.assertEqual(summary["artifacts"]["sourceData"], "source-data")
 
+    def test_fetch_metadata_writes_metadata_ready_summary_without_rpa(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def fetch_metadata(shop_id, advertiser_id, start_date, end_date, *, output_dir):
+                calls.append((shop_id, advertiser_id, start_date, end_date, output_dir))
+                Path(output_dir).mkdir(parents=True)
+                (Path(output_dir) / "gateway-response.json").write_text("{}", encoding="utf-8")
+                return {"resultType": "files"}
+
+            summary = standard_workflow.fetch_report_metadata(
+                standard_workflow.WorkflowRequest(
+                    start_date="2026-07-19",
+                    end_date="2026-07-25",
+                    top_n=None,
+                    advertiser_id="1770096415226951",
+                    shop_id="shop-1",
+                ),
+                root,
+                fetch_metadata=fetch_metadata,
+            )
+
+            persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["status"], "metadata_ready")
+        self.assertEqual(summary["request"]["topN"], None)
+        self.assertEqual(summary["artifacts"]["sourceData"], "source-data")
+        self.assertEqual(persisted, summary)
+        self.assertEqual(calls, [
+            ("shop-1", "1770096415226951", "2026-07-19", "2026-07-25", root / "source-data")
+        ])
+
     def test_prepare_does_not_build_facts_from_partial_ready_materials(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -570,6 +603,30 @@ class StandardWorkflowTests(unittest.TestCase):
 
 
 class StandardWorkflowCliTests(unittest.TestCase):
+    def test_fetch_metadata_prints_run_artifacts_without_prepare_or_rpa(self):
+        stdout = io.StringIO()
+        with patch.object(
+            run_standard_analysis,
+            "fetch_report_metadata",
+            return_value={"artifacts": {"sourceData": "source-data"}},
+        ) as fetch_metadata, redirect_stdout(stdout):
+            result = run_standard_analysis.main([
+                "fetch-metadata",
+                "--start-date", "2026-07-19",
+                "--end-date", "2026-07-25",
+                "--advertiser-id", "1770096415226951",
+                "--shop-id", "shop-1",
+                "--output-dir", "/tmp/qianchuan-metadata",
+            ])
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fetch_metadata.call_args.args[0].top_n, None)
+        self.assertIn("run_summary=/tmp/qianchuan-metadata/run-summary.json", stdout.getvalue())
+        self.assertIn(
+            "gateway_response=/tmp/qianchuan-metadata/source-data/gateway-response.json",
+            stdout.getvalue(),
+        )
+
     def test_prepare_prints_artifact_paths_without_artifact_path_helper(self):
         stdout = io.StringIO()
         with patch.object(run_standard_analysis, "ensure_prepare_dependencies"), patch.object(

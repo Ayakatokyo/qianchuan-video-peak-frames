@@ -49,6 +49,11 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertNotIn("--rpa-concurrency", skill)
         self.assertNotIn("--resume", skill)
 
+    def test_skill_uses_runs_directory_for_new_standard_runs(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("runs/<run-id>", skill)
+
     def test_skill_keeps_t_plus_two_date_conversion(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

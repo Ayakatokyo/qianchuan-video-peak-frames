@@ -10,6 +10,7 @@ from dependency_bootstrap import DependencyBootstrapError, ensure_prepare_depend
 from standard_workflow import (
     StandardWorkflowError,
     WorkflowRequest,
+    fetch_report_metadata,
     finalize_standard_run,
     prepare_standard_run,
     standard_run_status,
@@ -39,6 +40,13 @@ def build_parser():
     prepare.add_argument("--advertiser-id", required=True)
     prepare.add_argument("--shop-id", required=True)
     prepare.add_argument("--output-dir", required=True)
+
+    metadata = commands.add_parser("fetch-metadata")
+    metadata.add_argument("--start-date", required=True)
+    metadata.add_argument("--end-date", required=True)
+    metadata.add_argument("--advertiser-id", required=True)
+    metadata.add_argument("--shop-id", required=True)
+    metadata.add_argument("--output-dir", required=True)
 
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--output-dir", required=True)
@@ -71,6 +79,19 @@ def main(argv=None):
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"diagnostic_analysis_data={Path(args.output_dir) / artifacts['diagnosticData']}")
             print(f"diagnostic_analysis_prompt={Path(args.output_dir) / artifacts['diagnosticPrompt']}")
+        elif args.command == "fetch-metadata":
+            fetch_report_metadata(
+                WorkflowRequest(
+                    start_date=args.start_date,
+                    end_date=args.end_date,
+                    top_n=None,
+                    advertiser_id=args.advertiser_id,
+                    shop_id=args.shop_id,
+                ),
+                args.output_dir,
+            )
+            print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
+            print(f"gateway_response={Path(args.output_dir) / 'source-data' / 'gateway-response.json'}")
         elif args.command == "finalize":
             summary = finalize_standard_run(args.output_dir, args.analysis_json)
             artifacts = summary["artifacts"]

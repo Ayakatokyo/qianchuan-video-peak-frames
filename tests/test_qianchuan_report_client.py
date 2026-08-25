@@ -182,6 +182,35 @@ class QianchuanReportClientTests(unittest.TestCase):
                 [record],
             )
 
+    def test_fetch_metadata_writes_redacted_gateway_response_without_downloading_file(self):
+        response = FakeResponse({
+            "success": True,
+            "data": {
+                "result_type": "files",
+                "result_content": {
+                    "status": "COMPLETED",
+                    "failedInstances": 0,
+                    "files": [{"fileUrl": "http://gateway.test/files/report.csv?token=secret"}],
+                },
+            },
+        })
+        session = FakeSession(response)
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, valid_env(), clear=True
+        ):
+            root = Path(temp_dir)
+            metadata = client.fetch_material_report_metadata(
+                "shop-1", "1770096415226951", "2026-08-01", "2026-08-07",
+                output_dir=root, session=session,
+            )
+
+            gateway_response = (root / "gateway-response.json").read_text(encoding="utf-8")
+
+        self.assertEqual(metadata, {"resultType": "files"})
+        self.assertIsNone(session.get_call)
+        self.assertNotIn("secret", gateway_response)
+
     def test_files_response_without_a_valid_result_file_raises(self):
         response = FakeResponse({
             "success": True,

@@ -210,6 +210,56 @@ def fetch_material_report(
     environ=None,
     session=None,
 ):
+    result, source_dir, session = _fetch_gateway_result(
+        shop_id,
+        advertiser_id,
+        start_date,
+        end_date,
+        output_dir=output_dir,
+        environ=environ,
+        session=session,
+    )
+    records = _records_from_result(result, source_dir, session)
+    if not records:
+        raise ReportClientError("material report contains no records")
+    return records
+
+
+def fetch_material_report_metadata(
+    shop_id,
+    advertiser_id,
+    start_date,
+    end_date,
+    *,
+    output_dir,
+    environ=None,
+    session=None,
+):
+    result, _source_dir, _session = _fetch_gateway_result(
+        shop_id,
+        advertiser_id,
+        start_date,
+        end_date,
+        output_dir=output_dir,
+        environ=environ,
+        session=session,
+    )
+    data = result.get("data")
+    return {
+        "resultType": data.get("result_type") if isinstance(data, dict) else "records",
+    }
+
+
+def _fetch_gateway_result(
+    shop_id,
+    advertiser_id,
+    start_date,
+    end_date,
+    *,
+    output_dir,
+    environ=None,
+    session=None,
+):
     if not str(shop_id or "").strip():
         raise ReportClientError("shop_id is required")
     context = resolve_runtime_context(os.environ if environ is None else environ)
@@ -254,10 +304,7 @@ def fetch_material_report(
     if result.get("success") is False:
         raise ReportClientError("material report gateway returned failure")
     _write_json(source_dir / "gateway-response.json", _redact(result))
-    records = _records_from_result(result, source_dir, session)
-    if not records:
-        raise ReportClientError("material report contains no records")
-    return records
+    return result, source_dir, session
 
 
 def _raise_for_gateway_status(response, context):
