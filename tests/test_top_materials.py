@@ -203,6 +203,8 @@ class MaterialSelectionTests(unittest.TestCase):
                         "totalCost": 7.0,
                     }
                 ],
+                "skippedSourceRecordCount": 0,
+                "skippedSourceRecords": [],
                 "materials": [
                     {
                         "actualStartDate": "2026-05-01",
@@ -292,6 +294,41 @@ class ExportCliTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertFalse(output.exists())
+
+    def test_skips_incomplete_source_records_and_exports_eligible_materials(self):
+        valid = json.loads(origin_data("m-1", cost="7"))
+        incomplete = json.loads(origin_data("m-bad", cost="99"))
+        del incomplete["dimensions"]["roi2_material_video_name"]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "top_materials.json"
+            facts_output = root / "asset-material-facts-v1.json"
+            with patch(
+                "export_top_materials.fetch_material_report",
+                return_value=[valid, incomplete],
+            ):
+                result = main([
+                    "--shop-id", "shop-1",
+                    "--advertiser-id", "1765875532",
+                    "--start-date", "2026-05-01",
+                    "--end-date", "2026-05-07",
+                    "--output", str(output),
+                    "--asset-facts-output", str(facts_output),
+                    "--source-output-dir", str(root / "source-data"),
+                ])
+
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            facts_materials = list(
+                json.loads(facts_output.read_text(encoding="utf-8"))["materials"]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual([item["materialId"] for item in payload["materials"]], ["m-1"])
+        self.assertEqual(payload["skippedSourceRecordCount"], 1)
+        self.assertEqual(payload["skippedSourceRecords"][0]["sourceRowIndex"], 1)
+        self.assertEqual(payload["skippedSourceRecords"][0]["materialId"], "m-bad")
+        self.assertIn("roi2_material_video_name", payload["skippedSourceRecords"][0]["reason"])
+        self.assertEqual(facts_materials, ["m-1"])
 
 
 if __name__ == "__main__":

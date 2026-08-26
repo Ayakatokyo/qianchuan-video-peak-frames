@@ -90,7 +90,6 @@ class QianchuanReportClientTests(unittest.TestCase):
                 "roi2_material_video_play_info",
                 "roi2_material_video_name",
                 "roi2_material_video_type",
-                "roi2_material_advice_reason",
                 "material_create_time_v2",
                 "material_id",
                 "anchor_id",
@@ -111,7 +110,12 @@ class QianchuanReportClientTests(unittest.TestCase):
             "video_play_finish_rate_for_roi2_v2",
         ):
             self.assertIn(field, client.DEFAULT_METRICS)
-        for field in ("roi2_material_advice", "stat_time_day", "range_stat_time_hour"):
+        for field in (
+            "roi2_material_advice",
+            "roi2_material_advice_reason",
+            "stat_time_day",
+            "range_stat_time_hour",
+        ):
             self.assertNotIn(field, client.DEFAULT_DIMENSIONS)
         self.assertIn(
             "additional_delivery_total_refund_order_count_for_roi2_1h_assist",
@@ -220,9 +224,9 @@ class QianchuanReportClientTests(unittest.TestCase):
         self.assertIn("video_play_finish_rate_for_roi2_v2", str(caught.exception))
         self.assertNotIn("authorization-token", str(caught.exception))
 
-    def test_fetch_rejects_a_nonempty_record_missing_a_dimension(self):
+    def test_fetch_allows_a_record_missing_selection_dimensions(self):
         record = material_record()
-        del record["dimensions"]["roi2_material_advice_reason"]
+        del record["dimensions"]["roi2_material_video_name"]
         response = FakeResponse({
             "success": True,
             "data": {
@@ -233,15 +237,12 @@ class QianchuanReportClientTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
             os.environ, valid_env(), clear=True
         ):
-            with self.assertRaisesRegex(
-                client.ReportClientError, "missing expected fields"
-            ) as caught:
-                client.fetch_material_report(
-                    "shop-1", "1770096415226951", "2026-08-01", "2026-08-07",
-                    output_dir=Path(temp_dir), session=FakeSession(response),
-                )
+            records = client.fetch_material_report(
+                "shop-1", "1770096415226951", "2026-08-01", "2026-08-07",
+                output_dir=Path(temp_dir), session=FakeSession(response),
+            )
 
-        self.assertIn("roi2_material_advice_reason", str(caught.exception))
+        self.assertEqual(records, [record])
 
     def test_files_response_downloads_and_returns_structured_records(self):
         record = material_record()

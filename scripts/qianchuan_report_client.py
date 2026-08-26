@@ -23,7 +23,6 @@ DEFAULT_DIMENSIONS = [
     "roi2_material_video_play_info",
     "roi2_material_video_name",
     "roi2_material_video_type",
-    "roi2_material_advice_reason",
     "material_create_time_v2",
     "material_id",
     "anchor_id",
@@ -462,15 +461,11 @@ def _validate_field_contract():
 def _validate_record_fields(records):
     missing = {}
     for record in records:
-        for group, expected in (
-            ("dimensions", DEFAULT_DIMENSIONS),
-            ("metrics", DEFAULT_METRICS),
-        ):
-            actual = record.get(group)
-            actual = actual if isinstance(actual, dict) else {}
-            absent = [field for field in expected if field not in actual]
-            if absent:
-                missing.setdefault(group, set()).update(absent)
+        actual = record.get("metrics")
+        actual = actual if isinstance(actual, dict) else {}
+        absent = [field for field in DEFAULT_METRICS if field not in actual]
+        if absent:
+            missing.setdefault("metrics", set()).update(absent)
     if missing:
         detail = "; ".join(
             "{0}: {1}".format(group, ", ".join(sorted(fields)))

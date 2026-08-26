@@ -16,7 +16,12 @@ from asset_metrics_lib import (
     build_asset_facts_payload,
 )
 from qianchuan_report_client import ReportClientError, fetch_material_report
-from top_materials_lib import MaterialAggregator, MaterialDataError, build_output
+from top_materials_lib import (
+    MaterialAggregator,
+    MaterialDataError,
+    build_output,
+    validate_material_origin_data,
+)
 
 
 def build_parser():
@@ -71,15 +76,25 @@ def main(argv=None):
             end_date.isoformat(),
             output_dir=Path(args.source_output_dir),
         )
-        for record in records:
+        skipped_source_records = []
+        for source_row_index, record in enumerate(records):
             raw_record = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-            aggregator.add_raw_origin_data(raw_record)
-            if metrics_aggregator is not None:
-                metrics_aggregator.add_raw_origin_data(raw_record)
+            try:
+                validate_material_origin_data(raw_record)
+                if metrics_aggregator is not None:
+                    metrics_aggregator.add_raw_origin_data(raw_record)
+                aggregator.add_raw_origin_data(raw_record)
+            except (AssetMetricsError, MaterialDataError) as error:
+                skipped_source_records.append({
+                    "sourceRowIndex": source_row_index,
+                    "materialId": _record_material_id(record),
+                    "reason": str(error),
+                })
         materials, excluded = aggregator.select()
         payload = build_output(
             start_date.isoformat(), end_date.isoformat(), pattern,
             args.material_type, args.advertiser_id, materials, excluded,
+            skipped_source_records,
         )
         _write_atomic_json(output, payload)
         if metrics_aggregator is not None:
@@ -120,6 +135,17 @@ def _write_atomic_json(output, payload):
         except FileNotFoundError:
             pass
         raise
+
+
+def _record_material_id(record):
+    try:
+        value = record["dimensions"]["material_id"]["Value"]
+    except (KeyError, TypeError):
+        return None
+    if isinstance(value, bool) or value is None:
+        return None
+    material_id = str(value).strip()
+    return material_id or None
 
 
 if __name__ == "__main__":

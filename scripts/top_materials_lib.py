@@ -121,6 +121,11 @@ def select_materials(raw_origin_data, name_pattern, material_types, top_n):
     return aggregator.select()
 
 
+def validate_material_origin_data(raw_row):
+    """Validate a row before it is added to any selection aggregate."""
+    _parse_origin_data(raw_row)
+
+
 def build_output(
     actual_start_date,
     actual_end_date,
@@ -129,6 +134,7 @@ def build_output(
     advertiser_id,
     materials,
     excluded,
+    skipped_source_records=(),
 ):
     """Build the JSON-serializable output contract for selected materials."""
     pattern = _normalise_name_pattern(name_pattern)
@@ -155,6 +161,8 @@ def build_output(
             }
             for item in excluded
         ],
+        "skippedSourceRecordCount": len(skipped_source_records),
+        "skippedSourceRecords": list(skipped_source_records),
         "materials": [
             {
                 "actualStartDate": actual_start_date,
