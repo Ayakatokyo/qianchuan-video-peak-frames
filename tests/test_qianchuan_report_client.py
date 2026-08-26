@@ -164,6 +164,58 @@ class QianchuanReportClientTests(unittest.TestCase):
         self.assertEqual(payload["business_params"]["startTime"], "2026-08-01 00:00:00")
         self.assertEqual(payload["business_params"]["endTime"], "2026-08-07 23:59:59")
 
+    def test_fetch_validates_full_contract_and_writes_field_manifest(self):
+        response = FakeResponse({
+            "success": True,
+            "data": {
+                "result_type": "payload",
+                "result_content": {"payload": [material_record()]},
+            },
+        })
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, valid_env(), clear=True
+        ):
+            root = Path(temp_dir)
+            records = client.fetch_material_report(
+                "shop-1", "1770096415226951", "2026-08-01", "2026-08-07",
+                output_dir=root, session=FakeSession(response),
+            )
+            manifest = json.loads(
+                (root / "field-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(records, [material_record()])
+        self.assertEqual(manifest["dimensions"], client.DEFAULT_DIMENSIONS)
+        self.assertEqual(manifest["metrics"], client.DEFAULT_METRICS)
+        self.assertEqual(manifest["recordCount"], 1)
+        self.assertEqual(manifest["startTime"], "2026-08-01 00:00:00")
+        self.assertEqual(manifest["endTime"], "2026-08-07 23:59:59")
+        self.assertNotIn("authorization-token", json.dumps(manifest))
+
+    def test_fetch_rejects_a_nonempty_record_missing_a_contract_field(self):
+        record = material_record()
+        del record["metrics"]["video_play_finish_rate_for_roi2_v2"]
+        response = FakeResponse({
+            "success": True,
+            "data": {
+                "result_type": "payload",
+                "result_content": {"payload": [record]},
+            },
+        })
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ, valid_env(), clear=True
+        ):
+            with self.assertRaisesRegex(
+                client.ReportClientError, "missing expected fields"
+            ) as caught:
+                client.fetch_material_report(
+                    "shop-1", "1770096415226951", "2026-08-01", "2026-08-07",
+                    output_dir=Path(temp_dir), session=FakeSession(response),
+                )
+
+        self.assertIn("video_play_finish_rate_for_roi2_v2", str(caught.exception))
+        self.assertNotIn("authorization-token", str(caught.exception))
+
     def test_files_response_downloads_and_returns_structured_records(self):
         record = material_record()
         response = FakeResponse({

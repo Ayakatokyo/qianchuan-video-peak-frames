@@ -206,6 +206,7 @@ def check_auth(environ=None):
 
 
 def build_business_params(advertiser_id, start_date, end_date):
+    _validate_field_contract()
     advertiser = _advertiser_id(advertiser_id)
     start, end = _date_range(start_date, end_date)
     return {
@@ -242,6 +243,8 @@ def fetch_material_report(
     records = _records_from_result(result, source_dir, session)
     if not records:
         raise ReportClientError("material report contains no records")
+    _validate_record_fields(records)
+    _write_field_manifest(source_dir, advertiser_id, start_date, end_date, records)
     return records
 
 
@@ -440,6 +443,54 @@ def _validate_records(records):
     if any(not isinstance(record, dict) for record in records):
         raise ReportClientError("material report payload contains a non-object record")
     return records
+
+
+def _validate_field_contract():
+    if len(DEFAULT_DIMENSIONS) > 10:
+        raise ReportClientError("material aggregate query exceeds 10 dimension limit")
+    if len(DEFAULT_DIMENSIONS) != len(set(DEFAULT_DIMENSIONS)):
+        raise ReportClientError("material aggregate dimensions contain duplicates")
+    if len(DEFAULT_METRICS) != len(set(DEFAULT_METRICS)):
+        raise ReportClientError("material aggregate metrics contain duplicates")
+    forbidden = {"stat_time_day", "range_stat_time_hour"}
+    if forbidden.intersection(DEFAULT_DIMENSIONS):
+        raise ReportClientError("material aggregate query includes temporal dimensions")
+    if not DEFAULT_ORDER_BY or DEFAULT_ORDER_BY[0].get("field") not in DEFAULT_METRICS:
+        raise ReportClientError("material aggregate sort field is not a metric")
+
+
+def _validate_record_fields(records):
+    missing = {}
+    for record in records:
+        for group, expected in (
+            ("dimensions", DEFAULT_DIMENSIONS),
+            ("metrics", DEFAULT_METRICS),
+        ):
+            actual = record.get(group)
+            actual = actual if isinstance(actual, dict) else {}
+            absent = [field for field in expected if field not in actual]
+            if absent:
+                missing.setdefault(group, set()).update(absent)
+    if missing:
+        detail = "; ".join(
+            "{0}: {1}".format(group, ", ".join(sorted(fields)))
+            for group, fields in sorted(missing.items())
+        )
+        raise ReportClientError("material report missing expected fields: " + detail)
+
+
+def _write_field_manifest(source_dir, advertiser_id, start_date, end_date, records):
+    params = build_business_params(advertiser_id, start_date, end_date)
+    _write_json(source_dir / "field-manifest.json", {
+        "dataTopic": params["dataTopic"],
+        "dimensions": params["dimensions"],
+        "metrics": params["metrics"],
+        "filters": params["filters"],
+        "orderBy": params["orderBy"],
+        "startTime": params["startTime"],
+        "endTime": params["endTime"],
+        "recordCount": len(records),
+    })
 
 
 def _write_json(path, payload):
