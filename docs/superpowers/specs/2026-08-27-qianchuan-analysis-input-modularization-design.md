@@ -87,7 +87,7 @@ Top18 事实包中的主要字段体积：
 
 ### 3.2 核心决策
 
-隔离的是事实组织、Prompt 片段和校验模块，不是模型调用次数。模型在同一次调用中读取 manifest、五个章节事实包和全部 JPEG，输出一份完整 v5 JSON。
+隔离的是事实组织、单份 Prompt 内的章节规则和校验模块，不是 Prompt 文件或模型调用次数。模型在同一次调用中读取 manifest、五个章节事实包、唯一 Prompt 和全部 JPEG，输出一份完整 v5 JSON。
 
 ## 4. 目标链路
 
@@ -129,7 +129,7 @@ flowchart TD
 ```text
 diagnostic-analysis/
 ├── diagnostic-analysis-data.json          # 兼容快照，新模型不读取
-├── diagnostic-analysis-prompt.md          # 组合后的单次调用 Prompt
+├── diagnostic-analysis-prompt.md          # 唯一 Prompt 的运行时副本
 ├── diagnostic-ai-analysis.json            # 当前 v5 输出
 └── analysis-units/
     ├── analysis-unit-manifest.json
@@ -248,28 +248,25 @@ manifest 负责：
 
 ## 7. Prompt 组织
 
-维护时将 Prompt 拆为片段：
+继续只维护一个权威源文件：
 
 ```text
-prompts/analysis-units/
-├── common.md
-├── chapter01-portfolio.md
-├── chapter02-audience.md
-├── chapter03-script.md
-├── chapter04-highlight.md
-└── chapter05-material.md
+prompts/diagnostic-analysis-prompt-v1.md
 ```
 
-`prepare` 将片段按固定顺序组合成一份 `diagnostic-analysis-prompt.md`。模型仍只读取一份最终 Prompt 并执行一次。
+`prepare` 保持现有行为，将该文件原样复制为运行目录中的 `diagnostic-analysis-prompt.md`。不新增 `prompts/analysis-units/`，不做 Prompt 片段拼装，也不生成多个章节 Prompt。
 
-`common.md` 只维护：
+单份 Prompt 内部按固定顺序组织规则：
 
-- 当前对话模型身份和一次调用约束。
-- v5 顶层输出契约。
-- 通用证据、因果、禁用话术和 JSON 输出规则。
-- JPEG 全量查看与失败恢复规则。
+1. 通用执行契约：当前对话模型身份、一次调用、v5 顶层输出、证据边界、因果限制、JSON 输出和 JPEG 全量查看。
+2. Chapter 01：声明组合结论的业务问题、`chapter01-portfolio-input.json` 和输出字段。
+3. Chapter 02：声明人群事实包、三种指标口径、证据前缀和输出字段。
+4. Chapter 03：声明脚本事实包、内容公式与脚本文案规则。
+5. Chapter 04：声明视觉事实包、逐帧覆盖、分类和缺失帧规则。
+6. Chapter 05：声明单素材事实包、素材级输出、决策枚举和质量要求。
+7. 统一生成前自检：一次检查素材、帧、证据、字段数量和文本质量，再写一份完整 JSON。
 
-各章节片段只维护本章节的业务问题、输入包、输出字段、证据前缀和质量要求。修改一个章节时，不应要求同步阅读其他章节内部规则。
+章节标题和输入映射形成局部维护边界，但通用规则只出现一次。修改某章分析思路时只调整同一 Prompt 的对应章节，不复制公共规则，也不改变模型调用次数。
 
 ## 8. 输出与统一校验
 
@@ -304,7 +301,7 @@ validate_analysis_input(analysis_json, analysis_manifest, analysis_units)
 
 - `diagnostic-ai-analysis.json` v5 不变，现有报告渲染器和 Presentation 无需迁移。
 - `diagnostic-analysis-data.json` 第一阶段继续生成，作为历史兼容快照和 A/B 基线。
-- 新运行只把 manifest、五个章节包、组合 Prompt 和 JPEG 交给模型。
+- 新运行只把 manifest、五个章节包、单份 Prompt 和 JPEG 交给模型。
 - 历史运行仍允许使用旧完整事实包重新分析或渲染。
 - 当至少两个规模不同的真实批次稳定通过后，再评估是否停止生成完整兼容快照。
 - 不引入四包/五包结果合并器，因为模型仍然输出一个完整 v5 JSON。
@@ -328,12 +325,12 @@ validate_analysis_input(analysis_json, analysis_manifest, analysis_units)
 - 不修改 Prompt 业务规则、v5 输出和报告渲染。
 - 证明每个包不泄漏其他章节的大型展示或原始明细。
 
-### 批次 B：Prompt 与校验隔离
+### 批次 B：单份 Prompt 与校验隔离
 
-- 将 Prompt 拆成六个可组合片段。
+- 在现有唯一 Prompt 内建立通用规则和五个章节的固定边界。
 - 提取统一分析校验入口。
 - `finalize` 在产生副作用前执行统一校验。
-- 将已确认的当前对话模型身份约束固化到 `SKILL.md` 和组合 Prompt。
+- 将已确认的当前对话模型身份约束固化到 `SKILL.md` 和唯一 Prompt。
 
 ### 批次 C：真实模型 A/B 与兼容收口
 
@@ -348,7 +345,7 @@ validate_analysis_input(analysis_json, analysis_manifest, analysis_units)
 
 - Top18 五个模型事实包总字节数相对当前 1,004,011 bytes 至少降低 30%。
 - 不通过删除现有业务维度或隐藏缺失数据达到体积目标。
-- Prompt 总体积不得因拆片显著增长；组合结果仍为一次模型指令。
+- 唯一 Prompt 的总体积不得因章节重组显著增长，且仍为一次模型指令。
 - 记录当前模型分析实际耗时，A/B 使用同一真实批次和同一输出契约。
 
 ### 12.2 数据与分析完整性
