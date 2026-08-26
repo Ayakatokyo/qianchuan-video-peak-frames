@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,18 +15,16 @@ import qianchuan_report_client as client  # noqa: E402
 
 
 def material_record(material_id="m-1"):
+    dimensions = {
+        field: {"Value": field, "ValueStr": field}
+        for field in client.DEFAULT_DIMENSIONS
+    }
+    dimensions["material_id"] = {"Value": material_id, "ValueStr": material_id}
     return {
-        "dimensions": {
-            "material_id": {"Value": material_id, "ValueStr": material_id},
-            "anchor_id": {"Value": "anchor-1", "ValueStr": "anchor-1"},
-            "roi2_material_video_name": {"Value": "素材", "ValueStr": "素材"},
-            "roi2_material_type_v3": {"Value": "3", "ValueStr": "3"},
-            "roi2_material_video_type": {"Value": "video", "ValueStr": "video"},
-        },
+        "dimensions": dimensions,
         "metrics": {
-            "stat_cost_for_overall_roi2": {"Value": 12.5, "ValueStr": "12.5"},
-            "total_order_settle_amount_for_roi2_1h": {"Value": 8, "ValueStr": "8"},
-            "total_pay_order_gmv_include_coupon_for_roi2": {"Value": 10, "ValueStr": "10"},
+            field: {"Value": 1, "ValueStr": "1"}
+            for field in client.DEFAULT_METRICS
         },
     }
 
@@ -86,13 +85,34 @@ class QianchuanReportClientTests(unittest.TestCase):
         self.assertEqual(
             client.DEFAULT_DIMENSIONS,
             [
+                "ecp_app_id",
+                "roi2_material_type_v3",
+                "roi2_material_video_play_info",
+                "roi2_material_video_name",
+                "roi2_material_video_type",
+                "roi2_material_advice_reason",
+                "material_create_time_v2",
                 "material_id",
                 "anchor_id",
-                "roi2_material_video_name",
-                "roi2_material_type_v3",
-                "roi2_material_video_type",
             ],
         )
+        self.assertEqual(len(client.DEFAULT_METRICS), 102)
+        self.assertEqual(len(client.DEFAULT_METRICS), len(set(client.DEFAULT_METRICS)))
+        self.assertEqual(
+            hashlib.sha256("\0".join(client.DEFAULT_METRICS).encode()).hexdigest(),
+            "ef5af9efb7c10495f8d0ab9476df4655c976e2745ecbbc2ca9987a8a68980aae",
+        )
+        for field in (
+            "stat_cost_for_overall_roi2",
+            "total_prepay_and_pay_settle_overall_roi2_1h",
+            "total_cost_per_pay_order_settle_for_overall_roi2_1h",
+            "total_prepay_and_pay_settle_roi2_1h",
+            "live_show_count_for_roi2_v2",
+            "video_play_finish_rate_for_roi2_v2",
+        ):
+            self.assertIn(field, client.DEFAULT_METRICS)
+        for field in ("roi2_material_advice", "stat_time_day", "range_stat_time_hour"):
+            self.assertNotIn(field, client.DEFAULT_DIMENSIONS)
         self.assertIn(
             "additional_delivery_total_refund_order_count_for_roi2_1h_assist",
             client.DEFAULT_METRICS,

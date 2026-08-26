@@ -18,11 +18,15 @@ FUNCTION_CODE = "OCEANENGINE_UNI_PROMOTION_PLAN_DATA_REQUESTS_ZDY"
 PLATFORM = "OCEANENGINE"
 DEFAULT_DATA_TOPIC = "OVERALL_ROI_LIVE_MATERIAL_VIDEO"
 DEFAULT_DIMENSIONS = [
+    "ecp_app_id",
+    "roi2_material_type_v3",
+    "roi2_material_video_play_info",
+    "roi2_material_video_name",
+    "roi2_material_video_type",
+    "roi2_material_advice_reason",
+    "material_create_time_v2",
     "material_id",
     "anchor_id",
-    "roi2_material_video_name",
-    "roi2_material_type_v3",
-    "roi2_material_video_type",
 ]
 DEFAULT_METRICS = [
     "stat_cost_for_overall_roi2",
@@ -111,6 +115,22 @@ DEFAULT_METRICS = [
     "additional_delivery_total_cost_per_pay_order_settle_for_roi2_7d_assist",
     "additional_delivery_total_order_settle_amount_rate_for_roi2_7d_assist",
     "additional_delivery_total_order_settle_count_rate_for_roi2_7d_assist",
+    "live_show_count_for_roi2_v2",
+    "live_cvr_rate_for_roi2_v2",
+    "live_watch_count_for_roi2_v2",
+    "live_convert_rate_for_roi2_v2",
+    "total_cpc_for_roi2",
+    "total_ecpm_for_roi2",
+    "video_avg_watch_duration_for_roi2",
+    "video_comment_count_for_roi2_v2",
+    "video_follow_count_for_roi2",
+    "video_like_count_for_roi2",
+    "video_play_count_for_roi2_v2",
+    "video_play_duration_2s_rate_for_roi2",
+    "video_play_duration_3s_rate_for_roi2",
+    "video_play_duration_5s_rate_for_roi2",
+    "video_play_duration_10s_rate_for_roi2",
+    "video_play_finish_rate_for_roi2_v2",
 ]
 DEFAULT_FILTERS = [
     {"field": "ecp_app_id", "operator": 7, "values": ["1", "2"]},
