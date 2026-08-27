@@ -51,6 +51,10 @@ def build_parser():
     finalize.add_argument("--output-dir", required=True)
     finalize.add_argument("--analysis-json", required=True)
 
+    validate_analysis = commands.add_parser("validate-analysis")
+    validate_analysis.add_argument("--output-dir", required=True)
+    validate_analysis.add_argument("--analysis-json", required=True)
+
     status = commands.add_parser("status")
     status.add_argument("--output-dir", required=True)
     return parser
@@ -101,6 +105,11 @@ def main(argv=None):
             print(f"final_report_data={report_dir / 'final-report-data.json'}")
             print(f"final_report_html={Path(args.output_dir) / artifacts['report']}")
             print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
+        elif args.command == "validate-analysis":
+            print(json.dumps(
+                workflow.validate_analysis(args.output_dir, args.analysis_json),
+                ensure_ascii=False,
+            ))
         else:
             print(json.dumps(workflow.standard_run_status(args.output_dir), ensure_ascii=False))
     except DependencyBootstrapError as exc:

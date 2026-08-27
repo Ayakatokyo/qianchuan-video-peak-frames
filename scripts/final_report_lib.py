@@ -1421,6 +1421,59 @@ def _validate_standard_ai_quality(conclusion, material_cards):
     _validate_v2_analysis_quality(conclusion, material_cards)
 
 
+def _prepare_report_data(
+    top_materials_json,
+    peak_output_dir,
+    diagnosis_records_dir,
+    analysis_json,
+):
+    top_payload = _read_json(top_materials_json, "top materials JSON")
+    materials = _selected_materials(top_payload)
+    records_by_material, record_warnings = load_records_for_materials(
+        materials, diagnosis_records_dir
+    )
+    summaries_by_material = load_summaries_for_materials(materials, peak_output_dir)
+    batch_verification = load_batch_verification(peak_output_dir)
+    batch_manifest = load_batch_manifest(peak_output_dir)
+    top_material_roi = load_top_material_roi_facts(peak_output_dir)
+    conclusion = load_conclusion_analysis(analysis_json) if analysis_json else None
+    return (
+        build_final_report_data(
+            top_payload,
+            records_by_material,
+            summaries_by_material,
+            conclusion=conclusion,
+            batch_verification=batch_verification,
+            batch_manifest=batch_manifest,
+            input_warnings=record_warnings,
+            top_material_roi=top_material_roi,
+        ),
+        conclusion,
+    )
+
+
+def validate_standard_ai_analysis(
+    top_materials_json,
+    peak_output_dir,
+    diagnosis_records_dir,
+    analysis_json,
+):
+    """Validate the AI analysis against the same inputs used for rendering."""
+    data, conclusion = _prepare_report_data(
+        top_materials_json,
+        peak_output_dir,
+        diagnosis_records_dir,
+        analysis_json,
+    )
+    _validate_standard_ai_quality(conclusion, data["materials"])
+    overview = data["overview"]
+    return {
+        "analysisSchemaVersion": conclusion["schemaVersion"],
+        "materialCount": overview["materialCount"],
+        "highlightFrameCount": overview["highlightFrameCount"],
+    }
+
+
 def build_final_report_data(
     top_payload,
     records_by_material,
@@ -1687,25 +1740,11 @@ def generate_final_report(
     copy_assets=False,
     require_ai_quality=False,
 ):
-    top_payload = _read_json(top_materials_json, "top materials JSON")
-    materials = _selected_materials(top_payload)
-    records_by_material, record_warnings = load_records_for_materials(
-        materials, diagnosis_records_dir
-    )
-    summaries_by_material = load_summaries_for_materials(materials, peak_output_dir)
-    batch_verification = load_batch_verification(peak_output_dir)
-    batch_manifest = load_batch_manifest(peak_output_dir)
-    top_material_roi = load_top_material_roi_facts(peak_output_dir)
-    conclusion = load_conclusion_analysis(analysis_json) if analysis_json else None
-    legacy_data = build_final_report_data(
-        top_payload,
-        records_by_material,
-        summaries_by_material,
-        conclusion=conclusion,
-        batch_verification=batch_verification,
-        batch_manifest=batch_manifest,
-        input_warnings=record_warnings,
-        top_material_roi=top_material_roi,
+    legacy_data, conclusion = _prepare_report_data(
+        top_materials_json,
+        peak_output_dir,
+        diagnosis_records_dir,
+        analysis_json,
     )
     if require_ai_quality:
         _validate_standard_ai_quality(conclusion, legacy_data["materials"])

@@ -9,7 +9,7 @@ from pathlib import Path
 import export_top_materials
 import extract_peak_frames
 from diagnostic_analysis_lib import prepare_diagnostic_analysis
-from final_report_lib import generate_final_report
+from final_report_lib import generate_final_report, validate_standard_ai_analysis
 from qianchuan_report_client import fetch_material_report_metadata
 from report_renderer import create_report_archive
 from batch_runtime import (
@@ -383,6 +383,38 @@ def _read_summary(path):
     if not isinstance(payload, dict):
         raise StandardWorkflowError("report", "run summary must be an object")
     return payload
+
+
+def validate_analysis(output_dir, analysis_json, *, validate=validate_standard_ai_analysis):
+    """Validate AI analysis without changing the run's retryable state."""
+    paths = workflow_paths(output_dir)
+    summary = _read_summary(paths["summary"])
+    request_payload = summary.get("request")
+    request = WorkflowRequest(
+        start_date=request_payload.get("startDate", ""),
+        end_date=request_payload.get("endDate", ""),
+        top_n=request_payload.get("topN"),
+        advertiser_id=request_payload.get("advertiserId", ""),
+        shop_id=request_payload.get("shopId", ""),
+    ) if isinstance(request_payload, dict) else None
+    try:
+        _validate_request(request)
+        if summary.get("status") != "analysis_pending":
+            raise StandardWorkflowError("analysis", "run is not awaiting AI analysis")
+        analysis_path = Path(analysis_json)
+        if not analysis_path.is_file():
+            raise StandardWorkflowError("analysis", "analysis JSON is missing")
+        details = validate(
+            top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
+            peak_output_dir=paths["peak_frames"],
+            diagnosis_records_dir=paths["records"],
+            analysis_json=analysis_path,
+        )
+    except StandardWorkflowError:
+        raise
+    except Exception as exc:
+        raise StandardWorkflowError("analysis", str(exc)) from exc
+    return {"analysisStatus": "valid", **details}
 
 
 def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_final_report,

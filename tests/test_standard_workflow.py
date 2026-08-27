@@ -542,6 +542,72 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertIsNone(summary["artifacts"]["analysisUnitManifest"])
         self.assertTrue(archive_exists)
 
+    def test_validate_analysis_checks_existing_artifacts_without_changing_run_state(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text('{"schemaVersion": 5}', encoding="utf-8")
+            original_summary = {
+                "schemaVersion": 2,
+                "status": "analysis_pending",
+                "request": self.request_payload(),
+                "artifacts": {},
+                "failure": None,
+            }
+            standard_workflow.write_run_summary(root / "run-summary.json", original_summary)
+
+            result = standard_workflow.validate_analysis(
+                root,
+                analysis_json,
+                validate=lambda **kwargs: calls.append(kwargs) or {
+                    "analysisSchemaVersion": 5,
+                    "materialCount": 2,
+                    "highlightFrameCount": 12,
+                },
+            )
+            persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["analysisStatus"], "valid")
+        self.assertEqual(result["analysisSchemaVersion"], 5)
+        self.assertEqual(result["materialCount"], 2)
+        self.assertEqual(result["highlightFrameCount"], 12)
+        self.assertEqual(persisted, original_summary)
+        self.assertEqual(calls[0]["analysis_json"], analysis_json)
+        self.assertEqual(
+            calls[0]["top_materials_json"],
+            root / "peak-frames" / "top_materials_rpa_ready.json",
+        )
+
+    def test_validate_analysis_keeps_run_retryable_after_quality_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text('{"schemaVersion": 5}', encoding="utf-8")
+            original_summary = {
+                "schemaVersion": 2,
+                "status": "analysis_pending",
+                "request": self.request_payload(),
+                "artifacts": {},
+                "failure": None,
+            }
+            standard_workflow.write_run_summary(root / "run-summary.json", original_summary)
+
+            with self.assertRaisesRegex(
+                standard_workflow.StandardWorkflowError, "overallConclusion"
+            ) as error:
+                standard_workflow.validate_analysis(
+                    root,
+                    analysis_json,
+                    validate=lambda **_kwargs: (_ for _ in ()).throw(
+                        ValueError("overallConclusion must contain at least 100 characters")
+                    ),
+                )
+            persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(error.exception.stage, "analysis")
+        self.assertEqual(persisted, original_summary)
+
     def test_finalize_requires_dense_ai_analysis(self):
         render_calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -812,6 +878,39 @@ class StandardWorkflowCliTests(unittest.TestCase):
         self.assertIn(
             "final_report_zip=/tmp/qianchuan-run/final-report.zip",
             stdout.getvalue(),
+        )
+
+    def test_validate_analysis_prints_validation_summary(self):
+        validate_analysis = Mock(return_value={
+            "analysisStatus": "valid",
+            "analysisSchemaVersion": 5,
+            "materialCount": 2,
+            "highlightFrameCount": 12,
+        })
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "validate_analysis": validate_analysis,
+        })()
+        with patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow):
+            with patch.object(run_standard_analysis, "ensure_prepare_dependencies"):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    result = run_standard_analysis.main(
+                        [
+                            "validate-analysis",
+                            "--output-dir",
+                            "/tmp/qianchuan-run",
+                            "--analysis-json",
+                            "/tmp/qianchuan-run/diagnostic-ai-analysis.json",
+                        ]
+                    )
+
+        self.assertEqual(result, 0)
+        self.assertIn('"analysisStatus": "valid"', stdout.getvalue())
+        validate_analysis.assert_called_once_with(
+            "/tmp/qianchuan-run",
+            "/tmp/qianchuan-run/diagnostic-ai-analysis.json",
         )
 
 

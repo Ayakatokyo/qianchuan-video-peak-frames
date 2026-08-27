@@ -16,6 +16,12 @@ metadata:
 
 报表查询的 `--shop-id` 是授权店铺 ID，仅用于素材报表连接器。RPA 诊断使用 RPA 授权账户列表中的千川 ID；标准入口不会把报表店铺 ID 传给 RPA，而由 RPA 批处理自动解析当前授权的唯一千川 ID。无授权账户或多账户时，先处理授权选择错误，不重复提交素材诊断。
 
+## 单 Agent 执行边界
+
+本技能的完整流程由当前对话的主 Agent 直接执行，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。不要为进度等待、事实包核验、帧审阅、AI 分析、`finalize`、报告检查或归档拆分额外 Agent。
+
+交付前的报告核验由当前主 Agent 直接完成：打开本地 `final-report/final-report.html`，在桌面 `1440x1000` 视口检查封面、目录、章节卡片、图表和高光帧，并结合 `run-summary.json` 与报告文件存在性确认交付状态。若当前环境无法打开或查看 HTML，只记录“视口核验待执行”及原因；不得以创建子代理作为替代，也不得将未完成的视口核验表述为已通过。
+
 ## 周期换算
 
 相对周期使用 T+2 数据回流口径，先换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天。不得将执行日或前一日纳入分析；例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`（含首尾）。
@@ -74,6 +80,16 @@ RPA 执行只有一个 480 秒截止时间。超过截止时间时，系统终�
 
 以该提示词为 AI JSON 输出契约：按其中的字段、证据、覆盖、枚举、长度与定向修正规则完成一次完整分析。结论仅分析业务事实；每个成功 JPEG 都要有高光帧分析，`missingFrames` 必须在 `frameCoverageNote` 说明影响，证据引用逐字复用事实包标识。v4 仅用于历史报告兼容。
 
+写入 AI JSON 后、调用 `finalize` 前，必须执行一次只读质量校验：
+
+```bash
+python scripts/run_standard_analysis.py validate-analysis \
+  --output-dir "$PWD/runs/<run-id>" \
+  --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
+```
+
+该命令复用报告渲染的 JSON、证据、帧覆盖、dashboard、枚举和内容长度门禁，不修改运行目录。校验失败时，当前主 Agent 仅修正报错字段后重新执行该命令；不得重新执行 `prepare`，不得调用子代理。校验通过后再进入 `finalize`；`finalize` 仍会重复执行同一质量门禁，防止跳过校验命令。
+
 ### 3. 校验并交付报告
 
 ```bash
@@ -82,7 +98,7 @@ python scripts/run_standard_analysis.py finalize \
   --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-仅当 `run-summary.json` 状态为 `complete` 时交付 `final-report.zip`。解压后打开 `final-report/final-report.html`；压缩包包含报告 HTML、数据文件和本地高光帧，图片不依赖三方链接，视频仍使用平台返回的 URL。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。交付前在桌面 `1440x1000` 视口检查封面、目录、章节卡片、图表和高光帧，无文本遮挡或正文横向溢出。
+仅当 `run-summary.json` 状态为 `complete` 时交付 `final-report.zip`。解压后由当前主 Agent 打开 `final-report/final-report.html`；压缩包包含报告 HTML、数据文件和本地高光帧，图片不依赖三方链接，视频仍使用平台返回的 URL。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。交付前由当前主 Agent 在桌面 `1440x1000` 视口检查封面、目录、章节卡片、图表和高光帧，无文本遮挡或正文横向溢出。
 
 若状态仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；其余故障按[运维手册](references/qianchuan-operations-runbook.md)恢复。
 

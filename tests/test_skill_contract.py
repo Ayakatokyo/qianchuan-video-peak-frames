@@ -52,6 +52,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
         self.assertIn("run_standard_analysis.py prepare", skill)
+        self.assertIn("run_standard_analysis.py validate-analysis", skill)
         self.assertIn("run_standard_analysis.py finalize", skill)
         self.assertNotIn("python scripts/export_top_materials.py", skill)
         self.assertNotIn("python scripts/extract_peak_frames.py", skill)
@@ -109,6 +110,15 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("视频仍使用平台返回的 URL", skill)
         self.assertIn("不得交付草稿报告", skill)
 
+    def test_skill_keeps_report_delivery_single_agent(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("单 Agent 执行边界", skill)
+        self.assertIn("不得创建、调用或委派子代理", skill)
+        self.assertIn("不得调用会强制创建子代理的渲染校验", skill)
+        self.assertIn("当前主 Agent 直接完成", skill)
+        self.assertIn("不得以创建子代理作为替代", skill)
+
     def test_skill_documents_finalize_retry_after_correcting_ai_json(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
@@ -142,6 +152,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("decision 只能使用", prompt)
         self.assertIn("每张成功高光帧恰好一条", prompt)
         self.assertIn("final_report_lib.py", prompt)
+        self.assertIn("validate-analysis", prompt)
 
     def test_skill_and_prompt_use_five_units_in_one_current_model_call(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
