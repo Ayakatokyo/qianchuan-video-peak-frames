@@ -813,32 +813,25 @@ def _commercial_facts(top_payload, top_material_roi_facts_path):
     }
 
 
-def _publish_output_pair(output_dir, analysis, prompt):
+def _publish_prompt(output_dir, prompt):
     root = Path(output_dir)
-    data_path = root / "diagnostic-analysis-data.json"
     prompt_path = root / "diagnostic-analysis-prompt.md"
-    data_staging = root / f".diagnostic-analysis-data.{uuid.uuid4().hex}.json.tmp"
     prompt_staging = root / f".diagnostic-analysis-prompt.{uuid.uuid4().hex}.md.tmp"
     try:
         root.mkdir(parents=True, exist_ok=True)
-        data_staging.write_text(
-            json.dumps(analysis, ensure_ascii=False, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
         prompt_staging.write_text(prompt, encoding="utf-8")
-        os.replace(data_staging, data_path)
         os.replace(prompt_staging, prompt_path)
     except OSError as exc:
         raise DiagnosticAnalysisError(
             f"unable to publish diagnostic analysis output in {root}: {exc}"
         ) from exc
     finally:
-        for staging in (data_staging, prompt_staging):
+        for staging in (prompt_staging,):
             try:
                 staging.unlink(missing_ok=True)
             except OSError:
                 pass
-    return data_path, prompt_path
+    return prompt_path
 
 
 def build_diagnostic_analysis(top_payload, records_by_material, commercial=None):
@@ -897,6 +890,6 @@ def prepare_diagnostic_analysis(
             top_payload, peak_output_dir
         )
     analysis["warnings"] = read_warnings + analysis["warnings"] + highlight_warnings
-    data_path, prompt_path = _publish_output_pair(output_dir, analysis, prompt)
     publish_analysis_units(output_dir, analysis)
-    return data_path, prompt_path, analysis
+    prompt_path = _publish_prompt(output_dir, prompt)
+    return prompt_path, analysis

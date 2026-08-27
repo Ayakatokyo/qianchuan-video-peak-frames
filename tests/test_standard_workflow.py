@@ -150,7 +150,6 @@ class StandardWorkflowTests(unittest.TestCase):
             def prepare_facts(**kwargs):
                 calls.append(("facts", kwargs))
                 return (
-                    root / "diagnostic-analysis" / "diagnostic-analysis-data.json",
                     root / "diagnostic-analysis" / "diagnostic-analysis-prompt.md",
                     {},
                 )
@@ -184,6 +183,8 @@ class StandardWorkflowTests(unittest.TestCase):
                 calls[3][1]["top_material_roi_facts_path"],
                 root / "peak-frames" / "top-material-roi-facts-v1.json",
             )
+            self.assertNotIn("diagnosticData", summary["artifacts"])
+            self.assertEqual(summary["schemaVersion"], 2)
             self.assertEqual(
                 summary["artifacts"]["analysisUnitManifest"],
                 "diagnostic-analysis/analysis-units/analysis-unit-manifest.json",
@@ -213,7 +214,7 @@ class StandardWorkflowTests(unittest.TestCase):
                 self.request(), root,
                 export_main=export_main,
                 extract_main=extract_main,
-                prepare_facts=lambda **_kwargs: (root / "data.json", root / "prompt.md", {}),
+                prepare_facts=lambda **_kwargs: (root / "prompt.md", {}),
             )
 
             roi_facts = json.loads(
@@ -247,7 +248,7 @@ class StandardWorkflowTests(unittest.TestCase):
                 export_main=export_main,
                 extract_main=extract_main,
                 prepare_facts=lambda **_kwargs: (
-                    root / "data.json", root / "prompt.md", {}
+                    root / "prompt.md", {}
                 ),
             )
 
@@ -277,7 +278,7 @@ class StandardWorkflowTests(unittest.TestCase):
                 export_main=export_main,
                 extract_main=extract_main,
                 prepare_facts=lambda **_kwargs: (
-                    root / "data.json", root / "prompt.md", {}
+                    root / "prompt.md", {}
                 ),
             )
 
@@ -688,7 +689,6 @@ class StandardWorkflowCliTests(unittest.TestCase):
         stdout = io.StringIO()
         prepare_standard_run = Mock(return_value={
             "artifacts": {
-                "diagnosticData": "diagnostic-analysis/diagnostic-analysis-data.json",
                 "diagnosticPrompt": "diagnostic-analysis/diagnostic-analysis-prompt.md",
                 "analysisUnitManifest": "diagnostic-analysis/analysis-units/analysis-unit-manifest.json",
             }
@@ -712,10 +712,7 @@ class StandardWorkflowCliTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 0)
-        self.assertIn(
-            "diagnostic_analysis_data=/tmp/qianchuan-run/diagnostic-analysis/diagnostic-analysis-data.json",
-            stdout.getvalue(),
-        )
+        self.assertNotIn("diagnostic_analysis_data=", stdout.getvalue())
         self.assertIn(
             "diagnostic_analysis_prompt=/tmp/qianchuan-run/diagnostic-analysis/diagnostic-analysis-prompt.md",
             stdout.getvalue(),

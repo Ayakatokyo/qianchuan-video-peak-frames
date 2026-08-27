@@ -8,7 +8,7 @@
 - `analysis-units/chapter04-highlight-input.json`
 - `analysis-units/chapter05-material-input.json`
 
-`diagnostic-analysis-data.json` 仅是历史兼容快照，新分析不得读取它来补充或覆盖五个章节事实包。当前对话模型必须逐张实际查看 `chapter04-highlight-input.json` 中 `materials[*].frames[*].framePath` 指向的 JPEG，一次输出完整结果；不得拆成五次模型调用，不得使用外部模型服务、`codex exec` 或子进程替代当前对话模型。
+历史运行中的 `diagnostic-analysis-data.json` 仅作兼容留档；新运行不再生成，新分析不得读取它来补充或覆盖五个章节事实包。当前对话模型必须逐张实际查看 `chapter04-highlight-input.json` 中 `materials[*].frames[*].framePath` 指向的 JPEG，一次输出完整结果；不得拆成五次模型调用，不得使用外部模型服务、`codex exec` 或子进程替代当前对话模型。
 
 只分析五个章节事实包提供的业务事实。不得分析执行过程，不得把运行目录名、任务上下文、代码修复、`verify` 收口、`fresh rerun`、`rpa_request_failed`、候选失败、补位、取消、重跑或批次调度写入任何输出字段。素材 rank 只表示当前已提取素材在输入中的排序；rank 缺口不得被解释为补位或失败。
 

@@ -676,20 +676,17 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             )
             self._write_json(records_dir / "m-2.json", {"not": "a record list"})
 
-            data_path, prompt_path, analysis = prepare_diagnostic_analysis(
+            prompt_path, analysis = prepare_diagnostic_analysis(
                 top_materials, records_dir, output_dir
             )
 
-            self.assertEqual(data_path, output_dir / "diagnostic-analysis-data.json")
             self.assertEqual(prompt_path, output_dir / "diagnostic-analysis-prompt.md")
-            self.assertEqual(
-                json.loads(data_path.read_text(encoding="utf-8")), analysis
-            )
+            self.assertFalse((output_dir / "diagnostic-analysis-data.json").exists())
             self.assertEqual(
                 prompt_path.read_text(encoding="utf-8"),
                 DEFAULT_PROMPT_PATH.read_text(encoding="utf-8"),
             )
-            self.assertNotIn("https://signed.example", data_path.read_text(encoding="utf-8"))
+            self.assertNotIn("https://signed.example", json.dumps(analysis, ensure_ascii=False))
             self.assertEqual(
                 analysis["materials"],
                 [
@@ -719,7 +716,7 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             self.assertIn("diagnosis records for material m-2 are not a list", analysis["warnings"])
             self.assertIn("missing diagnosis records for material m-3", analysis["warnings"])
 
-    def test_publishes_compact_fact_package_to_reduce_ai_input_size(self):
+    def test_does_not_publish_legacy_compatibility_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             top_materials = root / "top_materials.json"
@@ -735,18 +732,12 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
                 [crowd_record("m-1", "SHOW_COUNT", "age", "24-30", 100)],
             )
 
-            data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+            _prompt_path, analysis = prepare_diagnostic_analysis(
                 top_materials, records_dir, output_dir
             )
 
-            data_text = data_path.read_text(encoding="utf-8")
-            self.assertEqual(json.loads(data_text), analysis)
-            self.assertTrue(data_text.endswith("\n"))
-            self.assertNotIn('\n  "', data_text)
-            self.assertEqual(
-                data_text,
-                json.dumps(analysis, ensure_ascii=False, separators=(",", ":")) + "\n",
-            )
+            self.assertFalse((output_dir / "diagnostic-analysis-data.json").exists())
+            self.assertEqual(analysis["materials"][0]["materialId"], "m-1")
 
     def test_prepare_accepts_retained_diagnosis_csv_dir_without_json_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -794,7 +785,7 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
                 ],
             )
 
-            data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+            _prompt_path, analysis = prepare_diagnostic_analysis(
                 top_materials, csv_dir, output_dir
             )
 
@@ -805,9 +796,6 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             )
             self.assertNotIn(
                 "missing diagnosis records for material m-1", analysis["warnings"]
-            )
-            self.assertEqual(
-                json.loads(data_path.read_text(encoding="utf-8")), analysis
             )
 
     def test_copies_override_prompt_and_rejects_missing_template_without_output(self):
@@ -825,7 +813,7 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             self._write_json(records_dir / "m-1.json", [])
             template.write_text("custom prompt\n", encoding="utf-8")
 
-            _data_path, prompt_path, _analysis = prepare_diagnostic_analysis(
+            prompt_path, _analysis = prepare_diagnostic_analysis(
                 top_materials, records_dir, output_dir, template
             )
 
@@ -884,7 +872,7 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
                 },
             )
 
-            data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+            _prompt_path, analysis = prepare_diagnostic_analysis(
                 top_materials,
                 records_dir,
                 output_dir,
@@ -913,9 +901,6 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
                         "errorMessage": "decoder killed",
                     }
                 ],
-            )
-            self.assertEqual(
-                json.loads(data_path.read_text(encoding="utf-8")), analysis
             )
 
 
@@ -951,7 +936,7 @@ class DiagnosticAnalysisCommercialFactsTests(unittest.TestCase):
                 ],
             }), encoding="utf-8")
 
-            _data_path, _prompt_path, analysis = prepare_diagnostic_analysis(
+            _prompt_path, analysis = prepare_diagnostic_analysis(
                 top_materials,
                 records_dir,
                 output_dir,
@@ -973,7 +958,7 @@ class DiagnosticAnalysisCommercialFactsTests(unittest.TestCase):
 
 
 class DiagnosticAnalysisUnitIntegrationTests(unittest.TestCase):
-    def test_prepare_keeps_compatibility_return_and_publishes_analysis_units(self):
+    def test_prepare_publishes_analysis_units_without_compatibility_snapshot(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             top_materials = root / "top_materials.json"
@@ -995,15 +980,12 @@ class DiagnosticAnalysisUnitIntegrationTests(unittest.TestCase):
             )
             (records_dir / "m-1.json").write_text("[]", encoding="utf-8")
 
-            data_path, prompt_path, analysis = prepare_diagnostic_analysis(
+            prompt_path, analysis = prepare_diagnostic_analysis(
                 top_materials, records_dir, output_dir
             )
 
-            self.assertEqual(data_path, output_dir / "diagnostic-analysis-data.json")
             self.assertEqual(prompt_path, output_dir / "diagnostic-analysis-prompt.md")
-            self.assertEqual(
-                json.loads(data_path.read_text(encoding="utf-8")), analysis
-            )
+            self.assertFalse((output_dir / "diagnostic-analysis-data.json").exists())
             manifest_path = (
                 output_dir / "analysis-units" / "analysis-unit-manifest.json"
             )

@@ -58,7 +58,7 @@ python scripts/run_standard_analysis.py fetch-metadata \
 
 该命令只落盘 `source-data/gateway-response.json` 和 `run-summary.json`（状态 `metadata_ready`），不下载结果文件、不生成候选素材，也不调用 RPA。完整 `prepare` 在内网可达时会在相同的 `source-data/` 目录保留网关元数据、原始 CSV 与结构化 JSON，并以结构化记录生成候选素材和 ROI 事实。
 
-仅当状态为 `analysis_pending` 时进入 AI 分析。必须使用本次 `prepare` 生成的 `diagnostic-analysis/analysis-units/analysis-unit-manifest.json`、manifest 声明的五个章节事实包与 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 或其他候选清单组装事实，也不得手写 `missingRanks`。`diagnostic-analysis/diagnostic-analysis-data.json` 继续保留为兼容快照，但新分析不得读取该快照补充五个章节包。
+仅当状态为 `analysis_pending` 时进入 AI 分析。必须使用本次 `prepare` 生成的 `diagnostic-analysis/analysis-units/analysis-unit-manifest.json`、manifest 声明的五个章节事实包与 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 或其他候选清单组装事实，也不得手写 `missingRanks`。历史运行可能仍有 `diagnostic-analysis/diagnostic-analysis-data.json`，但新运行不再生成，新分析不得读取该快照。
 
 将 `prepare` 视为单一长任务：不要因没有实时进度而另起运行，也不要手工干预 RPA、波次或后处理。出现中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时，保留运行目录并遵循[运维手册](references/qianchuan-operations-runbook.md)；连接器与波次约束见 [RPA 输出契约](references/rpa-output-contract.md)。
 

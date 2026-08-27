@@ -119,7 +119,7 @@ def _relative(root, path):
     return str(Path(path).resolve().relative_to(Path(root).resolve()))
 
 
-def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=None,
+def _summary(request, paths, *, status, diagnostic_prompt=None,
              analysis_unit_manifest=None, report=None, report_archive=None,
              failure=None, active_stage=None):
     root = paths["root"]
@@ -131,7 +131,7 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
         "shopId": request.shop_id,
     } if isinstance(request, WorkflowRequest) else None
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "status": status,
         "activeStage": active_stage,
         "request": request_summary,
@@ -141,7 +141,6 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
             "assetMaterialFacts": _relative(root, paths["asset_facts"]),
             "topMaterialRoiFacts": _relative(root, paths["top_material_roi_facts"]),
             "readyMaterials": _relative(root, paths["peak_frames"] / READY_MATERIALS_NAME),
-            "diagnosticData": _relative(root, diagnostic_data) if diagnostic_data else None,
             "diagnosticPrompt": _relative(root, diagnostic_prompt) if diagnostic_prompt else None,
             "analysisUnitManifest": (
                 _relative(root, analysis_unit_manifest)
@@ -312,7 +311,7 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 paths["peak_frames"] / READY_MATERIALS_NAME,
                 paths["top_material_roi_facts"],
             )
-            data_path, prompt_path, _analysis = prepare_facts(
+            prompt_path, _analysis = prepare_facts(
                 top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
                 diagnosis_records_dir=paths["records"],
                 peak_output_dir=paths["peak_frames"],
@@ -323,7 +322,6 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 request,
                 paths,
                 status="analysis_pending",
-                diagnostic_data=data_path,
                 diagnostic_prompt=prompt_path,
                 analysis_unit_manifest=(
                     paths["analysis"]
@@ -433,7 +431,6 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
                 request,
                 paths,
                 status="complete",
-                diagnostic_data=paths["analysis"] / "diagnostic-analysis-data.json",
                 diagnostic_prompt=paths["analysis"] / "diagnostic-analysis-prompt.md",
                 analysis_unit_manifest=(
                     analysis_unit_manifest if analysis_unit_manifest.is_file() else None

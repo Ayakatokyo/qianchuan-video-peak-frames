@@ -156,7 +156,7 @@ def example_analysis():
 
 
 class AnalysisUnitProjectionTests(unittest.TestCase):
-    def test_projects_compatible_snapshot_into_isolated_chapter_inputs(self):
+    def test_projects_normalized_facts_into_isolated_chapter_inputs(self):
         units = build_analysis_units(example_analysis())
 
         self.assertEqual(
@@ -218,6 +218,10 @@ class AnalysisUnitPublicationTests(unittest.TestCase):
                 manifest_path,
                 Path(temp_dir) / "analysis-units" / "analysis-unit-manifest.json",
             )
+            self.assertNotIn("compatibilitySnapshotPath", manifest)
+            self.assertEqual(manifest["schemaVersion"], 2)
+            self.assertEqual(manifest["sourceFactsSchemaVersion"], 1)
+            self.assertNotIn("sourceSnapshotSchemaVersion", manifest)
             self.assertEqual(manifest["executionMode"], "single_model_call")
             self.assertEqual(manifest["analysisSchemaVersion"], 5)
             self.assertEqual(manifest["materialIds"], ["m-1"])

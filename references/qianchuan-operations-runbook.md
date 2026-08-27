@@ -12,7 +12,7 @@
 python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 ```
 
-仅当状态为 `analysis_pending`，并且 `diagnostic-analysis-data.json` 与 `diagnostic-analysis-prompt.md` 都由成功的 `prepare` 生成时，才可继续。不得从 `top_materials.json` 或手写 `missingRanks` 组装事实包。
+仅当状态为 `analysis_pending`，并且五个章节事实包、manifest 与 `diagnostic-analysis-prompt.md` 都由成功的 `prepare` 生成时，才可继续。历史运行可能仍有 `diagnostic-analysis-data.json`，但新运行不再生成；不得从该快照、`top_materials.json` 或手写 `missingRanks` 组装事实包。
 
 ## 长任务元数据
 

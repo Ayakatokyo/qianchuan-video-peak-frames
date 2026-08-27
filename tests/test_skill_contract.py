@@ -75,7 +75,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("diagnostic-analysis-data.json", skill)
+        self.assertIn("五个章节事实包", skill)
         self.assertIn("diagnostic-analysis-prompt.md", skill)
         self.assertIn("实际查看", skill)
         self.assertIn("JPEG", skill)
@@ -111,7 +111,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
 
         self.assertIn("run_standard_analysis.py status", skill)
         self.assertIn("analysis_pending", skill)
-        self.assertIn("diagnostic-analysis-data.json", skill)
+        self.assertIn("历史运行可能仍有 `diagnostic-analysis/diagnostic-analysis-data.json`", skill)
         self.assertIn("diagnostic-analysis-prompt.md", skill)
         self.assertIn("不得从 `top_materials.json`", skill)
         self.assertIn("不得手写 `missingRanks`", skill)
@@ -149,7 +149,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
             self.assertIn(filename, prompt)
         self.assertIn("当前对话模型", skill)
         self.assertIn("一次模型调用", skill)
-        self.assertIn("兼容快照", skill)
+        self.assertIn("新运行不再生成", skill)
         self.assertNotIn("作为唯一的结构化事实来源", prompt)
         self.assertNotIn("prompts/analysis-units", skill)
 

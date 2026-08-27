@@ -1,4 +1,4 @@
-"""Build isolated chapter inputs from the compatible analysis snapshot."""
+"""Build isolated chapter inputs from normalized diagnostic facts."""
 
 from copy import deepcopy
 import hashlib
@@ -46,7 +46,7 @@ UNIT_CONTRACTS = {
 
 
 class AnalysisUnitError(ValueError):
-    """Raised when a compatible snapshot cannot produce chapter inputs."""
+    """Raised when normalized diagnostic facts cannot produce chapter inputs."""
 
 
 def _text(value):
@@ -236,16 +236,16 @@ def _material_indexes(analysis, script_unit):
 
 
 def build_analysis_units(analysis):
-    """Project one compatible fact snapshot into five isolated model inputs."""
+    """Project normalized diagnostic facts into five isolated model inputs."""
     if not isinstance(analysis, dict) or analysis.get("schemaVersion") != 1:
-        raise AnalysisUnitError("analysis snapshot must use schemaVersion 1")
+        raise AnalysisUnitError("normalized diagnostic facts must use schemaVersion 1")
     raw_materials = analysis.get("materials")
     if not isinstance(raw_materials, list) or not raw_materials:
-        raise AnalysisUnitError("analysis snapshot materials must be a non-empty list")
+        raise AnalysisUnitError("normalized diagnostic facts materials must be a non-empty list")
     materials = [_identity(item) for item in raw_materials if isinstance(item, dict)]
     material_ids = [_text(item.get("materialId")) for item in materials]
     if not all(material_ids) or len(material_ids) != len(set(material_ids)):
-        raise AnalysisUnitError("analysis snapshot material IDs must be unique")
+        raise AnalysisUnitError("normalized diagnostic facts material IDs must be unique")
 
     script_unit = _script_unit(analysis)
     audience_unit = _audience_unit(analysis)
@@ -357,14 +357,13 @@ def publish_analysis_units(output_dir, analysis):
         if isinstance(material, dict)
     ]
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "executionMode": "single_model_call",
         "analysisSchemaVersion": 5,
-        "sourceSnapshotSchemaVersion": analysis["schemaVersion"],
+        "sourceFactsSchemaVersion": analysis["schemaVersion"],
         "period": deepcopy(analysis.get("period", {})),
         "materialIds": material_ids,
         "promptPath": "../diagnostic-analysis-prompt.md",
-        "compatibilitySnapshotPath": "../diagnostic-analysis-data.json",
         "frames": _frame_counts(analysis),
         "units": [item for _filename, _raw, item in serialized_units],
     }

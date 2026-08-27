@@ -78,7 +78,6 @@ def main(argv=None):
             )
             artifacts = summary["artifacts"]
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
-            print(f"diagnostic_analysis_data={Path(args.output_dir) / artifacts['diagnosticData']}")
             print(f"diagnostic_analysis_prompt={Path(args.output_dir) / artifacts['diagnosticPrompt']}")
             print(f"analysis_unit_manifest={Path(args.output_dir) / artifacts['analysisUnitManifest']}")
         elif args.command == "fetch-metadata":
