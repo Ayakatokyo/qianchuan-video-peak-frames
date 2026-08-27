@@ -1,12 +1,42 @@
 # diagnostic-analysis-prompt-v1
 
-当前执行技能的模型必须使用 `diagnostic-analysis-data.json` 作为唯一的结构化事实来源，并逐张实际查看 `highlights.materials[*].frames[*].framePath` 指向的 JPEG。
+当前执行技能的当前对话模型必须先读取 `analysis-units/analysis-unit-manifest.json`，校验其中五个章节事实包的路径、字节数、SHA-256、素材顺序和帧数量，再在一次模型调用中统一读取：
 
-只分析 RPA 提取到的业务事实：人群、脚本、投放明细和高光帧。不得分析执行过程，不得把运行目录名、任务上下文、代码修复、`verify` 收口、`fresh rerun`、`rpa_request_failed`、候选失败、补位、取消、重跑或批次调度写入任何输出字段。素材 rank 只表示当前已提取素材在输入中的排序；rank 缺口不得被解释为补位或失败。
+- `analysis-units/chapter01-portfolio-input.json`
+- `analysis-units/chapter02-audience-input.json`
+- `analysis-units/chapter03-script-input.json`
+- `analysis-units/chapter04-highlight-input.json`
+- `analysis-units/chapter05-material-input.json`
 
-`materials[*].video` 仅用于最终报告保留素材来源元数据；其中的 `src` 是平台临时签名 URL。不得在任何分析字段中引用、复述、评价或建议使用该 URL。
+`diagnostic-analysis-data.json` 仅是历史兼容快照，新分析不得读取它来补充或覆盖五个章节事实包。当前对话模型必须逐张实际查看 `chapter04-highlight-input.json` 中 `materials[*].frames[*].framePath` 指向的 JPEG，一次输出完整结果；不得拆成五次模型调用，不得使用外部模型服务、`codex exec` 或子进程替代当前对话模型。
+
+只分析五个章节事实包提供的业务事实。不得分析执行过程，不得把运行目录名、任务上下文、代码修复、`verify` 收口、`fresh rerun`、`rpa_request_failed`、候选失败、补位、取消、重跑或批次调度写入任何输出字段。素材 rank 只表示当前已提取素材在输入中的排序；rank 缺口不得被解释为补位或失败。
+
+五个模型事实包不包含平台临时签名视频或封面 URL。不得从兼容快照或其他运行产物补充、引用、复述、评价或建议使用这些 URL。
 
 将结果写入单独的 `diagnostic-ai-analysis.json`。只输出合法 JSON，不要用 Markdown 代码块包裹。
+
+## 五章分析边界
+
+### Chapter 01：TOP 素材组合结论
+
+以 `chapter01-portfolio-input.json` 的素材顺序、已有 `commercial` 和聚合 `interaction` 为组合层主事实，并且只在生成对应组合结论时引用 Chapter 02 的人群、Chapter 03 的脚本和 Chapter 04 的高光证据。输出 `overallConclusion` 和全部 `portfolioDimensionConclusions`。本轮不新增经营指标，不从素材名称、排名或其他章节反推未提供的投放结论。
+
+### Chapter 02：人群洞察
+
+只以 `chapter02-audience-input.json` 的 `SHOW_COUNT`、`CLICK_COUNT`、`TRANSACTION_AMOUNT` 三种口径及其全部可用维度生成 `batchInsights[topic=audience]`。三条洞察的事实、判断和建议必须按口径隔离，不混用证据引用。
+
+### Chapter 03：脚本洞察
+
+只以 `chapter03-script-input.json` 的完整脚本、一二级标签、真实证据句和标签汇总生成 `batchInsights[topic=script]`。不将脚本句子与高光帧秒点做无依据对齐。
+
+### Chapter 04：高光画面洞察
+
+只以 `chapter04-highlight-input.json` 和实际查看的 JPEG 生成 `highlightDashboard`、`materialAnalyses[*].highlightAnalyses` 和 `frameCoverageNote`。图像结论不得由脚本文本、文件名或兼容快照代替。
+
+### Chapter 05：单素材深度分析
+
+以 `chapter05-material-input.json` 建立素材顺序、人群偏好和证据索引，再按同一 `materialId` 读取 Chapter 03 的脚本事实和 Chapter 04 的高光帧。输出每条素材的 `materialAnalyses`；不从兼容快照补充 `delivery`，不虚构五包未提供的单素材秒级走势或经营指标。
 
 ## 生成前门禁自检
 
@@ -15,24 +45,24 @@
 在写入 JSON 前先完成一次契约自检，不要边生成边试错：
 
 - 读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，先建立合法 `frameRef/evidenceRefs` 白名单及字段字符数预算，再严格按其中的枚举与字符数范围构造字段；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
-- 从事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
-- 按素材分片查看画面，每片最多 6 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自事实包，确认 dashboard 只输出实际存在且非空的分类。自检未通过前不要写入 `diagnostic-ai-analysis.json`，也不要调用 `finalize`；禁止先写简短草稿、再以多轮全文补丁补足字符数或修正证据。
+- 从 manifest 和五个章节事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
+- 按素材分片查看画面，每片最多 6 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。自检未通过前不要写入 `diagnostic-ai-analysis.json`，也不要调用 `finalize`；禁止先写简短草稿、再以多轮全文补丁补足字符数或修正证据。
 
 ## 证据与归因规则
 
 - 不得虚构事实，不得将相关性或峰值同时性表述为因果关系。
 - 所有 AI 二次分析字段都必须采用“少量关键事实锚点 + 判断 + 建议”的写法：只选最能支撑判断的原始数值、占比、出现次数、素材数量或高光帧秒点作为依据，说明其业务含义和下一步如何验证；不得只写抽象结论，也不得把事实清单当作结论主体。
 - 人群文案只能使用“展现次数”“点击次数”“成交金额”三个正式口径名称；不得用“触达”替代展现次数，不得用“响应”替代点击次数，也不得混写三种口径。
-- `portfolioDimensionConclusions.audience` 仅服务第 01 章组合结论：在展现次数、点击次数、成交金额下分别检查八大人群、年龄、性别和地域，收缩为组合层摘要、判断和优先验证方向。不得复用第 02 章人群洞察的标题、完整判断链或具体行动方案；证据引用必须是事实包中存在的 `audience:{metric}:{dimension}:{bucket}`。
-- `batchInsights[topic=audience]` 仅服务第 02 章人群洞察：必须恰好输出三条，依次覆盖展现次数（`SHOW_COUNT`）、点击次数（`CLICK_COUNT`）、成交金额（`TRANSACTION_AMOUNT`）。每条的标题不是固定文案，必须由 AI 基于对应口径的八大人群、年龄、性别和地域事实生成；单条的全部 `evidenceRefs` 只能属于一个对应的 `audience:{metric}:*` 口径。不得复用第 01 章人群组合结论的标题、判断或建议。
+- `portfolioDimensionConclusions.audience` 仅服务第 01 章组合结论：综合 `chapter02-audience-input.json` 中展现次数、点击次数、成交金额下的八大人群、年龄、性别和地域，收缩为组合层摘要、判断和优先验证方向。不得复用第 02 章人群洞察的标题、完整判断链或具体行动方案；证据引用必须是事实包中存在的 `audience:{metric}:{dimension}:{bucket}`。
+- `batchInsights[topic=audience]` 仅服务第 02 章人群洞察：必须恰好输出三条，依次覆盖 `chapter02-audience-input.json` 的展现次数（`SHOW_COUNT`）、点击次数（`CLICK_COUNT`）、成交金额（`TRANSACTION_AMOUNT`）。每条的标题不是固定文案，必须由 AI 基于对应口径的八大人群、年龄、性别和地域事实生成；单条的全部 `evidenceRefs` 只能属于一个对应的 `audience:{metric}:*` 口径。不得复用第 01 章人群组合结论的标题、判断或建议。
 - `portfolioDimensionConclusions` 必须分别输出素材列表、人群、脚本、高光画面和互动时序五条组合层结论。JSON key 仍使用 `commercial` 以兼容既有 schema，但展示文案必须称为“素材列表数据”。每条必须包含事实、判断和建议，且不得写成数据复述或长段分析；页面会将五条按固定顺序连续展示，不再使用 Tab。
-- `commercial` 只能解释事实包 `commercial` 内的整体消耗、净成交金额、整体成交金额、净成交 ROI 和整体支付 ROI。不得自行计算、改名、替换指标或猜测缺失数值；不得出现“资产表”或任何数据来源名称。
+- `commercial` 只能解释 `chapter01-portfolio-input.json` 的 `commercial` 内已有指标。不得自行计算、改名、替换指标、增加分析维度或猜测缺失数值；不得出现“资产表”或任何数据来源名称。
 - `audience` 与 `script` 是组合层判断，不能与 `batchInsights` 的对应洞察原文完全相同；不得输出 `batchInsights.topic=integrated`。
-- `highlight` 只能使用事实包中最终 TOP 素材的 `highlight:*` 证据，高光帧的结论必须是对组合画面机制的谨慎判断。
-- `interaction` 必须覆盖事实包中实际可用的整体点击次数、整体流失数、整体点赞次数、整体评论次数、整体转发次数和整体新增粉丝数，并结合相对播放位置分布判断互动发生阶段。整体总量引用 `interaction:{metric}:total`，区间分布引用 `interaction:{metric}:{bucket}`；总量和时序不能混写，不得把素材间相关性或峰值同时性表述为因果，不可用指标明确说明数据不足。
+- `highlight` 只能使用 `chapter04-highlight-input.json` 中最终 TOP 素材的 `highlight:*` 证据，高光帧的结论必须是对组合画面机制的谨慎判断。
+- `interaction` 必须覆盖 `chapter01-portfolio-input.json` 中实际可用的整体点击次数、整体流失数、整体点赞次数、整体评论次数、整体转发次数和整体新增粉丝数，并结合相对播放位置分布判断互动发生阶段。整体总量引用 `interaction:{metric}:total`，区间分布引用 `interaction:{metric}:{bucket}`；总量和时序不能混写，不得把素材间相关性或峰值同时性表述为因果，不可用指标明确说明数据不足。
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
-- 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指事实包 `highlights.materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 至 peak_top_5，也必须分别输出对应分析。
-- 若该素材 `highlights.materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 5 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
+- 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指 `chapter04-highlight-input.json` 的 `materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 至 peak_top_5，也必须分别输出对应分析。
+- 若该素材在 `chapter04-highlight-input.json` 的 `materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 5 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
 - 高光帧的 `visualObservation` 必须来自实际查看 JPEG 的画面观察；`commercialInterpretation` 使用“与点击峰值同时出现”“待验证假设”等谨慎表述。
 - `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。当前事实包没有脚本分段时码，不得宣称帧对应具体话术，也不得根据整段脚本猜测画面所在秒的话术。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。

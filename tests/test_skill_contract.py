@@ -133,6 +133,39 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("每张成功高光帧恰好一条", prompt)
         self.assertIn("final_report_lib.py", prompt)
 
+    def test_skill_and_prompt_use_five_units_in_one_current_model_call(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("analysis-unit-manifest.json", skill)
+        self.assertIn("analysis-unit-manifest.json", prompt)
+        for filename in (
+            "chapter01-portfolio-input.json",
+            "chapter02-audience-input.json",
+            "chapter03-script-input.json",
+            "chapter04-highlight-input.json",
+            "chapter05-material-input.json",
+        ):
+            self.assertIn(filename, prompt)
+        self.assertIn("当前对话模型", skill)
+        self.assertIn("一次模型调用", skill)
+        self.assertIn("兼容快照", skill)
+        self.assertNotIn("作为唯一的结构化事实来源", prompt)
+        self.assertNotIn("prompts/analysis-units", skill)
+
+    def test_single_prompt_keeps_chapter_analysis_boundaries_explicit(self):
+        prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
+
+        for heading in (
+            "### Chapter 01：TOP 素材组合结论",
+            "### Chapter 02：人群洞察",
+            "### Chapter 03：脚本洞察",
+            "### Chapter 04：高光画面洞察",
+            "### Chapter 05：单素材深度分析",
+        ):
+            self.assertIn(heading, prompt)
+        self.assertIn("本轮不新增经营指标", prompt)
+
     def test_skill_uses_generated_prompt_as_ai_json_contract(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

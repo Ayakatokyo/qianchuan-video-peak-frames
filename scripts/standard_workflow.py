@@ -120,7 +120,8 @@ def _relative(root, path):
 
 
 def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=None,
-             report=None, report_archive=None, failure=None, active_stage=None):
+             analysis_unit_manifest=None, report=None, report_archive=None,
+             failure=None, active_stage=None):
     root = paths["root"]
     request_summary = {
         "startDate": request.start_date,
@@ -142,6 +143,10 @@ def _summary(request, paths, *, status, diagnostic_data=None, diagnostic_prompt=
             "readyMaterials": _relative(root, paths["peak_frames"] / READY_MATERIALS_NAME),
             "diagnosticData": _relative(root, diagnostic_data) if diagnostic_data else None,
             "diagnosticPrompt": _relative(root, diagnostic_prompt) if diagnostic_prompt else None,
+            "analysisUnitManifest": (
+                _relative(root, analysis_unit_manifest)
+                if analysis_unit_manifest else None
+            ),
             "report": _relative(root, report) if report else None,
             "reportArchive": _relative(root, report_archive) if report_archive else None,
         },
@@ -320,6 +325,11 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 status="analysis_pending",
                 diagnostic_data=data_path,
                 diagnostic_prompt=prompt_path,
+                analysis_unit_manifest=(
+                    paths["analysis"]
+                    / "analysis-units"
+                    / "analysis-unit-manifest.json"
+                ),
             )
             write_run_summary(paths["summary"], summary)
             return summary
@@ -416,12 +426,18 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
                 archive_path = create_report_archive(paths["report"])
             except Exception as exc:
                 raise StandardWorkflowError("report", str(exc)) from exc
+            analysis_unit_manifest = (
+                paths["analysis"] / "analysis-units" / "analysis-unit-manifest.json"
+            )
             completed = _summary(
                 request,
                 paths,
                 status="complete",
                 diagnostic_data=paths["analysis"] / "diagnostic-analysis-data.json",
                 diagnostic_prompt=paths["analysis"] / "diagnostic-analysis-prompt.md",
+                analysis_unit_manifest=(
+                    analysis_unit_manifest if analysis_unit_manifest.is_file() else None
+                ),
                 report=html_path,
                 report_archive=archive_path,
             )

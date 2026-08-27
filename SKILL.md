@@ -58,7 +58,7 @@ python scripts/run_standard_analysis.py fetch-metadata \
 
 该命令只落盘 `source-data/gateway-response.json` 和 `run-summary.json`（状态 `metadata_ready`），不下载结果文件、不生成候选素材，也不调用 RPA。完整 `prepare` 在内网可达时会在相同的 `source-data/` 目录保留网关元数据、原始 CSV 与结构化 JSON，并以结构化记录生成候选素材和 ROI 事实。
 
-仅当状态为 `analysis_pending` 时进入 AI 分析。必须使用本次 `prepare` 生成的 `diagnostic-analysis/diagnostic-analysis-data.json` 与 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 或其他候选清单组装事实，也不得手写 `missingRanks`。
+仅当状态为 `analysis_pending` 时进入 AI 分析。必须使用本次 `prepare` 生成的 `diagnostic-analysis/analysis-units/analysis-unit-manifest.json`、manifest 声明的五个章节事实包与 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 或其他候选清单组装事实，也不得手写 `missingRanks`。`diagnostic-analysis/diagnostic-analysis-data.json` 继续保留为兼容快照，但新分析不得读取该快照补充五个章节包。
 
 将 `prepare` 视为单一长任务：不要因没有实时进度而另起运行，也不要手工干预 RPA、波次或后处理。出现中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时，保留运行目录并遵循[运维手册](references/qianchuan-operations-runbook.md)；连接器与波次约束见 [RPA 输出契约](references/rpa-output-contract.md)。
 
@@ -68,9 +68,9 @@ RPA 执行只有一个 480 秒截止时间。超过截止时间时，系统终�
 
 #### AI 交接前置检查
 
-先读取事实包和提示词，核对素材数、成功帧数与 `missingFrames`，再按 `framePath` 实际查看每张 JPEG；每批不超过 6 帧。策略或 guardrail 拒绝时，立即按[运维手册](references/qianchuan-operations-runbook.md)冻结并恢复帧审阅，不得跳过任何帧或改用其他产物补充事实。
+先读取事实包和提示词：具体包括 manifest、五个章节事实包和唯一 Prompt；核对字节数、SHA-256、素材数、成功帧数与 `missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看每张 JPEG；每批不超过 6 帧。策略或 guardrail 拒绝时，立即按[运维手册](references/qianchuan-operations-runbook.md)冻结并恢复帧审阅，不得跳过任何帧或改用其他产物补充事实。
 
-在同一运行目录写入 `diagnostic-analysis/diagnostic-ai-analysis.json`，使用 `schemaVersion: 5`。第 01 部分必须覆盖经营表现、人群、脚本、高光画面和互动时序；第 `04｜高光画面洞察` 必须输出 `highlightDashboard`，将每个成功高光帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次。不得把帧秒数宣称为对应某句脚本话术。
+必须由当前对话模型在一次模型调用中统一读取五个章节事实包，并在同一运行目录一次写入完整的 `diagnostic-analysis/diagnostic-ai-analysis.json`，使用 `schemaVersion: 5`。不得拆成五次分析，不得通过外部模型服务、`codex exec` 或子进程替代当前对话模型。第 01 部分必须覆盖经营表现、人群、脚本、高光画面和互动时序；第 `04｜高光画面洞察` 必须输出 `highlightDashboard`，将每个成功高光帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次。不得把帧秒数宣称为对应某句脚本话术。
 
 以该提示词为 AI JSON 输出契约：按其中的字段、证据、覆盖、枚举、长度与定向修正规则完成一次完整分析。结论仅分析业务事实；每个成功 JPEG 都要有高光帧分析，`missingFrames` 必须在 `frameCoverageNote` 说明影响，证据引用逐字复用事实包标识。v4 仅用于历史报告兼容。
 

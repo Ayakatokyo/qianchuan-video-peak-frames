@@ -7,6 +7,7 @@ import uuid
 
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from path_safety import artifact_path, validate_material_id
+from analysis_units_lib import publish_analysis_units
 
 
 SCHEMA_VERSION = 1
@@ -897,4 +898,5 @@ def prepare_diagnostic_analysis(
         )
     analysis["warnings"] = read_warnings + analysis["warnings"] + highlight_warnings
     data_path, prompt_path = _publish_output_pair(output_dir, analysis, prompt)
+    publish_analysis_units(output_dir, analysis)
     return data_path, prompt_path, analysis

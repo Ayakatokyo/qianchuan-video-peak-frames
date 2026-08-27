@@ -972,5 +972,45 @@ class DiagnosticAnalysisCommercialFactsTests(unittest.TestCase):
         })
 
 
+class DiagnosticAnalysisUnitIntegrationTests(unittest.TestCase):
+    def test_prepare_keeps_compatibility_return_and_publishes_analysis_units(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_materials = root / "top_materials.json"
+            records_dir = root / "diagnosis-records"
+            output_dir = root / "diagnostic-analysis"
+            records_dir.mkdir()
+            top_materials.write_text(
+                json.dumps(
+                    {
+                        "actualStartDate": "2026-08-10",
+                        "actualEndDate": "2026-08-20",
+                        "materials": [
+                            {"rank": 1, "materialId": "m-1", "materialName": "素材一"}
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            (records_dir / "m-1.json").write_text("[]", encoding="utf-8")
+
+            data_path, prompt_path, analysis = prepare_diagnostic_analysis(
+                top_materials, records_dir, output_dir
+            )
+
+            self.assertEqual(data_path, output_dir / "diagnostic-analysis-data.json")
+            self.assertEqual(prompt_path, output_dir / "diagnostic-analysis-prompt.md")
+            self.assertEqual(
+                json.loads(data_path.read_text(encoding="utf-8")), analysis
+            )
+            manifest_path = (
+                output_dir / "analysis-units" / "analysis-unit-manifest.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["units"]), 5)
+            self.assertEqual(manifest["materialIds"], ["m-1"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,7 +22,7 @@
 
 ### Task 1：章节投影与 manifest 纯函数
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tests/test_analysis_units.py` 构造一个同时含 audience、scripts、interaction、delivery、commercial、highlights 的最小兼容事实包，断言：
 
@@ -46,13 +46,13 @@ self.assertEqual(
 )
 ```
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_analysis_units -v`
 
 Expected: FAIL，原因是 `analysis_units_lib` 尚不存在。
 
-- [ ] **Step 3: 最小实现五个投影**
+- [x] **Step 3: 最小实现五个投影**
 
 在 `scripts/analysis_units_lib.py` 定义：
 
@@ -78,9 +78,9 @@ def publish_analysis_units(output_dir, analysis):
 - Chapter 02：三种人群口径、全部维度和 `preferencesByMetric`；删除所有重复 `sourceMaterialIds` 和与 `preferencesByMetric.SHOW_COUNT` 重复的 `preferences`。
 - Chapter 03：完整脚本文本、标签、证据句和确定性 `script:*` 引用。
 - Chapter 04：成功帧、缺失帧、覆盖状态和 JPEG 路径；不复制其他章节事实。
-- Chapter 05：每条素材的身份、三口径偏好、脚本引用、高光引用、缺失帧和现有 RPA `delivery` 明细；本轮不新增 API 指标。
+- Chapter 05：每条素材的身份、三口径偏好、脚本引用、高光引用和缺失帧；本轮不新增经营指标，现有 RPA `delivery` 因没有合法证据域而只保留在兼容快照和报告确定性链路中，不进入模型包。
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_analysis_units -v`
 
@@ -88,7 +88,7 @@ Expected: PASS。
 
 ### Task 2：原子发布、哈希和体积合同
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 增加测试断言 `publish_analysis_units` 生成：
 
@@ -104,13 +104,13 @@ analysis-units/
 
 manifest 必须包含 `executionMode: single_model_call`、`analysisSchemaVersion: 5`、素材顺序、五个单元路径、UTF-8 字节数和 SHA-256；逐项重新读取文件后计算值必须一致。测试同时断言 manifest 最后发布，任一单元序列化失败时不得留下 manifest。
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_analysis_units -v`
 
 Expected: FAIL，缺少发布或 manifest 字段。
 
-- [ ] **Step 3: 实现紧凑序列化和 manifest**
+- [x] **Step 3: 实现紧凑序列化和 manifest**
 
 统一使用：
 
@@ -122,7 +122,7 @@ digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 先将全部单元写入同目录临时文件并 `os.replace`，最后写入 manifest。manifest 不嵌入业务数据。
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_analysis_units -v`
 
@@ -130,7 +130,7 @@ Expected: PASS。
 
 ### Task 3：接入 prepare 与标准工作流
 
-- [ ] **Step 1: 写失败集成测试**
+- [x] **Step 1: 写失败集成测试**
 
 在 `tests/test_diagnostic_analysis.py` 断言 `prepare_diagnostic_analysis` 保持原返回三元组，同时生成 manifest 和五个包。在 `tests/test_standard_workflow.py` 断言运行摘要新增：
 
@@ -141,17 +141,17 @@ self.assertEqual(
 )
 ```
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_diagnostic_analysis tests.test_standard_workflow -v`
 
 Expected: FAIL，缺少章节产物和摘要字段。
 
-- [ ] **Step 3: 最小集成实现**
+- [x] **Step 3: 最小集成实现**
 
 `prepare_diagnostic_analysis` 在兼容快照构造完成后调用 `publish_analysis_units(output_dir, analysis)`；`_summary` 根据固定路径填充 `analysisUnitManifest`。不修改 RPA、API 获取、报告 finalize 参数或 AI v5 Schema。
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_analysis_units tests.test_diagnostic_analysis tests.test_standard_workflow -v`
 
@@ -159,7 +159,7 @@ Expected: PASS。
 
 ### Task 4：唯一 Prompt 与技能交接合同
 
-- [ ] **Step 1: 写失败合同测试**
+- [x] **Step 1: 写失败合同测试**
 
 在 `tests/test_skill_contract.py` 断言 Prompt 和 SKILL：
 
@@ -172,17 +172,17 @@ self.assertNotIn("作为唯一的结构化事实来源", prompt)
 self.assertNotIn("prompts/analysis-units", skill)
 ```
 
-- [ ] **Step 2: 验证 RED**
+- [x] **Step 2: 验证 RED**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_skill_contract -v`
 
 Expected: FAIL，Prompt 仍声明兼容快照为唯一输入。
 
-- [ ] **Step 3: 更新单份 Prompt 和 SKILL**
+- [x] **Step 3: 更新单份 Prompt 和 SKILL**
 
 Prompt 保持一个权威文件，按通用规则和五章顺序说明输入路径、输出字段、证据前缀、全量 JPEG 审阅与统一自检。SKILL 要求当前对话模型一次读取 manifest、五包和 JPEG，一次输出完整 v5 JSON；`diagnostic-analysis-data.json` 仅作为兼容快照，不交给新分析流程。
 
-- [ ] **Step 4: 验证 GREEN**
+- [x] **Step 4: 验证 GREEN**
 
 Run: `/opt/homebrew/opt/python@3.13/libexec/bin/python3 -m unittest tests.test_skill_contract tests.test_diagnostic_analysis -v`
 
@@ -190,19 +190,19 @@ Expected: PASS。
 
 ### Task 5：最新 Top6 真实回归与全量验证
 
-- [ ] **Step 1: 在临时目录重建分析输入**
+- [x] **Step 1: 在临时目录重建分析输入**
 
 从 `runs/qianchuan-20260810-20260820-top6` 只读复制或引用 ready materials、diagnosis records、peak frames 和 ROI facts，在 `mktemp -d` 目录调用 `prepare_diagnostic_analysis`。不得重跑 API/RPA，不得覆盖原运行目录。
 
-- [ ] **Step 2: 校验真实产物**
+- [x] **Step 2: 校验真实产物**
 
 检查五个包的字节数、总字节数、manifest 哈希、6 个素材顺序、34 张 JPEG、缺失帧和跨章禁止字段。记录相对 544,024 bytes 兼容事实包的变化。
 
-- [ ] **Step 3: 兼容报告回归**
+- [x] **Step 3: 兼容报告回归**
 
 使用原批次现有 `diagnostic-ai-analysis.json` 和临时输出完成报告生成，证明 AI v5 与报告渲染行为未改变；不得启动实际浏览器。
 
-- [ ] **Step 4: 完整验证**
+- [x] **Step 4: 完整验证**
 
 Run:
 

@@ -184,6 +184,10 @@ class StandardWorkflowTests(unittest.TestCase):
                 calls[3][1]["top_material_roi_facts_path"],
                 root / "peak-frames" / "top-material-roi-facts-v1.json",
             )
+            self.assertEqual(
+                summary["artifacts"]["analysisUnitManifest"],
+                "diagnostic-analysis/analysis-units/analysis-unit-manifest.json",
+            )
             persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(persisted, summary)
 
@@ -534,6 +538,7 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["artifacts"]["report"], "final-report/final-report.html")
         self.assertEqual(summary["artifacts"]["reportArchive"], "final-report.zip")
+        self.assertIsNone(summary["artifacts"]["analysisUnitManifest"])
         self.assertTrue(archive_exists)
 
     def test_finalize_requires_dense_ai_analysis(self):
@@ -685,6 +690,7 @@ class StandardWorkflowCliTests(unittest.TestCase):
             "artifacts": {
                 "diagnosticData": "diagnostic-analysis/diagnostic-analysis-data.json",
                 "diagnosticPrompt": "diagnostic-analysis/diagnostic-analysis-prompt.md",
+                "analysisUnitManifest": "diagnostic-analysis/analysis-units/analysis-unit-manifest.json",
             }
         })
         fake_workflow = type("FakeWorkflow", (), {
@@ -712,6 +718,10 @@ class StandardWorkflowCliTests(unittest.TestCase):
         )
         self.assertIn(
             "diagnostic_analysis_prompt=/tmp/qianchuan-run/diagnostic-analysis/diagnostic-analysis-prompt.md",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "analysis_unit_manifest=/tmp/qianchuan-run/diagnostic-analysis/analysis-units/analysis-unit-manifest.json",
             stdout.getvalue(),
         )
         self.assertFalse(hasattr(run_standard_analysis, "_artifact_path"))
