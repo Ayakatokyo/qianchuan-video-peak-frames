@@ -38,7 +38,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 波次调度使用双重屏障：只有上一批 RPA 全部终态且该批已选素材后处理全部终态，下一批 RPA 才会提交。后处理重试耗尽后的失败是终态，允许下一批提交候选素材补位；后处理尚在运行或重试时不得接入下一批。
 
-若用户未明确授权再次调用 RPA，先运行“修复保留产物”章节的 `repair_manifest.py`。该修复只读取已有 CSV/records 并补做本地后处理，不会发起 RPA；即使 manifest 的 `postprocessStatus` 已写成 `succeeded`，也会以实际 `summary.json`、`summary.md` 和 JPEG 是否完整为准，补跑缺失的截帧。检查 `repair-manifest.json` 的 `rpaCalls` 必须为 `0`，并核对修复后的三层数量。
+若用户未明确授权再次调用 RPA，先运行“修复保留产物”章节的 `repair_manifest.py`。该修复优先核验 `rpa-receipts/<materialId>.json` 的 `records_persisted` 收据；收据中的 records 已包含目标素材的平铺 `recordType=material_info` 与非空 `videoUrl` 时，即使 manifest 仍为 submitted/pending，也直接进入本地后处理，不会发起 RPA。即使 manifest 的 `postprocessStatus` 已写成 `succeeded`，也会以实际 `summary.json`、`summary.md` 和 JPEG 是否完整为准，补跑缺失的截帧。检查 `repair-manifest.json` 的 `rpaCalls` 必须为 `0`，并核对修复后的三层数量。
 
 ```bash
 python scripts/extract_peak_frames.py \
@@ -69,6 +69,6 @@ python scripts/repair_manifest.py \
   --diagnosis-csv-dir "/path/to/run/diagnosis-csv"
 ```
 
-该命令只执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。
+该命令先执行 `records_persisted receipt -> records`，再执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。
 
 检查保留的 `diagnosis-records/`、`diagnosis-csv/`、素材 `summary.json` 与 JPEG，而不是仅凭文件名判断成功。RPA 输出字段、下载上限和波次状态的完整约束见 [RPA 输出契约](rpa-output-contract.md)。

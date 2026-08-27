@@ -11,6 +11,10 @@ import extract_peak_frames as pipeline
 from batch_runtime import new_run_id, stage_counts, write_json_atomically
 from batch_verification import material_output_issues
 from rpa_csv_parser import parse_diagnosis_csv
+from rpa_artifact_receipts import (
+    RpaArtifactReceiptError,
+    load_records_persisted_receipt,
+)
 from path_safety import artifact_path, material_dir, validate_material_id
 
 
@@ -56,6 +60,28 @@ def _default_postprocess(args, entry):
         raise attempt["error"]
     _result_dir, summary_json, summary_md = attempt["result"]
     return {"summaryJson": str(summary_json), "summaryMd": str(summary_md)}
+
+
+def _load_receipted_records(root, material_id):
+    """Return durable RPA records when an interrupted manifest missed the checkpoint."""
+    try:
+        recovered = load_records_persisted_receipt(
+            root / "rpa-receipts",
+            material_id=material_id,
+            base_dir=root,
+        )
+    except RpaArtifactReceiptError:
+        return None
+
+    records_path = recovered["recordsPath"]
+    records = pipeline._read_diagnosis_records(records_path, material_id)
+    pipeline.find_material_video_url(records, material_id)
+    return {
+        "records": records,
+        "recordsPath": records_path,
+        "csvPath": recovered["csvPath"],
+        "clientAttemptId": recovered["receipt"]["clientAttemptId"],
+    }
 
 
 def _rebuild_manifest(manifest, materials, base_dir=None):
@@ -187,7 +213,27 @@ def repair_batch(
         records_path = _resolve(root, entry.get("diagnosisRecordsPath"), artifact_path(records_dir, material_id, ".json"))
         csv_path = _resolve(root, entry.get("diagnosisCsvPath"), artifact_path(csv_dir, material_id, ".csv"))
         records = None
-        if records_path.is_file():
+        try:
+            receipted = _load_receipted_records(root, material_id)
+        except Exception as exc:
+            errors.append(f"{material_id}: persisted receipt is unusable: {exc}")
+            receipted = None
+        if receipted is not None:
+            records = receipted["records"]
+            records_path = receipted["recordsPath"]
+            csv_path = receipted["csvPath"]
+            entry.update(
+                {
+                    "diagnosisRecordsPath": _relative(root, records_path),
+                    "diagnosisCsvPath": _relative(root, csv_path),
+                    "recordsPersisted": True,
+                    "rpaResultStatus": "available",
+                    "rpaClientAttemptId": receipted["clientAttemptId"],
+                    "rpaCsvVerified": True,
+                }
+            )
+            actions.append({"materialId": material_id, "action": "receipt_to_records"})
+        elif records_path.is_file():
             try:
                 records = pipeline._read_diagnosis_records(records_path, material_id)
             except Exception as exc:

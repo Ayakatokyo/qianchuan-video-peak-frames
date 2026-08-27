@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import repair_manifest  # noqa: E402
+from rpa_artifact_receipts import publish_receipt  # noqa: E402
 
 
 def write_manifest(root, entry):
@@ -38,6 +39,81 @@ def write_manifest(root, entry):
 
 
 class RepairManifestTests(unittest.TestCase):
+    def test_recovers_stale_manifest_from_records_persisted_receipt_without_rpa(self):
+        """A durable RPA receipt must outrank an interrupted manifest checkpoint."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            material_id = "m-receipt"
+            entry = {
+                "materialId": material_id,
+                "rank": 1,
+                "rpaStatus": "submitted",
+                "rpaResultStatus": None,
+                "recordsPersisted": False,
+                "postprocessStatus": "pending",
+                "status": "running",
+                "diagnosisRecordsPath": None,
+                "diagnosisCsvPath": None,
+                "summaryJson": None,
+                "summaryMd": None,
+                "timingsSec": {},
+            }
+            peak = write_manifest(root, entry)
+            retained = root / "retained-rpa-artifacts"
+            retained.mkdir()
+            csv_path = retained / f"{material_id}.csv"
+            records_path = retained / f"{material_id}.json"
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/{material_id}.mp4\n",
+                encoding="utf-8",
+            )
+            records_path.write_text(
+                json.dumps([{
+                    "recordType": "material_info",
+                    "materialId": material_id,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                }]),
+                encoding="utf-8",
+            )
+            publish_receipt(
+                root / "rpa-receipts",
+                material_id=material_id,
+                client_attempt_id="attempt-1",
+                state="records_persisted",
+                csv_path=csv_path,
+                records_path=records_path,
+            )
+            output = peak / material_id
+            output.mkdir()
+            summary_json = output / "summary.json"
+            summary_md = output / "summary.md"
+
+            def local_postprocess(_args, _entry):
+                summary_json.write_text(
+                    json.dumps({
+                        "materialId": material_id,
+                        "frames": [{"framePath": "peak.jpg"}],
+                        "warnings": [],
+                    }),
+                    encoding="utf-8",
+                )
+                summary_md.write_text("summary\n", encoding="utf-8")
+                (output / "peak.jpg").write_bytes(b"\xff\xd8frame\xff\xd9")
+                return {"summaryJson": str(summary_json), "summaryMd": str(summary_md)}
+
+            result = repair_manifest.repair_batch(peak, postprocess=local_postprocess)
+            manifest = json.loads((peak / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(result["rpaCalls"], 0)
+        self.assertIn(
+            {"materialId": material_id, "action": "receipt_to_records"},
+            result["actions"],
+        )
+        self.assertEqual(manifest["materials"][0]["rpaStatus"], "selected")
+        self.assertEqual(manifest["materials"][0]["rpaResultStatus"], "available")
+        self.assertEqual(manifest["stageCounts"]["postprocessSucceededCount"], 1)
+
     def test_default_postprocess_uses_current_wave_postprocess_contract(self):
         result_dir = Path("/tmp/peak-frames/m-1")
         summary_json = result_dir / "summary.json"

@@ -19,6 +19,16 @@ ACTIVE_OPERATIONAL_DOCUMENTS = (
 
 
 class StandardWorkflowSkillContractTests(unittest.TestCase):
+    def test_rpa_contract_requires_flat_material_info_probe_and_receipt_recovery(self):
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("`recordType` is the discriminator", contract)
+        self.assertIn("top-level fields", contract)
+        self.assertIn("`recordType == \"material_info\"`", contract)
+        self.assertIn("`rpa-receipts/<materialId>.json`", contract)
+        self.assertIn("records_persisted", runbook)
+
     def test_entry_prompt_requires_shop_id_for_report_and_rpa_authorization(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

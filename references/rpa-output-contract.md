@@ -54,6 +54,12 @@ Identical duplicate time/value rows are collapsed. Conflicting values at the sam
 
 This example selects second 0 as the fixed opening frame, then seconds 3, 7, and 5 by global local-peak click rank.
 
+## Diagnosis Record Shape
+
+`recordType` is the discriminator for every normalized diagnosis record. It is not a nested object name. The connector emits `interaction_series`, `crowd_analysis`, `delivery_material_detail`, `material_info`, and `script_analysis` records in one flat JSON list; each record keeps its fields as top-level fields.
+
+For online frame extraction, locate the record with `recordType == "material_info"` and the target `materialId`, then read its top-level fields `videoUrl`, `thumbnailUrl`, `videoDuration`, and `materialUri`. Do not probe a nested `.material_info` field or conclude that a video URL is absent before enumerating `recordType` values and checking the matching flat record.
+
 ## Online Video Fields
 
 Online mode reads the `material_info` record field `videoUrl`, downloads it to a temporary local video file, and then reuses the same local processing pipeline. `videoDuration` may be present in the connector output, but FFmpeg remains the source of truth for frame timestamp bounds. The target is `zero_second` plus up to three local peaks. 少于 3 个局部峰值 is a curve characteristic, not a technical failure. Postprocessing succeeds when `zero_second` exists and, if peaks were expected, at least one peak frame exists (至少一张峰值帧). A failed expected frame is retained in `summary.json.missingFrames` and must be disclosed in that material's 单素材深度分析. Signal-terminated FFmpeg extraction receives one local 低资源重试 and never triggers an RPA refetch.
@@ -119,7 +125,7 @@ match the batch manifest. The readiness marker records the same `runId`.
 
 The wave output directory is protected by `.batch-run.lock` and a unique `runId`. A stale lock with `running` or `submitted` manifest entries requires explicit recovery; it must not be silently overwritten.
 
-Local repair is available with `python scripts/repair_manifest.py --output-dir <peak-frames-dir>`. It performs `CSV -> records`, `records -> 后处理`, and valid summary/JPEG -> manifest repairs without calling RPA. If the manifest is missing, pass `--top-materials-json`; artifact-only recovery uses `rpaStatus: unknown` until records prove RPA selection. The resulting `repair-manifest.json` records `rpaCalls: 0`, actions, errors, and stage counts.
+Local repair is available with `python scripts/repair_manifest.py --output-dir <peak-frames-dir>`. It first validates `rpa-receipts/<materialId>.json` in `records_persisted` state, then performs `CSV -> records`, `records -> 后处理`, and valid summary/JPEG -> manifest repairs without calling RPA. A valid receipt overrides a stale manifest checkpoint and restores the material as `rpaStatus: selected` and `rpaResultStatus: available` before local frame extraction. If the manifest is missing, pass `--top-materials-json`; artifact-only recovery uses `rpaStatus: unknown` until records prove RPA selection. The resulting `repair-manifest.json` records `rpaCalls: 0`, actions, errors, and stage counts.
 
 Counting terms are intentionally separate. `assetSelectedMaterialCount` is the legacy field name for the number of rank-ordered material IDs loaded from the report candidate pool for this run, equivalent to `candidateCount` and capped by `candidateLimit`. `rpaSubmittedMaterialCount` is the number of material IDs actually sent to the RPA connector, equivalent to the length of `submittedMaterials`. Batch completion requires `postprocessSucceededCount >= targetTopN`; the scheduler never submits the entire candidate pool up front, and submits from the candidate head by waves until that final-success condition is met or the candidate pool is exhausted. Wave timing measures RPA boundaries only and must not be used as an end-to-end or postprocess timing.
 
