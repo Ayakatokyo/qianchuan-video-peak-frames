@@ -32,6 +32,24 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
+PORTFOLIO_SUMMARY_KEYS = (
+    "schemaVersion",
+    "period",
+    "newMaterialCount7d",
+    "newMaterialStartDate",
+    "newMaterialEndDate",
+    "materialCount",
+    "summaryMetrics",
+)
+
+
+def _portfolio_summary(value):
+    raw = value if isinstance(value, dict) else {}
+    if "summaryMetrics" not in raw:
+        return deepcopy(raw)
+    return {key: deepcopy(raw[key]) for key in PORTFOLIO_SUMMARY_KEYS if key in raw}
+
+
 def safe_component(value):
     cleaned = "".join(
         character if character.isalnum() or character in "-_" else "_"
@@ -252,6 +270,9 @@ def report_data_for_template(
             return presentation
         result = deepcopy(presentation)
         chapters = result.get("chapters") if isinstance(result.get("chapters"), dict) else {}
+        chapter01 = chapters.get("chapter01") if isinstance(chapters.get("chapter01"), dict) else {}
+        if "portfolio" in chapter01:
+            chapter01["portfolio"] = _portfolio_summary(chapter01.get("portfolio"))
         chapter04 = chapters.get("chapter04") if isinstance(chapters.get("chapter04"), dict) else {}
         groups = chapter04.get("groups") if isinstance(chapter04.get("groups"), dict) else {}
         for group in groups.values():
@@ -339,8 +360,7 @@ def report_data_for_template(
         "status": data.get("status"),
         "period": data.get("period", {}),
         "pipelineSummary": data.get("pipelineSummary", {}),
-        "topMaterialRoi": data.get("topMaterialRoi", {}),
-        "portfolio": data.get("portfolio", {}),
+        "portfolio": _portfolio_summary(data.get("portfolio", {})),
         "materials": materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
         "batchInsights": data.get("batchInsights", {}),

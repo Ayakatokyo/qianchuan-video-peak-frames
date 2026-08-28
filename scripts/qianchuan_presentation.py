@@ -7,6 +7,15 @@ CATEGORIES = ("portrait", "product", "other")
 TABS = ("highlight", "interaction", "audience", "script", "decision")
 CHAPTER01_POINTS = ("commercial",)
 CHAPTER_SECTIONS = tuple(f"chapter0{index}" for index in range(1, 6))
+PORTFOLIO_SUMMARY_KEYS = (
+    "schemaVersion",
+    "period",
+    "newMaterialCount7d",
+    "newMaterialStartDate",
+    "newMaterialEndDate",
+    "materialCount",
+    "summaryMetrics",
+)
 
 
 def _text(value):
@@ -36,6 +45,13 @@ def _mapping(value):
 
 def _list(value):
     return value if isinstance(value, list) else []
+
+
+def _portfolio_summary(value):
+    raw = _mapping(value)
+    if "summaryMetrics" not in raw:
+        return deepcopy(raw)
+    return {key: deepcopy(raw[key]) for key in PORTFOLIO_SUMMARY_KEYS if key in raw}
 
 
 def _material_refs(value, material_ids):
@@ -73,7 +89,7 @@ def _dimension(conclusion, topic):
 
 def _chapter01(data):
     conclusion = _mapping(data.get("conclusion"))
-    facts = {"commercial": _mapping(data.get("portfolio") or data.get("topMaterialRoi"))}
+    facts = {"commercial": _portfolio_summary(data.get("portfolio") or data.get("topMaterialRoi"))}
     points = []
     evidence_refs = []
     labels = {
@@ -90,7 +106,7 @@ def _chapter01(data):
             "leadIn": lead_in,
             "conclusion": conclusion_text,
             "evidenceRefs": refs,
-            "source": f"facts.{topic} + ai.portfolioDimensionConclusions.{topic}",
+            "source": f"facts.portfolio + ai.portfolioDimensionConclusions.{topic}",
             "availability": _availability(
                 has_facts or bool(conclusion_text),
                 has_facts and bool(conclusion_text) and bool(refs),

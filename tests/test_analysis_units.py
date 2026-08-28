@@ -217,6 +217,8 @@ class AnalysisUnitProjectionTests(unittest.TestCase):
         units = build_analysis_units(analysis)
         chapter01 = units["chapter01-portfolio"]
         self.assertEqual(chapter01["portfolio"], analysis["portfolio"])
+        self.assertNotIn("materials", chapter01)
+        self.assertNotIn("materialIds", chapter01)
         for key in ("audience", "scripts", "interaction", "highlights", "delivery"):
             self.assertNotIn(key, chapter01)
 

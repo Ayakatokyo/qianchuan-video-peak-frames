@@ -254,8 +254,6 @@ def build_analysis_units(analysis):
         "unitId": "chapter01-portfolio",
         "chapterId": "01",
         "period": deepcopy(analysis.get("period", {})),
-        "materialIds": material_ids,
-        "materials": materials,
         "portfolio": deepcopy(analysis.get("portfolio", {})),
     }
     highlight_unit = {

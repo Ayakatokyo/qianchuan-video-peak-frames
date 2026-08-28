@@ -25,7 +25,7 @@
 <!-- 历史契约短语保留：本轮不新增经营指标；当前版本已将新增指标限定在素材榜单事实包内。 -->
 <!-- 历史兼容措辞：不得复用第 01 章人群组合结论；不得为了填充 TOP 组合结论而输出 integrated。 -->
 
-只以 `chapter01-portfolio-input.json` 的素材榜单、近 7 天上新数量和榜单指标为事实，输出 `overallConclusion` 与唯一的 `portfolioDimensionConclusions.commercial`。近 7 天遵循 T+1 口径：以技能执行日 T 为基准，统计 `T-7` 至 `T-1`（含首尾）且 `material_create_time_v2` 落在该区间的素材。禁止引用 Chapter 02～05 的人群、脚本、高光画面或互动时序事实，也不得从素材名称反推业务结论。
+只读取 `chapter01-portfolio-input.json` 的 `portfolio`，以其中的全量素材列表、近 7 天上新数量和榜单指标为事实，输出 `overallConclusion` 与唯一的 `portfolioDimensionConclusions.commercial`。`portfolio.materials` 是事实包提供的全量素材数据，用于事实核验，不是 RPA 选中素材清单；不得读取 Chapter 01 顶层 `materials` 或 `materialIds`，也不得从其他章节补充素材。近 7 天遵循 T+1 口径：以技能执行日 T 为基准，统计 `T-7` 至 `T-1`（含首尾）且 `material_create_time_v2` 落在该区间的素材。`summaryMetrics` 只保留当前 ROI 字段 `roi` 及消耗、点击率、转化率、3 秒完播率和 CPM；`summaryMetrics.roi` 来源字段为 `total_prepay_and_pay_order_roi2`，Chapter 01 事实包不包含 `netSettlementRoi` 或 `overallPaymentRoi`。禁止引用 Chapter 02～05 的人群、脚本、高光画面或互动时序事实，也不得从素材名称反推业务结论。`overallConclusion` 是第一部分唯一直接展示的叙事段落：建议控制在 180-260 个中文字符，在关键数据锚点之外至少包含三项分析判断（例如指标组合反映的效率关系、上新节奏风险、存量分层机会、归因边界或验证优先级），并明确分阶段动作，不能只是指标清单。`commercial.conclusion` 作为结构化备用结论，commercial.conclusion 不得重复 overallConclusion 中相同的指标串，应补充互不重复的业务含义和验证动作。
 
 ### Chapter 02：人群洞察
 
@@ -60,7 +60,7 @@
 - 人群文案只能使用“展现次数”“点击次数”“成交金额”三个正式口径名称；不得用“触达”替代展现次数，不得用“响应”替代点击次数，也不得混写三种口径。
 - `batchInsights[topic=audience]` 仅服务第 02 章人群洞察：必须恰好输出三条，依次覆盖 `chapter02-audience-input.json` 的展现次数（`SHOW_COUNT`）、点击次数（`CLICK_COUNT`）、成交金额（`TRANSACTION_AMOUNT`）。每条的标题不是固定文案，必须由 AI 基于对应口径的八大人群、年龄、性别和地域事实生成；单条的全部 `evidenceRefs` 只能属于一个对应的 `audience:{metric}:*` 口径。不得复用第 01 章素材榜单结论的标题、判断或建议。
 - `portfolioDimensionConclusions` 只允许输出 `commercial` 一个 key，以兼容既有 schema；展示文案统一称为“素材榜单数据”。该结论必须综合近 7 天上新素材量、榜单消耗、ROI、点击率、转化率、3 秒完播率和 CPM，形成“事实锚点 → 榜单判断 → 下一步验证”。
-- `commercial` 只能解释 `chapter01-portfolio-input.json` 的 `portfolio` 与 `materials` 内已有指标。指标名称、时间窗口和数值必须遵循事实包，不得自行改名或补造缺失指标；不得出现“资产表”或任何数据来源名称。
+- `commercial` 只能解释 `chapter01-portfolio-input.json` 的 `portfolio` 内已有指标；`portfolio.materials` 仅用于核验全量素材事实，不得把素材明细逐条展开成报告段落。指标名称、时间窗口和数值必须遵循事实包，不得自行改名或补造缺失指标；不得出现“资产表”或任何数据来源名称。其结论应优先写指标之间的关系、经营含义和下一轮验证设计，避免再次罗列 `overallConclusion` 已写出的完整指标串。
 - 第 01 章不得输出人群、脚本、高光画面或互动时序分析；这些内容只允许出现在对应章节。
 - `highlight` 只能使用 `chapter04-highlight-input.json` 中最终 TOP 素材的 `highlight:*` 证据，高光帧的结论必须是对组合画面机制的谨慎判断。
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
@@ -72,7 +72,7 @@
 
 ## 内容长度与信息密度（标准入口 finalize 的硬性门禁）
 
-- `overallConclusion` 必须为 100-180 个中文字符，概括素材上新规模、榜单核心指标、最优先动作和验证边界。`portfolioDimensionConclusions.commercial.conclusion` 必须为 100-180 个中文字符，至少覆盖上新量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM 中可用的关键指标，并填写至少一个合法 `commercial:*` 证据引用。
+- `overallConclusion` 建议为 180-260 个中文字符，概括素材上新规模、榜单核心指标、指标关系、至少三项分析判断、分阶段动作和验证边界；若事实包指标齐全，必须覆盖上新量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM。`portfolioDimensionConclusions.commercial.conclusion` 必须为 100-180 个中文字符，至少覆盖上新量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM 中可用的关键指标，并填写至少一个合法 `commercial:*` 证据引用；其文字不应重复 overallConclusion 的指标串。
 - 每条 `batchInsights.conclusion` 必须为 180-280 个中文字符，包含具体指标名称和至少 2 个可核验事实点；事实点之后必须给出分析含义、投放判断和可验证假设，并填写至少一个合法 `evidenceRefs`。
 - 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
 - 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
@@ -83,7 +83,7 @@
 
 最终 HTML 页面保留以下 5 个 section，输出字段必须围绕这些 section 收缩：
 
-- `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。展示 `overallConclusion` 和唯一的 `portfolioDimensionConclusions.commercial`，不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
+- `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。前端只直接展示 `overallConclusion` 单段文字；`portfolioDimensionConclusions.commercial` 仅作为结构化结论、证据和兼容字段，不另起可见段落。不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
 - `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用已查看 JPEG 的共同可见信号写至少 20 个字符的 `commonConclusion`，再给出至少一条正文不少于 20 个字符的可验证 `derivativeDirections`；不得把峰值同时性写成因果。

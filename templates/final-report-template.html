@@ -2357,12 +2357,11 @@ function renderCombinationConclusion() {
   }
   root.hidden = true;
   fallback.hidden = false;
-  const paragraphParts = [
-    chapter01?.overallConclusion || conclusion.overallConclusion,
-    ...points.map((point) => point?.conclusion),
-  ].filter((part, index, all) => text(part) && all.indexOf(part) === index);
+  const paragraphText = chapter01?.overallConclusion
+    || conclusion.overallConclusion
+    || points.find((point) => text(point?.conclusion))?.conclusion;
   document.getElementById("overall-conclusion").replaceChildren(
-    renderTextWithMaterialLinks(paragraphParts.join(" ") || "素材榜单数据洞察待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
+    renderTextWithMaterialLinks(paragraphText || "素材榜单数据洞察待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
   );
 }
 

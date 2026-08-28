@@ -77,6 +77,23 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
 
         self.assertEqual(set(result["portfolio"]["materials"]), {"m-1", "m-2"})
 
+    def test_chapter01_does_not_depend_on_selected_materials_for_portfolio_facts(self):
+        top_payload = {
+            "materials": [{"materialId": "m-1"}],
+            "portfolioFacts": {
+                "materialCount": 2,
+                "materials": {
+                    "m-1": {"materialId": "m-1"},
+                    "m-2": {"materialId": "m-2"},
+                },
+            },
+        }
+
+        result = build_diagnostic_analysis(top_payload, {})
+
+        self.assertEqual(result["portfolio"]["materialCount"], 2)
+        self.assertEqual(set(result["portfolio"]["materials"]), {"m-1", "m-2"})
+
     def test_builds_relative_interaction_summary_for_selected_materials(self):
         top_payload = {
             "materials": [
@@ -110,6 +127,13 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
         self.assertIn("T-7", prompt)
         self.assertNotIn("portfolioDimensionConclusions.audience", prompt)
         self.assertNotIn("portfolioDimensionConclusions.highlight", prompt)
+        self.assertIn("只读取 `chapter01-portfolio-input.json` 的 `portfolio`", prompt)
+        self.assertIn("`summaryMetrics.roi`", prompt)
+        self.assertIn("total_prepay_and_pay_order_roi2", prompt)
+        self.assertIn("不得读取 Chapter 01 顶层 `materials` 或 `materialIds`", prompt)
+        self.assertIn("commercial.conclusion 不得重复 overallConclusion", prompt)
+        self.assertIn("至少包含三项分析判断", prompt)
+        self.assertIn("Chapter 01 事实包不包含 `netSettlementRoi` 或 `overallPaymentRoi`", prompt)
         self.assertIn("一二级内容公式", prompt)
         self.assertIn("脚本文案", prompt)
 

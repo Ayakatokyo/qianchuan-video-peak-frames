@@ -228,6 +228,33 @@ class FinalReportConclusionTests(unittest.TestCase):
 
 
 class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
+    def test_template_payload_does_not_embed_chapter01_material_details(self):
+        payload = {
+            "presentation": {
+                "chapters": {
+                    "chapter01": {
+                        "portfolio": {
+                            "materialCount": 1145,
+                            "summaryMetrics": {"roi": "2.29"},
+                            "materials": {"m-1": {"materialId": "m-1"}},
+                        }
+                    }
+                }
+            },
+            "portfolio": {
+                "materialCount": 1145,
+                "summaryMetrics": {"roi": "2.29"},
+                "materials": {"m-1": {"materialId": "m-1"}},
+            },
+            "materials": [],
+        }
+
+        template_data = report_data_for_template(payload, None)
+
+        self.assertNotIn("materials", template_data["portfolio"])
+        self.assertNotIn("materials", template_data["presentation"]["chapters"]["chapter01"]["portfolio"])
+        self.assertNotIn("topMaterialRoi", template_data)
+
     def test_chapter01_renders_one_untitled_paragraph(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
@@ -244,6 +271,8 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
         self.assertNotIn("function activateTopDimensionTab", template)
         self.assertIn('["commercial", ""]', template)
         self.assertIn("chapter01?.overallConclusion", template)
+        self.assertNotIn("...points.map((point) => point?.conclusion)", template)
+        self.assertIn("const paragraphText =", template)
         self.assertIn('root.hidden = true;', template)
         self.assertIn('fallback.hidden = false;', template)
         self.assertNotIn('root.append(element("article", "top-roi-card")', template)
@@ -2768,8 +2797,10 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("少量关键事实锚点 + 判断 + 建议", prompt_text)
         self.assertIn("事实锚点 → 榜单判断 → 下一步验证", prompt_text)
         self.assertIn("不得只写抽象结论", prompt_text)
-        self.assertIn("100-180 个中文字符", prompt_text)
+        self.assertIn("180-260 个中文字符", prompt_text)
         self.assertIn("近 7 天上新素材量", prompt_text)
+        self.assertIn("`summaryMetrics.roi`", prompt_text)
+        self.assertIn("total_prepay_and_pay_order_roi2", prompt_text)
         self.assertIn("每条 `batchInsights.conclusion` 必须为 180-280 个中文字符", prompt_text)
         self.assertIn(
             "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符",

@@ -58,6 +58,8 @@ class AssetMetricsTests(unittest.TestCase):
         self.assertEqual(facts["newMaterialEndDate"], "2026-08-27")
         self.assertEqual(facts["materials"]["new"]["metrics"]["ctr"], "2.5")
         self.assertEqual(facts["materials"]["new"]["metrics"]["threeSecondCompletionRate"], "70")
+        self.assertNotIn("netSettlementRoi", facts["summaryMetrics"])
+        self.assertNotIn("overallPaymentRoi", facts["summaryMetrics"])
 
     def test_aggregates_atomic_metrics_per_material_independent_of_input_order(self):
         rows = [

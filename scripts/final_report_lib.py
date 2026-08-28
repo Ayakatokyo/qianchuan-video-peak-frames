@@ -99,6 +99,24 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
+PORTFOLIO_SUMMARY_KEYS = (
+    "schemaVersion",
+    "period",
+    "newMaterialCount7d",
+    "newMaterialStartDate",
+    "newMaterialEndDate",
+    "materialCount",
+    "summaryMetrics",
+)
+
+
+def _portfolio_summary(value):
+    raw = value if isinstance(value, dict) else {}
+    if "summaryMetrics" not in raw:
+        return dict(raw)
+    return {key: raw[key] for key in PORTFOLIO_SUMMARY_KEYS if key in raw}
+
+
 def _read_json(path, purpose):
     source = Path(path)
     try:
@@ -1445,6 +1463,17 @@ def _prepare_report_data(
     analysis_json,
 ):
     top_payload = _read_json(top_materials_json, "top materials JSON")
+    # Chapter 01 facts are the authoritative full material-list source.  The
+    # RPA-ready payload intentionally contains only the selected assets, so
+    # when an analysis-unit directory is available, inject its portfolio facts
+    # before building the report projection.
+    if analysis_json:
+        chapter01_facts_path = Path(analysis_json).parent / "analysis-units" / "chapter01-portfolio-input.json"
+        if chapter01_facts_path.is_file():
+            chapter01_payload = _read_json(chapter01_facts_path, "Chapter 01 facts")
+            portfolio = chapter01_payload.get("portfolio") if isinstance(chapter01_payload, dict) else None
+            if isinstance(portfolio, dict):
+                top_payload["portfolioFacts"] = portfolio
     materials = _selected_materials(top_payload)
     records_by_material, record_warnings = load_records_for_materials(
         materials, diagnosis_records_dir
@@ -1573,7 +1602,7 @@ def build_final_report_data(
             "rankingMetric": _text(top_payload.get("rankingMetric")) or "totalCost",
         },
         "topMaterialRoi": top_material_roi_data,
-        "portfolio": diagnostic.get("portfolio", {}),
+        "portfolio": _portfolio_summary(diagnostic.get("portfolio", {})),
         "materials": material_cards,
         "defaultMaterialId": default_material_id,
         "pipelineSummary": _pipeline_summary(batch_manifest, batch_verification),

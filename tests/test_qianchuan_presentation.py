@@ -89,10 +89,14 @@ class PresentationTests(unittest.TestCase):
     def test_projects_material_list_insight_as_single_point_without_lead_in(self):
         data = sample_data()
         data["portfolio"] = {
+            "schemaVersion": 1,
+            "period": {"actualStartDate": "2026-08-01", "actualEndDate": "2026-08-07"},
             "newMaterialCount7d": 3,
             "newMaterialStartDate": "2026-08-21",
             "newMaterialEndDate": "2026-08-27",
-            "metrics": {"cost": "100", "ctr": "2.5"},
+            "materialCount": 2,
+            "summaryMetrics": {"cost": "100", "roi": "1.5", "ctr": "2.5"},
+            "materials": {"m-1": {"materialId": "m-1", "createdAt": "2026-08-02"}},
         }
         data["conclusion"] = {
             "schemaVersion": 6,
@@ -109,7 +113,11 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(chapter01["title"], "素材榜单数据洞察")
         self.assertEqual([point["id"] for point in chapter01["points"]], ["commercial"])
         self.assertEqual(chapter01["points"][0]["leadIn"], "")
-        self.assertEqual(chapter01["portfolio"], data["portfolio"])
+        self.assertEqual(
+            chapter01["portfolio"],
+            {key: value for key, value in data["portfolio"].items() if key != "materials"},
+        )
+        self.assertNotIn("materials", chapter01["portfolio"])
 
     def test_projects_new_chapter_contracts_with_stable_material_references(self):
         report = build_presentation_report(complete_presentation_data())

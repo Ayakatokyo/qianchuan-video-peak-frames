@@ -187,26 +187,6 @@ def build_portfolio_facts(
         ),
     }
     total_cost = Decimal(summary["cost"])
-    net_amount = Decimal("0")
-    payment_amount = Decimal("0")
-    for raw_row in raw_rows:
-        row = _load_origin_data(raw_row) if isinstance(raw_row, str) else raw_row
-        if not isinstance(row, dict):
-            continue
-        try:
-            material_id, name, material_type = _parse_material_scope(row)
-        except AssetMetricsError:
-            continue
-        if material_id not in material_payload:
-            continue
-        if pattern is not None and pattern.search(name) is None:
-            continue
-        if types and material_type not in types:
-            continue
-        net_amount += _optional_metric(row, NET_SETTLEMENT_AMOUNT_METRIC) or Decimal("0")
-        payment_amount += _optional_metric(row, OVERALL_PAYMENT_AMOUNT_METRIC) or Decimal("0")
-    summary["netSettlementRoi"] = _decimal_text(net_amount / total_cost) if total_cost else None
-    summary["overallPaymentRoi"] = _decimal_text(payment_amount / total_cost) if total_cost else None
     for key in PORTFOLIO_METRIC_KEYS:
         weighted_values = [
             (Decimal(item["totalCost"]), Decimal(item["metrics"][key]))
