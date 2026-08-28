@@ -144,6 +144,25 @@ class PresentationTests(unittest.TestCase):
             report["chapters"]["chapter02"]["preferencesByMetric"]["CLICK_COUNT"][0]["topMaterials"][0]["materialId"],
             "m-1",
         )
+        self.assertNotIn("preferences", report["chapters"]["chapter02"])
+        projected_candidate = report["chapters"]["chapter02"]["preferencesByMetric"]["CLICK_COUNT"][0]["topMaterials"][0]
+        self.assertTrue(set(projected_candidate).issubset({"rank", "materialId", "materialName", "audiencePercentage", "totalCost"}))
+        self.assertNotIn("preferenceLift", projected_candidate)
+
+    def test_projects_chapter02_metrics_without_unused_dimension_metadata(self):
+        data = complete_presentation_data()
+        data["audience"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"].update({
+            "dimensionKey": "age",
+            "dimensionName": "年龄",
+            "totalMetricValue": 12,
+            "missingMaterialIds": ["m-2"],
+        })
+        report = build_presentation_report(data)
+        dimension = report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"]["dimensions"]["age"]
+        self.assertNotIn("dimensionKey", dimension)
+        self.assertNotIn("dimensionName", dimension)
+        self.assertNotIn("totalMetricValue", dimension)
+        self.assertNotIn("missingMaterialIds", report["chapters"]["chapter02"]["metrics"]["CLICK_COUNT"])
         group = report["chapters"]["chapter03"]["groups"][0]
         self.assertEqual((group["level1"], group["labels"][0]["level2"]), ("商品卖点", "适用场景"))
         self.assertEqual(group["labels"][0]["evidenceRefs"], ["script:m-1:商品卖点:适用场景"])

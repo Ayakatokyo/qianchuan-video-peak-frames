@@ -215,7 +215,7 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
 
         preferences = build_diagnostic_analysis(top_payload, records_by_material)[
             "audience"
-        ]["preferences"]
+        ]["preferencesByMetric"]["SHOW_COUNT"]
         preferences_by_group = {
             group["audienceGroup"]: group["topMaterials"] for group in preferences
         }
@@ -287,7 +287,7 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
 
         preferences = build_diagnostic_analysis(top_payload, records_by_material)[
             "audience"
-        ]["preferences"]
+        ]["preferencesByMetric"]["SHOW_COUNT"]
         preferences_by_group = {
             group["audienceGroup"]: group["topMaterials"] for group in preferences
         }
@@ -343,7 +343,7 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
 
         preferences = build_diagnostic_analysis(top_payload, records_by_material)[
             "audience"
-        ]["preferences"]
+        ]["preferencesByMetric"]["SHOW_COUNT"]
 
         self.assertEqual(preferences, [])
 
@@ -398,7 +398,7 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
         audience = build_diagnostic_analysis(top_payload, records_by_material)["audience"]
         preferences_by_metric = audience["preferencesByMetric"]
 
-        self.assertEqual(audience["preferences"], preferences_by_metric["SHOW_COUNT"])
+        self.assertNotIn("preferences", audience)
         show_preferences = {
             group["audienceGroup"]: group["topMaterials"]
             for group in preferences_by_metric["SHOW_COUNT"]

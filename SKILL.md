@@ -78,7 +78,7 @@ RPA 执行只有一个 480 秒截止时间。超过截止时间时，系统终�
 
 必须由当前对话模型在一次模型调用中统一读取五个章节事实包，并在同一运行目录一次写入完整的 `diagnostic-analysis/diagnostic-ai-analysis.json`，使用 `schemaVersion: 5`。不得拆成五次分析，不得通过外部模型服务、`codex exec` 或子进程替代当前对话模型。报告仍保留经营表现、人群、脚本、高光画面和互动时序的章节边界；其中第 01 部分只读取 `chapter01-portfolio-input.json` 的 `portfolio` 全量素材事实，覆盖近 7 天上新素材量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM；不得读取 Chapter 01 顶层 RPA 选中素材字段 `materials` 或 `materialIds`。第 01 部分事实包的 `summaryMetrics` 只保留当前 `roi` 及其他榜单指标，不包含 `netSettlementRoi`、`overallPaymentRoi`；当前 ROI 来源字段为 `total_prepay_and_pay_order_roi2`。`overallConclusion` 是第一部分唯一直接展示的段落，建议写满 180-260 个中文字符，除关键数据锚点外至少包含三项分析判断和分阶段验证动作；`commercial.conclusion` 不得重复其完整指标串，应补充业务含义和验证动作。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`，将每个成功高光帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次。不得把帧秒数宣称为对应某句脚本话术。
 
-以该提示词为 AI JSON 输出契约：按其中的字段、证据、覆盖、枚举、长度与定向修正规则完成一次完整分析。结论仅分析业务事实；每个成功 JPEG 都要有高光帧分析，`missingFrames` 必须在 `frameCoverageNote` 说明影响，证据引用逐字复用事实包标识。v4 仅用于历史报告兼容。
+以该提示词为 AI JSON 输出契约：按其中的字段、证据、覆盖、枚举、长度与定向修正规则完成一次完整分析。第二部分的 `preferencesByMetric` 仅供报告偏好 drill-down 使用，AI 不读取，也不得将其中的 TOP3 素材字段写入人群洞察。结论仅分析业务事实；每个成功 JPEG 都要有高光帧分析，`missingFrames` 必须在 `frameCoverageNote` 说明影响，证据引用逐字复用事实包标识。v4 仅用于历史报告兼容。
 
 写入 AI JSON 后、调用 `finalize` 前，必须执行一次只读质量校验：
 

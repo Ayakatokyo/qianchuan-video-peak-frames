@@ -47,7 +47,6 @@
     <header class="section-header"><h2>02｜人群洞察</h2></header>
     <div class="insight-layout">
       <div class="primary-summary" id="audience-primary"></div>
-      <div class="audience-preferences" id="audience-preferences"></div>
       <div class="data-dashboard" id="audience-dashboard"></div>
     </div>
   </section>
@@ -104,7 +103,7 @@ function chapter01Insights(topic) {
 
 function chapter02Insights() {
   const insights = presentationChapter("chapter02")?.insights;
-  return Array.isArray(insights) ? insights : reportData.batchInsights?.audience;
+  return Array.isArray(insights) ? insights : [];
 }
 
 function chapter03Summary() {
@@ -651,11 +650,6 @@ function renderRegionChart(card, dimensions) {
     regionTabs.append(button);
   });
   renderRegion(activeDimensionKey);
-}
-
-function renderAudiencePreferences() {
-  const root = document.getElementById("audience-preferences");
-  root.replaceChildren();
 }
 
 function renderAudiencePreferenceCard(audienceGroup, metricKey = "SHOW_COUNT") {
@@ -2382,7 +2376,6 @@ function renderReport() {
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
   renderCombinationConclusion();
   renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");
-  renderAudiencePreferences();
   renderAudienceDashboard();
   renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");
   renderScriptDashboard();

@@ -29,7 +29,7 @@
 
 ### Chapter 02：人群洞察
 
-只以 `chapter02-audience-input.json` 的 `SHOW_COUNT`、`CLICK_COUNT`、`TRANSACTION_AMOUNT` 三种口径及其全部可用维度生成 `batchInsights[topic=audience]`。三条洞察的事实、判断和建议必须按口径隔离，不混用证据引用。
+只以 `chapter02-audience-input.json` 的 `SHOW_COUNT`、`CLICK_COUNT`、`TRANSACTION_AMOUNT` 三种口径及其全部可用维度生成 `batchInsights[topic=audience]`。三条洞察的事实、判断和建议必须按口径隔离，不混用证据引用。`preferencesByMetric` 仅供报告偏好 drill-down 使用，AI 不读取，也不得将其中的 TOP3 素材字段写入人群洞察。
 
 ### Chapter 03：脚本洞察
 

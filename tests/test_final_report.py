@@ -255,6 +255,29 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
         self.assertNotIn("materials", template_data["presentation"]["chapters"]["chapter01"]["portfolio"])
         self.assertNotIn("topMaterialRoi", template_data)
 
+    def test_template_payload_uses_presentation_as_new_chapter02_source(self):
+        payload = {
+            "presentation": {
+                "presentationSchemaVersion": 1,
+                "chapters": {
+                    "chapter02": {
+                        "availability": "available",
+                        "metrics": {"SHOW_COUNT": {"dimensions": {}}},
+                        "insights": [],
+                        "preferencesByMetric": {},
+                    }
+                },
+            },
+            "audience": {"metrics": {"legacy": True}},
+            "batchInsights": {"audience": [{"title": "legacy"}]},
+            "materials": [],
+        }
+
+        template_data = report_data_for_template(payload, None)
+
+        self.assertNotIn("audience", template_data)
+        self.assertNotIn("batchInsights", template_data)
+
     def test_chapter01_renders_one_untitled_paragraph(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
@@ -2475,7 +2498,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("高光帧", html_text)
         self.assertNotIn("evidenceRefs.join", html_text)
         self.assertIn('id="audience-dashboard"', html_text)
-        self.assertIn('id="audience-preferences"', html_text)
+        self.assertNotIn('id="audience-preferences"', html_text)
         self.assertIn('id="script-dashboard"', html_text)
         self.assertIn("function animateScriptDrill", html_text)
         self.assertIn("function renderScriptDrill", html_text)
@@ -2493,14 +2516,14 @@ class FinalReportRenderTests(unittest.TestCase):
         )
         self.assertIn("function chapter02Insights()", html_text)
         self.assertIn('presentationChapter("chapter02")?.insights', html_text)
-        self.assertIn("reportData.batchInsights?.audience", html_text)
+        self.assertNotIn("reportData.batchInsights?.audience", html_text)
         self.assertIn(
             'renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");',
             html_text,
         )
-        self.assertIn("function renderAudiencePreferences", html_text)
+        self.assertNotIn("function renderAudiencePreferences", html_text)
         self.assertIn(
-            'renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");\n  renderAudiencePreferences();\n  renderAudienceDashboard();',
+            'renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");\n  renderAudienceDashboard();',
             html_text,
         )
         self.assertIn(
@@ -2795,6 +2818,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句", prompt_text)
         self.assertIn("解释这些事实为什么影响素材放量、改写或保留判断", prompt_text)
         self.assertIn("少量关键事实锚点 + 判断 + 建议", prompt_text)
+        self.assertIn("preferencesByMetric", prompt_text)
+        self.assertIn("仅供报告偏好 drill-down 使用，AI 不读取", prompt_text)
         self.assertIn("事实锚点 → 榜单判断 → 下一步验证", prompt_text)
         self.assertIn("不得只写抽象结论", prompt_text)
         self.assertIn("180-260 个中文字符", prompt_text)

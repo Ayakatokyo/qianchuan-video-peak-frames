@@ -351,9 +351,22 @@ def report_data_for_template(
             and contains_execution_process_term(warning)
         )
     ]
+    template_data_presentation = presentation_for_template(data.get("presentation"))
+    presentation_chapters = (
+        template_data_presentation.get("chapters", {})
+        if isinstance(template_data_presentation, dict)
+        else {}
+    )
+    chapter02 = presentation_chapters.get("chapter02")
+    has_v1_presentation = (
+        isinstance(template_data_presentation, dict)
+        and template_data_presentation.get("presentationSchemaVersion") == 1
+        and isinstance(chapter02, dict)
+        and chapter02.get("availability") in {"available", "partial"}
+    )
     return {
         "schemaVersion": data.get("schemaVersion"),
-        "presentation": presentation_for_template(data.get("presentation")),
+        "presentation": template_data_presentation,
         "generatedAt": data.get("generatedAt"),
         "runId": data.get("runId")
         or (data.get("pipelineSummary") or {}).get("runId"),
@@ -363,8 +376,10 @@ def report_data_for_template(
         "portfolio": _portfolio_summary(data.get("portfolio", {})),
         "materials": materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
-        "batchInsights": data.get("batchInsights", {}),
-        "audience": data.get("audience", {}),
+        **({} if has_v1_presentation else {
+            "batchInsights": data.get("batchInsights", {}),
+            "audience": data.get("audience", {}),
+        }),
         "scripts": data.get("scripts", {}),
         "conclusion": {
             "schemaVersion": conclusion.get("schemaVersion"),

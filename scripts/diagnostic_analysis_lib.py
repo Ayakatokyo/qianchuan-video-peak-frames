@@ -876,7 +876,6 @@ def build_diagnostic_analysis(top_payload, records_by_material, commercial=None)
                 metric: _aggregate_audience_metric(records_by_material, selected_ids, metric)
                 for metric in AUDIENCE_METRICS
             },
-            "preferences": preferences_by_metric.get(PREFERENCE_METRIC, []),
             "preferencesByMetric": preferences_by_metric,
         },
         "scripts": _build_scripts(records_by_material, selected_ids, warnings),

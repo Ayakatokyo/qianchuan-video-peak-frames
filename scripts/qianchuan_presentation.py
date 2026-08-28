@@ -70,13 +70,41 @@ def _preferences(value, material_ids):
         if not isinstance(preference, dict):
             continue
         item = deepcopy(preference)
-        item["topMaterials"] = [
-            deepcopy(candidate)
-            for candidate in _list(item.get("topMaterials"))
-            if isinstance(candidate, dict) and _text(candidate.get("materialId")) in material_ids
-        ]
+        candidates = _list(item.get("topMaterials"))
+        item["topMaterials"] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or _text(candidate.get("materialId")) not in material_ids:
+                continue
+            item["topMaterials"].append({
+                key: deepcopy(candidate[key])
+                for key in ("rank", "materialId", "materialName", "audiencePercentage", "totalCost")
+                if key in candidate
+            })
         item["sourceMaterialIds"] = [candidate["materialId"] for candidate in item["topMaterials"]]
         projected.append(item)
+    return projected
+
+
+def _metrics(value):
+    projected = {}
+    for metric, raw_metric in _mapping(value).items():
+        if not isinstance(raw_metric, dict):
+            continue
+        dimensions = {}
+        for dimension_key, raw_dimension in _mapping(raw_metric.get("dimensions")).items():
+            if not isinstance(raw_dimension, dict):
+                continue
+            dimension = {"buckets": []}
+            for bucket in _list(raw_dimension.get("buckets")):
+                if not isinstance(bucket, dict):
+                    continue
+                dimension["buckets"].append({
+                    key: deepcopy(bucket[key])
+                    for key in ("bucket", "metricValue", "metricPercentage", "sourceMaterialIds", "evidenceRefs")
+                    if key in bucket
+                })
+            dimensions[dimension_key] = dimension
+        projected[metric] = {"dimensions": dimensions}
     return projected
 
 
@@ -131,13 +159,16 @@ def _chapter02(data, material_ids):
         for insight in _list(_mapping(data.get("conclusion")).get("batchInsights"))
         if isinstance(insight, dict) and _text(insight.get("topic")) == "audience"
     ]
-    metrics = deepcopy(_mapping(audience.get("metrics")))
-    preferences = _preferences(audience.get("preferences"), material_ids)
+    metrics = _metrics(audience.get("metrics"))
     preferences_by_metric = {
         _text(metric): _preferences(items, material_ids)
         for metric, items in _mapping(audience.get("preferencesByMetric")).items()
         if _text(metric)
     }
+    if not preferences_by_metric and _list(audience.get("preferences")):
+        preferences_by_metric["SHOW_COUNT"] = _preferences(
+            audience.get("preferences"), material_ids
+        )
     has_refs = False
     for metric_key, metric in metrics.items():
         for dimension_key, dimension in _mapping(metric).get("dimensions", {}).items():
@@ -148,12 +179,12 @@ def _chapter02(data, material_ids):
                         f"audience:{metric_key}:{dimension_key}:{_text(bucket.get('bucket'))}"
                     ] if _text(bucket.get("bucket")) else []
                     has_refs = has_refs or bool(bucket["sourceMaterialIds"])
-    for preference in preferences + [item for items in preferences_by_metric.values() for item in items]:
+    for preference in [item for items in preferences_by_metric.values() for item in items]:
         has_refs = has_refs or bool(preference["sourceMaterialIds"])
-    has_content = bool(metrics or preferences or preferences_by_metric)
+    has_content = bool(metrics or preferences_by_metric)
     return {
         "id": "chapter02", "title": "人群洞察", "insights": insights,
-        "metrics": metrics, "preferences": preferences,
+        "metrics": metrics,
         "preferencesByMetric": preferences_by_metric,
         "source": "facts.audience + ai.batchInsights[audience]", "evidenceRefs": [],
         "availability": _availability(has_content, has_refs),
