@@ -110,7 +110,7 @@ def _report_image_references(report_dir, html_text):
     return references
 
 
-def _validate_report_archive(archive_path, report_name, references):
+def _validate_report_archive(archive_path, report_name, references, include_display_facts=False):
     prefix = f"{report_name}/"
     required = {
         f"{prefix}final-report.html",
@@ -118,6 +118,8 @@ def _validate_report_archive(archive_path, report_name, references):
         f"{prefix}presentation-report.json",
         *(f"{prefix}{reference}" for reference in references),
     }
+    if include_display_facts:
+        required.add(f"{prefix}report-display-facts.json")
     try:
         with zipfile.ZipFile(archive_path) as archive:
             names = set(archive.namelist())
@@ -163,7 +165,12 @@ def create_report_archive(report_dir, archive_path=None):
             for source in sorted(root.rglob("*")):
                 if source.is_file() and not source.is_symlink():
                     archive.write(source, source.relative_to(root.parent).as_posix())
-        _validate_report_archive(staging, root.name, references)
+        _validate_report_archive(
+            staging,
+            root.name,
+            references,
+            include_display_facts=(root / "report-display-facts.json").is_file(),
+        )
         os.replace(staging, target)
     except (OSError, zipfile.BadZipFile) as exc:
         staging.unlink(missing_ok=True)
@@ -352,6 +359,20 @@ def report_data_for_template(
         )
     ]
     template_data_presentation = presentation_for_template(data.get("presentation"))
+    template_display_facts = data.get("displayFacts", {})
+    if isinstance(template_display_facts, dict):
+        template_display_facts = deepcopy(template_display_facts)
+        template_display_facts.pop("highlights", None)
+        template_display_facts.pop("delivery", None)
+        template_display_facts["materials"] = [
+            {
+                key: deepcopy(value)
+                for key, value in material.items()
+                if key not in {"summaryPath", "warnings", "analysis", "highlightFrames"}
+            }
+            for material in template_display_facts.get("materials", [])
+            if isinstance(material, dict)
+        ]
     presentation_chapters = (
         template_data_presentation.get("chapters", {})
         if isinstance(template_data_presentation, dict)
@@ -364,6 +385,9 @@ def report_data_for_template(
         and isinstance(chapter02, dict)
         and chapter02.get("availability") in {"available", "partial"}
     )
+    if isinstance(template_display_facts, dict) and has_v1_presentation:
+        chapter02.pop("metrics", None)
+        chapter02.pop("preferencesByMetric", None)
     return {
         "schemaVersion": data.get("schemaVersion"),
         "presentation": template_data_presentation,
@@ -374,6 +398,7 @@ def report_data_for_template(
         "period": data.get("period", {}),
         "pipelineSummary": data.get("pipelineSummary", {}),
         "portfolio": _portfolio_summary(data.get("portfolio", {})),
+        "displayFacts": template_display_facts,
         "materials": materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
         **({} if has_v1_presentation else {

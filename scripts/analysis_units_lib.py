@@ -100,9 +100,25 @@ def _audience_unit(analysis):
         "chapterId": "02",
         "period": deepcopy(analysis.get("period", {})),
         "metrics": metrics,
-        "preferencesByMetric": _without_source_material_ids(
-            audience.get("preferencesByMetric", {})
-        ),
+    }
+
+
+def build_display_facts(analysis):
+    """Project deterministic facts used by report charts and fixed panels."""
+    if not isinstance(analysis, dict) or analysis.get("schemaVersion") != 1:
+        raise AnalysisUnitError("normalized diagnostic facts must use schemaVersion 1")
+    return {
+        "schemaVersion": 1,
+        "sourceFactsSchemaVersion": analysis["schemaVersion"],
+        "period": deepcopy(analysis.get("period", {})),
+        "portfolio": deepcopy(analysis.get("portfolio", {})),
+        "materials": deepcopy(analysis.get("materials", [])),
+        "audience": deepcopy(analysis.get("audience", {})),
+        "scripts": deepcopy(analysis.get("scripts", {})),
+        "interaction": deepcopy(analysis.get("interaction", {})),
+        "delivery": deepcopy(analysis.get("delivery", {})),
+        "highlights": deepcopy(analysis.get("highlights", {})),
+        "commercial": deepcopy(analysis.get("commercial", {})),
     }
 
 
@@ -173,38 +189,6 @@ def _commercial_evidence_refs(commercial):
     ]
 
 
-def _material_audience_preferences(audience):
-    result = {}
-    preferences = audience.get("preferencesByMetric", {}) if isinstance(audience, dict) else {}
-    if not isinstance(preferences, dict):
-        return result
-    for metric, groups in preferences.items():
-        if not isinstance(groups, list):
-            continue
-        for group in groups:
-            if not isinstance(group, dict):
-                continue
-            audience_group = _text(group.get("audienceGroup"))
-            for item in group.get("topMaterials", []):
-                if not isinstance(item, dict):
-                    continue
-                material_id = _text(item.get("materialId"))
-                if not material_id:
-                    continue
-                preference = {
-                    key: deepcopy(value)
-                    for key, value in item.items()
-                    if key not in {"materialId", "materialName", "totalCost"}
-                }
-                preference["metric"] = metric
-                preference["audienceGroup"] = audience_group
-                preference["evidenceRef"] = (
-                    f"audience:{metric}:user_group_label_name:{audience_group}"
-                )
-                result.setdefault(material_id, []).append(preference)
-    return result
-
-
 def _material_indexes(analysis, script_unit):
     script_refs = {}
     for material in script_unit["materials"]:
@@ -264,7 +248,6 @@ def build_analysis_units(analysis):
         "materials": deepcopy(analysis.get("highlights", {}).get("materials", [])),
     }
 
-    audience_preferences = _material_audience_preferences(analysis.get("audience", {}))
     script_refs, highlight_index = _material_indexes(analysis, script_unit)
     material_units = []
     for identity in materials:
@@ -273,7 +256,6 @@ def build_analysis_units(analysis):
         material_units.append(
             {
                 **deepcopy(identity),
-                "audiencePreferences": audience_preferences.get(material_id, []),
                 "scriptEvidenceRefs": script_refs.get(material_id, []),
                 "highlightRefs": highlight.get("highlightRefs", []),
                 "missingFrames": highlight.get("missingFrames", []),
@@ -323,6 +305,7 @@ def _frame_counts(analysis):
 def publish_analysis_units(output_dir, analysis):
     """Write compact units first and publish the hash manifest last."""
     units = build_analysis_units(analysis)
+    display_facts = build_display_facts(analysis)
     serialized_units = []
     for unit_id, filename in UNIT_DEFINITIONS:
         raw = _compact_json_bytes(units[unit_id])
@@ -350,6 +333,12 @@ def publish_analysis_units(output_dir, analysis):
         for material in analysis.get("materials", [])
         if isinstance(material, dict)
     ]
+    display_raw = _compact_json_bytes(display_facts)
+    display_entry = {
+        "path": "report-display-facts.json",
+        "byteSize": len(display_raw),
+        "sha256": hashlib.sha256(display_raw).hexdigest(),
+    }
     manifest = {
         "schemaVersion": 2,
         "executionMode": "single_model_call",
@@ -360,14 +349,19 @@ def publish_analysis_units(output_dir, analysis):
         "promptPath": "../diagnostic-analysis-prompt.md",
         "frames": _frame_counts(analysis),
         "units": [item for _filename, _raw, item in serialized_units],
+        "displayFacts": display_entry,
     }
     manifest_raw = _compact_json_bytes(manifest)
 
     unit_dir = Path(output_dir) / "analysis-units"
     manifest_path = unit_dir / "analysis-unit-manifest.json"
+    display_path = Path(output_dir) / "report-display-facts.json"
     staging_paths = []
     manifest_staging = unit_dir / (
         f".analysis-unit-manifest.{uuid.uuid4().hex}.json.tmp"
+    )
+    display_staging = display_path.with_name(
+        f".{display_path.name}.{uuid.uuid4().hex}.tmp"
     )
     try:
         unit_dir.mkdir(parents=True, exist_ok=True)
@@ -376,11 +370,13 @@ def publish_analysis_units(output_dir, analysis):
             staging.write_bytes(raw)
             staging_paths.append((staging, unit_dir / filename))
         manifest_staging.write_bytes(manifest_raw)
+        display_staging.write_bytes(display_raw)
 
         manifest_path.unlink(missing_ok=True)
         for staging, target in staging_paths:
             os.replace(staging, target)
         os.replace(manifest_staging, manifest_path)
+        os.replace(display_staging, display_path)
     finally:
         for staging, _target in staging_paths:
             try:
@@ -389,6 +385,10 @@ def publish_analysis_units(output_dir, analysis):
                 pass
         try:
             manifest_staging.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            display_staging.unlink(missing_ok=True)
         except OSError:
             pass
     return manifest_path, manifest

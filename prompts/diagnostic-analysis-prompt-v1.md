@@ -2,6 +2,8 @@
 
 当前执行技能的当前对话模型必须先读取 `analysis-units/analysis-unit-manifest.json`，校验其中五个章节事实包的路径、字节数、SHA-256、素材顺序和帧数量，再在一次模型调用中统一读取：
 
+`report-display-facts.json` 是前端展示快照，不属于模型输入；模型不得读取、引用或复述其中的 TOP3/图表展示字段。
+
 - `analysis-units/chapter01-portfolio-input.json`
 - `analysis-units/chapter02-audience-input.json`
 - `analysis-units/chapter03-script-input.json`

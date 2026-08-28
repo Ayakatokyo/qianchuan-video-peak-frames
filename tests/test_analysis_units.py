@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from analysis_units_lib import (  # noqa: E402
     build_analysis_units,
+    build_display_facts,
     publish_analysis_units,
 )
 
@@ -176,6 +177,7 @@ class AnalysisUnitProjectionTests(unittest.TestCase):
             json.dumps(units["chapter02-audience"], ensure_ascii=False),
         )
         self.assertNotIn("preferences", units["chapter02-audience"])
+        self.assertNotIn("preferencesByMetric", units["chapter02-audience"])
         audience_bucket = units["chapter02-audience"]["metrics"]["SHOW_COUNT"][
             "dimensions"
         ]["user_group_label_name"]["buckets"][0]
@@ -205,6 +207,20 @@ class AnalysisUnitProjectionTests(unittest.TestCase):
         )
         self.assertNotIn("deliveryFacts", material)
         self.assertNotIn("delivery", json.dumps(units, ensure_ascii=False))
+        self.assertNotIn("audiencePreferences", units["chapter05-material"]["materials"][0])
+
+    def test_display_facts_keep_all_fixed_report_data(self):
+        display = build_display_facts(example_analysis())
+        self.assertEqual(
+            set(display),
+            {
+                "schemaVersion", "sourceFactsSchemaVersion", "period", "portfolio",
+                "materials", "audience", "scripts", "interaction", "delivery",
+                "highlights", "commercial",
+            },
+        )
+        self.assertIn("preferencesByMetric", display["audience"])
+        self.assertIn("metrics", display["audience"])
 
     def test_chapter01_contains_only_material_list_facts(self):
         analysis = example_analysis()
@@ -244,6 +260,14 @@ class AnalysisUnitPublicationTests(unittest.TestCase):
             self.assertEqual(manifest["frames"]["successfulCount"], 1)
             self.assertEqual(manifest["frames"]["missingCount"], 0)
             self.assertEqual(len(manifest["units"]), 5)
+            display_path = Path(temp_dir) / "report-display-facts.json"
+            self.assertTrue(display_path.is_file())
+            display_raw = display_path.read_bytes()
+            self.assertEqual(manifest["displayFacts"]["path"], "report-display-facts.json")
+            self.assertEqual(manifest["displayFacts"]["byteSize"], len(display_raw))
+            self.assertEqual(
+                manifest["displayFacts"]["sha256"], hashlib.sha256(display_raw).hexdigest()
+            )
 
             for item in manifest["units"]:
                 unit_path = manifest_path.parent / item["path"]

@@ -17,6 +17,7 @@ from diagnostic_analysis_lib import (
     build_material_audience,
     load_retained_diagnosis_records,
 )
+from analysis_units_lib import build_display_facts
 from report_renderer import (
     ReportRenderingError,
     atomic_write_text,
@@ -1550,6 +1551,16 @@ def build_final_report_data(
         )
         for material in materials
     ]
+    display_facts = build_display_facts(diagnostic)
+    display_facts["materials"] = [
+        {
+            key: value
+            for key, value in card.items()
+            if key != "analysis"
+        }
+        for card in material_cards
+    ]
+    display_facts["topMaterialRoi"] = top_material_roi_data
     _validate_v2_evidence(
         conclusion,
         diagnostic,
@@ -1602,6 +1613,7 @@ def build_final_report_data(
             "rankingMetric": _text(top_payload.get("rankingMetric")) or "totalCost",
         },
         "topMaterialRoi": top_material_roi_data,
+        "displayFacts": display_facts,
         "portfolio": _portfolio_summary(diagnostic.get("portfolio", {})),
         "materials": material_cards,
         "defaultMaterialId": default_material_id,
@@ -1797,6 +1809,7 @@ def generate_final_report(
         _validate_standard_ai_quality(conclusion, legacy_data["materials"])
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"
+    display_facts_path = output_root / "report-display-facts.json"
     presentation_path = output_root / "presentation-report.json"
     html_path = output_root / "final-report.html"
     from qianchuan_presentation import build_presentation_report
@@ -1805,6 +1818,10 @@ def generate_final_report(
     data = {"presentation": presentation, **legacy_data}
     _atomic_write_text(
         data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    )
+    _atomic_write_text(
+        display_facts_path,
+        json.dumps(data.get("displayFacts", {}), ensure_ascii=False, indent=2) + "\n",
     )
     _atomic_write_text(
         presentation_path, json.dumps(presentation, ensure_ascii=False, indent=2) + "\n"

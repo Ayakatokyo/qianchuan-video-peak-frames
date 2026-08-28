@@ -654,7 +654,8 @@ function renderRegionChart(card, dimensions) {
 
 function renderAudiencePreferenceCard(audienceGroup, metricKey = "SHOW_COUNT") {
   const chapter02 = presentationChapter("chapter02");
-  const preferencesByMetric = chapter02?.preferencesByMetric || reportData.audience?.preferencesByMetric || {};
+  const displayAudience = reportData.displayFacts?.audience || {};
+  const preferencesByMetric = displayAudience.preferencesByMetric || chapter02?.preferencesByMetric || reportData.audience?.preferencesByMetric || {};
   const preferences = Array.isArray(preferencesByMetric[metricKey])
     ? preferencesByMetric[metricKey]
     : Array.isArray(chapter02?.preferences)
@@ -770,7 +771,8 @@ function returnToAudienceOverview(root, buckets, selectedName, metricKey) {
 
 function renderAudienceDashboard() {
   const root = document.getElementById("audience-dashboard");
-  const metrics = presentationChapter("chapter02")?.metrics || reportData.audience?.metrics || {};
+  const displayAudience = reportData.displayFacts?.audience || {};
+  const metrics = displayAudience.metrics || presentationChapter("chapter02")?.metrics || reportData.audience?.metrics || {};
   const metricKeys = ["SHOW_COUNT", "TRANSACTION_AMOUNT", "CLICK_COUNT"].filter((key) => metrics[key]);
   root.replaceChildren();
   if (metricKeys.length === 0) {

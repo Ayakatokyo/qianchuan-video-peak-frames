@@ -368,6 +368,18 @@ def _chapter05(materials, ai_schema_version):
 
 def build_presentation_report(data):
     data = data if isinstance(data, dict) else {}
+    display_facts = data.get("displayFacts")
+    if isinstance(display_facts, dict):
+        fact_data = {
+            **data,
+            **{
+                key: deepcopy(value)
+                for key, value in display_facts.items()
+                if key not in {"schemaVersion", "sourceFactsSchemaVersion", "materials"}
+            },
+        }
+    else:
+        fact_data = data
     materials = _materials(data)
     material_ids = {item["materialId"] for item in materials}
     report = {
@@ -375,12 +387,12 @@ def build_presentation_report(data):
         "report": {"title": "千川素材分析报告", "runId": data.get("runId"), "period": deepcopy(data.get("period", {})), "status": data.get("status"), "sections": list(CHAPTER_SECTIONS)},
         "materials": [{"materialId": item["materialId"], "materialName": item.get("materialName", ""), "rank": item.get("rank"), "source": "facts.materials"} for item in materials],
         "chapters": {
-            "chapter01": _chapter01(data), "chapter02": _chapter02(data, material_ids),
-            "chapter03": _chapter03(data, material_ids), "chapter04": _chapter04(data, materials),
+            "chapter01": _chapter01(fact_data), "chapter02": _chapter02(fact_data, material_ids),
+            "chapter03": _chapter03(fact_data, material_ids), "chapter04": _chapter04(fact_data, materials),
             "chapter05": _chapter05(materials, (data.get("conclusion") or {}).get("schemaVersion")),
         },
-        "interactions": {"source": "facts.interaction", "availability": "available" if data.get("interaction") else "unavailable"},
-        "extensions": {"qianchuan": {"aiSchemaVersion": (data.get("conclusion") or {}).get("schemaVersion")}},
+        "interactions": {"source": "report-display-facts.interaction", "availability": "available" if fact_data.get("interaction") else "unavailable"},
+        "extensions": {"qianchuan": {"aiSchemaVersion": (data.get("conclusion") or {}).get("schemaVersion"), "displayFactSource": "report-display-facts.json"}},
     }
     validate_presentation_report(report)
     return report

@@ -147,6 +147,11 @@ def _summary(request, paths, *, status, diagnostic_prompt=None,
                 if analysis_unit_manifest else None
             ),
             "report": _relative(root, report) if report else None,
+            "reportDisplayFacts": (
+                _relative(root, Path(report).parent / "report-display-facts.json")
+                if report and (Path(report).parent / "report-display-facts.json").is_file()
+                else None
+            ),
             "reportArchive": _relative(root, report_archive) if report_archive else None,
         },
         "failure": failure,
