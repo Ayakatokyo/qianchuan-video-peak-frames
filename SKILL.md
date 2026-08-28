@@ -76,7 +76,7 @@ RPA 执行只有一个 480 秒截止时间。超过截止时间时，系统终�
 
 先读取事实包和提示词：具体包括 manifest、五个章节事实包和唯一 Prompt；核对字节数、SHA-256、素材数、成功帧数与 `missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看每张 JPEG；每批不超过 6 帧。策略或 guardrail 拒绝时，立即按[运维手册](references/qianchuan-operations-runbook.md)冻结并恢复帧审阅，不得跳过任何帧或改用其他产物补充事实。
 
-必须由当前对话模型在一次模型调用中统一读取五个章节事实包，并在同一运行目录一次写入完整的 `diagnostic-analysis/diagnostic-ai-analysis.json`，使用 `schemaVersion: 5`。不得拆成五次分析，不得通过外部模型服务、`codex exec` 或子进程替代当前对话模型。第 01 部分必须覆盖经营表现、人群、脚本、高光画面和互动时序；第 `04｜高光画面洞察` 必须输出 `highlightDashboard`，将每个成功高光帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次。不得把帧秒数宣称为对应某句脚本话术。
+必须由当前对话模型在一次模型调用中统一读取五个章节事实包，并在同一运行目录一次写入完整的 `diagnostic-analysis/diagnostic-ai-analysis.json`，使用 `schemaVersion: 5`。不得拆成五次分析，不得通过外部模型服务、`codex exec` 或子进程替代当前对话模型。报告仍保留经营表现、人群、脚本、高光画面和互动时序的章节边界；其中第 01 部分只分析素材榜单数据，覆盖近 7 天上新素材量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM；第 `04｜高光画面洞察` 必须输出 `highlightDashboard`，将每个成功高光帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次。不得把帧秒数宣称为对应某句脚本话术。
 
 以该提示词为 AI JSON 输出契约：按其中的字段、证据、覆盖、枚举、长度与定向修正规则完成一次完整分析。结论仅分析业务事实；每个成功 JPEG 都要有高光帧分析，`missingFrames` 必须在 `frameCoverageNote` 说明影响，证据引用逐字复用事实包标识。v4 仅用于历史报告兼容。
 

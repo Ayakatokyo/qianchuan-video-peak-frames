@@ -20,7 +20,7 @@ UNIT_CONTRACTS = {
     "chapter01-portfolio": {
         "chapterId": "01",
         "outputFields": ["overallConclusion", "portfolioDimensionConclusions"],
-        "allowedEvidencePrefixes": ["commercial:", "audience:", "script:", "highlight:", "interaction:"],
+        "allowedEvidencePrefixes": ["commercial:"],
     },
     "chapter02-audience": {
         "chapterId": "02",
@@ -249,8 +249,6 @@ def build_analysis_units(analysis):
 
     script_unit = _script_unit(analysis)
     audience_unit = _audience_unit(analysis)
-    commercial = deepcopy(analysis.get("commercial", {}))
-    interaction = _interaction_with_evidence(analysis.get("interaction", {}))
     portfolio_unit = {
         "schemaVersion": 1,
         "unitId": "chapter01-portfolio",
@@ -258,9 +256,7 @@ def build_analysis_units(analysis):
         "period": deepcopy(analysis.get("period", {})),
         "materialIds": material_ids,
         "materials": materials,
-        "commercial": commercial,
-        "interaction": interaction,
-        "commercialEvidenceRefs": _commercial_evidence_refs(commercial),
+        "portfolio": deepcopy(analysis.get("portfolio", {})),
     }
     highlight_unit = {
         "schemaVersion": 1,

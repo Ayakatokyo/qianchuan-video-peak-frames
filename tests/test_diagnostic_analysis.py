@@ -61,6 +61,22 @@ def write_diagnosis_csv(path, records):
 
 
 class DiagnosticAnalysisAudienceTests(unittest.TestCase):
+    def test_chapter01_portfolio_keeps_full_material_list_facts(self):
+        top_payload = {
+            "materials": [{"materialId": "m-1", "materialName": "榜单素材"}],
+            "portfolioFacts": {
+                "materialCount": 2,
+                "materials": {
+                    "m-1": {"materialId": "m-1", "metrics": {"ctr": "1.0"}},
+                    "m-2": {"materialId": "m-2", "metrics": {"ctr": "2.0"}},
+                },
+            },
+        }
+
+        result = build_diagnostic_analysis(top_payload, {})
+
+        self.assertEqual(set(result["portfolio"]["materials"]), {"m-1", "m-2"})
+
     def test_builds_relative_interaction_summary_for_selected_materials(self):
         top_payload = {
             "materials": [
@@ -89,17 +105,11 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
 
     def test_prompt_requires_full_chapter01_fact_coverage(self):
         prompt = DEFAULT_PROMPT_PATH.read_text(encoding="utf-8")
-        for interaction_fact in (
-            "整体点击次数",
-            "整体流失数",
-            "整体点赞次数",
-            "整体评论次数",
-            "整体转发次数",
-            "整体新增粉丝数",
-        ):
-            self.assertIn(interaction_fact, prompt)
-        for audience_dimension in ("八大人群", "年龄", "性别", "地域"):
-            self.assertIn(audience_dimension, prompt)
+        for portfolio_fact in ("近 7 天上新素材量", "点击率", "转化率", "3 秒完播率", "CPM"):
+            self.assertIn(portfolio_fact, prompt)
+        self.assertIn("T-7", prompt)
+        self.assertNotIn("portfolioDimensionConclusions.audience", prompt)
+        self.assertNotIn("portfolioDimensionConclusions.highlight", prompt)
         self.assertIn("一二级内容公式", prompt)
         self.assertIn("脚本文案", prompt)
 

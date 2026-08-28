@@ -13,6 +13,7 @@ from asset_metrics_lib import (  # noqa: E402
     AssetMetricsError,
     aggregate_asset_metrics,
     build_asset_facts_payload,
+    build_portfolio_facts,
 )
 
 
@@ -23,16 +24,41 @@ def origin_row(material_id, cost, net_settlement, overall_payment):
             "roi2_material_video_name": {"ValueStr": "素材 %s" % material_id},
             "roi2_material_type_v3": {"ValueStr": "短视频"},
             "roi2_material_video_type": {"ValueStr": "素材视频"},
+            "material_create_time_v2": {"ValueStr": "2026-08-27 10:00:00"},
         },
         "metrics": {
             "stat_cost_for_overall_roi2": {"Value": cost},
             "total_order_settle_amount_for_roi2_1h": {"Value": net_settlement},
             "total_pay_order_gmv_include_coupon_for_roi2": {"Value": overall_payment},
+            "total_prepay_and_pay_order_roi2": {"Value": "1.50"},
+            "additional_delivery_ctr_for_roi2_assist": {"Value": "2.50"},
+            "additional_delivery_convert_rate_for_roi2_assist": {"Value": "3.50"},
+            "video_play_duration_3s_rate_for_roi2": {"Value": "70.00"},
+            "total_ecpm_for_roi2": {"Value": "450.00"},
         },
     }, ensure_ascii=False)
 
 
 class AssetMetricsTests(unittest.TestCase):
+    def test_builds_portfolio_facts_with_t_plus_one_new_material_window(self):
+        rows = [
+            origin_row("old", "10", "15", "20"),
+            origin_row("new", "20", "30", "40"),
+        ]
+        rows[0] = rows[0].replace("2026-08-27", "2026-08-20")
+        facts = build_portfolio_facts(
+            rows,
+            execution_date="2026-08-28",
+            start_date="2026-08-10",
+            end_date="2026-08-20",
+        )
+
+        self.assertEqual(facts["newMaterialCount7d"], 1)
+        self.assertEqual(facts["newMaterialStartDate"], "2026-08-21")
+        self.assertEqual(facts["newMaterialEndDate"], "2026-08-27")
+        self.assertEqual(facts["materials"]["new"]["metrics"]["ctr"], "2.5")
+        self.assertEqual(facts["materials"]["new"]["metrics"]["threeSecondCompletionRate"], "70")
+
     def test_aggregates_atomic_metrics_per_material_independent_of_input_order(self):
         rows = [
             origin_row("m-2", "20.10", "45.40", "50.60"),

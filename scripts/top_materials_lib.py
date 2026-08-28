@@ -135,6 +135,7 @@ def build_output(
     materials,
     excluded,
     skipped_source_records=(),
+    portfolio_facts=None,
 ):
     """Build the JSON-serializable output contract for selected materials."""
     pattern = _normalise_name_pattern(name_pattern)
@@ -146,7 +147,7 @@ def build_output(
     }
     if normalised_advertiser_id is not None:
         filters["advertiserId"] = normalised_advertiser_id
-    return {
+    output = {
         "actualStartDate": actual_start_date,
         "actualEndDate": actual_end_date,
         "materialCount": len(materials),
@@ -178,6 +179,9 @@ def build_output(
             for rank, material in enumerate(materials, start=1)
         ],
     }
+    if portfolio_facts is not None:
+        output["portfolioFacts"] = portfolio_facts
+    return output
 
 
 def _parse_origin_data(raw_row):

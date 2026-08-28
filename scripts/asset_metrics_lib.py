@@ -2,6 +2,7 @@
 
 import json
 import re
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 
@@ -13,6 +14,14 @@ REQUIRED_METRICS = (
     NET_SETTLEMENT_AMOUNT_METRIC,
     OVERALL_PAYMENT_AMOUNT_METRIC,
 )
+
+PORTFOLIO_METRIC_KEYS = {
+    "roi": "total_prepay_and_pay_order_roi2",
+    "ctr": "additional_delivery_ctr_for_roi2_assist",
+    "conversionRate": "additional_delivery_convert_rate_for_roi2_assist",
+    "threeSecondCompletionRate": "video_play_duration_3s_rate_for_roi2",
+    "cpm": "total_ecpm_for_roi2",
+}
 
 
 class AssetMetricsError(ValueError):
@@ -88,6 +97,170 @@ def build_asset_facts_payload(
             for material_id, metrics in sorted(materials.items())
         },
     }
+
+
+def build_portfolio_facts(
+    raw_rows,
+    *,
+    execution_date,
+    start_date,
+    end_date,
+    name_pattern=None,
+    material_types=(),
+):
+    """Build deterministic material-list facts from API origin rows.
+
+    The new-material window follows the T+1 convention: the seven calendar
+    dates from execution_date - 7 days through execution_date - 1 day.
+    """
+    execution = _parse_iso_date(execution_date, "execution_date")
+    start = _parse_iso_date(start_date, "start_date")
+    end = _parse_iso_date(end_date, "end_date")
+    if start > end:
+        raise AssetMetricsError("start_date must not be after end_date")
+    window_start = execution - timedelta(days=7)
+    window_end = execution - timedelta(days=1)
+    pattern = _normalise_name_pattern(name_pattern)
+    types = _normalise_material_types(material_types)
+    materials = {}
+    new_material_ids = set()
+    for raw_row in raw_rows:
+        row = _load_origin_data(raw_row) if isinstance(raw_row, str) else raw_row
+        if not isinstance(row, dict):
+            continue
+        try:
+            material_id, name, material_type = _parse_material_scope(row)
+            cost = _normalise_metric(
+                _nested_value(row, "metrics", COST_METRIC, "Value"), COST_METRIC
+            )
+        except AssetMetricsError:
+            # API pages can contain incomplete placeholder rows; they cannot
+            # contribute deterministic portfolio facts and are ignored.
+            continue
+        if pattern is not None and pattern.search(name) is None:
+            continue
+        if types and material_type not in types:
+            continue
+        if material_id == "-2":
+            continue
+        created_at = _creation_time(row)
+        aggregate = materials.setdefault(
+            material_id,
+            {
+                "materialId": material_id,
+                "materialName": name,
+                "materialType": material_type,
+                "totalCost": Decimal("0"),
+                "createdAt": created_at,
+                "metricValues": {key: [] for key in PORTFOLIO_METRIC_KEYS},
+            },
+        )
+        aggregate["totalCost"] += cost
+        if aggregate.get("createdAt") is None and created_at is not None:
+            aggregate["createdAt"] = created_at
+        for key, source_metric in PORTFOLIO_METRIC_KEYS.items():
+            value = _optional_metric(row, source_metric)
+            if value is not None:
+                aggregate["metricValues"][key].append((cost, value))
+        if created_at is not None and window_start <= created_at.date() <= window_end:
+            new_material_ids.add(material_id)
+
+    material_payload = {}
+    for material_id, aggregate in sorted(materials.items()):
+        metrics = {
+            key: _decimal_text(_weighted_average(values)) if values else None
+            for key, values in aggregate["metricValues"].items()
+        }
+        material_payload[material_id] = {
+            "materialId": material_id,
+            "materialName": aggregate["materialName"],
+            "materialType": aggregate["materialType"],
+            "createdAt": aggregate["createdAt"].isoformat(sep=" ")
+            if aggregate["createdAt"] is not None else None,
+            "totalCost": _decimal_text(aggregate["totalCost"]),
+            "metrics": metrics,
+        }
+
+    summary = {
+        "cost": _decimal_text(
+            sum((Decimal(item["totalCost"]) for item in material_payload.values()), Decimal("0"))
+        ),
+    }
+    total_cost = Decimal(summary["cost"])
+    net_amount = Decimal("0")
+    payment_amount = Decimal("0")
+    for raw_row in raw_rows:
+        row = _load_origin_data(raw_row) if isinstance(raw_row, str) else raw_row
+        if not isinstance(row, dict):
+            continue
+        try:
+            material_id, name, material_type = _parse_material_scope(row)
+        except AssetMetricsError:
+            continue
+        if material_id not in material_payload:
+            continue
+        if pattern is not None and pattern.search(name) is None:
+            continue
+        if types and material_type not in types:
+            continue
+        net_amount += _optional_metric(row, NET_SETTLEMENT_AMOUNT_METRIC) or Decimal("0")
+        payment_amount += _optional_metric(row, OVERALL_PAYMENT_AMOUNT_METRIC) or Decimal("0")
+    summary["netSettlementRoi"] = _decimal_text(net_amount / total_cost) if total_cost else None
+    summary["overallPaymentRoi"] = _decimal_text(payment_amount / total_cost) if total_cost else None
+    for key in PORTFOLIO_METRIC_KEYS:
+        weighted_values = [
+            (Decimal(item["totalCost"]), Decimal(item["metrics"][key]))
+            for item in material_payload.values()
+            if item["metrics"][key] is not None
+        ]
+        summary[key] = _decimal_text(_weighted_average(weighted_values)) if weighted_values else None
+
+    return {
+        "schemaVersion": 1,
+        "period": {"actualStartDate": start.isoformat(), "actualEndDate": end.isoformat()},
+        "newMaterialCount7d": len(new_material_ids),
+        "newMaterialStartDate": window_start.isoformat(),
+        "newMaterialEndDate": window_end.isoformat(),
+        "materialCount": len(material_payload),
+        "summaryMetrics": summary,
+        "materials": material_payload,
+    }
+
+
+def _parse_iso_date(value, field):
+    try:
+        return date.fromisoformat(str(value))
+    except (TypeError, ValueError) as exc:
+        raise AssetMetricsError("%s must use YYYY-MM-DD" % field) from exc
+
+
+def _creation_time(row):
+    raw = row.get("dimensions", {}).get("material_create_time_v2", {})
+    value = raw.get("ValueStr") if isinstance(raw, dict) else raw
+    try:
+        return datetime.fromisoformat(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_metric(row, metric):
+    try:
+        value = _nested_value(row, "metrics", metric, "Value")
+    except AssetMetricsError:
+        return None
+    try:
+        return _normalise_metric(value, metric)
+    except AssetMetricsError:
+        return None
+
+
+def _weighted_average(values):
+    if not values:
+        return Decimal("0")
+    total_weight = sum((weight for weight, _value in values), Decimal("0"))
+    if total_weight:
+        return sum((weight * value for weight, value in values), Decimal("0")) / total_weight
+    return sum((value for _weight, value in values), Decimal("0")) / len(values)
 
 
 def _parse_origin_data(raw_row):

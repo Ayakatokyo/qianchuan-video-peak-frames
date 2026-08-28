@@ -25,7 +25,7 @@
   <div class="report-shell">
     <nav class="report-nav" aria-label="报告目录">
       <small>报告目录</small>
-      <a href="#top-material-combination" aria-current="location">01｜TOP 素材组合结论</a>
+      <a href="#top-material-combination" aria-current="location">01｜素材榜单数据洞察</a>
       <a href="#audience-insights">02｜人群洞察</a>
       <a href="#script-insights">03｜脚本洞察</a>
       <a href="#highlight-dashboard-section">04｜高光画面洞察</a>
@@ -34,10 +34,9 @@
     <div class="report-content" id="report-content">
 
   <section class="section" id="top-material-combination">
-    <header class="section-header"><h2>01｜TOP 素材组合结论</h2></header>
+    <header class="section-header"><h2>01｜素材榜单数据洞察</h2></header>
     <div class="insight-layout">
       <div class="primary-summary" id="overall-conclusion-card">
-        <b class="top-overall-heading">组合结论</b>
         <p id="overall-conclusion"></p>
       </div>
       <div class="combination-conclusion" id="combination-conclusion"></div>
@@ -2341,11 +2340,7 @@ function renderCombinationConclusion() {
   const points = Array.isArray(chapter01?.points)
     ? chapter01.points
     : [
-      ["commercial", "从经营表现数据来看："],
-      ["audience", "从人群数据来看："],
-      ["script", "从脚本数据来看："],
-      ["highlight", "从高光画面数据来看："],
-      ["interaction", "从互动时序数据来看："],
+      ["commercial", ""],
     ].map(([id, leadIn]) => ({
       id,
       leadIn,
@@ -2360,21 +2355,15 @@ function renderCombinationConclusion() {
     );
     return;
   }
-  root.hidden = false;
+  root.hidden = true;
   fallback.hidden = false;
+  const paragraphParts = [
+    chapter01?.overallConclusion || conclusion.overallConclusion,
+    ...points.map((point) => point?.conclusion),
+  ].filter((part, index, all) => text(part) && all.indexOf(part) === index);
   document.getElementById("overall-conclusion").replaceChildren(
-    renderTextWithMaterialLinks((chapter01?.overallConclusion || conclusion.overallConclusion) || "组合结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
+    renderTextWithMaterialLinks(paragraphParts.join(" ") || "素材榜单数据洞察待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
   );
-  const pointList = element("ol", "combination-points");
-  points.filter((point) => text(point?.conclusion)).forEach((point) => {
-    const item = element("li", "combination-point");
-    item.append(
-      element("strong", "combination-point-lead", point.leadIn),
-      renderTextWithMaterialLinks(point.conclusion),
-    );
-    pointList.append(item);
-  });
-  root.append(pointList);
 }
 
 document.querySelector(".frame-lightbox-close").addEventListener("click", closeFrameLightbox);

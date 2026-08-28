@@ -340,6 +340,7 @@ def report_data_for_template(
         "period": data.get("period", {}),
         "pipelineSummary": data.get("pipelineSummary", {}),
         "topMaterialRoi": data.get("topMaterialRoi", {}),
+        "portfolio": data.get("portfolio", {}),
         "materials": materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
         "batchInsights": data.get("batchInsights", {}),

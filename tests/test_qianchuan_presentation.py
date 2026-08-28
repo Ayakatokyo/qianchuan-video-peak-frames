@@ -86,18 +86,43 @@ def complete_presentation_data():
 
 
 class PresentationTests(unittest.TestCase):
+    def test_projects_material_list_insight_as_single_point_without_lead_in(self):
+        data = sample_data()
+        data["portfolio"] = {
+            "newMaterialCount7d": 3,
+            "newMaterialStartDate": "2026-08-21",
+            "newMaterialEndDate": "2026-08-27",
+            "metrics": {"cost": "100", "ctr": "2.5"},
+        }
+        data["conclusion"] = {
+            "schemaVersion": 6,
+            "overallConclusion": "榜单结论",
+            "portfolioDimensionConclusions": {
+                "commercial": {
+                    "conclusion": "素材榜单数据结论",
+                    "evidenceRefs": ["commercial:cost"],
+                }
+            },
+        }
+        report = build_presentation_report(data)
+        chapter01 = report["chapters"]["chapter01"]
+        self.assertEqual(chapter01["title"], "素材榜单数据洞察")
+        self.assertEqual([point["id"] for point in chapter01["points"]], ["commercial"])
+        self.assertEqual(chapter01["points"][0]["leadIn"], "")
+        self.assertEqual(chapter01["portfolio"], data["portfolio"])
+
     def test_projects_new_chapter_contracts_with_stable_material_references(self):
         report = build_presentation_report(complete_presentation_data())
         self.assertEqual(report["report"]["sections"], [f"chapter0{index}" for index in range(1, 6)])
         self.assertNotIn("chapter06", report["chapters"])
         chapter01 = report["chapters"]["chapter01"]
-        self.assertEqual(chapter01["title"], "组合结论")
+        self.assertEqual(chapter01["title"], "素材榜单数据洞察")
         self.assertNotIn("tabs", chapter01)
         self.assertEqual(
             [point["id"] for point in chapter01["points"]],
-            ["commercial", "audience", "script", "highlight", "interaction"],
+            ["commercial"],
         )
-        self.assertEqual(chapter01["points"][0]["leadIn"], "从素材列表数据来看：")
+        self.assertEqual(chapter01["points"][0]["leadIn"], "")
         self.assertEqual(chapter01["points"][0]["evidenceRefs"], ["commercial:m-1"])
         self.assertNotIn("batchInsights", report["chapters"]["chapter01"])
         self.assertEqual(

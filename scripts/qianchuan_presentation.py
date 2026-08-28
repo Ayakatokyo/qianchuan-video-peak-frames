@@ -5,7 +5,7 @@ from copy import deepcopy
 
 CATEGORIES = ("portrait", "product", "other")
 TABS = ("highlight", "interaction", "audience", "script", "decision")
-CHAPTER01_POINTS = ("commercial", "audience", "script", "highlight", "interaction")
+CHAPTER01_POINTS = ("commercial",)
 CHAPTER_SECTIONS = tuple(f"chapter0{index}" for index in range(1, 6))
 
 
@@ -73,21 +73,11 @@ def _dimension(conclusion, topic):
 
 def _chapter01(data):
     conclusion = _mapping(data.get("conclusion"))
-    facts = {
-        "commercial": _mapping(data.get("topMaterialRoi")),
-        "audience": _mapping(data.get("audience")),
-        "script": _mapping(data.get("scripts")),
-        "highlight": _mapping(conclusion.get("highlightDashboard")),
-        "interaction": _mapping(data.get("interaction")),
-    }
+    facts = {"commercial": _mapping(data.get("portfolio") or data.get("topMaterialRoi"))}
     points = []
     evidence_refs = []
     labels = {
-        "commercial": ("素材列表", "从素材列表数据来看："),
-        "audience": ("人群", "从人群数据来看："),
-        "script": ("脚本", "从脚本数据来看："),
-        "highlight": ("高光画面", "从高光画面数据来看："),
-        "interaction": ("互动时序", "从互动时序数据来看："),
+        "commercial": ("素材榜单数据", ""),
     }
     for topic in CHAPTER01_POINTS:
         conclusion_text, refs = _dimension(conclusion, topic)
@@ -107,7 +97,8 @@ def _chapter01(data):
             ),
         })
     return {
-        "id": "chapter01", "title": "组合结论", "points": points,
+        "id": "chapter01", "title": "素材榜单数据洞察", "points": points,
+        "portfolio": facts["commercial"],
         "overallConclusion": _text(conclusion.get("overallConclusion")),
         "source": "facts + ai.portfolioDimensionConclusions", "evidenceRefs": evidence_refs,
         "availability": _availability(

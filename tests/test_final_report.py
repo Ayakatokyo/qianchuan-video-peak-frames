@@ -228,7 +228,7 @@ class FinalReportConclusionTests(unittest.TestCase):
 
 
 class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
-    def test_top_dimension_conclusions_render_as_continuous_points(self):
+    def test_chapter01_renders_one_untitled_paragraph(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"
         )
@@ -236,14 +236,14 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn('>组合结论<', template)
-        self.assertIn('"combination-points"', template)
-        self.assertIn('"combination-point-lead"', template)
+        self.assertNotIn('class="top-overall-heading"', template)
+        self.assertNotIn('"combination-points"', template)
+        self.assertNotIn('"combination-point-lead"', template)
         self.assertNotIn('"top-dimension-tabs"', template)
         self.assertNotIn('"top-dimension-panel"', template)
         self.assertNotIn("function activateTopDimensionTab", template)
-        self.assertIn('["interaction", "从互动时序数据来看："]', template)
-        self.assertIn("chapter01?.points", template)
+        self.assertIn('["commercial", ""]', template)
+        self.assertIn("chapter01?.overallConclusion", template)
         self.assertIn('root.hidden = true;', template)
         self.assertIn('fallback.hidden = false;', template)
         self.assertNotIn('root.append(element("article", "top-roi-card")', template)
@@ -2766,10 +2766,10 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句", prompt_text)
         self.assertIn("解释这些事实为什么影响素材放量、改写或保留判断", prompt_text)
         self.assertIn("少量关键事实锚点 + 判断 + 建议", prompt_text)
-        self.assertIn("每条必须包含事实、判断和建议", prompt_text)
-        self.assertIn("不得写成数据复述或长段分析", prompt_text)
+        self.assertIn("事实锚点 → 榜单判断 → 下一步验证", prompt_text)
+        self.assertIn("不得只写抽象结论", prompt_text)
         self.assertIn("100-180 个中文字符", prompt_text)
-        self.assertIn("60-120 个中文字符", prompt_text)
+        self.assertIn("近 7 天上新素材量", prompt_text)
         self.assertIn("每条 `batchInsights.conclusion` 必须为 180-280 个中文字符", prompt_text)
         self.assertIn(
             "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符",
@@ -2777,7 +2777,7 @@ class FinalReportRenderTests(unittest.TestCase):
         )
         self.assertIn("不得输出 `batchInsights.topic=integrated`", prompt_text)
         self.assertIn("必须输出至少 3 条 audience、2 条 script 洞察", prompt_text)
-        self.assertIn("portfolioDimensionConclusions.audience", prompt_text)
+        self.assertNotIn("portfolioDimensionConclusions.audience", prompt_text)
         self.assertIn("batchInsights[topic=audience]", prompt_text)
         self.assertIn("标题不是固定文案", prompt_text)
         self.assertIn("不得复用第 01 章人群组合结论", prompt_text)
@@ -2879,7 +2879,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertEqual(data["status"], "complete")
         self.assertIn("千川 TOP 素材池商业诊断报告", html_text)
         self.assertNotIn("报告状态", html_text)
-        self.assertIn("01｜TOP 素材组合结论", html_text)
+        self.assertIn("01｜素材榜单数据洞察", html_text)
         self.assertIn("02｜人群洞察", html_text)
         self.assertIn("03｜脚本洞察", html_text)
         self.assertIn("04｜高光画面洞察", html_text)
@@ -3179,7 +3179,7 @@ class FinalReportRenderTests(unittest.TestCase):
             html_text = html_path.read_text(encoding="utf-8")
         self.assertNotIn("01｜组合总览", html_text)
         for heading in (
-            "01｜TOP 素材组合结论",
+            "01｜素材榜单数据洞察",
             "02｜人群洞察",
             "03｜脚本洞察",
             "04｜高光画面洞察",

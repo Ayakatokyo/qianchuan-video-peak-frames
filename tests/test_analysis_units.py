@@ -206,6 +206,20 @@ class AnalysisUnitProjectionTests(unittest.TestCase):
         self.assertNotIn("deliveryFacts", material)
         self.assertNotIn("delivery", json.dumps(units, ensure_ascii=False))
 
+    def test_chapter01_contains_only_material_list_facts(self):
+        analysis = example_analysis()
+        analysis["portfolio"] = {
+            "newMaterialCount7d": 3,
+            "newMaterialStartDate": "2026-08-21",
+            "newMaterialEndDate": "2026-08-27",
+            "metrics": {"cost": "100", "ctr": "2.5"},
+        }
+        units = build_analysis_units(analysis)
+        chapter01 = units["chapter01-portfolio"]
+        self.assertEqual(chapter01["portfolio"], analysis["portfolio"])
+        for key in ("audience", "scripts", "interaction", "highlights", "delivery"):
+            self.assertNotIn(key, chapter01)
+
 
 class AnalysisUnitPublicationTests(unittest.TestCase):
     def test_publishes_compact_units_and_verified_manifest_last(self):

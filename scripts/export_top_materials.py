@@ -14,6 +14,7 @@ from asset_metrics_lib import (
     AssetMetricsAggregator,
     AssetMetricsError,
     build_asset_facts_payload,
+    build_portfolio_facts,
 )
 from qianchuan_report_client import ReportClientError, fetch_material_report
 from top_materials_lib import (
@@ -77,6 +78,7 @@ def main(argv=None):
             output_dir=Path(args.source_output_dir),
         )
         skipped_source_records = []
+        portfolio_records = []
         for source_row_index, record in enumerate(records):
             raw_record = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
             try:
@@ -84,6 +86,7 @@ def main(argv=None):
                 if metrics_aggregator is not None:
                     metrics_aggregator.add_raw_origin_data(raw_record)
                 aggregator.add_raw_origin_data(raw_record)
+                portfolio_records.append(raw_record)
             except (AssetMetricsError, MaterialDataError) as error:
                 skipped_source_records.append({
                     "sourceRowIndex": source_row_index,
@@ -95,6 +98,14 @@ def main(argv=None):
             start_date.isoformat(), end_date.isoformat(), pattern,
             args.material_type, args.advertiser_id, materials, excluded,
             skipped_source_records,
+            portfolio_facts=build_portfolio_facts(
+                portfolio_records,
+                execution_date=date.today().isoformat(),
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                name_pattern=pattern,
+                material_types=args.material_type,
+            ),
         )
         _write_atomic_json(output, payload)
         if metrics_aggregator is not None:

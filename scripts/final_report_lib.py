@@ -45,6 +45,14 @@ COMMERCIAL_EVIDENCE_REFS = {
     "commercial:overallPaymentAmount",
     "commercial:netSettlementRoi",
     "commercial:overallPaymentRoi",
+    "commercial:newMaterialCount7d",
+    "commercial:newMaterialStartDate",
+    "commercial:newMaterialEndDate",
+    "commercial:roi",
+    "commercial:ctr",
+    "commercial:conversionRate",
+    "commercial:threeSecondCompletionRate",
+    "commercial:cpm",
 }
 COMMERCIAL_SOURCE_TERMS = ("资产表", "数据来源")
 AUDIENCE_NONCANONICAL_TERMS = ("触达", "响应")
@@ -467,8 +475,9 @@ def _normalize_v4_conclusion(payload):
 def _normalize_v5_conclusion(payload):
     normalized = _normalize_v2_conclusion(payload)
     dimensions = payload.get("portfolioDimensionConclusions")
-    if not isinstance(dimensions, dict) or set(dimensions) != set(
-        PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION
+    compact = isinstance(dimensions, dict) and set(dimensions) == {"commercial"}
+    if not isinstance(dimensions, dict) or (
+        not compact and set(dimensions) != set(PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION)
     ):
         raise FinalReportError(
             "portfolioDimensionConclusions must contain exactly "
@@ -476,7 +485,8 @@ def _normalize_v5_conclusion(payload):
         )
     legacy_payload = dict(payload)
     legacy_payload["portfolioDimensionConclusions"] = {
-        topic: dimensions[topic] for topic in PORTFOLIO_DIMENSION_TOPICS
+        topic: dimensions.get(topic, {"conclusion": "兼容字段", "evidenceRefs": []})
+        for topic in PORTFOLIO_DIMENSION_TOPICS
     }
     return {
         **normalized,
@@ -484,7 +494,7 @@ def _normalize_v5_conclusion(payload):
         "overallConclusion": _text(payload.get("overallConclusion")),
         "portfolioDimensionConclusions": {
             topic: _validate_dimension_conclusion(dimensions[topic], topic)
-            for topic in PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION
+            for topic in (("commercial",) if compact else PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION)
         },
         "highlightDashboard": _normalize_v4_conclusion(legacy_payload)["highlightDashboard"],
     }
@@ -1030,7 +1040,10 @@ def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
                 rank_type = _text(frame.get("rankType"))
                 if rank_type:
                     refs.add(f"highlight:{material_id}:{rank_type}")
-    if top_material_roi.get("source") == "verifiedAssetFacts":
+    if (
+        top_material_roi.get("source") == "verifiedAssetFacts"
+        or diagnostic.get("portfolio")
+    ):
         refs.update(COMMERCIAL_EVIDENCE_REFS)
     for metric, metric_data in diagnostic.get("interaction", {}).get("metrics", {}).items():
         if metric_data.get("available") and metric_data.get("totalMetricValue") is not None:
@@ -1104,11 +1117,15 @@ def _validate_v2_evidence(
             " ".join(insight["conclusion"].split())
         )
     seen_dimension_texts = set()
-    dimension_topics = (
-        PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION
-        if conclusion.get("schemaVersion") == 5
-        else PORTFOLIO_DIMENSION_TOPICS
-    )
+    dimensions = conclusion["portfolioDimensionConclusions"]
+    if conclusion.get("schemaVersion") == 5 and set(dimensions) == {"commercial"}:
+        dimension_topics = ("commercial",)
+    else:
+        dimension_topics = (
+            PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION
+            if conclusion.get("schemaVersion") == 5
+            else PORTFOLIO_DIMENSION_TOPICS
+        )
     for topic in dimension_topics:
         dimension = dimensions[topic]
         dimension_text = " ".join(dimension["conclusion"].split())
@@ -1556,6 +1573,7 @@ def build_final_report_data(
             "rankingMetric": _text(top_payload.get("rankingMetric")) or "totalCost",
         },
         "topMaterialRoi": top_material_roi_data,
+        "portfolio": diagnostic.get("portfolio", {}),
         "materials": material_cards,
         "defaultMaterialId": default_material_id,
         "pipelineSummary": _pipeline_summary(batch_manifest, batch_verification),

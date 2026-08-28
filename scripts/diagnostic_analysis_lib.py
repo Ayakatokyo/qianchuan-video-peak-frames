@@ -2,6 +2,7 @@ import ast
 import json
 import math
 import os
+from copy import deepcopy
 from pathlib import Path
 import uuid
 
@@ -813,6 +814,30 @@ def _commercial_facts(top_payload, top_material_roi_facts_path):
     }
 
 
+def _portfolio_facts(top_payload, materials):
+    raw = top_payload.get("portfolioFacts") if isinstance(top_payload, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    result = {
+        key: deepcopy(raw[key])
+        for key in (
+            "schemaVersion", "period", "newMaterialCount7d",
+            "newMaterialStartDate", "newMaterialEndDate", "materialCount",
+            "summaryMetrics",
+        ) if key in raw
+    }
+    all_materials = raw.get("materials")
+    if isinstance(all_materials, dict):
+        # Chapter 01 is a portfolio-level view: retain the complete material
+        # list rather than narrowing facts to the RPA-selected Top N assets.
+        result["materials"] = {
+            material_id: deepcopy(value)
+            for material_id, value in all_materials.items()
+            if isinstance(value, dict)
+        }
+    return result
+
+
 def _publish_prompt(output_dir, prompt):
     root = Path(output_dir)
     prompt_path = root / "diagnostic-analysis-prompt.md"
@@ -845,6 +870,7 @@ def build_diagnostic_analysis(top_payload, records_by_material, commercial=None)
         "schemaVersion": SCHEMA_VERSION,
         "period": _period(top_payload),
         "materials": _materials_with_record_metadata(materials, records_by_material),
+        "portfolio": _portfolio_facts(top_payload, materials),
         "audience": {
             "metrics": {
                 metric: _aggregate_audience_metric(records_by_material, selected_ids, metric)
