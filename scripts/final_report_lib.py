@@ -41,6 +41,7 @@ HIGHLIGHT_DASHBOARD_MINIMUMS = {
     "commonConclusion": 20,
     "derivativeDirectionBody": 20,
 }
+HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH = 32
 COMMERCIAL_EVIDENCE_REFS = {
     "commercial:cost",
     "commercial:netSettlementAmount",
@@ -284,6 +285,7 @@ def _validate_v2_material_analysis(raw, index):
     material_id = _text(raw.get("materialId"))
     audience_conclusion = _text(raw.get("audienceConclusion"))
     script_conclusion = _text(raw.get("scriptConclusion"))
+    interaction_conclusion = _text(raw.get("interactionConclusion"))
     integrated_conclusion = _text(raw.get("integratedConclusion"))
     decision = _text(raw.get("decision")) or "unknown"
     next_action = _text(raw.get("nextAction"))
@@ -306,6 +308,7 @@ def _validate_v2_material_analysis(raw, index):
         "materialId": material_id,
         "audienceConclusion": audience_conclusion,
         "scriptConclusion": script_conclusion,
+        "interactionConclusion": interaction_conclusion,
         "highlightAnalyses": [
             _validate_v2_highlight_analysis(item, index, item_index)
             for item_index, item in enumerate(highlights)
@@ -436,6 +439,8 @@ def _validate_highlight_dashboard_group(raw, index):
             evidence_refs = _string_list(item.get("evidenceRefs"), f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].evidenceRefs")
             if not title or not body or not evidence_refs:
                 raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}] requires title, body, and evidenceRefs")
+            if len(title) > HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH:
+                raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].title must contain at most {HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH} characters")
             if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
                 raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].body must contain at least {HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters")
             normalized_common.append({"title": title, "body": body, "evidenceRefs": evidence_refs})
@@ -470,6 +475,12 @@ def _validate_highlight_dashboard_group(raw, index):
             raise FinalReportError(
                 "highlightDashboard.groups[{}].derivativeDirections[{}] requires title, body, and evidenceRefs".format(
                     index, direction_index
+                )
+            )
+        if len(title) > HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH:
+            raise FinalReportError(
+                "highlightDashboard.groups[{}].derivativeDirections[{}].title must contain at most {} characters".format(
+                    index, direction_index, HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH
                 )
             )
         if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["derivativeDirectionBody"]:
@@ -517,6 +528,23 @@ def _normalize_v4_conclusion(payload):
         raise FinalReportError(
             "highlightDashboard.groups must use the fixed category order: portrait, product, other"
         )
+    seen_copy_keys = set()
+    seen_titles = set()
+    for group in normalized_groups:
+        for section in ("commonConclusion", "derivativeDirections"):
+            for item in group[section]:
+                title_key = (section, item["title"].strip())
+                if title_key in seen_titles:
+                    raise FinalReportError(
+                        "highlightDashboard groups must not reuse identical title across categories; each frame must be classified exactly once"
+                    )
+                seen_titles.add(title_key)
+                copy_key = (section, item["title"].strip(), item["body"].strip())
+                if copy_key in seen_copy_keys:
+                    raise FinalReportError(
+                        "highlightDashboard groups must not reuse identical title/body across categories"
+                    )
+                seen_copy_keys.add(copy_key)
     return {
         **normalized,
         "schemaVersion": 4,
@@ -625,16 +653,17 @@ def _selected_materials(top_payload):
         if not material_id or material_id in seen:
             continue
         seen.add(material_id)
-        selected.append(
-            {
-                "rank": raw.get("rank", index),
-                "materialId": material_id,
-                "materialName": _text(raw.get("materialName")),
-                "materialType": _text(raw.get("materialType")),
-                "videoType": _text(raw.get("videoType")),
-                "totalCost": round(_number(raw.get("totalCost")), 6),
-            }
-        )
+        item = {
+            "rank": raw.get("rank", index),
+            "materialId": material_id,
+            "materialName": _text(raw.get("materialName")),
+            "materialType": _text(raw.get("materialType")),
+            "videoType": _text(raw.get("videoType")),
+            "totalCost": round(_number(raw.get("totalCost")), 6),
+        }
+        if isinstance(raw.get("materialRanking"), dict):
+            item["materialRanking"] = deepcopy(raw["materialRanking"])
+        selected.append(item)
     if not selected:
         raise FinalReportError("top materials JSON contains no usable materials")
     return selected
@@ -645,6 +674,7 @@ def _empty_material_analysis(material_id):
         "materialId": material_id,
         "audienceConclusion": "数据不足以判断。",
         "scriptConclusion": "数据不足以判断。",
+        "interactionConclusion": "数据不足以判断。",
         "highlightAnalyses": [],
         "integratedConclusion": "暂无综合判断。",
         "decision": "unknown",
@@ -1439,6 +1469,15 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
                     f"materialAnalyses[{material_id}].{field_name} must contain at least "
                     f"{minimums['materialConclusion']} characters"
                 )
+        if conclusion.get("schemaVersion") == 5 and not analysis["interactionConclusion"]:
+            failures.append(
+                f"materialAnalyses[{material_id}].interactionConclusion is required"
+            )
+        if analysis["interactionConclusion"] and len(analysis["interactionConclusion"]) < minimums["materialConclusion"]:
+            failures.append(
+                f"materialAnalyses[{material_id}].interactionConclusion must contain at least "
+                f"{minimums['materialConclusion']} characters"
+            )
         if len(analysis["nextAction"]) < minimums["materialNextAction"]:
             failures.append(
                 f"materialAnalyses[{material_id}].nextAction must contain at least "
@@ -1879,7 +1918,14 @@ def generate_final_report(
     html_path = output_root / "final-report.html"
     from qianchuan_presentation import build_presentation_report
 
-    presentation = build_presentation_report(legacy_data)
+    chapter05_facts = {}
+    if analysis_json:
+        chapter05_path = Path(analysis_json).parent / "analysis-units" / "chapter05-material-input.json"
+        if chapter05_path.is_file():
+            chapter05_facts = _read_json(chapter05_path, "Chapter 05 material facts")
+    presentation = build_presentation_report(
+        {**legacy_data, "chapter05Facts": chapter05_facts}
+    )
     data = {"presentation": presentation, **legacy_data}
     export_path = export_highlight_workbook(
         legacy_data, presentation, output_root / "highlight-frames.xlsx"

@@ -1784,8 +1784,92 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
         with self.assertRaisesRegex(FinalReportError, "fixed category order"):
             normalize_conclusion_analysis(unordered)
 
+    def test_rejects_cross_category_reused_highlight_copy(self):
+        conclusion = self._conclusion()
+        conclusion["highlightDashboard"]["groups"].append(
+            {
+                "category": "product",
+                "frameRefs": ["highlight:m-1:product_peak"],
+                "commonConclusion": [
+                    {
+                        "title": "相同标题",
+                        "body": "这是一段足够长的分类结论，用于验证不同视觉分类不得复用完全相同的分析正文和标题。",
+                        "evidenceRefs": ["highlight:m-1:product_peak"],
+                    }
+                ],
+                "derivativeDirections": [
+                    {
+                        "title": "相同方向",
+                        "body": "这是一段足够长的裂变方向，用于验证不同视觉分类不得复用完全相同的行动建议和标题。",
+                        "evidenceRefs": ["highlight:m-1:product_peak"],
+                    }
+                ],
+            }
+        )
+        conclusion["highlightDashboard"]["groups"][0]["commonConclusion"] = [
+            {
+                "title": "相同标题",
+                "body": "这是一段足够长的分类结论，用于验证不同视觉分类不得复用完全相同的分析正文和标题。",
+                "evidenceRefs": ["highlight:m-1:first_peak"],
+            }
+        ]
+        conclusion["highlightDashboard"]["groups"][0]["derivativeDirections"] = [
+            {
+                "title": "相同方向",
+                "body": "这是一段足够长的裂变方向，用于验证不同视觉分类不得复用完全相同的行动建议和标题。",
+                "evidenceRefs": ["highlight:m-1:first_peak"],
+            }
+        ]
+        with self.assertRaisesRegex(FinalReportError, "reuse"):
+            normalize_conclusion_analysis(conclusion)
+
+    def test_rejects_cross_category_reused_highlight_title_even_with_different_body(self):
+        conclusion = self._conclusion()
+        product = {
+            "category": "product",
+            "frameRefs": ["highlight:m-1:product_peak"],
+            "commonConclusion": [{"title": "主体突出带来快速识别", "body": "产品包装和瓶身占据中心位置，规格信息更容易被看到并形成识别。", "evidenceRefs": ["highlight:m-1:product_peak"]}],
+            "derivativeDirections": [{"title": "主体突出带来快速识别", "body": "将产品近景提前并减少背景干扰，验证首屏识别速度和点击率变化。", "evidenceRefs": ["highlight:m-1:product_peak"]}],
+        }
+        conclusion["highlightDashboard"]["groups"].append(product)
+        conclusion["highlightDashboard"]["groups"][0]["commonConclusion"] = [{"title": "主体突出带来快速识别", "body": "人物口播与产品同框，生活化动作降低理解门槛并形成快速识别。", "evidenceRefs": ["highlight:m-1:first_peak"]}]
+        conclusion["highlightDashboard"]["groups"][0]["derivativeDirections"] = [{"title": "人物开场承接生活场景", "body": "保留人物开场并提前露出产品，验证首屏理解成本和点击表现。", "evidenceRefs": ["highlight:m-1:first_peak"]}]
+        with self.assertRaisesRegex(FinalReportError, "title"):
+            normalize_conclusion_analysis(conclusion)
+
+    def test_rejects_overlong_highlight_summary_title(self):
+        conclusion = self._conclusion()
+        conclusion["highlightDashboard"]["groups"][0]["commonConclusion"] = [
+            {
+                "title": "人物正面表达和生活化场景共同降低理解门槛并提升首屏识别效率的总结性结论",
+                "body": "人物口播与产品同框，生活化动作降低理解门槛并形成快速识别。",
+                "evidenceRefs": ["highlight:m-1:first_peak"],
+            }
+        ]
+        with self.assertRaisesRegex(FinalReportError, "title.*characters"):
+            normalize_conclusion_analysis(conclusion)
+
 
 class FinalReportQualityGateTests(unittest.TestCase):
+
+    def test_schema5_quality_gate_requires_ai_interaction_conclusion(self):
+        conclusion = {"schemaVersion": 5, "overallConclusion": "总体结论。" * 80,
+            "portfolioDimensionConclusions": {}, "batchInsights": [], "materialAnalyses": [{
+            "materialId": "m-1",
+            "audienceConclusion": "人群结论足够长。" * 40,
+            "scriptConclusion": "脚本结论足够长。" * 40,
+            "interactionConclusion": "",
+            "highlightAnalyses": [],
+            "integratedConclusion": "综合结论足够长。" * 40,
+            "nextAction": "下一步动作足够长。" * 40,
+            "evidenceRefs": ["interaction:m-1:total"],
+        }]}
+        conclusion["portfolioDimensionConclusions"] = {
+            topic: {"conclusion": "维度结论。" * 50, "evidenceRefs": [f"{topic}:ref"]}
+            for topic in ("commercial", "audience", "script", "highlight", "interaction")
+        }
+        with self.assertRaisesRegex(FinalReportError, "interactionConclusion.*required"):
+            _validate_v2_analysis_quality(conclusion, [{"materialId": "m-1", "extractionStatus": "succeeded", "highlightFrames": []}])
     def test_duplicate_highlight_observations_are_detected_per_material(self):
         highlights = [
             {
@@ -2599,6 +2683,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("function renderPrimaryInsight", html_text)
         self.assertIn('id="highlight-dashboard"', html_text)
         self.assertIn("function renderHighlightDashboard", html_text)
+        self.assertIn('if (item.title && item.title !== "共性结论")', html_text)
         self.assertIn("function renderDashboardFrame", html_text)
         self.assertIn("activateMaterialById(materialId)", html_text)
         self.assertNotIn("帧对应具体话术", html_text)
@@ -2731,6 +2816,12 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('workspacePanels.get("audience").append(', html_text)
         self.assertIn('workspacePanels.get("script").append(', html_text)
         self.assertIn('workspacePanels.get("decision").append(', html_text)
+        workspace_block = html_text[html_text.index("function renderMaterialWorkspace(material)"):]
+        self.assertLess(workspace_block.index('renderFormula("互动时序分析"'), workspace_block.index("renderInteractionTimeline(material)"))
+        self.assertLess(workspace_block.index('renderFormula("人群分析"'), workspace_block.index("renderMaterialAudienceDashboard(material)"))
+        self.assertLess(workspace_block.index('renderFormula("脚本分析"'), workspace_block.index("renderScriptAnalysis(material)"))
+        highlight_block = html_text[html_text.index("function renderHighlightWorkspace(material)"):]
+        self.assertLess(highlight_block.index("renderVisualStrip(material, selection)"), highlight_block.index("observations, renderFrameCoverageNote"))
         self.assertIn("function renderHighlightDashboard", html_text)
         self.assertNotIn("data:video/", html_text)
         self.assertIn("八大人群分布", html_text)
@@ -2889,9 +2980,11 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("total_prepay_and_pay_order_roi2", prompt_text)
         self.assertIn("每条 `batchInsights.conclusion` 必须为 180-280 个中文字符", prompt_text)
         self.assertIn(
-            "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符",
+            "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion`、`interactionConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符",
             prompt_text,
         )
+        self.assertIn("`interactionConclusion`", prompt_text)
+        self.assertIn("互动时序事实为什么影响素材放量、改写或保留判断", prompt_text)
         self.assertIn("不得输出 `batchInsights.topic=integrated`", prompt_text)
         self.assertIn("必须输出至少 3 条 audience、2 条 script 洞察", prompt_text)
         self.assertNotIn("portfolioDimensionConclusions.audience", prompt_text)
@@ -3126,10 +3219,10 @@ class FinalReportRenderTests(unittest.TestCase):
 
             html_text = html_path.read_text(encoding="utf-8")
 
-        self.assertIn('"interactionTimeline"', html_text)
+        self.assertIn('"interaction":{"metrics"', html_text)
         self.assertIn('"label":"整体点击次数"', html_text)
         self.assertIn('"peak":{"second":1.0,"value":9.0}', html_text)
-        self.assertIn('"scriptAnalysis"', html_text)
+        self.assertIn('"script":{"materialUri"', html_text)
         self.assertIn('"formula"', html_text)
         self.assertIn('"早餐可以不碰碳水', html_text)
         self.assertIn(
@@ -3294,6 +3387,7 @@ class FinalReportRenderTests(unittest.TestCase):
             )
 
             html_text = html_path.read_text(encoding="utf-8")
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(encoding="utf-8")
         self.assertNotIn("01｜组合总览", html_text)
         for heading in (
             "01｜素材榜单数据洞察",
@@ -3313,8 +3407,8 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('"materialId":"m-2"', html_text)
         self.assertIn("互动时序分析", html_text)
         self.assertIn("脚本分析数据", html_text)
-        self.assertIn('"interactionTimeline"', html_text)
-        self.assertIn('"scriptAnalysis"', html_text)
+        self.assertIn('"interaction":{"metrics"', html_text)
+        self.assertIn('"script":{"materialUri"', html_text)
         self.assertIn("人群分析", html_text)
         self.assertIn("脚本分析", html_text)
         self.assertIn("高光帧观察", html_text)
@@ -3325,6 +3419,9 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("脚本分析", html_text)
         self.assertIn("综合判断与下一步", html_text)
         self.assertIn('element("div", "material-workspace-tabs")', html_text)
+        self.assertIn(".material-head {\n      display: block;\n      padding-bottom: 14px;\n      border-bottom: 1px solid var(--line);", css_text)
+        self.assertIn(".material-workspace-tabs {\n      display: flex;", css_text)
+        self.assertNotIn(".material-workspace-tabs {\n      display: flex;\n      gap: 6px;\n      overflow-x: auto;\n      padding-bottom: 2px;\n      border-bottom: 1px solid var(--line);", css_text)
         self.assertIn('data-workspace-tab', html_text)
         self.assertIn('container.querySelectorAll("#material-tab-list [role=\'tab\']")', html_text)
         self.assertIn('container.querySelectorAll(".material-panels > [role=\'tabpanel\']")', html_text)
@@ -3335,7 +3432,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('全不选高光帧', html_text)
         self.assertIn('"互动时序分析数据"', html_text)
         self.assertIn('displayMaterialName(material.materialName, materialId)', html_text)
-        self.assertIn('"materialAudience"', html_text)
+        self.assertIn("materialAudience:", html_text)
         self.assertIn('function renderMaterialAudienceDashboard(material)', html_text)
         self.assertIn('function materialInteractionSummary(timeline)', html_text)
         self.assertIn('highlight-frame-choice', html_text)

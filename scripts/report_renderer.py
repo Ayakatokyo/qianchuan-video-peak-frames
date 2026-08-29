@@ -379,11 +379,14 @@ def report_data_for_template(
         else {}
     )
     chapter02 = presentation_chapters.get("chapter02")
+    chapter05 = presentation_chapters.get("chapter05")
     has_v1_presentation = (
         isinstance(template_data_presentation, dict)
         and template_data_presentation.get("presentationSchemaVersion") == 1
-        and isinstance(chapter02, dict)
-        and chapter02.get("availability") in {"available", "partial"}
+        and (
+            (isinstance(chapter05, dict) and chapter05.get("availability") in {"available", "partial"})
+            or (isinstance(chapter02, dict) and chapter02.get("availability") in {"available", "partial"})
+        )
     )
     # In the v1 browser payload, Chapter 05 Presentation is the single
     # material-detail source. Keep only catalog fields at the legacy top level
@@ -399,12 +402,24 @@ def report_data_for_template(
             for material in materials
         ]
     if isinstance(template_display_facts, dict) and has_v1_presentation:
-        chapter02.pop("metrics", None)
-        chapter02.pop("preferencesByMetric", None)
+        if isinstance(chapter02, dict):
+            chapter02.pop("metrics", None)
+            chapter02.pop("preferencesByMetric", None)
         # Chapter 03 is already projected into Presentation. Keep the raw
         # script facts available to the AI/report artifacts, but do not embed
         # a second unused copy in the v1 browser payload.
         template_display_facts.pop("scripts", None)
+        # Chapter 05 Presentation is the sole browser source for per-material
+        # facts; keep only a catalog in displayFacts for legacy consumers.
+        template_display_facts["materials"] = [
+            {
+                key: deepcopy(value)
+                for key, value in material.items()
+                if key in {"rank", "materialId", "materialName"}
+            }
+            for material in template_display_facts.get("materials", [])
+            if isinstance(material, dict)
+        ]
     return {
         "schemaVersion": data.get("schemaVersion"),
         "presentation": template_data_presentation,

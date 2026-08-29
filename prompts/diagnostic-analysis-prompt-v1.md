@@ -40,11 +40,11 @@
 ### Chapter 04：高光画面洞察
 
 只以 `chapter04-highlight-input.json` 和实际查看的 JPEG 生成 `highlightDashboard`、`materialAnalyses[*].highlightAnalyses` 和 `frameCoverageNote`。图像结论不得由脚本文本、文件名或兼容快照代替。
-每个视觉分类的 `commonConclusion` 必须输出 3 个 `{title,body,evidenceRefs}` 分点，`derivativeDirections` 也必须输出 3 个同序 `{title,body,evidenceRefs}` 分点；两组按索引一一对应，分别覆盖“画面主体与构图、信息层与动作机制、可迁移机会”，正文要给出可执行的验证动作和指标，不能只写短句。
+每个视觉分类的 `commonConclusion` 必须输出 3 个 `{title,body,evidenceRefs}` 分点，`derivativeDirections` 也必须输出 3 个同序 `{title,body,evidenceRefs}` 分点；两组按索引一一对应，分别覆盖主体、信息/动作、迁移验证三个角度，但 `title` 必须是基于该分类事实写成的简短总结性结论（建议 8-24 个中文字符，最多 32 个字符；不是“画面主体与构图”“信息层与动作机制”“可迁移机会”等固定标签），且不同分类不得复用相同标题。正文要给出可执行的验证动作和指标，不能只写短句。
 
 ### Chapter 05：单素材深度分析
 
-以 `chapter05-material-input.json` 建立素材顺序、人群偏好和证据索引，再按同一 `materialId` 读取 Chapter 03 的脚本事实和 Chapter 04 的高光帧。输出每条素材的 `materialAnalyses`；不从兼容快照补充 `delivery`，不虚构五包未提供的单素材秒级走势或经营指标。
+`chapter05-material-input.json` 是单素材完整事实的唯一主输入：每个 `materials[*]` 已按 `materialId` 汇总素材基础/榜单事实、视频元数据、人群、脚本、高光帧、互动时序和证据索引。优先只在该素材对象内完成事实核验与分析；Chapter 03/04 仅用于批量结论或视觉分类的交叉校验，不得重新拼接另一份单素材事实。输出每条素材的 `materialAnalyses`；不从兼容快照补充 `delivery`，不虚构事实包未提供的单素材秒级走势或经营指标。
 
 ## 生成前门禁自检
 
@@ -78,7 +78,7 @@
 
 - `overallConclusion` 建议为 180-260 个中文字符，概括素材上新规模、榜单核心指标、指标关系、至少三项分析判断、分阶段动作和验证边界；若事实包指标齐全，必须覆盖上新量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM。`portfolioDimensionConclusions.commercial.conclusion` 必须为 100-180 个中文字符，至少覆盖上新量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM 中可用的关键指标，并填写至少一个合法 `commercial:*` 证据引用；其文字不应重复 overallConclusion 的指标串。
 - 每条 `batchInsights.conclusion` 必须为 180-280 个中文字符，包含具体指标名称和至少 2 个可核验事实点；事实点之后必须给出分析含义、投放判断和可验证假设，并填写至少一个合法 `evidenceRefs`。
-- 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
+- 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion`、`interactionConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`interactionConclusion` 不得为空、不得使用固定模板或只复述峰值摘要；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，互动时序分析必须解释互动时序事实为什么影响素材放量、改写或保留判断，并结合峰值/走势给出验证建议；不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
 - 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
 - 必须输出至少 3 条 audience、2 条 script 洞察；`audience` 洞察需覆盖展现次数、点击次数、成交金额三个角度，事实不足时仍需给出下一步补充或验证方向。不得为了填充素材榜单数据洞察而输出 `batchInsights.topic=integrated`。
 - `keywordCloudInsight` 必须包含 `oneSentenceConclusion`、`summary` 和 `sellingPoints`；卖点最多 4 条。每条卖点必须引用 `keywordCloud.keywords[*].keyword` 和合法 `evidenceRefs`，不得引入关键词云与脚本文本之外的新事实；前端展示顺序固定为 AI 二次分析、关键词云模块、脚本汇总数据。
@@ -91,8 +91,8 @@
 - `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。前端只直接展示 `overallConclusion` 单段文字；`portfolioDimensionConclusions.commercial` 仅作为结构化结论、证据和兼容字段，不另起可见段落。不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用已查看 JPEG 的共同可见信号写 3 个分点式 `commonConclusion`，并按相同顺序给出 3 个正文不少于 20 个字符的可验证 `derivativeDirections`；不得把峰值同时性写成因果。
-- `05｜单素材深度分析`：页面会先展示确定性的 `互动时序分析` 和 `脚本分析数据`，再展示 `materialAnalyses` 中的 AI 二次总结。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
+- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用该分类 JPEG 的共同可见信号写 3 个分点式 `commonConclusion`，并按相同顺序给出 3 个正文不少于 20 个字符的可验证 `derivativeDirections`；小标题必须是 8-24 个中文字符的短句式总结结论（最多 32 个字符），而不是统一的栏目名；每个分类的标题、正文、验证动作和 evidenceRefs 必须基于本分类独有画面，不得与其他分类复用相同标题或完全相同正文；不得把峰值同时性写成因果。
+- `05｜单素材深度分析`：每个工作区先展示 `materialAnalyses` 中对应的 AI 二次分析，再展示确定性的真实事实数据（包括互动时序分析和脚本分析数据）；高光帧观察保留“视频/高光帧在上、文字分析在下”的事实优先排版。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧不得作为第 01 章证据。
 
@@ -117,9 +117,9 @@
         "category": "portrait",
         "frameRefs": ["highlight:事实包中的素材 ID:帧类型"],
         "commonConclusion": [
-          {"title": "画面主体与构图", "body": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "信息层与动作机制", "body": "说明信息层、动作和视觉焦点如何降低理解成本，并给出待验证指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "可迁移机会", "body": "说明下一轮可复用或改写的画面变量，以及对应的对照验证方式。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
+          {"title": "人物正面表达让生活场景更易进入", "body": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "持物动作把产品信息落到可见对象", "body": "说明信息层、动作和视觉焦点如何降低理解成本，并给出待验证指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "保留主体距离即可迁移到新场景", "body": "说明下一轮可复用或改写的画面变量，以及对应的对照验证方式。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
         ],
         "derivativeDirections": [
           {
@@ -156,6 +156,7 @@
       "materialId": "事实包中的素材 ID",
       "audienceConclusion": "人群分析或数据不足说明",
       "scriptConclusion": "脚本分析或数据不足说明",
+      "interactionConclusion": "互动时序分析或数据不足说明",
       "highlightAnalyses": [
         {
           "frameRef": "逐字复制该素材 frames[*].evidenceRef；每张高光帧一条",

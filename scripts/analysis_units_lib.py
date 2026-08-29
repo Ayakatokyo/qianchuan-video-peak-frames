@@ -164,6 +164,14 @@ def _script_unit(analysis):
                 "materialId": material_id,
                 "text": _text(raw.get("text")),
                 "labels": labels,
+                # Keep the deterministic label chain in the per-material
+                # package so the browser can render the formula/color mapping
+                # without consulting the batch script unit.
+                "formula": [
+                    {"level1": _text(label.get("level1")), "level2": _text(label.get("level2"))}
+                    for label in labels
+                    if _text(label.get("level1")) and _text(label.get("level2"))
+                ],
                 "evidence": deepcopy(raw.get("evidence", [])),
             }
         )
@@ -281,6 +289,7 @@ def _material_indexes(analysis, script_unit):
             continue
         material_id = _text(material.get("materialId"))
         highlight_index[material_id] = {
+            "frames": deepcopy(material.get("frames", [])),
             "highlightRefs": [
                 _text(frame.get("evidenceRef"))
                 for frame in material.get("frames", [])
@@ -293,6 +302,34 @@ def _material_indexes(analysis, script_unit):
     return script_refs, highlight_index
 
 
+def _material_interaction(value):
+    if not isinstance(value, dict):
+        return {"metrics": []}
+    metrics = value.get("metrics")
+    if isinstance(metrics, list):
+        return deepcopy(value)
+    if isinstance(metrics, dict):
+        return {
+            "metrics": [
+                {"metric": metric, **deepcopy(metric_data)}
+                for metric, metric_data in metrics.items()
+                if isinstance(metric_data, dict)
+            ]
+        }
+    return {"metrics": []}
+
+
+def _material_video(value):
+    if not isinstance(value, dict):
+        return {}
+    # Signed playback URLs are delivery artifacts, not analysis facts.
+    return {
+        key: deepcopy(value[key])
+        for key in ("durationSec", "materialUri")
+        if key in value
+    }
+
+
 def build_analysis_units(analysis):
     """Project normalized diagnostic facts into five isolated model inputs."""
     if not isinstance(analysis, dict) or analysis.get("schemaVersion") != 1:
@@ -300,7 +337,13 @@ def build_analysis_units(analysis):
     raw_materials = analysis.get("materials")
     if not isinstance(raw_materials, list) or not raw_materials:
         raise AnalysisUnitError("normalized diagnostic facts materials must be a non-empty list")
-    materials = [_identity(item) for item in raw_materials if isinstance(item, dict)]
+    source_materials = [item for item in raw_materials if isinstance(item, dict)]
+    materials = [_identity(item) for item in source_materials]
+    source_by_id = {
+        _text(item.get("materialId")): item
+        for item in source_materials
+        if _text(item.get("materialId"))
+    }
     material_ids = [_text(item.get("materialId")) for item in materials]
     if not all(material_ids) or len(material_ids) != len(set(material_ids)):
         raise AnalysisUnitError("normalized diagnostic facts material IDs must be unique")
@@ -323,17 +366,37 @@ def build_analysis_units(analysis):
     }
 
     script_refs, highlight_index = _material_indexes(analysis, script_unit)
+    fallback_interaction = analysis.get("interaction", {}) if len(materials) == 1 else {}
+    script_by_id = {
+        _text(item.get("materialId")): item
+        for item in script_unit.get("materials", [])
+        if isinstance(item, dict) and _text(item.get("materialId"))
+    }
     material_units = []
     for identity in materials:
         material_id = identity["materialId"]
         highlight = highlight_index.get(material_id, {})
+        source_material = source_by_id.get(material_id, {})
         material_units.append(
             {
                 **deepcopy(identity),
-                "scriptEvidenceRefs": script_refs.get(material_id, []),
-                "highlightRefs": highlight.get("highlightRefs", []),
-                "missingFrames": highlight.get("missingFrames", []),
-                "frameCoverage": highlight.get("frameCoverage", {}),
+                "materialRanking": deepcopy(source_material.get("materialRanking", {})),
+                "video": _material_video(source_material.get("video", {})),
+                "audience": deepcopy(source_material.get("audience", {})),
+                "script": deepcopy(source_material.get("script") or script_by_id.get(material_id, {})),
+                "highlight": {
+                    "frames": highlight.get("frames", []),
+                    "missingFrames": highlight.get("missingFrames", []),
+                    "frameCoverage": highlight.get("frameCoverage", {}),
+                },
+                "interactionTimeline": _material_interaction(
+                    source_material.get("interactionTimeline") or fallback_interaction
+                ),
+                "evidenceIndex": {
+                    **deepcopy(source_material.get("evidenceIndex", {})),
+                    "script": script_refs.get(material_id, []),
+                    "highlight": highlight.get("highlightRefs", []),
+                },
             }
         )
     material_unit = {

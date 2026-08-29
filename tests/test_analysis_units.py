@@ -199,15 +199,29 @@ class AnalysisUnitProjectionTests(unittest.TestCase):
 
         material = units["chapter05-material"]["materials"][0]
         self.assertEqual(
-            material["highlightRefs"], ["highlight:m-1:zero_second"]
+            material["highlight"]["frames"][0]["evidenceRef"],
+            "highlight:m-1:zero_second",
         )
         self.assertEqual(
-            material["scriptEvidenceRefs"],
+            material["evidenceIndex"]["script"],
             ["script:m-1:商品卖点:适用场景"],
         )
         self.assertNotIn("deliveryFacts", material)
         self.assertNotIn("delivery", json.dumps(units, ensure_ascii=False))
         self.assertNotIn("audiencePreferences", units["chapter05-material"]["materials"][0])
+
+        self.assertIn("audience", material)
+        self.assertIn("script", material)
+        self.assertIn("highlight", material)
+        self.assertIn("interactionTimeline", material)
+        self.assertIn("evidenceIndex", material)
+        self.assertEqual(material["highlight"]["frames"][0]["framePath"], "/tmp/m-1/zero.jpg")
+        self.assertEqual(material["script"]["text"], "完整脚本文案")
+        self.assertEqual(
+            material["script"]["formula"],
+            [{"level1": "商品卖点", "level2": "适用场景"}],
+        )
+        self.assertEqual(material["interactionTimeline"]["metrics"][0]["metric"], "CLICK_COUNT")
 
     def test_display_facts_keep_all_fixed_report_data(self):
         display = build_display_facts(example_analysis())

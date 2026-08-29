@@ -166,6 +166,7 @@ function chapter05Materials() {
       materialId: item.materialId,
       materialName: item.materialName || catalogItem.materialName,
       rank: catalogItem.rank,
+      materialRanking: item.materialRanking || {},
       highlightFrames: item.highlight?.frames || [],
       materialAudience: item.audience || {},
       scriptAnalysis: item.script || {},
@@ -2014,14 +2015,21 @@ function renderMaterialWorkspace(material) {
   });
   workspacePanels.get("highlight").append(renderHighlightWorkspace(material));
   workspacePanels.get("interaction").append(
-    renderFormula("互动时序分析", [text(analysis.interactionConclusion, materialInteractionSummary(material.interactionTimeline))]),
+    renderFormula("互动时序分析", [
+      analysis.interactionConclusion
+        ? analysis.interactionConclusion
+        : "暂无 AI 二次分析结果，请重新生成该素材的分析。"
+    ]),
     renderInteractionTimeline(material)
   );
   workspacePanels.get("audience").append(
     renderFormula("人群分析", [analysis.audienceConclusion]),
     renderMaterialAudienceDashboard(material)
   );
-  workspacePanels.get("script").append(renderFormula("脚本分析", [analysis.scriptConclusion]), renderScriptAnalysis(material));
+  workspacePanels.get("script").append(
+    renderFormula("脚本分析", [analysis.scriptConclusion]),
+    renderScriptAnalysis(material)
+  );
   workspacePanels.get("decision").append(renderFormula("综合判断与下一步", [
     analysis.integratedConclusion,
     `素材决策：${materialDecisionLabel(analysis.decision)}`,
@@ -2277,7 +2285,9 @@ function renderHighlightDashboard() {
       : [{ title: "共性结论", body: group.commonConclusion }];
     commonItems.forEach((item) => {
       const insight = element("article", "highlight-insight");
-      insight.append(elementWithMaterialLinks("h5", "", item.title || "共性结论"));
+      if (item.title && item.title !== "共性结论") {
+        insight.append(elementWithMaterialLinks("h5", "", item.title));
+      }
       insight.append(elementWithMaterialLinks("p", "", item.body || item.conclusion || ""));
       common.append(insight);
     });

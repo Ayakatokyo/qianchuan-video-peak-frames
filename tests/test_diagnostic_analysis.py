@@ -722,31 +722,13 @@ class DiagnosticAnalysisPublicationTests(unittest.TestCase):
             )
             self.assertNotIn("https://signed.example", json.dumps(analysis, ensure_ascii=False))
             self.assertEqual(
-                analysis["materials"],
-                [
-                    {
-                        "rank": 1,
-                        "materialId": "m-1",
-                        "materialName": "素材一",
-                        "materialType": "",
-                        "videoType": "",
-                    },
-                    {
-                        "rank": 2,
-                        "materialId": "m-2",
-                        "materialName": "素材二",
-                        "materialType": "",
-                        "videoType": "",
-                    },
-                    {
-                        "rank": 3,
-                        "materialId": "m-3",
-                        "materialName": "素材三",
-                        "materialType": "",
-                        "videoType": "",
-                    },
-                ],
+                [(item["rank"], item["materialId"], item["materialName"]) for item in analysis["materials"]],
+                [(1, "m-1", "素材一"), (2, "m-2", "素材二"), (3, "m-3", "素材三")],
             )
+            self.assertIn("audience", analysis["materials"][0])
+            self.assertIn("script", analysis["materials"][0])
+            self.assertIn("interactionTimeline", analysis["materials"][0])
+            self.assertIn("evidenceIndex", analysis["materials"][0])
             self.assertIn("diagnosis records for material m-2 are not a list", analysis["warnings"])
             self.assertIn("missing diagnosis records for material m-3", analysis["warnings"])
 

@@ -197,7 +197,7 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(chapter04["conclusion"]["source"], "ai.portfolioDimensionConclusions.highlight")
         self.assertEqual(chapter04["conclusion"]["evidenceRefs"], ["highlight:m-1"])
         chapter05 = report["chapters"]["chapter05"]
-        self.assertEqual(chapter05["source"], "facts.materials + ai.materialAnalyses")
+        self.assertEqual(chapter05["source"], "facts.chapter05 + ai.materialAnalyses")
         self.assertEqual(chapter05["materials"][0]["analysis"]["source"], "ai.materialAnalyses")
         self.assertNotIn("nextActions", report["chapters"])
 
@@ -280,6 +280,50 @@ class PresentationTests(unittest.TestCase):
         self.assertIn("materials", rendered)
         self.assertIn("conclusion", rendered)
 
+    def test_presentation_preserves_optional_material_ranking_facts(self):
+        data = sample_data()
+        data["materials"][0]["materialRanking"] = {"roi": 1.8, "cost": 100}
+        report = build_presentation_report(data)
+        self.assertEqual(
+            report["chapters"]["chapter05"]["materials"][0]["materialRanking"],
+            {"roi": 1.8, "cost": 100},
+        )
+
+    def test_chapter05_prefers_canonical_material_fact_package(self):
+        data = sample_data()
+        data["materials"][0]["materialAudience"] = {"legacy": True}
+        data["chapter05Facts"] = {
+            "materials": [
+                {
+                    "materialId": "m-1",
+                    "audience": {"metrics": {"SHOW_COUNT": {"canonical": True}}},
+                    "script": {"text": "canonical script"},
+                    "highlight": {"frames": data["materials"][0]["highlightFrames"]},
+                    "interactionTimeline": {"metrics": []},
+                }
+            ]
+        }
+        report = build_presentation_report(data)
+        material = report["chapters"]["chapter05"]["materials"][0]
+        self.assertTrue(material["audience"]["metrics"]["SHOW_COUNT"]["canonical"])
+        self.assertEqual(material["script"]["text"], "canonical script")
+
+    def test_chapter05_keeps_script_formula_from_legacy_facts_when_canonical_labels_only(self):
+        data = sample_data()
+        data["chapter05Facts"] = {
+            "materials": [{
+                "materialId": "m-1",
+                "script": {
+                    "text": "canonical script",
+                    "labels": [{"level1": "商品卖点", "level2": "适用场景"}],
+                    "evidence": [{"level2": "适用场景", "sentence": "早餐场景口播"}],
+                },
+            }]
+        }
+        report = build_presentation_report(data)
+        script = report["chapters"]["chapter05"]["materials"][0]["script"]
+        self.assertEqual(script["formula"], [{"level1": "利益点", "level2": "高蛋白"}])
+
     def test_renderer_removes_script_display_duplicates_for_v1_presentation(self):
         data = complete_presentation_data()
         data["displayFacts"] = {
@@ -298,6 +342,55 @@ class PresentationTests(unittest.TestCase):
         self.assertNotIn("highlightFrames", rendered["materials"][0])
         self.assertIn("metrics", rendered["displayFacts"]["audience"])
         self.assertIn("preferencesByMetric", rendered["displayFacts"]["audience"])
+
+    def test_renderer_reduces_display_materials_when_chapter05_is_available(self):
+        data = complete_presentation_data()
+        data["displayFacts"] = {
+            "materials": [
+                {
+                    "materialId": "m-1",
+                    "materialName": "素材一",
+                    "rank": 1,
+                    "materialAudience": {"metrics": {"SHOW_COUNT": {}}},
+                    "interactionTimeline": {"metrics": [{"metric": "CLICK_COUNT"}]},
+                    "scriptAnalysis": {"text": "重复事实"},
+                    "video": {"src": "video"},
+                }
+            ],
+            "audience": {"metrics": {}},
+            "scripts": {"labelSummary": []},
+        }
+        data["presentation"] = build_presentation_report(data)
+        rendered = report_data_for_template(data, None)
+        self.assertEqual(
+            set(rendered["displayFacts"]["materials"][0]),
+            {"rank", "materialId", "materialName"},
+        )
+
+    def test_renderer_separates_materials_when_chapter02_is_unavailable(self):
+        data = sample_data()
+        data["displayFacts"] = {
+            "materials": [
+                {
+                    "materialId": "m-1",
+                    "materialName": "素材一",
+                    "rank": 1,
+                    "materialAudience": {"metrics": {}},
+                    "interactionTimeline": {"metrics": []},
+                    "scriptAnalysis": {"text": "重复事实"},
+                }
+            ],
+            "audience": {"metrics": {}},
+        }
+        data["presentation"] = build_presentation_report(data)
+        rendered = report_data_for_template(data, None)
+        self.assertEqual(
+            set(rendered["materials"][0]), {"rank", "materialId", "materialName"}
+        )
+        self.assertEqual(
+            set(rendered["displayFacts"]["materials"][0]),
+            {"rank", "materialId", "materialName"},
+        )
 
     def test_renderer_rewrites_presentation_assets_and_preserves_video(self):
         data = sample_data()
@@ -319,6 +412,7 @@ class PresentationTests(unittest.TestCase):
     def test_template_passes_presentation_video_to_material_workspace(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
         self.assertIn("video: item.video || {},", template)
+        self.assertIn("materialRanking: item.materialRanking || {},", template)
 
     def test_template_prefers_presentation_chapters_with_legacy_fallback(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")

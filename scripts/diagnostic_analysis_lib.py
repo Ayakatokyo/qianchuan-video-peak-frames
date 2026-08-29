@@ -374,6 +374,41 @@ def build_material_audience(records, material_id):
     }
 
 
+def _material_interaction_timeline(records):
+    """Build deterministic interaction facts scoped to one material."""
+    grouped = {metric: [] for metric in INTERACTION_METRICS}
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, dict) or record.get("recordType") != "interaction_series":
+            continue
+        metric = _text(record.get("interactionMetric"))
+        second = _finite_number(record.get("durationSec"))
+        value = _finite_number(record.get("metricValue"))
+        if metric not in grouped or second is None or value is None or second < 0 or value < 0:
+            continue
+        grouped[metric].append({"second": second, "value": value})
+    metrics = []
+    labels = {
+        "CLICK_COUNT": "整体点击次数",
+        "LOSE_COUNT": "整体流失数",
+        "LIKE_COUNT": "整体点赞次数",
+        "COMMENT_COUNT": "整体评论次数",
+        "SHARE_COUNT": "整体转发次数",
+        "NEW_FOLLOWER_COUNT": "整体新增粉丝数",
+    }
+    for metric in INTERACTION_METRICS:
+        points = sorted(grouped[metric], key=lambda item: item["second"])
+        if not points:
+            continue
+        peak = max(points, key=lambda item: (item["value"], -item["second"]))
+        metrics.append({
+            "metric": metric,
+            "label": labels.get(metric, metric),
+            "points": points,
+            "peak": {"second": peak["second"], "value": peak["value"]},
+        })
+    return {"metrics": metrics}
+
+
 def _aggregate_audience_preferences(records_by_material, materials, metric=PREFERENCE_METRIC):
     material_buckets = {}
     baseline_buckets = {}
@@ -866,6 +901,51 @@ def _publish_prompt(output_dir, prompt):
 def build_diagnostic_analysis(top_payload, records_by_material, commercial=None):
     materials, warnings = _selected_materials(top_payload)
     selected_ids = [material["materialId"] for material in materials]
+    script_facts = _build_scripts(records_by_material, selected_ids, warnings)
+    enriched_materials = _materials_with_record_metadata(materials, records_by_material)
+    script_by_material = {
+        _text(item.get("materialId")): item
+        for item in script_facts.get("materials", [])
+        if isinstance(item, dict) and _text(item.get("materialId"))
+    }
+    for material in enriched_materials:
+        material_id = material["materialId"]
+        material["audience"] = build_material_audience(
+            records_by_material.get(material_id, []), material_id
+        )
+        material["script"] = deepcopy(script_by_material.get(material_id, {}))
+        material["interactionTimeline"] = _material_interaction_timeline(
+            records_by_material.get(material_id, [])
+        )
+        script_refs = []
+        for label in material["script"].get("labels", []):
+            if not isinstance(label, dict):
+                continue
+            level1 = _text(label.get("level1"))
+            level2 = _text(label.get("level2"))
+            if level1 and level2:
+                script_refs.append(f"script:{material_id}:{level1}:{level2}")
+        audience_refs = []
+        for metric, metric_data in material["audience"].get("metrics", {}).items():
+            for dimension_key, dimension in metric_data.get("dimensions", {}).items():
+                for bucket in dimension.get("buckets", []):
+                    bucket_name = _text(bucket.get("bucket")) if isinstance(bucket, dict) else ""
+                    if bucket_name:
+                        audience_refs.append(
+                            f"audience:{metric}:{dimension_key}:{bucket_name}"
+                        )
+        interaction_refs = [
+            f"interaction:{item['metric']}:total"
+            for item in material["interactionTimeline"].get("metrics", [])
+            if isinstance(item, dict) and _text(item.get("metric"))
+        ]
+        material["evidenceIndex"] = {
+            "audience": list(dict.fromkeys(audience_refs)),
+            "script": list(dict.fromkeys(script_refs)),
+            "highlight": [],
+            "interaction": list(dict.fromkeys(interaction_refs)),
+            "commercial": [],
+        }
     preferences_by_metric = {
         metric: _aggregate_audience_preferences(records_by_material, materials, metric)
         for metric in AUDIENCE_METRICS
@@ -873,7 +953,7 @@ def build_diagnostic_analysis(top_payload, records_by_material, commercial=None)
     return {
         "schemaVersion": SCHEMA_VERSION,
         "period": _period(top_payload),
-        "materials": _materials_with_record_metadata(materials, records_by_material),
+        "materials": enriched_materials,
         "portfolio": _portfolio_facts(top_payload, materials),
         "audience": {
             "metrics": {
@@ -882,7 +962,7 @@ def build_diagnostic_analysis(top_payload, records_by_material, commercial=None)
             },
             "preferencesByMetric": preferences_by_metric,
         },
-        "scripts": _build_scripts(records_by_material, selected_ids, warnings),
+        "scripts": script_facts,
         "interaction": _aggregate_interaction(records_by_material, selected_ids),
         "delivery": {"materials": _build_delivery(records_by_material, selected_ids)},
         "commercial": commercial if commercial is not None else {

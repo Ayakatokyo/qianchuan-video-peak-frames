@@ -340,12 +340,45 @@ def _chapter04(data, materials):
     }
 
 
-def _chapter05(materials, ai_schema_version):
+def _chapter05(materials, ai_schema_version, canonical_facts=None):
+    canonical_by_id = {
+        _text(item.get("materialId")): item
+        for item in _list(_mapping(canonical_facts).get("materials"))
+        if isinstance(item, dict) and _text(item.get("materialId"))
+    }
     projected = []
     for material in materials:
         analysis = material.get("analysis") if isinstance(material.get("analysis"), dict) else {}
+        canonical = canonical_by_id.get(material["materialId"], {})
+        canonical_highlight = canonical.get("highlight") if isinstance(canonical.get("highlight"), dict) else {}
+        canonical_frames = canonical_highlight.get("frames") if isinstance(canonical_highlight.get("frames"), list) else []
+        source_frames = canonical_frames or material.get("highlightFrames", [])
+        source_audience = canonical.get("audience") or material.get("materialAudience", {})
+        source_script = canonical.get("script") or material.get("scriptAnalysis", {})
+        if isinstance(source_script, dict):
+            source_script = deepcopy(source_script)
+            # Older Chapter05 packages carried labels/evidence but no formula.
+            # Preserve the established formula chain as a compatibility
+            # fallback so transcript/formula colors remain linked.
+            if not isinstance(source_script.get("formula"), list) or not source_script.get("formula"):
+                legacy_script = material.get("scriptAnalysis", {})
+                legacy_formula = legacy_script.get("formula") if isinstance(legacy_script, dict) else None
+                if isinstance(legacy_formula, list) and legacy_formula:
+                    source_script["formula"] = deepcopy(legacy_formula)
+                else:
+                    source_script["formula"] = [
+                        {
+                            "level1": _text(label.get("level1")),
+                            "level2": _text(label.get("level2")),
+                        }
+                        for label in _list(source_script.get("labels"))
+                        if isinstance(label, dict)
+                        and _text(label.get("level1"))
+                        and _text(label.get("level2"))
+                    ]
+        source_interaction = canonical.get("interactionTimeline") or material.get("interactionTimeline", {})
         frames = []
-        for frame in material.get("highlightFrames", []):
+        for frame in source_frames:
             if isinstance(frame, dict):
                 item = deepcopy(frame)
                 item["frameRef"] = _frame_ref(material["materialId"], frame)
@@ -354,10 +387,10 @@ def _chapter05(materials, ai_schema_version):
         tabs = [
             {"id": tab, "label": label, "source": source, "availability": availability}
             for tab, label, source, availability in (
-                ("highlight", "高光帧观察", "facts.materials.highlightFrames", "available" if frames else "unavailable"),
-                ("interaction", "互动时序分析", "facts.interactionTimeline", "available" if material.get("interactionTimeline") else "unavailable"),
-                ("audience", "人群分析", "facts.materialAudience", "available" if material.get("materialAudience") else "unavailable"),
-                ("script", "脚本分析", "facts.scriptAnalysis", "available" if material.get("scriptAnalysis") else "unavailable"),
+                ("highlight", "高光帧观察", "facts.chapter05.highlight", "available" if frames else "unavailable"),
+                ("interaction", "互动时序分析", "facts.chapter05.interactionTimeline", "available" if source_interaction else "unavailable"),
+                ("audience", "人群分析", "facts.chapter05.audience", "available" if source_audience else "unavailable"),
+                ("script", "脚本分析", "facts.chapter05.script", "available" if source_script else "unavailable"),
                 ("decision", "综合判断与下一步", "ai.materialAnalyses", "available" if analysis.get("decision") or analysis.get("integratedConclusion") or analysis.get("nextAction") else "unavailable"),
             )
         ]
@@ -365,11 +398,12 @@ def _chapter05(materials, ai_schema_version):
             "id": f"chapter05-material-{material['materialId']}",
             "materialId": material["materialId"],
             "materialName": material.get("materialName", ""),
+            "materialRanking": deepcopy(material.get("materialRanking", {})),
             "tabs": tabs,
-            "audience": deepcopy(material.get("materialAudience", {})),
-            "script": deepcopy(material.get("scriptAnalysis", {})),
+            "audience": deepcopy(source_audience),
+            "script": deepcopy(source_script),
             "highlight": {"frames": frames, "analyses": deepcopy(analysis.get("highlightAnalyses", []))},
-            "interaction": deepcopy(material.get("interactionTimeline", {})),
+            "interaction": deepcopy(source_interaction),
             "video": deepcopy(material.get("video", {})),
             "analysis": {
                 **{
@@ -379,10 +413,10 @@ def _chapter05(materials, ai_schema_version):
                 },
                 "source": "ai.materialAnalyses",
             },
-            "source": "facts.materials + ai.materialAnalyses",
+            "source": "facts.chapter05 + ai.materialAnalyses",
             "evidenceRefs": deepcopy(analysis.get("evidenceRefs", [])) if isinstance(analysis.get("evidenceRefs"), list) else [],
             "availability": "available" if (
-                material.get("highlightFrames")
+                frames
                 and ai_schema_version in {4, 5}
                 and analysis.get("evidenceRefs")
             ) else "partial",
@@ -392,7 +426,7 @@ def _chapter05(materials, ai_schema_version):
         "title": "单素材深度分析",
         "materials": projected,
         "defaultMaterialId": projected[0]["materialId"] if projected else None,
-        "source": "facts.materials + ai.materialAnalyses",
+        "source": "facts.chapter05 + ai.materialAnalyses",
         "availability": "available" if projected else "unavailable",
     }
 
@@ -420,7 +454,11 @@ def build_presentation_report(data):
         "chapters": {
             "chapter01": _chapter01(fact_data), "chapter02": _chapter02(fact_data, material_ids),
             "chapter03": _chapter03(fact_data, material_ids), "chapter04": _chapter04(fact_data, materials),
-            "chapter05": _chapter05(materials, (data.get("conclusion") or {}).get("schemaVersion")),
+            "chapter05": _chapter05(
+                materials,
+                (data.get("conclusion") or {}).get("schemaVersion"),
+                data.get("chapter05Facts"),
+            ),
         },
         "interactions": {"source": "report-display-facts.interaction", "availability": "available" if fact_data.get("interaction") else "unavailable"},
         "extensions": {"qianchuan": {"aiSchemaVersion": (data.get("conclusion") or {}).get("schemaVersion"), "displayFactSource": "report-display-facts.json"}},
