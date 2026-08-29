@@ -3110,7 +3110,89 @@ body.unified-report {
   font-weight: 400;
 }
 
+.unified-report .keyword-cloud-panel {
+  grid-column: 1 / -1;
+  margin: 18px 0;
+}
+
+.unified-report .keyword-cloud-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(300px, 1.2fr) minmax(280px, 1.1fr);
+  gap: 14px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.unified-report .keyword-cloud-layout article {
+  display: flex;
+  flex-direction: column;
+  min-height: 190px;
+  padding: 18px;
+  border-radius: 22px;
+  background: #fbf4e8;
+  color: #3b241b;
+  border: 1px solid #dec5a5;
+  box-shadow: 0 8px 18px rgba(91, 48, 25, 0.06);
+}
+
+.unified-report .keyword-cloud-kicker {
+  display: block;
+  margin-bottom: 14px;
+  color: #6f3924;
+  font-size: 1.1rem;
+  font-weight: 800;
+}
+
+.unified-report .keyword-cloud-conclusion h3 {
+  flex: 0 0 auto;
+  margin: 0 0 22px;
+  font-size: clamp(16px, 1.55vw, 22px);
+  line-height: 1.35;
+}
+
+.unified-report .keyword-cloud-conclusion {
+  justify-content: flex-start;
+}
+
+.unified-report .keyword-cloud-conclusion h3 { margin-top: auto; }
+.unified-report .keyword-cloud-conclusion p {
+  flex: 0 0 auto;
+  margin-bottom: auto;
+}
+
+.unified-report .keyword-cloud-words {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px 13px;
+  min-height: 130px;
+}
+
+.unified-report .keyword-cloud-word { font-weight: 900; }
+.unified-report .keyword-cloud-tone-0 { color: #3159d5; }
+.unified-report .keyword-cloud-tone-1 { color: #4a9b68; }
+.unified-report .keyword-cloud-tone-2 { color: #e3a52f; }
+.unified-report .keyword-cloud-tone-3 { color: #765bd5; }
+.unified-report .keyword-cloud-tone-4 { color: #d45c4d; }
+.unified-report .keyword-cloud-tone-5 { color: #2795a8; }
+
+.unified-report .keyword-selling-card {
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: #f1dfc4;
+  border-left: 3px solid #b97845;
+}
+
+.unified-report .keyword-selling-card:nth-child(3n) { background: #f1dfc4; }
+.unified-report .keyword-selling-card p { margin: 6px 0 0; }
+.unified-report .keyword-selling-card p { font-size: 0.92rem; }
+
 @media (max-width: 640px) {
+  .unified-report .keyword-cloud-layout { grid-template-columns: 1fr; }
+
   .unified-report #script-dashboard .pie-layout {
     grid-template-columns: 1fr;
   }

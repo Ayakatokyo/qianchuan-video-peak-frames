@@ -221,6 +221,49 @@ class AnalysisUnitProjectionTests(unittest.TestCase):
         )
         self.assertIn("preferencesByMetric", display["audience"])
         self.assertIn("metrics", display["audience"])
+        self.assertEqual(set(display["scripts"]), {"labelSummary", "keywordCloud"})
+
+    def test_chapter03_builds_deterministic_keyword_cloud_from_script_text(self):
+        analysis = example_analysis()
+        analysis["materials"].append({"materialId": "m-2", "materialName": "标题词不应进入"})
+        analysis["scripts"]["materials"].append({
+            "materialId": "m-2", "text": "早餐燕窝，早餐营养", "labels": [], "evidence": []
+        })
+        cloud = build_analysis_units(analysis)["chapter03-script"]["keywordCloud"]
+        self.assertEqual(cloud["source"], "facts.scripts.materials[*].text")
+        breakfast = next(item for item in cloud["keywords"] if item["keyword"] == "早餐")
+        self.assertEqual(breakfast["frequency"], 2)
+        self.assertEqual(breakfast["materialIds"], ["m-2"])
+        self.assertTrue(all("标题词不应进入" not in item["keyword"] for item in cloud["keywords"]))
+
+    def test_keyword_cloud_keeps_domain_phrases_instead_of_two_character_fragments(self):
+        analysis = example_analysis()
+        analysis["scripts"]["materials"][0]["text"] = "直播间鲜炖燕窝和小冰箱，直播间鲜炖燕窝，小冰箱"
+        keywords = [item["keyword"] for item in build_analysis_units(analysis)["chapter03-script"]["keywordCloud"]["keywords"]]
+        self.assertIn("直播间", keywords)
+        self.assertIn("鲜炖", keywords)
+        self.assertIn("燕窝", keywords)
+        self.assertIn("冰箱", keywords)
+        self.assertNotIn("播间", keywords)
+        self.assertNotIn("炖燕", keywords)
+
+    def test_keyword_cloud_filters_function_words_by_part_of_speech_not_word_list(self):
+        analysis = example_analysis()
+        analysis["scripts"]["materials"][0]["text"] = "燕窝营养 现在 这个 真的 他们 赠送 加热器"
+        keywords = [item["keyword"] for item in build_analysis_units(analysis)["chapter03-script"]["keywordCloud"]["keywords"]]
+        self.assertNotIn("现在", keywords)
+        self.assertNotIn("这个", keywords)
+        self.assertNotIn("他们", keywords)
+
+    def test_chapter03_reuses_precomputed_keyword_cloud_facts(self):
+        analysis = example_analysis()
+        analysis["scripts"]["keywordCloud"] = {
+            "source": "facts.scripts.materials[*].text",
+            "keywords": [{"keyword": "预计算短语", "frequency": 9, "materialIds": ["m-1"], "evidenceRefs": ["script:m-1:text:预计算短语"]}],
+        }
+        cloud = build_analysis_units(analysis)["chapter03-script"]["keywordCloud"]
+        self.assertEqual(cloud["keywords"][0]["keyword"], "预计算短语")
+        self.assertEqual(cloud["keywords"][0]["frequency"], 9)
 
     def test_chapter01_contains_only_material_list_facts(self):
         analysis = example_analysis()

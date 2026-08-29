@@ -127,6 +127,16 @@ class FinalReportArchiveTests(unittest.TestCase):
 
 
 class FinalReportConclusionTests(unittest.TestCase):
+    def test_v5_preserves_keyword_cloud_insight_for_presentation(self):
+        payload = {
+            "schemaVersion": 5, "overallConclusion": "总览",
+            "portfolioDimensionConclusions": {topic: {"conclusion": "结论", "evidenceRefs": []} for topic in ("commercial", "audience", "script", "highlight", "interaction")},
+            "highlightDashboard": {"groups": []}, "batchInsights": [], "materialAnalyses": [],
+            "keywordCloudInsight": {"oneSentenceConclusion": "一句话", "summary": "总结", "sellingPoints": []},
+        }
+        normalized = normalize_conclusion_analysis(payload)
+        self.assertEqual(normalized["keywordCloudInsight"]["summary"], "总结")
+
     def test_top_level_next_actions_are_ignored(self):
         conclusion = normalize_conclusion_analysis(
             {
@@ -277,6 +287,35 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
 
         self.assertNotIn("audience", template_data)
         self.assertNotIn("batchInsights", template_data)
+
+    def test_template_payload_uses_presentation_as_chapter03_source(self):
+        payload = {
+            "presentation": {
+                "presentationSchemaVersion": 1,
+                "chapters": {
+                    "chapter02": {"availability": "available"},
+                    "chapter03": {
+                        "groups": [{"level1": "商品卖点", "labels": []}],
+                        "insights": [],
+                    },
+                },
+            },
+            "displayFacts": {
+                "scripts": {"labelSummary": [{"level1": "旧来源"}]},
+                "audience": {"metrics": {}, "preferencesByMetric": {}},
+            },
+            "scripts": {"labelSummary": [{"level1": "旧来源"}]},
+            "materials": [],
+        }
+
+        template_data = report_data_for_template(payload, None)
+
+        self.assertNotIn("scripts", template_data)
+        self.assertNotIn("scripts", template_data["displayFacts"])
+        self.assertEqual(
+            template_data["presentation"]["chapters"]["chapter03"]["groups"][0]["level1"],
+            "商品卖点",
+        )
 
     def test_chapter01_renders_one_untitled_paragraph(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
@@ -2500,6 +2539,14 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('id="audience-dashboard"', html_text)
         self.assertNotIn('id="audience-preferences"', html_text)
         self.assertIn('id="script-dashboard"', html_text)
+        self.assertIn('id="keyword-cloud-panel"', html_text)
+        self.assertIn("function renderKeywordCloudPanel", html_text)
+        self.assertIn("keywords.slice(0, 24)", html_text)
+        self.assertIn("0.95 + (Number(item.frequency || 0) / max) * 1.35", html_text)
+        self.assertIn("stableKeywordOrder", html_text)
+        self.assertIn("Number(b.frequency || 0) - Number(a.frequency || 0)", html_text)
+        self.assertIn("keyword-cloud-conclusion", css_text)
+        self.assertIn('renderKeywordCloudPanel();\n  renderScriptDashboard();', html_text)
         self.assertIn("function animateScriptDrill", html_text)
         self.assertIn("function renderScriptDrill", html_text)
         self.assertIn("function returnToScriptOverview", html_text)
@@ -2953,7 +3000,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('<script type="application/json" id="report-data">', html_text)
         self.assertIn('"materials"', html_text)
         self.assertIn('"audience"', html_text)
-        self.assertIn('"scripts"', html_text)
+        self.assertNotIn('"scripts"', html_text)
         self.assertNotIn("__REPORT_DATA_JSON__", html_text)
 
     def test_embedded_template_data_excludes_execution_process_metadata(self):

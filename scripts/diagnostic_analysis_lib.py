@@ -8,7 +8,7 @@ import uuid
 
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from path_safety import artifact_path, validate_material_id
-from analysis_units_lib import publish_analysis_units
+from analysis_units_lib import _keyword_cloud, publish_analysis_units
 
 
 SCHEMA_VERSION = 1
@@ -583,7 +583,11 @@ def _build_scripts(records_by_material, selected_ids, warnings):
                 "evidence": sorted(summary["evidence"]),
             }
         )
-    return {"materials": materials, "labelSummary": label_summary}
+    return {
+        "materials": materials,
+        "labelSummary": label_summary,
+        "keywordCloud": _keyword_cloud(materials),
+    }
 
 
 DELIVERY_EXCLUDED_FIELDS = {

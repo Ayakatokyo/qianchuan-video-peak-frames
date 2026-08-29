@@ -192,7 +192,8 @@ def _chapter02(data, material_ids):
 
 
 def _chapter03(data, material_ids):
-    summary = _list(_mapping(data.get("scripts")).get("labelSummary"))
+    scripts = _mapping(data.get("scripts"))
+    summary = _list(scripts.get("labelSummary"))
     groups = []
     by_level1 = {}
     for raw in summary:
@@ -226,8 +227,51 @@ def _chapter03(data, material_ids):
         insight = deepcopy(raw)
         insight["source"] = "ai.batchInsights[script]"
         insights.append(insight)
+    raw_cloud = _mapping(scripts.get("keywordCloud"))
+    review = {
+        _text(item.get("keyword")): _text(item.get("decision"))
+        for item in _list(_mapping(data.get("conclusion")).get("keywordCloudReview"))
+        if isinstance(item, dict) and _text(item.get("keyword"))
+    }
+    keywords = []
+    cloud_refs = []
+    for raw in _list(raw_cloud.get("keywords")):
+        if not isinstance(raw, dict) or not _text(raw.get("keyword")):
+            continue
+        if review.get(_text(raw["keyword"])) == "exclude":
+            continue
+        refs = [ref for ref in _list(raw.get("evidenceRefs")) if _text(ref)]
+        item = {
+            "keyword": _text(raw["keyword"]),
+            "frequency": raw.get("frequency", 0),
+            "materialIds": _material_refs(raw.get("materialIds"), material_ids),
+            "evidenceRefs": refs,
+        }
+        keywords.append(item)
+        cloud_refs.extend(refs)
+    ai_cloud = _mapping(_mapping(data.get("conclusion")).get("keywordCloudInsight"))
+    selling_points = []
+    valid_keywords = {item["keyword"] for item in keywords}
+    valid_refs = set(cloud_refs)
+    for raw in _list(ai_cloud.get("sellingPoints"))[:4]:
+        if not isinstance(raw, dict):
+            continue
+        keyword_refs = [ref for ref in _list(raw.get("keywordRefs")) if ref in valid_keywords]
+        evidence = [ref for ref in _list(raw.get("evidenceRefs")) if ref in valid_refs]
+        if _text(raw.get("title")) and _text(raw.get("description")) and keyword_refs and evidence:
+            selling_points.append({"title": _text(raw["title"]), "description": _text(raw["description"]), "keywordRefs": keyword_refs, "evidenceRefs": evidence})
+    keyword_panel = {
+        "oneSentenceConclusion": _text(ai_cloud.get("oneSentenceConclusion")),
+        "summary": _text(ai_cloud.get("summary")),
+        "keywords": keywords,
+        "sellingPoints": selling_points,
+        "source": "facts.scripts.keywordCloud + ai.keywordCloudInsight",
+        "evidenceRefs": list(dict.fromkeys(cloud_refs + [ref for card in selling_points for ref in card["evidenceRefs"]])),
+        "availability": _availability(bool(keywords), bool(keywords)),
+    }
     return {
         "id": "chapter03", "title": "脚本洞察", "groups": groups, "insights": insights,
+        "keywordCloudPanel": keyword_panel,
         "source": "facts.scripts + ai.batchInsights[script]", "evidenceRefs": evidence_refs,
         "availability": _availability(bool(groups), bool(evidence_refs) and has_refs),
     }

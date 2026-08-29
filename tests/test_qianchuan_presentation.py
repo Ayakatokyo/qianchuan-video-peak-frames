@@ -60,6 +60,7 @@ def complete_presentation_data():
             },
         },
         "scripts": {
+            "keywordCloud": {"source": "facts.scripts.materials[*].text", "keywords": [{"keyword": "早餐", "frequency": 3, "materialIds": ["m-1"], "evidenceRefs": ["script:m-1:text:早餐"]}]},
             "labelSummary": [{
                 "level1": "商品卖点", "level2": "适用场景", "occurrenceCount": 1,
                 "materialIds": ["m-1"], "evidence": ["早餐场景"],
@@ -77,6 +78,8 @@ def complete_presentation_data():
             {"topic": "audience", "title": "成交结构：价值解释需要匹配", "conclusion": "成交金额的集中人群与展现口径不同，下一轮分别验证价格、规格和品质解释的成交承接。", "evidenceRefs": ["audience:TRANSACTION_AMOUNT:gender:女"]},
             {"topic": "script", "title": "一二级内容公式：原始 AI 标题", "conclusion": "脚本结论", "evidenceRefs": ["script:m-1:商品卖点:适用场景"]},
         ],
+        "keywordCloudInsight": {"oneSentenceConclusion": "脚本围绕早餐场景组织内容。", "summary": "高频词集中在早餐场景。", "sellingPoints": [{"title": "场景明确", "description": "早餐是主要切入口。", "keywordRefs": ["早餐"], "evidenceRefs": ["script:m-1:text:早餐"]}]},
+        "keywordCloudReview": [{"keyword": "早餐", "decision": "accept"}, {"keyword": "小仙", "decision": "exclude"}],
         "nextActions": [{
             "title": "优先测试开场", "body": "将利益点前置到前 3 秒", "action": "改写开场", "validation": "比较 CTR", "priority": "high",
             "evidenceRefs": ["audience:m-1"], "materialIds": ["m-1"],
@@ -86,6 +89,20 @@ def complete_presentation_data():
 
 
 class PresentationTests(unittest.TestCase):
+    def test_chapter03_projects_keyword_cloud_between_ai_and_script_summary(self):
+        chapter03 = build_presentation_report(complete_presentation_data())["chapters"]["chapter03"]
+        panel = chapter03["keywordCloudPanel"]
+        self.assertEqual(panel["keywords"][0]["keyword"], "早餐")
+        self.assertEqual(panel["oneSentenceConclusion"], "脚本围绕早餐场景组织内容。")
+        self.assertEqual(len(panel["sellingPoints"]), 1)
+        self.assertEqual(panel["source"], "facts.scripts.keywordCloud + ai.keywordCloudInsight")
+
+    def test_chapter03_applies_ai_review_to_keyword_cloud(self):
+        data = complete_presentation_data()
+        data["scripts"]["keywordCloud"]["keywords"].append({"keyword": "小仙", "frequency": 3, "materialIds": ["m-1"], "evidenceRefs": ["script:m-1:text:小仙"]})
+        chapter03 = build_presentation_report(data)["chapters"]["chapter03"]
+        self.assertNotIn("小仙", [item["keyword"] for item in chapter03["keywordCloudPanel"]["keywords"]])
+
     def test_projects_material_list_insight_as_single_point_without_lead_in(self):
         data = sample_data()
         data["portfolio"] = {
@@ -255,6 +272,23 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(rendered["presentation"]["presentationSchemaVersion"], 1)
         self.assertIn("materials", rendered)
         self.assertIn("conclusion", rendered)
+
+    def test_renderer_removes_script_display_duplicates_for_v1_presentation(self):
+        data = complete_presentation_data()
+        data["displayFacts"] = {
+            "schemaVersion": 1,
+            "sourceFactsSchemaVersion": 1,
+            "scripts": data["scripts"],
+            "audience": data["audience"],
+        }
+        data["presentation"] = build_presentation_report(data)
+
+        rendered = report_data_for_template(data, None)
+
+        self.assertNotIn("scripts", rendered)
+        self.assertNotIn("scripts", rendered["displayFacts"])
+        self.assertIn("metrics", rendered["displayFacts"]["audience"])
+        self.assertIn("preferencesByMetric", rendered["displayFacts"]["audience"])
 
     def test_renderer_rewrites_presentation_assets_and_preserves_video(self):
         data = sample_data()

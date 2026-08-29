@@ -388,6 +388,10 @@ def report_data_for_template(
     if isinstance(template_display_facts, dict) and has_v1_presentation:
         chapter02.pop("metrics", None)
         chapter02.pop("preferencesByMetric", None)
+        # Chapter 03 is already projected into Presentation. Keep the raw
+        # script facts available to the AI/report artifacts, but do not embed
+        # a second unused copy in the v1 browser payload.
+        template_display_facts.pop("scripts", None)
     return {
         "schemaVersion": data.get("schemaVersion"),
         "presentation": template_data_presentation,
@@ -405,7 +409,7 @@ def report_data_for_template(
             "batchInsights": data.get("batchInsights", {}),
             "audience": data.get("audience", {}),
         }),
-        "scripts": data.get("scripts", {}),
+        **({} if has_v1_presentation else {"scripts": data.get("scripts", {})}),
         "conclusion": {
             "schemaVersion": conclusion.get("schemaVersion"),
             "overallConclusion": conclusion.get("overallConclusion", ""),

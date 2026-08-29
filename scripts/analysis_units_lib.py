@@ -6,6 +6,14 @@ import json
 import os
 from pathlib import Path
 import uuid
+import re
+
+try:
+    import jieba
+    import jieba.posseg as pseg
+except ImportError:  # pragma: no cover - dependency bootstrap reports this clearly
+    jieba = None
+    pseg = None
 
 
 UNIT_DEFINITIONS = (
@@ -107,6 +115,9 @@ def build_display_facts(analysis):
     """Project deterministic facts used by report charts and fixed panels."""
     if not isinstance(analysis, dict) or analysis.get("schemaVersion") != 1:
         raise AnalysisUnitError("normalized diagnostic facts must use schemaVersion 1")
+    scripts = analysis.get("scripts", {})
+    if not isinstance(scripts, dict):
+        scripts = {}
     return {
         "schemaVersion": 1,
         "sourceFactsSchemaVersion": analysis["schemaVersion"],
@@ -114,7 +125,12 @@ def build_display_facts(analysis):
         "portfolio": deepcopy(analysis.get("portfolio", {})),
         "materials": deepcopy(analysis.get("materials", [])),
         "audience": deepcopy(analysis.get("audience", {})),
-        "scripts": deepcopy(analysis.get("scripts", {})),
+        # Full script text and per-material labels belong only to the AI unit;
+        # the report display only needs the deterministic aggregate.
+        "scripts": {
+            "labelSummary": deepcopy(scripts.get("labelSummary", [])),
+            "keywordCloud": deepcopy(scripts.get("keywordCloud", {})),
+        },
         "interaction": deepcopy(analysis.get("interaction", {})),
         "delivery": deepcopy(analysis.get("delivery", {})),
         "highlights": deepcopy(analysis.get("highlights", {})),
@@ -158,7 +174,65 @@ def _script_unit(analysis):
         "period": deepcopy(analysis.get("period", {})),
         "materials": materials,
         "labelSummary": deepcopy(scripts.get("labelSummary", [])),
+        # diagnostic_analysis_lib is the single producer of keywordCloud facts;
+        # keep a fallback for callers that construct analysis dictionaries directly.
+        "keywordCloud": deepcopy(scripts.get("keywordCloud"))
+        if isinstance(scripts.get("keywordCloud"), dict)
+        else _keyword_cloud(materials),
     }
+
+
+_KEYWORD_MIN_FREQUENCY = 2
+_KEYWORD_POS_PREFIXES = ("n", "v", "a", "eng")
+
+
+def _script_keywords(text):
+    tokens = []
+    if jieba is None:
+        raise RuntimeError("jieba is required for deterministic Chinese keyword extraction")
+    previous = None
+    for item in pseg.cut(text):
+        token = item.word.strip()
+        flag = item.flag or ""
+        is_content = bool(token and flag.startswith(_KEYWORD_POS_PREFIXES))
+        if not is_content:
+            previous = None
+            continue
+        if token.isascii():
+            valid = len(token) >= 2 and not token.isdigit() and any(char.isalnum() for char in token)
+            normalized = token.lower() if valid else ""
+        else:
+            normalized = token if re.search(r"[\u4e00-\u9fff]", token) else ""
+        if normalized:
+            if len(normalized) >= 2:
+                tokens.append(normalized)
+            if previous and len(previous) == 1 and len(normalized) == 1:
+                tokens.append(previous + normalized)
+            previous = normalized
+    return tokens
+
+
+def _keyword_cloud(materials):
+    stats = {}
+    for material in materials:
+        material_id = _text(material.get("materialId"))
+        for keyword in _script_keywords(_text(material.get("text"))):
+            item = stats.setdefault(keyword, {"frequency": 0, "materialIds": set()})
+            item["frequency"] += 1
+            if material_id:
+                item["materialIds"].add(material_id)
+    keywords = []
+    for keyword, item in sorted(stats.items(), key=lambda pair: (-pair[1]["frequency"], pair[0])):
+        if item["frequency"] < _KEYWORD_MIN_FREQUENCY:
+            continue
+        material_ids = sorted(item["materialIds"])
+        keywords.append({
+            "keyword": keyword,
+            "frequency": item["frequency"],
+            "materialIds": material_ids,
+            "evidenceRefs": [f"script:{material_id}:text:{keyword}" for material_id in material_ids],
+        })
+    return {"source": "facts.scripts.materials[*].text", "keywords": keywords}
 
 
 def _interaction_with_evidence(interaction):

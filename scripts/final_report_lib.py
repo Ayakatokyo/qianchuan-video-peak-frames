@@ -507,6 +507,23 @@ def _normalize_v5_conclusion(payload):
         topic: dimensions.get(topic, {"conclusion": "兼容字段", "evidenceRefs": []})
         for topic in PORTFOLIO_DIMENSION_TOPICS
     }
+    keyword_cloud_insight = payload.get("keywordCloudInsight")
+    normalized_keyword_cloud = None
+    if isinstance(keyword_cloud_insight, dict):
+        normalized_keyword_cloud = {
+            "oneSentenceConclusion": _text(keyword_cloud_insight.get("oneSentenceConclusion")),
+            "summary": _text(keyword_cloud_insight.get("summary")),
+            "sellingPoints": [
+                {
+                    "title": _text(item.get("title")),
+                    "description": _text(item.get("description")),
+                    "keywordRefs": _string_list(item.get("keywordRefs", []), "keywordCloudInsight.sellingPoints.keywordRefs"),
+                    "evidenceRefs": _string_list(item.get("evidenceRefs", []), "keywordCloudInsight.sellingPoints.evidenceRefs"),
+                }
+                for item in keyword_cloud_insight.get("sellingPoints", [])[:4]
+                if isinstance(item, dict)
+            ],
+        }
     return {
         **normalized,
         "schemaVersion": 5,
@@ -516,6 +533,12 @@ def _normalize_v5_conclusion(payload):
             for topic in (("commercial",) if compact else PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION)
         },
         "highlightDashboard": _normalize_v4_conclusion(legacy_payload)["highlightDashboard"],
+        **({"keywordCloudInsight": normalized_keyword_cloud} if normalized_keyword_cloud is not None else {}),
+        **({"keywordCloudReview": [
+            {"keyword": _text(item.get("keyword")), "decision": _text(item.get("decision")), "target": _text(item.get("target"))}
+            for item in payload.get("keywordCloudReview", [])
+            if isinstance(item, dict) and _text(item.get("keyword")) and _text(item.get("decision")) in {"accept", "exclude", "merge"}
+        ]} if isinstance(payload.get("keywordCloudReview"), list) else {}),
     }
 
 

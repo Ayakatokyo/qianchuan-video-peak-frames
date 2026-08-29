@@ -55,6 +55,7 @@
     <header class="section-header"><h2>03｜脚本洞察</h2></header>
     <div class="insight-layout">
       <div class="primary-summary" id="script-primary"></div>
+      <div class="keyword-cloud-panel" id="keyword-cloud-panel"></div>
       <div class="data-dashboard" id="script-dashboard"></div>
     </div>
   </section>
@@ -115,6 +116,17 @@ function chapter03Summary() {
 function chapter03Insights() {
   const insights = presentationChapter("chapter03")?.insights;
   return Array.isArray(insights) ? insights : chapter01Insights("script");
+}
+
+function chapter03KeywordCloud() {
+  return presentationChapter("chapter03")?.keywordCloudPanel || null;
+}
+
+function stableKeywordOrder(items) {
+  return [...items].sort((a, b) => {
+    const score = (item) => Array.from(String(item.keyword || "")).reduce((sum, char) => ((sum * 31) + char.charCodeAt(0)) % 100003, 17);
+    return Number(b.frequency || 0) - Number(a.frequency || 0) || score(a) - score(b);
+  });
 }
 
 function chapter04Groups() {
@@ -995,6 +1007,39 @@ function renderScriptDashboard(options = {}) {
     window.setTimeout(() => chartGrid.classList.add("is-visible"), 0);
     animateScriptDrill(options.transition, targetBar);
   }
+}
+
+function renderKeywordCloudPanel() {
+  const root = document.getElementById("keyword-cloud-panel");
+  const panel = chapter03KeywordCloud();
+  root.replaceChildren();
+  if (!panel) return;
+  const wrap = element("div", "keyword-cloud-layout");
+  const conclusion = element("article", "keyword-cloud-conclusion");
+  conclusion.append(element("small", "keyword-cloud-kicker", "一句话结论"), element("h3", "", panel.oneSentenceConclusion || "暂无分析"), element("p", "", panel.summary || ""));
+  const cloud = element("article", "keyword-cloud-summary");
+  cloud.append(element("small", "keyword-cloud-kicker", "高频关键词云"));
+  const words = element("div", "keyword-cloud-words");
+  const keywords = Array.isArray(panel.keywords) ? panel.keywords : [];
+  const max = Math.max(...keywords.map((item) => Number(item.frequency || 0)), 1);
+  stableKeywordOrder(keywords.slice(0, 24)).forEach((item, index) => {
+    const word = element("span", `keyword-cloud-word keyword-cloud-tone-${index % 6}`, item.keyword);
+    word.style.fontSize = `${0.95 + (Number(item.frequency || 0) / max) * 1.35}rem`;
+    word.title = `出现 ${formatNumber(item.frequency)} 次`;
+    words.append(word);
+  });
+  cloud.append(words);
+  const selling = element("article", "keyword-cloud-selling");
+  selling.append(element("small", "keyword-cloud-kicker", "从关键词云提炼的卖点"));
+  const cards = Array.isArray(panel.sellingPoints) ? panel.sellingPoints : [];
+  if (!cards.length) selling.append(element("p", "muted", "暂无分析"));
+  cards.slice(0, 4).forEach((card, index) => {
+    const item = element("div", "keyword-selling-card");
+    item.append(element("b", "", `${index + 1}｜${card.title || "卖点"}`), element("p", "", card.description || ""));
+    selling.append(item);
+  });
+  wrap.append(conclusion, cloud, selling);
+  root.append(wrap);
 }
 
 function renderFrames(material, selection = null) {
@@ -2380,6 +2425,7 @@ function renderReport() {
   renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");
   renderAudienceDashboard();
   renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");
+  renderKeywordCloudPanel();
   renderScriptDashboard();
   renderHighlightDashboard();
   renderMaterialTabs();

@@ -35,7 +35,7 @@
 
 ### Chapter 03：脚本洞察
 
-只以 `chapter03-script-input.json` 的完整脚本、一二级标签、真实证据句和标签汇总生成 `batchInsights[topic=script]`。不将脚本句子与高光帧秒点做无依据对齐。
+只以 `chapter03-script-input.json` 的完整脚本、一二级标签、真实证据句、标签汇总和确定性 `keywordCloud` 生成 `batchInsights[topic=script]`、`keywordCloudReview` 及 `keywordCloudInsight`。`keywordCloudReview` 只能对 NLP 候选词做 `accept`、`exclude` 或 `merge` 审查，不得修改原始频次；后端会依据审查结果重新汇总。不要将脚本句子与高光帧秒点做无依据对齐；关键词原始频次不得由 AI 改写。
 
 ### Chapter 04：高光画面洞察
 
@@ -79,6 +79,7 @@
 - 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
 - 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
 - 必须输出至少 3 条 audience、2 条 script 洞察；`audience` 洞察需覆盖展现次数、点击次数、成交金额三个角度，事实不足时仍需给出下一步补充或验证方向。不得为了填充素材榜单数据洞察而输出 `batchInsights.topic=integrated`。
+- `keywordCloudInsight` 必须包含 `oneSentenceConclusion`、`summary` 和 `sellingPoints`；卖点最多 4 条。每条卖点必须引用 `keywordCloud.keywords[*].keyword` 和合法 `evidenceRefs`，不得引入关键词云与脚本文本之外的新事实；前端展示顺序固定为 AI 二次分析、关键词云模块、脚本汇总数据。
 - `script` 洞察固定输出 2 条且按以下顺序：第一条标题以“`一二级内容公式：`”开头，分析一级/二级标签的高频结构、组合方式和差异；第二条标题以“`脚本文案：`”开头，分析真实文案中的利益点、表达方式与证据句。两条都必须引用对应的 `script:*` 证据，且不能只复述标签或原句。
 
 ## 页面结构映射
@@ -132,6 +133,18 @@
       "evidenceRefs": ["事实包中已有的引用"]
     }
   ],
+  "keywordCloudInsight": {
+    "oneSentenceConclusion": "基于脚本高频词给出的可读结论，必须引用事实中的场景、商品、优惠或动作表达。",
+    "summary": "对高频关键词组合关系的总结，不改写关键词频次。",
+    "sellingPoints": [
+      {
+        "title": "卖点标题",
+        "description": "仅基于脚本文本和关键词云提炼的卖点描述。",
+        "keywordRefs": ["关键词云中的真实词"],
+        "evidenceRefs": ["script:materialId:text:关键词"]
+      }
+    ]
+  },
   "materialAnalyses": [
     {
       "materialId": "事实包中的素材 ID",
