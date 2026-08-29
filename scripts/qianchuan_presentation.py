@@ -414,7 +414,6 @@ def _chapter05(materials, ai_schema_version, canonical_facts=None):
                 "source": "ai.materialAnalyses",
             },
             "source": "facts.chapter05 + ai.materialAnalyses",
-            "evidenceRefs": deepcopy(analysis.get("evidenceRefs", [])) if isinstance(analysis.get("evidenceRefs"), list) else [],
             "availability": "available" if (
                 frames
                 and ai_schema_version in {4, 5}

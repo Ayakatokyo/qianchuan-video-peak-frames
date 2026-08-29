@@ -289,6 +289,13 @@ class PresentationTests(unittest.TestCase):
             {"roi": 1.8, "cost": 100},
         )
 
+    def test_chapter05_does_not_duplicate_material_evidence_refs(self):
+        data = complete_presentation_data()
+        report = build_presentation_report(data)
+        material = report["chapters"]["chapter05"]["materials"][0]
+        self.assertNotIn("evidenceRefs", material)
+        self.assertEqual(material["analysis"]["evidenceRefs"], ["material:m-1"])
+
     def test_chapter05_prefers_canonical_material_fact_package(self):
         data = sample_data()
         data["materials"][0]["materialAudience"] = {"legacy": True}
@@ -342,6 +349,24 @@ class PresentationTests(unittest.TestCase):
         self.assertNotIn("highlightFrames", rendered["materials"][0])
         self.assertIn("metrics", rendered["displayFacts"]["audience"])
         self.assertIn("preferencesByMetric", rendered["displayFacts"]["audience"])
+        self.assertEqual(set(rendered["displayFacts"]), {"audience"})
+
+    def test_renderer_keeps_only_audience_display_facts_for_v1_presentation(self):
+        data = complete_presentation_data()
+        data["displayFacts"] = {
+            "schemaVersion": 1,
+            "sourceFactsSchemaVersion": 1,
+            "period": data["period"],
+            "portfolio": data.get("portfolio", {}),
+            "materials": [{"rank": 1, "materialId": "m-1", "materialName": "素材一"}],
+            "audience": data["audience"],
+            "interaction": {"metrics": {}},
+            "commercial": {"metrics": {}},
+            "topMaterialRoi": data["topMaterialRoi"],
+        }
+        data["presentation"] = build_presentation_report(data)
+        rendered = report_data_for_template(data, None)
+        self.assertEqual(set(rendered["displayFacts"]), {"audience"})
 
     def test_renderer_reduces_display_materials_when_chapter05_is_available(self):
         data = complete_presentation_data()
@@ -362,10 +387,7 @@ class PresentationTests(unittest.TestCase):
         }
         data["presentation"] = build_presentation_report(data)
         rendered = report_data_for_template(data, None)
-        self.assertEqual(
-            set(rendered["displayFacts"]["materials"][0]),
-            {"rank", "materialId", "materialName"},
-        )
+        self.assertEqual(set(rendered["displayFacts"]), {"audience"})
 
     def test_renderer_separates_materials_when_chapter02_is_unavailable(self):
         data = sample_data()
@@ -387,10 +409,7 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(
             set(rendered["materials"][0]), {"rank", "materialId", "materialName"}
         )
-        self.assertEqual(
-            set(rendered["displayFacts"]["materials"][0]),
-            {"rank", "materialId", "materialName"},
-        )
+        self.assertEqual(set(rendered["displayFacts"]), {"audience"})
 
     def test_renderer_rewrites_presentation_assets_and_preserves_video(self):
         data = sample_data()

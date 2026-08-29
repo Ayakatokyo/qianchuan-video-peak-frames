@@ -410,16 +410,15 @@ def report_data_for_template(
         # a second unused copy in the v1 browser payload.
         template_display_facts.pop("scripts", None)
         # Chapter 05 Presentation is the sole browser source for per-material
-        # facts; keep only a catalog in displayFacts for legacy consumers.
-        template_display_facts["materials"] = [
-            {
-                key: deepcopy(value)
-                for key, value in material.items()
-                if key in {"rank", "materialId", "materialName"}
-            }
-            for material in template_display_facts.get("materials", [])
-            if isinstance(material, dict)
-        ]
+        # facts; keep only the audience drill-down fallback in displayFacts.
+        # Chapter 05 Presentation and Chapter 02 Presentation are the only
+        # browser consumers of these facts. Keep the audience drill-down
+        # fallback only; portfolio, materials, interaction, commercial and
+        # ROI snapshots duplicate Presentation/top-level summaries and are
+        # not read by the template.
+        template_display_facts = {
+            "audience": deepcopy(template_display_facts.get("audience", {}))
+        }
     return {
         "schemaVersion": data.get("schemaVersion"),
         "presentation": template_data_presentation,
