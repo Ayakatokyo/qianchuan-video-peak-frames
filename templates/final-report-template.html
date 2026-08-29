@@ -61,7 +61,10 @@
   </section>
 
   <section class="section" id="highlight-dashboard-section">
-    <header class="section-header"><h2>04｜高光画面洞察</h2></header>
+    <header class="section-header">
+      <h2>04｜高光画面洞察</h2>
+      <a class="highlight-export-button" data-highlight-export href="highlight-frames.xlsx" download>导出高光帧资产（Excel）</a>
+    </header>
     <div class="highlight-dashboard" id="highlight-dashboard"></div>
   </section>
 
@@ -2208,9 +2211,12 @@ function activateHighlightCategoryTab(tab) {
 
 function renderHighlightDashboard() {
   const root = document.getElementById("highlight-dashboard");
+  if (root) root.replaceChildren();
+  const headerExport = document.querySelector("[data-highlight-export]");
+  if (headerExport && !headerExport.href) headerExport.href = "highlight-frames.xlsx";
+  if (headerExport) headerExport.hidden = false;
   const legacyConclusion = reportData.conclusion || {};
   const groups = chapter04Groups();
-  root.replaceChildren();
 
   const dimensionHighlight = chapter04Conclusion();
   if (!presentation && legacyConclusion.schemaVersion === 3 && dimensionHighlight?.conclusion) {
@@ -2225,10 +2231,7 @@ function renderHighlightDashboard() {
       if (fact) grid.append(renderDashboardFrame(text(reference), fact));
     });
     const common = element("div", "highlight-analysis-copy");
-    common.append(
-      element("b", "", "共性结论"),
-      elementWithMaterialLinks("p", "", dimensionHighlight.conclusion)
-    );
+    common.append(element("b", "", "共性结论"), elementWithMaterialLinks("p", "", dimensionHighlight.conclusion));
     if (grid.childElementCount > 0) categoryRoot.append(grid);
     categoryRoot.append(common);
     root.append(categoryRoot);
@@ -2267,11 +2270,17 @@ function renderHighlightDashboard() {
     categoryRoot.setAttribute("aria-labelledby", tab.id);
     categoryRoot.hidden = index !== 0;
     const grid = element("div", "highlight-frame-grid");
-    const common = element("div", "highlight-analysis-copy");
-    common.append(
-      element("b", "", "共性结论"),
-      elementWithMaterialLinks("p", "", group.commonConclusion)
-    );
+    const common = element("div", "highlight-analysis-copy highlight-insight-column");
+    common.append(element("b", "", "共性结论"));
+    const commonItems = Array.isArray(group.commonConclusion)
+      ? group.commonConclusion
+      : [{ title: "共性结论", body: group.commonConclusion }];
+    commonItems.forEach((item) => {
+      const insight = element("article", "highlight-insight");
+      insight.append(elementWithMaterialLinks("h5", "", item.title || "共性结论"));
+      insight.append(elementWithMaterialLinks("p", "", item.body || item.conclusion || ""));
+      common.append(insight);
+    });
     const directions = Array.isArray(group.derivativeDirections)
       ? group.derivativeDirections
       : [];
@@ -2284,14 +2293,12 @@ function renderHighlightDashboard() {
       panelRoot.append(categoryRoot);
       return;
     }
-    const directionCopy = element("div", "highlight-analysis-copy");
+    const directionCopy = element("div", "highlight-analysis-copy highlight-insight-column");
     const directionList = element("ul", "highlight-direction-list");
     directions.forEach((direction) => {
-      const item = element("li", "");
-      item.append(
-        elementWithMaterialLinks("b", "", direction.title),
-        elementWithMaterialLinks("p", "", direction.body)
-      );
+      const item = element("li", "highlight-insight");
+      item.append(elementWithMaterialLinks("h5", "", direction.title));
+      item.append(elementWithMaterialLinks("p", "", direction.body));
       directionList.append(item);
     });
     directionCopy.append(element("b", "", "裂变方向"), directionList);
@@ -2421,6 +2428,11 @@ document.addEventListener("keydown", (event) => {
 function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
+  const exportLink = document.querySelector("[data-highlight-export]");
+  if (exportLink && text(reportData.highlightExportHref)) {
+    exportLink.href = text(reportData.highlightExportHref);
+    exportLink.hidden = false;
+  }
   renderCombinationConclusion();
   renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");
   renderAudienceDashboard();

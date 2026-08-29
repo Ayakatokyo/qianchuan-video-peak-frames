@@ -24,6 +24,7 @@ from report_renderer import (
     render_html_report,
     safe_component,
 )
+from highlight_export import export_highlight_workbook
 
 _safe_component = safe_component
 
@@ -402,16 +403,44 @@ def _validate_highlight_dashboard_group(raw, index):
         raise FinalReportError(
             f"highlightDashboard.groups[{index}].frameRefs must not be empty"
         )
-    common_conclusion = _text(raw.get("commonConclusion"))
-    if not common_conclusion:
-        raise FinalReportError(
-            f"highlightDashboard.groups[{index}].commonConclusion is required"
-        )
-    if len(common_conclusion) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
-        raise FinalReportError(
-            f"highlightDashboard.groups[{index}].commonConclusion must contain at least "
-            f"{HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters"
-        )
+    raw_common = raw.get("commonConclusion")
+    # Repair interim reports that stringified the structured list with
+    # Python's repr (single quotes), preserving the intended point structure.
+    if isinstance(raw_common, str) and raw_common.lstrip().startswith("["):
+        try:
+            parsed_common = ast.literal_eval(raw_common)
+        except (SyntaxError, ValueError):
+            parsed_common = None
+        if isinstance(parsed_common, list):
+            raw_common = parsed_common
+    legacy_common = isinstance(raw_common, str)
+    if legacy_common:
+        common_text = _text(raw_common)
+        if not common_text:
+            raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion is required")
+        if len(common_text) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
+            raise FinalReportError(
+                f"highlightDashboard.groups[{index}].commonConclusion must contain at least "
+                f"{HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters"
+            )
+        normalized_common = [{"title": "共性结论", "body": common_text, "evidenceRefs": frame_refs}]
+    elif isinstance(raw_common, list):
+        if not raw_common:
+            raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion must not be empty")
+        normalized_common = []
+        for item_index, item in enumerate(raw_common):
+            if not isinstance(item, dict):
+                raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}] must be an object")
+            title = _text(item.get("title"))
+            body = _text(item.get("body"))
+            evidence_refs = _string_list(item.get("evidenceRefs"), f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].evidenceRefs")
+            if not title or not body or not evidence_refs:
+                raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}] requires title, body, and evidenceRefs")
+            if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
+                raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].body must contain at least {HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters")
+            normalized_common.append({"title": title, "body": body, "evidenceRefs": evidence_refs})
+    else:
+        raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion must be a string or list")
     directions = raw.get("derivativeDirections", [])
     if not isinstance(directions, list):
         raise FinalReportError(
@@ -454,10 +483,14 @@ def _validate_highlight_dashboard_group(raw, index):
         normalized_directions.append(
             {"title": title, "body": body, "evidenceRefs": evidence_refs}
         )
+    if not legacy_common and len(normalized_common) != len(normalized_directions):
+        raise FinalReportError(
+            f"highlightDashboard.groups[{index}] commonConclusion and derivativeDirections must have equal length"
+        )
     return {
         "category": category,
         "frameRefs": frame_refs,
-        "commonConclusion": common_conclusion,
+        "commonConclusion": normalized_common,
         "derivativeDirections": normalized_directions,
     }
 
@@ -1225,6 +1258,15 @@ def _validate_v2_evidence(
                     "highlightDashboard.groups frameRefs must be highlight evidence"
                 )
         actual_frame_refs.extend(group["frameRefs"])
+        common_items = group.get("commonConclusion", [])
+        if isinstance(common_items, list):
+            for item in common_items:
+                for reference in item.get("evidenceRefs", []):
+                    require_known(reference)
+                    if reference not in group_refs:
+                        raise FinalReportError(
+                            "highlightDashboard commonConclusion must reference its group"
+                        )
         for direction in group["derivativeDirections"]:
             for reference in direction["evidenceRefs"]:
                 require_known(reference)
@@ -1839,6 +1881,11 @@ def generate_final_report(
 
     presentation = build_presentation_report(legacy_data)
     data = {"presentation": presentation, **legacy_data}
+    export_path = export_highlight_workbook(
+        legacy_data, presentation, output_root / "highlight-frames.xlsx"
+    )
+    if export_path is not None:
+        data["highlightExportHref"] = export_path.name
     _atomic_write_text(
         data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )

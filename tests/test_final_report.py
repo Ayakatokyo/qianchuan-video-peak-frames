@@ -2420,6 +2420,20 @@ class FinalReportRenderTests(unittest.TestCase):
 
         self.assertNotIn("<style>\n    :root", template)
         self.assertIn('data-template-preview-style="true"', template)
+
+    def test_highlight_export_is_a_visible_header_action_without_dashboard_fallback(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'data-highlight-export href="highlight-frames.xlsx" download', template
+        )
+        self.assertNotIn("data-highlight-export-fallback", template)
+        self.assertIn("background: #7d4a25;", css_text)
+        self.assertNotIn("var(--accent-dark)", css_text)
         self.assertIn("--bg: #120b08;", css_text)
         self.assertIn(
             "background: linear-gradient(135deg, #160d09, #3b1f15 44%, #f5dfbd 44%, #fff8ec);",

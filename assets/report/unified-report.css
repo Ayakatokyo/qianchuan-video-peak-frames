@@ -1761,6 +1761,25 @@
       padding-top: 2px;
     }
 
+    .highlight-export-button {
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+      min-height: 34px;
+      border: 1px solid #7d4a25;
+      border-radius: 999px;
+      background: #7d4a25;
+      color: #fff8ec;
+      padding: 6px 14px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .highlight-export-button:hover {
+      background: var(--ink);
+    }
+
     .highlight-analysis-copy {
       min-width: 0;
     }
@@ -1774,6 +1793,25 @@
       display: block;
       margin-bottom: 8px;
       font-size: 15px;
+    }
+
+    .highlight-insight {
+      margin: 0 0 14px;
+    }
+
+    .highlight-insight:last-child {
+      margin-bottom: 0;
+    }
+
+    .highlight-insight h5 {
+      margin: 0 0 4px;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .highlight-insight p {
+      margin: 0;
+      line-height: 1.65;
     }
 
     .highlight-direction-list {

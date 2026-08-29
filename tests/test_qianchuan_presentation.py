@@ -224,7 +224,8 @@ class PresentationTests(unittest.TestCase):
         report = build_presentation_report(sample_data())
         self.assertEqual(report["presentationSchemaVersion"], 1)
         self.assertEqual(list(report["chapters"]["chapter04"]["groups"]), ["portrait", "product", "other"])
-        self.assertEqual(report["chapters"]["chapter04"]["groups"]["portrait"]["frames"][0]["frameRef"], "highlight:m-1:peak_top_1")
+        self.assertEqual(report["chapters"]["chapter04"]["groups"]["portrait"]["frameRefs"], ["highlight:m-1:peak_top_1"])
+        self.assertNotIn("frames", report["chapters"]["chapter04"]["groups"]["portrait"])
         self.assertEqual(report["chapters"]["chapter05"]["materials"][0]["materialId"], "m-1")
         self.assertEqual([tab["id"] for tab in report["chapters"]["chapter05"]["materials"][0]["tabs"]], ["highlight", "interaction", "audience", "script", "decision"])
         self.assertEqual(report["chapters"]["chapter05"]["materials"][0]["analysis"]["decision"], "scale")
@@ -246,6 +247,12 @@ class PresentationTests(unittest.TestCase):
         group = report["chapters"]["chapter04"]["groups"]["portrait"]
         self.assertEqual(group["availability"], "partial")
         self.assertEqual(report["chapters"]["chapter04"]["availability"], "partial")
+
+    def test_missing_frame_path_is_not_available(self):
+        data = sample_data()
+        data["materials"][0]["highlightFrames"][0]["framePath"] = ""
+        report = build_presentation_report(data)
+        self.assertEqual(report["chapters"]["chapter04"]["availability"], "unavailable")
 
     def test_validation_rejects_highlight_frame_assigned_to_multiple_categories(self):
         report = build_presentation_report(sample_data())
@@ -287,6 +294,8 @@ class PresentationTests(unittest.TestCase):
 
         self.assertNotIn("scripts", rendered)
         self.assertNotIn("scripts", rendered["displayFacts"])
+        self.assertEqual(set(rendered["materials"][0]), {"rank", "materialId", "materialName"})
+        self.assertNotIn("highlightFrames", rendered["materials"][0])
         self.assertIn("metrics", rendered["displayFacts"]["audience"])
         self.assertIn("preferencesByMetric", rendered["displayFacts"]["audience"])
 
@@ -300,9 +309,10 @@ class PresentationTests(unittest.TestCase):
             data["materials"][0]["highlightFrames"][0]["framePath"] = str(source)
             data["presentation"] = build_presentation_report(data)
             rendered = report_data_for_template(data, temp_dir, copy_assets=True)
-        frame = rendered["presentation"]["chapters"]["chapter04"]["groups"]["portrait"]["frames"][0]
         material = rendered["presentation"]["chapters"]["chapter05"]["materials"][0]
-        self.assertEqual(frame["framePath"], "assets/highlight-frames/m-1/peak.jpg")
+        group = rendered["presentation"]["chapters"]["chapter04"]["groups"]["portrait"]
+        self.assertNotIn("frames", group)
+        self.assertEqual(group["frameRefs"], ["highlight:m-1:peak_top_1"])
         self.assertEqual(material["highlight"]["frames"][0]["framePath"], "assets/highlight-frames/m-1/peak.jpg")
         self.assertEqual(material["video"]["src"], "https://video.example/m-1.mp4")
 

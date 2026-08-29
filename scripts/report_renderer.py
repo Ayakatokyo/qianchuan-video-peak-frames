@@ -385,6 +385,19 @@ def report_data_for_template(
         and isinstance(chapter02, dict)
         and chapter02.get("availability") in {"available", "partial"}
     )
+    # In the v1 browser payload, Chapter 05 Presentation is the single
+    # material-detail source. Keep only catalog fields at the legacy top level
+    # so highlight/audience/script facts are not embedded twice.
+    template_materials = materials
+    if has_v1_presentation:
+        template_materials = [
+            {
+                "rank": material.get("rank"),
+                "materialId": material.get("materialId"),
+                "materialName": material.get("materialName"),
+            }
+            for material in materials
+        ]
     if isinstance(template_display_facts, dict) and has_v1_presentation:
         chapter02.pop("metrics", None)
         chapter02.pop("preferencesByMetric", None)
@@ -403,7 +416,8 @@ def report_data_for_template(
         "pipelineSummary": data.get("pipelineSummary", {}),
         "portfolio": _portfolio_summary(data.get("portfolio", {})),
         "displayFacts": template_display_facts,
-        "materials": materials,
+        "highlightExportHref": _text(data.get("highlightExportHref")),
+        "materials": template_materials,
         "defaultMaterialId": data.get("defaultMaterialId"),
         **({} if has_v1_presentation else {
             "batchInsights": data.get("batchInsights", {}),

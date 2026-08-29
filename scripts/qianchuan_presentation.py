@@ -277,34 +277,11 @@ def _chapter03(data, material_ids):
     }
 
 
-def _frame_index(materials):
-    index = {}
-    for material in materials:
-        material_id = material["materialId"]
-        for frame in material.get("highlightFrames", []):
-            if not isinstance(frame, dict):
-                continue
-            ref = _frame_ref(material_id, frame)
-            if ref:
-                index[ref] = {
-                    "frameRef": ref,
-                    "materialId": material_id,
-                    "rankType": frame.get("rankType"),
-                    "durationSec": frame.get("durationSec"),
-                    "metricValue": frame.get("metricValue"),
-                    "framePath": frame.get("framePath", ""),
-                    "source": "facts.materials.highlightFrames",
-                    "availability": "available",
-                }
-    return index
-
-
 def _chapter04(data, materials):
     conclusion = data.get("conclusion") if isinstance(data.get("conclusion"), dict) else {}
     dashboard = conclusion.get("highlightDashboard") if isinstance(conclusion.get("highlightDashboard"), dict) else {}
     raw_groups = dashboard.get("groups") if isinstance(dashboard.get("groups"), list) else []
     by_category = {group.get("category"): group for group in raw_groups if isinstance(group, dict)}
-    frames = _frame_index(materials)
     conclusion_text, conclusion_refs = _dimension(conclusion, "highlight")
     groups = {}
     total_refs = 0
@@ -312,24 +289,34 @@ def _chapter04(data, materials):
     for category in CATEGORIES:
         raw = by_category.get(category, {})
         refs = [_text(ref) for ref in raw.get("frameRefs", []) if _text(ref)]
-        cards = []
+        group_available = 0
         for ref in refs:
             total_refs += 1
-            card = deepcopy(frames.get(ref, {"frameRef": ref, "availability": "unavailable", "source": "facts.materials.highlightFrames"}))
-            if card.get("availability") == "available":
+            # Frame details are projected once under Chapter 05 material facts.
+            # Chapter 04 only owns the AI classification refs and must not carry
+            # a second copy of frame metadata/path data.
+            if any(
+                _frame_ref(material.get("materialId", ""), frame) == ref
+                for material in materials
+                for frame in material.get("highlightFrames", [])
+                if isinstance(frame, dict) and _text(frame.get("framePath"))
+            ):
                 available_refs += 1
-            cards.append(card)
+                group_available += 1
         group_availability = (
-            "unavailable" if not cards
-            else "available" if available_refs == len(cards)
+            "unavailable" if not refs
+            else "available" if group_available == len(refs)
             else "partial"
         )
         groups[category] = {
             "id": f"chapter04-{category}",
             "category": category,
             "frameRefs": refs,
-            "frames": cards,
-            "commonConclusion": _text(raw.get("commonConclusion")),
+            "commonConclusion": (
+                deepcopy(raw.get("commonConclusion"))
+                if isinstance(raw.get("commonConclusion"), list)
+                else _text(raw.get("commonConclusion"))
+            ),
             "derivativeDirections": deepcopy(raw.get("derivativeDirections", [])) if isinstance(raw.get("derivativeDirections"), list) else [],
             "source": "facts.materials.highlightFrames + ai.highlightDashboard",
             "evidenceRefs": refs,

@@ -40,6 +40,7 @@
 ### Chapter 04：高光画面洞察
 
 只以 `chapter04-highlight-input.json` 和实际查看的 JPEG 生成 `highlightDashboard`、`materialAnalyses[*].highlightAnalyses` 和 `frameCoverageNote`。图像结论不得由脚本文本、文件名或兼容快照代替。
+每个视觉分类的 `commonConclusion` 必须输出 3 个 `{title,body,evidenceRefs}` 分点，`derivativeDirections` 也必须输出 3 个同序 `{title,body,evidenceRefs}` 分点；两组按索引一一对应，分别覆盖“画面主体与构图、信息层与动作机制、可迁移机会”，正文要给出可执行的验证动作和指标，不能只写短句。
 
 ### Chapter 05：单素材深度分析
 
@@ -65,6 +66,7 @@
 - `commercial` 只能解释 `chapter01-portfolio-input.json` 的 `portfolio` 内已有指标；`portfolio.materials` 仅用于核验全量素材事实，不得把素材明细逐条展开成报告段落。指标名称、时间窗口和数值必须遵循事实包，不得自行改名或补造缺失指标；不得出现“资产表”或任何数据来源名称。其结论应优先写指标之间的关系、经营含义和下一轮验证设计，避免再次罗列 `overallConclusion` 已写出的完整指标串。
 - 第 01 章不得输出人群、脚本、高光画面或互动时序分析；这些内容只允许出现在对应章节。
 - `highlight` 只能使用 `chapter04-highlight-input.json` 中最终 TOP 素材的 `highlight:*` 证据，高光帧的结论必须是对组合画面机制的谨慎判断。
+- 视觉分类必须只根据实际 JPEG 的主要视觉主体判断：`portrait` 为人物占据主要视觉焦点、产品仅为陪体；`product` 为包装、瓶身、内容物、开箱、食用或操作动作占据主要焦点，即使有人手或人物也优先归入 `product`；`other` 为无清晰人物/产品主体或焦点无法可靠判断。人物与产品同框时依据画面占比、视觉焦点和主体可辨识度，无法区分时归 `other`。严禁根据素材标题、文件名、脚本、品牌或标签猜分类。
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
 - 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指 `chapter04-highlight-input.json` 的 `materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 至 peak_top_5，也必须分别输出对应分析。
 - 若该素材在 `chapter04-highlight-input.json` 的 `materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 5 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
@@ -89,7 +91,7 @@
 - `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。前端只直接展示 `overallConclusion` 单段文字；`portfolioDimensionConclusions.commercial` 仅作为结构化结论、证据和兼容字段，不另起可见段落。不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用已查看 JPEG 的共同可见信号写至少 20 个字符的 `commonConclusion`，再给出至少一条正文不少于 20 个字符的可验证 `derivativeDirections`；不得把峰值同时性写成因果。
+- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用已查看 JPEG 的共同可见信号写 3 个分点式 `commonConclusion`，并按相同顺序给出 3 个正文不少于 20 个字符的可验证 `derivativeDirections`；不得把峰值同时性写成因果。
 - `05｜单素材深度分析`：页面会先展示确定性的 `互动时序分析` 和 `脚本分析数据`，再展示 `materialAnalyses` 中的 AI 二次总结。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧不得作为第 01 章证据。
@@ -114,7 +116,11 @@
       {
         "category": "portrait",
         "frameRefs": ["highlight:事实包中的素材 ID:帧类型"],
-        "commonConclusion": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。",
+        "commonConclusion": [
+          {"title": "画面主体与构图", "body": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "信息层与动作机制", "body": "说明信息层、动作和视觉焦点如何降低理解成本，并给出待验证指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "可迁移机会", "body": "说明下一轮可复用或改写的画面变量，以及对应的对照验证方式。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
+        ],
         "derivativeDirections": [
           {
             "title": "待验证画面变量",
