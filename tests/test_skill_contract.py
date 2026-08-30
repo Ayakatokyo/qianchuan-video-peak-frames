@@ -110,6 +110,15 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("视频仍使用平台返回的 URL", skill)
         self.assertIn("不得交付草稿报告", skill)
 
+    def test_skill_delivers_standalone_report_and_archive(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("同时交付以下两个产物", skill)
+        self.assertIn("独立报告", skill)
+        self.assertIn("final-report/final-report.html", skill)
+        self.assertIn("final-report.zip", skill)
+        self.assertIn("不得只交付压缩包", skill)
+
     def test_skill_keeps_report_delivery_single_agent(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

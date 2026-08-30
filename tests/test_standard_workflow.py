@@ -880,6 +880,37 @@ class StandardWorkflowCliTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_finalize_prints_standalone_final_report_path(self):
+        stdout = io.StringIO()
+        finalize_standard_run = Mock(return_value={
+            "artifacts": {
+                "report": "final-report/final-report.html",
+                "reportArchive": "final-report.zip",
+            }
+        })
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "finalize_standard_run": finalize_standard_run,
+        })()
+        with patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow):
+            with redirect_stdout(stdout):
+                result = run_standard_analysis.main(
+                    [
+                        "finalize",
+                        "--output-dir",
+                        "/tmp/qianchuan-run",
+                        "--analysis-json",
+                        "/tmp/analysis.json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "final_report_html=/tmp/qianchuan-run/final-report/final-report.html",
+            stdout.getvalue(),
+        )
+
     def test_validate_analysis_prints_validation_summary(self):
         validate_analysis = Mock(return_value={
             "analysisStatus": "valid",

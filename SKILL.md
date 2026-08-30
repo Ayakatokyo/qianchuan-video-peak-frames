@@ -98,7 +98,12 @@ python scripts/run_standard_analysis.py finalize \
   --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-仅当 `run-summary.json` 状态为 `complete` 时交付 `final-report.zip`。解压后由当前主 Agent 打开 `final-report/final-report.html`；压缩包包含报告 HTML、数据文件和本地高光帧，图片不依赖三方链接，视频仍使用平台返回的 URL。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。交付前由当前主 Agent 在桌面 `1440x1000` 视口检查封面、目录、章节卡片、图表和高光帧，无文本遮挡或正文横向溢出。
+仅当 `run-summary.json` 状态为 `complete` 时交付，并**同时交付以下两个产物**：
+
+1. 独立报告：`final-report/final-report.html`（可直接打开的 HTML 报告）；
+2. 完整压缩包：`final-report.zip`（包含报告 HTML、数据文件和本地高光帧）。
+
+最终回复必须分别提供这两个文件的路径或下载附件，**不得只交付压缩包**，也不得把压缩包当作独立报告的唯一入口。由当前主 Agent 打开独立报告 `final-report/final-report.html` 完成核验；压缩包内图片不依赖三方链接，视频仍使用平台返回的 URL。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。交付前由当前主 Agent 在桌面 `1440x1000` 视口检查封面、目录、章节卡片、图表和高光帧，无文本遮挡或正文横向溢出。
 
 若状态仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；其余故障按[运维手册](references/qianchuan-operations-runbook.md)恢复。
 
