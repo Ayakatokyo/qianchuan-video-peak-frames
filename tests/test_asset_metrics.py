@@ -61,6 +61,49 @@ class AssetMetricsTests(unittest.TestCase):
         self.assertNotIn("netSettlementRoi", facts["summaryMetrics"])
         self.assertNotIn("overallPaymentRoi", facts["summaryMetrics"])
 
+    def test_builds_hot_material_rule_after_aggregation_with_stable_order(self):
+        rows = [
+            origin_row("m-low", "19999.99", "1", "1"),
+            origin_row("m-equal", "10000", "1", "1"),
+            origin_row("m-equal", "10000", "1", "1"),
+            origin_row("m-high", "30000", "1", "1"),
+            origin_row("m-tie-b", "25000", "1", "1"),
+            origin_row("m-tie-a", "25000", "1", "1"),
+        ]
+
+        facts = build_portfolio_facts(
+            rows,
+            execution_date="2026-08-28",
+            start_date="2026-08-10",
+            end_date="2026-08-20",
+            advertiser_id="1770096415226951",
+        )
+
+        rule = facts["hotMaterialRule"]
+        self.assertEqual(rule["thresholdCost"], "20000")
+        self.assertEqual(rule["comparison"], "gte")
+        self.assertEqual(rule["qualifyingCount"], 4)
+        self.assertEqual(
+            [item["materialId"] for item in rule["qualifyingMaterials"]],
+            ["m-high", "m-tie-a", "m-tie-b", "m-equal"],
+        )
+        self.assertEqual(rule["qualifyingMaterials"][-1]["totalCost"], "20000")
+        self.assertEqual(
+            rule["qualifyingMaterials"][-1]["metrics"],
+            facts["materials"]["m-equal"]["metrics"],
+        )
+
+    def test_unknown_advertiser_rule_degrades_without_hot_material_facts(self):
+        facts = build_portfolio_facts(
+            [origin_row("m-1", "1", "1", "1")],
+            execution_date="2026-08-28",
+            start_date="2026-08-10",
+            end_date="2026-08-20",
+            advertiser_id="unknown-account",
+        )
+
+        self.assertNotIn("hotMaterialRule", facts)
+
     def test_aggregates_atomic_metrics_per_material_independent_of_input_order(self):
         rows = [
             origin_row("m-2", "20.10", "45.40", "50.60"),

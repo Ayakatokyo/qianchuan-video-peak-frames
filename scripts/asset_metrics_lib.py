@@ -4,6 +4,7 @@ import json
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 
 COST_METRIC = "stat_cost_for_overall_roi2"
@@ -22,6 +23,9 @@ PORTFOLIO_METRIC_KEYS = {
     "threeSecondCompletionRate": "video_play_duration_3s_rate_for_roi2",
     "cpm": "total_ecpm_for_roi2",
 }
+DEFAULT_HOT_MATERIAL_RULES_PATH = (
+    Path(__file__).resolve().parents[1] / "config" / "hot-material-rules.json"
+)
 
 
 class AssetMetricsError(ValueError):
@@ -107,6 +111,8 @@ def build_portfolio_facts(
     end_date,
     name_pattern=None,
     material_types=(),
+    advertiser_id=None,
+    hot_material_rules_path=None,
 ):
     """Build deterministic material-list facts from API origin rows.
 
@@ -195,7 +201,13 @@ def build_portfolio_facts(
         ]
         summary[key] = _decimal_text(_weighted_average(weighted_values)) if weighted_values else None
 
-    return {
+    hot_material_rule = _build_hot_material_rule(
+        material_payload,
+        advertiser_id=advertiser_id,
+        rules_path=hot_material_rules_path,
+    )
+
+    result = {
         "schemaVersion": 1,
         "period": {"actualStartDate": start.isoformat(), "actualEndDate": end.isoformat()},
         "newMaterialCount7d": len(new_material_ids),
@@ -205,6 +217,75 @@ def build_portfolio_facts(
         "summaryMetrics": summary,
         "materials": material_payload,
     }
+    if hot_material_rule is not None:
+        result["hotMaterialRule"] = hot_material_rule
+    return result
+
+
+def load_hot_material_rule(advertiser_id, rules_path=None):
+    """Load and validate the account-scoped deterministic hot-material rule."""
+    account_id = _normalise_advertiser_id(advertiser_id)
+    if account_id is None:
+        return None
+    source = Path(rules_path) if rules_path is not None else DEFAULT_HOT_MATERIAL_RULES_PATH
+    try:
+        raw_rules = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AssetMetricsError(f"unable to load hot material rule: {source}") from exc
+    if not isinstance(raw_rules, dict) or account_id not in raw_rules:
+        raise AssetMetricsError(f"missing hot material rule for advertiser {account_id}")
+    raw_rule = raw_rules[account_id]
+    if not isinstance(raw_rule, dict) or raw_rule.get("comparison") != "gte":
+        raise AssetMetricsError(f"invalid hot material rule for advertiser {account_id}")
+    threshold = _normalise_metric(raw_rule.get("thresholdCost"), "hot material thresholdCost")
+    return {"thresholdCost": _decimal_text(threshold), "comparison": "gte"}
+
+
+def _build_hot_material_rule(material_payload, *, advertiser_id, rules_path):
+    if advertiser_id is None:
+        rule = None
+    else:
+        try:
+            rule = load_hot_material_rule(advertiser_id, rules_path)
+        except AssetMetricsError as exc:
+            # Accounts without a configured business rule retain the legacy
+            # export contract; malformed rule files still fail loudly.
+            if not str(exc).startswith("missing hot material rule for advertiser "):
+                raise
+            rule = None
+    if rule is None:
+        return None
+    threshold = Decimal(rule["thresholdCost"])
+    qualifying_materials = []
+    for material_id, material in material_payload.items():
+        if Decimal(material["totalCost"]) < threshold:
+            continue
+        qualifying_materials.append({
+            "materialId": material_id,
+            "materialName": material["materialName"],
+            "totalCost": material["totalCost"],
+            "metrics": dict(material.get("metrics", {})),
+            "evidenceRef": f"commercial:hotMaterial:{material_id}",
+        })
+    qualifying_materials.sort(
+        key=lambda item: (-Decimal(item["totalCost"]), item["materialId"])
+    )
+    return {
+        **rule,
+        "qualifyingCount": len(qualifying_materials),
+        "qualifyingMaterials": qualifying_materials,
+    }
+
+
+def _normalise_advertiser_id(value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or isinstance(value, (dict, list)):
+        raise AssetMetricsError("advertiser_id must be a nonempty scalar")
+    result = str(value).strip()
+    if not result:
+        raise AssetMetricsError("advertiser_id must be a nonempty scalar")
+    return result
 
 
 def _parse_iso_date(value, field):

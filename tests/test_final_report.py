@@ -1645,6 +1645,84 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
             ["interaction:CLICK_COUNT:total"],
         )
 
+    def test_v5_accepts_hot_material_insight_only_with_fact_evidence(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["overallConclusion"] = "五个维度共同指向先验证开场吸引力，再观察成交承接。"
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击时序可用于判断开场节奏风险，并应与素材改写后的净成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:total"],
+        }
+        self.records_by_material["m-1"].append({
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 1,
+            "metricValue": 3,
+        })
+        self.top_payload["portfolioFacts"] = {
+            "hotMaterialRule": {
+                "thresholdCost": "20000",
+                "comparison": "gte",
+                "qualifyingCount": 1,
+                "qualifyingMaterials": [{
+                    "materialId": "m-1",
+                    "materialName": "真实素材名",
+                    "totalCost": "20000",
+                    "metrics": {"roi": "2.0"},
+                    "evidenceRef": "commercial:hotMaterial:m-1",
+                }],
+            }
+        }
+        conclusion["hotMaterialInsight"] = {
+            "conclusion": "命中素材达到规则阈值，建议保留其核心投放结构并用小预算对照验证效率是否稳定。",
+            "evidenceRefs": ["commercial:hotMaterialCount", "commercial:hotMaterial:m-1"],
+        }
+
+        normalized = normalize_conclusion_analysis(conclusion)
+        result = self._build_data(normalized)
+
+        self.assertEqual(
+            result["conclusion"]["hotMaterialInsight"]["evidenceRefs"],
+            ["commercial:hotMaterialCount", "commercial:hotMaterial:m-1"],
+        )
+
+    def test_v5_rejects_hot_material_insight_with_unknown_evidence_or_extra_fields(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["overallConclusion"] = "五个维度共同指向先验证开场吸引力，再观察成交承接。"
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击时序可用于判断开场节奏风险，并应与素材改写后的净成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:total"],
+        }
+        self.records_by_material["m-1"].append({
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 1,
+            "metricValue": 3,
+        })
+        self.top_payload["portfolioFacts"] = {
+            "hotMaterialRule": {
+                "thresholdCost": "20000",
+                "comparison": "gte",
+                "qualifyingCount": 1,
+                "qualifyingMaterials": [{
+                    "materialId": "m-1",
+                    "materialName": "真实素材名",
+                    "totalCost": "20000",
+                    "metrics": {},
+                    "evidenceRef": "commercial:hotMaterial:m-1",
+                }],
+            }
+        }
+        conclusion["hotMaterialInsight"] = {
+            "conclusion": "爆款命中素材值得继续验证。",
+            "evidenceRefs": ["commercial:hotMaterial:missing"],
+            "materials": ["不允许 AI 改写事实名称"],
+        }
+
+        with self.assertRaisesRegex(FinalReportError, "hotMaterialInsight"):
+            self._build_data(conclusion)
+
     def test_rejects_noncanonical_audience_metric_terms(self):
         conclusion = self._conclusion()
         conclusion["schemaVersion"] = 5
@@ -3442,6 +3520,17 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn('tab.dataset.materialId = materialId', html_text)
         self.assertIn('setAttribute("aria-selected", String(selected))', html_text)
         self.assertIn("function activateMaterialTab", html_text)
+        self.assertIn("function navigateToMaterial", html_text)
+        self.assertIn('data-material-id', html_text)
+        self.assertIn('summaryBody.append(heading, scope);', html_text)
+        self.assertIn('root.append(createCollapseToggle(summaryBody, "爆款素材汇总数据"), summaryBody);', html_text)
+        self.assertNotIn('id="hot-material-toggle"', html_text)
+        self.assertNotIn('const toggleRoot = document.getElementById("hot-material-toggle");', html_text)
+        self.assertIn('createCollapseToggle(summaryBody, "爆款素材汇总数据")', html_text)
+        self.assertIn("hot-material-list", html_text)
+        self.assertIn("overflow-y: auto;", css_text)
+        self.assertIn(".hot-material-summary-body[hidden] {", css_text)
+        self.assertIn(".hot-material-summary-body[hidden] {\n      display: none;\n    }", css_text)
         self.assertIn("ArrowRight", html_text)
         self.assertIn("Home", html_text)
 

@@ -862,7 +862,7 @@ def _portfolio_facts(top_payload, materials):
         for key in (
             "schemaVersion", "period", "newMaterialCount7d",
             "newMaterialStartDate", "newMaterialEndDate", "materialCount",
-            "summaryMetrics",
+            "summaryMetrics", "hotMaterialRule",
         ) if key in raw
     }
     all_materials = raw.get("materials")

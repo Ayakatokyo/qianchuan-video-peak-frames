@@ -29,6 +29,8 @@
 
 只读取 `chapter01-portfolio-input.json` 的 `portfolio`，以其中的全量素材列表、近 7 天上新数量和榜单指标为事实，输出 `overallConclusion` 与唯一的 `portfolioDimensionConclusions.commercial`。`portfolio.materials` 是事实包提供的全量素材数据，用于事实核验，不是 RPA 选中素材清单；不得读取 Chapter 01 顶层 `materials` 或 `materialIds`，也不得从其他章节补充素材。近 7 天遵循 T+1 口径：以技能执行日 T 为基准，统计 `T-7` 至 `T-1`（含首尾）且 `material_create_time_v2` 落在该区间的素材。`summaryMetrics` 只保留当前 ROI 字段 `roi` 及消耗、点击率、转化率、3 秒完播率和 CPM；`summaryMetrics.roi` 来源字段为 `total_prepay_and_pay_order_roi2`，Chapter 01 事实包不包含 `netSettlementRoi` 或 `overallPaymentRoi`。禁止引用 Chapter 02～05 的人群、脚本、高光画面或互动时序事实，也不得从素材名称反推业务结论。`overallConclusion` 是第一部分唯一直接展示的叙事段落：建议控制在 180-260 个中文字符，在关键数据锚点之外至少包含三项分析判断（例如指标组合反映的效率关系、上新节奏风险、存量分层机会、归因边界或验证优先级），并明确分阶段动作，不能只是指标清单。`commercial.conclusion` 作为结构化备用结论，commercial.conclusion 不得重复 overallConclusion 中相同的指标串，应补充互不重复的业务含义和验证动作。
 
+若 `portfolio.hotMaterialRule` 存在，必须把 `thresholdCost`、`comparison`、`qualifyingCount` 和 `qualifyingMaterials[*]` 当作只读确定性事实；命中数量使用实际 `qualifyingCount`，素材名称、素材 ID、消耗、辅助指标和 `evidenceRef` 必须逐字引用，不得由 AI 重新计算、排序、改写、补充或删除。基于这些事实新增结构化 `hotMaterialInsight`：结论只解释爆款数量、消耗与效率是否匹配、保留/复刻与小预算对照验证建议，不把相关性写成因果关系；`evidenceRefs` 只能引用 `commercial:hotMaterialCount` 和事实包中实际存在的 `commercial:hotMaterial:<materialId>`。`hotMaterialInsight` 在 JSON 中保持独立，便于证据追溯；Presentation 会把它与 `overallConclusion` 合并为第一部分唯一的 AI 展示内容，爆款素材面板只展示确定性详情，不再重复展示 AI 卡片。若历史事实包没有 `hotMaterialRule`，不要猜测爆款，可以省略该字段；前端仍显示确定性面板或空状态。
+
 ### Chapter 02：人群洞察
 
 只以 `chapter02-audience-input.json` 的 `SHOW_COUNT`、`CLICK_COUNT`、`TRANSACTION_AMOUNT` 三种口径及其全部可用维度生成 `batchInsights[topic=audience]`。三条洞察的事实、判断和建议必须按口径隔离，不混用证据引用。`preferencesByMetric` 仅供报告偏好 drill-down 使用，AI 不读取，也不得将其中的 TOP3 素材字段写入人群洞察。
@@ -63,6 +65,7 @@
 - 人群文案只能使用“展现次数”“点击次数”“成交金额”三个正式口径名称；不得用“触达”替代展现次数，不得用“响应”替代点击次数，也不得混写三种口径。
 - `batchInsights[topic=audience]` 仅服务第 02 章人群洞察：必须恰好输出三条，依次覆盖 `chapter02-audience-input.json` 的展现次数（`SHOW_COUNT`）、点击次数（`CLICK_COUNT`）、成交金额（`TRANSACTION_AMOUNT`）。每条的标题不是固定文案，必须由 AI 基于对应口径的八大人群、年龄、性别和地域事实生成；单条的全部 `evidenceRefs` 只能属于一个对应的 `audience:{metric}:*` 口径。不得复用第 01 章素材榜单结论的标题、判断或建议。
 - `portfolioDimensionConclusions` 只允许输出 `commercial` 一个 key，以兼容既有 schema；展示文案统一称为“素材榜单数据”。该结论必须综合近 7 天上新素材量、榜单消耗、ROI、点击率、转化率、3 秒完播率和 CPM，形成“事实锚点 → 榜单判断 → 下一步验证”。
+- `hotMaterialInsight` 在数据结构上与整体经营结论分离，只解释 `portfolio.hotMaterialRule` 已命中的素材；阈值、命中数量、素材名称、素材指标和证据引用都是只读事实，不能重新计算、改写或虚构。报告展示时必须把它合并到现有 AI 二次分析区域，不能再渲染第二个同名 AI 卡片。
 - `commercial` 只能解释 `chapter01-portfolio-input.json` 的 `portfolio` 内已有指标；`portfolio.materials` 仅用于核验全量素材事实，不得把素材明细逐条展开成报告段落。指标名称、时间窗口和数值必须遵循事实包，不得自行改名或补造缺失指标；不得出现“资产表”或任何数据来源名称。其结论应优先写指标之间的关系、经营含义和下一轮验证设计，避免再次罗列 `overallConclusion` 已写出的完整指标串。
 - 第 01 章不得输出人群、脚本、高光画面或互动时序分析；这些内容只允许出现在对应章节。
 - `highlight` 只能使用 `chapter04-highlight-input.json` 中最终 TOP 素材的 `highlight:*` 证据，高光帧的结论必须是对组合画面机制的谨慎判断。

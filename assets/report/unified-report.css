@@ -173,6 +173,97 @@
       min-width: 0;
     }
 
+    .hot-material-panel {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fffdf9;
+    }
+
+    .hot-material-summary-body {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .hot-material-summary-body[hidden] {
+      display: none;
+    }
+
+    .hot-material-title {
+      margin: 0;
+      font-size: 20px;
+    }
+
+    .hot-material-scope,
+    .hot-material-id,
+    .hot-material-empty {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .hot-material-list {
+      display: grid;
+      gap: 10px;
+      max-height: 420px;
+      overflow-y: auto;
+      padding-right: 6px;
+      overscroll-behavior: contain;
+    }
+
+    .hot-material-card {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+
+    .hot-material-name {
+      display: block;
+      width: 100%;
+      border: 0;
+      padding: 0;
+      margin: 0 0 3px;
+      background: transparent;
+      color: var(--ink);
+      cursor: pointer;
+      font: inherit;
+      line-height: 1.45;
+      font-size: 16px;
+      font-weight: 800;
+      overflow-wrap: anywhere;
+      text-align: left;
+    }
+
+    .hot-material-name:hover {
+      color: #7d4a25;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    .hot-material-name:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 3px;
+    }
+
+    .hot-material-spend {
+      margin-top: 8px;
+      color: #7d4a25;
+      font-weight: 800;
+    }
+
+    .hot-material-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
     .combination-points {
       display: grid;
       gap: 12px;

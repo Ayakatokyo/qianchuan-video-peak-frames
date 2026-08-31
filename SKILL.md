@@ -72,6 +72,8 @@ RPA 执行只有一个 480 秒截止时间。超过截止时间时，系统终�
 
 ### 2. 生成 AI 二次分析
 
+Chapter 01 若事实包存在 `portfolio.hotMaterialRule`，AI 只能基于其中的阈值、命中数量、素材名称、素材指标和 `evidenceRef` 输出结构化 `hotMaterialInsight`，不得重新计算、改写或虚构爆款事实。该字段在 AI JSON 中独立保留以便证据追溯，但 Presentation 与前端必须将其合并到既有 AI 二次分析区域，爆款面板只展示确定性详情，不重复渲染第二个 AI 卡片；历史事实包缺失该字段时允许省略，前端仍显示确定性面板或空状态。
+
 #### AI 交接前置检查
 
 先读取事实包和提示词：具体包括 manifest、五个章节事实包和唯一 Prompt；核对字节数、SHA-256、素材数、成功帧数与 `missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看每张 JPEG；每批不超过 6 帧。策略或 guardrail 拒绝时，立即按[运维手册](references/qianchuan-operations-runbook.md)冻结并恢复帧审阅，不得跳过任何帧或改用其他产物补充事实。

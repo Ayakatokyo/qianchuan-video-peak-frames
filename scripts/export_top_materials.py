@@ -105,6 +105,7 @@ def main(argv=None):
                 end_date=end_date.isoformat(),
                 name_pattern=pattern,
                 material_types=args.material_type,
+                advertiser_id=args.advertiser_id,
             ),
         )
         _write_atomic_json(output, payload)

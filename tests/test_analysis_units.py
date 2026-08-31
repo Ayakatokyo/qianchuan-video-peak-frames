@@ -286,10 +286,25 @@ class AnalysisUnitProjectionTests(unittest.TestCase):
             "newMaterialStartDate": "2026-08-21",
             "newMaterialEndDate": "2026-08-27",
             "metrics": {"cost": "100", "ctr": "2.5"},
+            "hotMaterialRule": {
+                "thresholdCost": "20000",
+                "comparison": "gte",
+                "qualifyingCount": 1,
+                "qualifyingMaterials": [{
+                    "materialId": "m-1",
+                    "materialName": "素材一",
+                    "totalCost": "20000",
+                    "metrics": {"roi": "2.1"},
+                    "evidenceRef": "commercial:hotMaterial:m-1",
+                }],
+            },
         }
         units = build_analysis_units(analysis)
         chapter01 = units["chapter01-portfolio"]
         self.assertEqual(chapter01["portfolio"], analysis["portfolio"])
+        self.assertEqual(
+            chapter01["portfolio"]["hotMaterialRule"]["qualifyingCount"], 1
+        )
         self.assertNotIn("materials", chapter01)
         self.assertNotIn("materialIds", chapter01)
         for key in ("audience", "scripts", "interaction", "highlights", "delivery"):

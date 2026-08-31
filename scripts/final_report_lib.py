@@ -110,6 +110,7 @@ PORTFOLIO_SUMMARY_KEYS = (
     "newMaterialEndDate",
     "materialCount",
     "summaryMetrics",
+    "hotMaterialRule",
 )
 
 
@@ -370,6 +371,24 @@ def _validate_dimension_conclusion(raw, topic):
     }
 
 
+def _validate_hot_material_insight(raw):
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise FinalReportError("hotMaterialInsight must be an object")
+    if set(raw) != {"conclusion", "evidenceRefs"}:
+        raise FinalReportError(
+            "hotMaterialInsight may contain only conclusion and evidenceRefs"
+        )
+    conclusion = _text(raw.get("conclusion"))
+    evidence_refs = _string_list(raw.get("evidenceRefs"), "hotMaterialInsight.evidenceRefs")
+    if not conclusion:
+        raise FinalReportError("hotMaterialInsight.conclusion is required")
+    if not evidence_refs:
+        raise FinalReportError("hotMaterialInsight.evidenceRefs must not be empty")
+    return {"conclusion": conclusion, "evidenceRefs": list(dict.fromkeys(evidence_refs))}
+
+
 def _normalize_v3_conclusion(payload):
     normalized = _normalize_v2_conclusion(payload)
     dimensions = payload.get("portfolioDimensionConclusions")
@@ -594,6 +613,8 @@ def _normalize_v5_conclusion(payload):
             for topic in (("commercial",) if compact else PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION)
         },
         "highlightDashboard": _normalize_v4_conclusion(legacy_payload)["highlightDashboard"],
+        **({"hotMaterialInsight": _validate_hot_material_insight(payload.get("hotMaterialInsight"))}
+           if "hotMaterialInsight" in payload else {}),
         **({"keywordCloudInsight": normalized_keyword_cloud} if normalized_keyword_cloud is not None else {}),
         **({"keywordCloudReview": [
             {"keyword": _text(item.get("keyword")), "decision": _text(item.get("decision")), "target": _text(item.get("target"))}
@@ -1150,6 +1171,13 @@ def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
         or diagnostic.get("portfolio")
     ):
         refs.update(COMMERCIAL_EVIDENCE_REFS)
+    hot_rule = diagnostic.get("portfolio", {}).get("hotMaterialRule", {})
+    if isinstance(hot_rule, dict):
+        if "qualifyingCount" in hot_rule:
+            refs.add("commercial:hotMaterialCount")
+        for material in hot_rule.get("qualifyingMaterials", []):
+            if isinstance(material, dict) and _text(material.get("materialId")):
+                refs.add(f"commercial:hotMaterial:{_text(material['materialId'])}")
     for metric, metric_data in diagnostic.get("interaction", {}).get("metrics", {}).items():
         if metric_data.get("available") and metric_data.get("totalMetricValue") is not None:
             refs.add(f"interaction:{metric}:total")
@@ -1185,6 +1213,29 @@ def _validate_v2_evidence(
             )
         for reference in insight["evidenceRefs"]:
             require_known(reference)
+    hot_insight = conclusion.get("hotMaterialInsight")
+    hot_rule = diagnostic.get("portfolio", {}).get("hotMaterialRule")
+    if hot_rule is not None:
+        if not isinstance(hot_rule, dict):
+            raise FinalReportError("portfolio.hotMaterialRule must be an object")
+        if hot_insight is None:
+            raise FinalReportError("hotMaterialInsight is required when hotMaterialRule exists")
+    if hot_insight is not None:
+        if not isinstance(hot_rule, dict):
+            raise FinalReportError("hotMaterialInsight requires portfolio.hotMaterialRule")
+        hot_refs = {
+            "commercial:hotMaterialCount",
+            *{
+                f"commercial:hotMaterial:{_text(item.get('materialId'))}"
+                for item in hot_rule.get("qualifyingMaterials", [])
+                if isinstance(item, dict) and _text(item.get("materialId"))
+            },
+        }
+        if not any(reference in hot_refs for reference in hot_insight["evidenceRefs"]):
+            raise FinalReportError("hotMaterialInsight must reference hot material evidence")
+        for reference in hot_insight["evidenceRefs"]:
+            if reference not in hot_refs:
+                raise FinalReportError(f"hotMaterialInsight has invalid evidence reference: {reference}")
     for material_analysis in conclusion["materialAnalyses"]:
         _reject_noncanonical_audience_terms(
             material_analysis["audienceConclusion"],

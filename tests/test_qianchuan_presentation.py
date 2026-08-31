@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 import tempfile
@@ -7,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from qianchuan_presentation import build_presentation_report, validate_presentation_report
-from report_renderer import report_data_for_template
+from report_renderer import report_data_for_template, render_html_report
 
 
 def sample_data():
@@ -135,6 +136,120 @@ class PresentationTests(unittest.TestCase):
             {key: value for key, value in data["portfolio"].items() if key != "materials"},
         )
         self.assertNotIn("materials", chapter01["portfolio"])
+
+    def test_projects_hot_material_panel_with_only_qualifying_materials(self):
+        data = sample_data()
+        data["portfolio"] = {
+            "schemaVersion": 1,
+            "materialCount": 1145,
+            "summaryMetrics": {"cost": "1167092.47", "roi": "2.29"},
+            "materials": {"m-1": {"materialId": "m-1"}, "m-2": {"materialId": "m-2"}},
+            "hotMaterialRule": {
+                "thresholdCost": "20000",
+                "comparison": "gte",
+                "qualifyingCount": 1,
+                "qualifyingMaterials": [{
+                    "materialId": "m-1",
+                    "materialName": "爆款真实名称",
+                    "totalCost": "20000",
+                    "metrics": {"roi": "2.0", "ctr": "1.5"},
+                    "evidenceRef": "commercial:hotMaterial:m-1",
+                }],
+            },
+        }
+        data["conclusion"]["portfolioDimensionConclusions"] = {
+            "commercial": {"conclusion": "整体榜单结论", "evidenceRefs": ["commercial:cost"]},
+        }
+        data["conclusion"]["hotMaterialInsight"] = {
+            "conclusion": "命中素材值得保留并做小预算对照。",
+            "evidenceRefs": ["commercial:hotMaterialCount", "commercial:hotMaterial:m-1"],
+        }
+
+        panel = build_presentation_report(data)["chapters"]["chapter01"]["hotMaterialPanel"]
+
+        self.assertEqual(panel["thresholdCost"], "20000")
+        self.assertEqual(panel["qualifyingCount"], 1)
+        self.assertEqual([item["materialName"] for item in panel["materials"]], ["爆款真实名称"])
+        self.assertNotIn("insight", panel)
+        self.assertNotIn("m-2", json.dumps(panel, ensure_ascii=False))
+
+    def test_projects_overall_and_hot_ai_content_as_one_chapter01_ai_conclusion(self):
+        data = sample_data()
+        data["portfolio"] = {
+            "materialCount": 2,
+            "summaryMetrics": {"cost": "30000"},
+            "hotMaterialRule": {
+                "thresholdCost": "20000",
+                "comparison": "gte",
+                "qualifyingCount": 1,
+                "qualifyingMaterials": [{
+                    "materialId": "m-1",
+                    "materialName": "爆款真实名称",
+                    "totalCost": "20000",
+                    "metrics": {"roi": "2.0"},
+                    "evidenceRef": "commercial:hotMaterial:m-1",
+                }],
+            },
+        }
+        data["conclusion"]["overallConclusion"] = "整体榜单结论"
+        data["conclusion"]["portfolioDimensionConclusions"] = {
+            "commercial": {"conclusion": "整体维度结论", "evidenceRefs": ["commercial:cost"]},
+        }
+        data["conclusion"]["hotMaterialInsight"] = {
+            "conclusion": "命中素材值得保留并做小预算对照。",
+            "evidenceRefs": ["commercial:hotMaterialCount", "commercial:hotMaterial:m-1"],
+        }
+
+        chapter = build_presentation_report(data)["chapters"]["chapter01"]
+
+        self.assertEqual(
+            chapter["aiConclusion"]["paragraphs"],
+            ["整体榜单结论", "命中素材值得保留并做小预算对照。"],
+        )
+        self.assertEqual(
+            chapter["aiConclusion"]["evidenceRefs"],
+            ["commercial:hotMaterialCount", "commercial:hotMaterial:m-1"],
+        )
+        self.assertEqual(chapter["hotMaterialPanel"]["materials"][0]["materialId"], "m-1")
+
+    def test_renderer_includes_hot_material_panel_without_full_portfolio_materials(self):
+        data = sample_data()
+        data["portfolio"] = {
+            "materialCount": 1145,
+            "summaryMetrics": {"cost": "1167092.47"},
+            "materials": {"m-1": {"materialId": "m-1"}, "m-2": {"materialId": "m-2"}},
+            "hotMaterialRule": {
+                "thresholdCost": "20000",
+                "comparison": "gte",
+                "qualifyingCount": 1,
+                "qualifyingMaterials": [{
+                    "materialId": "m-1",
+                    "materialName": "爆款真实名称",
+                    "totalCost": "20000",
+                    "metrics": {"roi": "2.0"},
+                    "evidenceRef": "commercial:hotMaterial:m-1",
+                }],
+            },
+        }
+        data["conclusion"]["portfolioDimensionConclusions"] = {
+            "commercial": {"conclusion": "整体榜单结论", "evidenceRefs": ["commercial:cost"]},
+        }
+        data["conclusion"]["hotMaterialInsight"] = {
+            "conclusion": "命中素材值得保留并做小预算对照。",
+            "evidenceRefs": ["commercial:hotMaterialCount"],
+        }
+        data["presentation"] = build_presentation_report(data)
+
+        rendered = report_data_for_template(data, None)
+        html = render_html_report(data)
+
+        panel = rendered["presentation"]["chapters"]["chapter01"]["hotMaterialPanel"]
+        self.assertEqual(panel["materials"][0]["materialName"], "爆款真实名称")
+        self.assertNotIn('"m-2"', json.dumps(rendered["presentation"]["chapters"]["chapter01"], ensure_ascii=False))
+        self.assertIn("function renderHotMaterialPanel", html)
+        self.assertIn("hotMaterialPanel", html)
+        self.assertIn("chapter01?.aiConclusion", html)
+        self.assertIn("navigateToMaterial(materialId)", html)
 
     def test_projects_new_chapter_contracts_with_stable_material_references(self):
         report = build_presentation_report(complete_presentation_data())

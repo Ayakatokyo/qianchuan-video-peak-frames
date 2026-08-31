@@ -15,6 +15,7 @@ PORTFOLIO_SUMMARY_KEYS = (
     "newMaterialEndDate",
     "materialCount",
     "summaryMetrics",
+    "hotMaterialRule",
 )
 
 
@@ -115,6 +116,49 @@ def _dimension(conclusion, topic):
     return _text(raw), []
 
 
+def _hot_material_panel(portfolio):
+    rule = _mapping(_mapping(portfolio).get("hotMaterialRule"))
+    qualifying = []
+    for raw in _list(rule.get("qualifyingMaterials")):
+        if not isinstance(raw, dict) or not _text(raw.get("materialId")):
+            continue
+        qualifying.append({
+            key: deepcopy(raw[key])
+            for key in ("materialId", "materialName", "totalCost", "metrics", "evidenceRef")
+            if key in raw
+        })
+    panel = {
+        "thresholdCost": _text(rule.get("thresholdCost")),
+        "comparison": _text(rule.get("comparison")),
+        "qualifyingCount": rule.get("qualifyingCount", 0),
+        "materials": qualifying,
+        "source": "facts.portfolio.hotMaterialRule",
+        "availability": "available" if rule else "unavailable",
+    }
+    return panel
+
+
+def _ai_conclusion(conclusion, hot_material_rule):
+    overall = _text(_mapping(conclusion).get("overallConclusion"))
+    insight = _mapping(_mapping(conclusion).get("hotMaterialInsight"))
+    hot_text = _text(insight.get("conclusion")) if hot_material_rule else ""
+    paragraphs = [paragraph for paragraph in (overall, hot_text) if paragraph]
+    evidence_refs = []
+    for reference in _list(insight.get("evidenceRefs")):
+        reference = _text(reference)
+        if reference and reference not in evidence_refs:
+            evidence_refs.append(reference)
+    source = "ai.overallConclusion"
+    if hot_material_rule and hot_text:
+        source += " + ai.hotMaterialInsight"
+    return {
+        "paragraphs": paragraphs,
+        "evidenceRefs": evidence_refs,
+        "source": source,
+        "availability": "available" if paragraphs else "unavailable",
+    }
+
+
 def _chapter01(data):
     conclusion = _mapping(data.get("conclusion"))
     facts = {"commercial": _portfolio_summary(data.get("portfolio") or data.get("topMaterialRoi"))}
@@ -143,6 +187,11 @@ def _chapter01(data):
     return {
         "id": "chapter01", "title": "素材榜单数据洞察", "points": points,
         "portfolio": facts["commercial"],
+        "hotMaterialPanel": _hot_material_panel(facts["commercial"]),
+        "aiConclusion": _ai_conclusion(
+            conclusion,
+            _mapping(facts["commercial"].get("hotMaterialRule")),
+        ),
         "overallConclusion": _text(conclusion.get("overallConclusion")),
         "source": "facts + ai.portfolioDimensionConclusions", "evidenceRefs": evidence_refs,
         "availability": _availability(

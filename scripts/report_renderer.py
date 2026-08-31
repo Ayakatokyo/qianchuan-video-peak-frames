@@ -40,6 +40,7 @@ PORTFOLIO_SUMMARY_KEYS = (
     "newMaterialEndDate",
     "materialCount",
     "summaryMetrics",
+    "hotMaterialRule",
 )
 
 

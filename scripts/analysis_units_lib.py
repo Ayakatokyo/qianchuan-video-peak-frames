@@ -27,7 +27,7 @@ UNIT_DEFINITIONS = (
 UNIT_CONTRACTS = {
     "chapter01-portfolio": {
         "chapterId": "01",
-        "outputFields": ["overallConclusion", "portfolioDimensionConclusions"],
+        "outputFields": ["overallConclusion", "portfolioDimensionConclusions", "hotMaterialInsight"],
         "allowedEvidencePrefixes": ["commercial:"],
     },
     "chapter02-audience": {

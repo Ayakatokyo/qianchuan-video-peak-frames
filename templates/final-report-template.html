@@ -39,6 +39,7 @@
       <div class="primary-summary" id="overall-conclusion-card">
         <p id="overall-conclusion"></p>
       </div>
+      <div class="hot-material-panel" id="hot-material-panel"></div>
       <div class="combination-conclusion" id="combination-conclusion"></div>
     </div>
   </section>
@@ -319,6 +320,12 @@ function activateMaterialById(materialId) {
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
   }
   return true;
+}
+
+function navigateToMaterial(materialId) {
+  const section = document.getElementById("material-analysis");
+  if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+  return activateMaterialById(materialId);
 }
 
 function materialLink(materialId) {
@@ -2415,12 +2422,75 @@ function renderCombinationConclusion() {
   }
   root.hidden = true;
   fallback.hidden = false;
+  const aiConclusion = chapter01?.aiConclusion;
+  const aiParagraphs = Array.isArray(aiConclusion?.paragraphs)
+    ? aiConclusion.paragraphs.map((paragraph) => text(paragraph)).filter(Boolean)
+    : [];
   const paragraphText = chapter01?.overallConclusion
     || conclusion.overallConclusion
     || points.find((point) => text(point?.conclusion))?.conclusion;
-  document.getElementById("overall-conclusion").replaceChildren(
-    renderTextWithMaterialLinks(paragraphText || "素材榜单数据洞察待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
+  const paragraphs = aiParagraphs.length
+    ? aiParagraphs
+    : [paragraphText || "素材榜单数据洞察待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。"];
+  const summary = document.getElementById("overall-conclusion");
+  summary.replaceChildren();
+  paragraphs.forEach((paragraph, index) => {
+    if (index) summary.append(document.createElement("br"), document.createElement("br"));
+    summary.append(renderTextWithMaterialLinks(paragraph));
+  });
+}
+
+function renderHotMaterialPanel() {
+  const root = document.getElementById("hot-material-panel");
+  if (!root) return;
+  const panel = presentationChapter("chapter01")?.hotMaterialPanel;
+  root.replaceChildren();
+  if (!panel) return;
+
+  const heading = element("h3", "hot-material-title", "爆款素材");
+  const comparison = panel.comparison === "gte" ? "≥" : panel.comparison || "";
+  const scope = element(
+    "p",
+    "hot-material-scope",
+    `规则：消耗 ${comparison} ${formatNumber(panel.thresholdCost)} 元｜命中 ${formatNumber(panel.qualifyingCount)} 条`
   );
+
+  const materials = Array.isArray(panel.materials) ? panel.materials : [];
+  const summaryBody = element("div", "hot-material-summary-body");
+  summaryBody.append(heading, scope);
+  if (!materials.length) {
+    summaryBody.append(element("p", "hot-material-empty", "当前统计周期暂无达到规则阈值的素材。"));
+  } else {
+    const list = element("div", "hot-material-list");
+    const metricLabels = {
+      roi: "ROI",
+      ctr: "点击率",
+      conversionRate: "转化率",
+      threeSecondCompletionRate: "3 秒完播率",
+      cpm: "CPM",
+    };
+    materials.forEach((material) => {
+      const card = element("article", "hot-material-card");
+      const name = element("button", "hot-material-name", text(material.materialName, material.materialId));
+      name.type = "button";
+      name.dataset.materialId = text(material.materialId);
+      name.title = "跳转到第五部分单素材深度分析";
+      name.addEventListener("click", () => navigateToMaterial(material.materialId));
+      const id = element("small", "hot-material-id", `素材 ID：${text(material.materialId)}`);
+      const spend = element("p", "hot-material-spend", `消耗 ${formatNumber(material.totalCost)} 元`);
+      card.append(name, id, spend);
+      const metrics = element("div", "hot-material-metrics");
+      Object.entries(metricLabels).forEach(([key, label]) => {
+        const value = material.metrics?.[key];
+        if (value === null || value === undefined || text(value) === "") return;
+        metrics.append(element("span", "hot-material-metric", `${label} ${formatNumber(value)}`));
+      });
+      if (metrics.childElementCount) card.append(metrics);
+      list.append(card);
+    });
+    summaryBody.append(list);
+  }
+  root.append(createCollapseToggle(summaryBody, "爆款素材汇总数据"), summaryBody);
 }
 
 document.querySelector(".frame-lightbox-close").addEventListener("click", closeFrameLightbox);
@@ -2444,6 +2514,7 @@ function renderReport() {
     exportLink.hidden = false;
   }
   renderCombinationConclusion();
+  renderHotMaterialPanel();
   renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");
   renderAudienceDashboard();
   renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");
