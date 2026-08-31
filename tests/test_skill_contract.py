@@ -125,8 +125,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("单 Agent 执行边界", skill)
         self.assertIn("不得创建、调用或委派子代理", skill)
         self.assertIn("不得调用会强制创建子代理的渲染校验", skill)
-        self.assertIn("当前主 Agent 直接完成", skill)
-        self.assertIn("不得以创建子代理作为替代", skill)
+        self.assertIn("主 Agent 直接执行", skill)
+        self.assertNotIn("视口检查", skill)
+        self.assertNotIn("报告核验", skill)
 
     def test_skill_documents_finalize_retry_after_correcting_ai_json(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
