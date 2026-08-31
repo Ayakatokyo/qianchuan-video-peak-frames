@@ -163,6 +163,15 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("final_report_lib.py", prompt)
         self.assertIn("validate-analysis", prompt)
 
+    def test_skill_requires_concise_keyword_cloud_one_sentence(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("28-45 个中文字符", skill)
+        self.assertIn("单一核心判断", skill)
+        self.assertIn("不得重复关键词频次、卖点卡片和验证动作", skill)
+        self.assertIn("验证动作放入 summary 或 sellingPoints", skill)
+        self.assertIn("summary 控制在 60-110 个中文字符", skill)
+
     def test_skill_and_prompt_use_five_units_in_one_current_model_call(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")

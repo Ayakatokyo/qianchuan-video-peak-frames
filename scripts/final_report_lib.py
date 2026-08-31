@@ -81,6 +81,18 @@ AI_QUALITY_MINIMUMS = {
     "visualObservation": 40,
     "commercialInterpretation": 80,
 }
+KEYWORD_CLOUD_ONE_SENTENCE_MIN_LENGTH = 28
+KEYWORD_CLOUD_ONE_SENTENCE_MAX_LENGTH = 45
+KEYWORD_CLOUD_SUMMARY_MIN_LENGTH = 60
+KEYWORD_CLOUD_SUMMARY_MAX_LENGTH = 110
+KEYWORD_CLOUD_ONE_SENTENCE_DETAIL_PATTERNS = (
+    ("frequency details", re.compile(r"关键词云|词云|高频|频次|频率|次数|\d+\s*次")),
+    ("selling point list", re.compile(r"卖点(?:卡片|列表)?|卡片")),
+    ("validation actions", re.compile(r"验证|测试|对照|下一轮|建议|观察|比较|改写|迭代|试投|复盘")),
+)
+KEYWORD_CLOUD_ONE_SENTENCE_MULTI_FOCUS_PATTERN = re.compile(
+    r"、|；|;|同时|此外|另外|以及|并列|既[^。！？]*又"
+)
 INTERACTION_METRIC_LABELS = {
     "CLICK_COUNT": "整体点击次数",
     "LOSE_COUNT": "整体流失数",
@@ -1453,12 +1465,54 @@ def _audience_insight_metrics(insight):
     return metrics
 
 
+def _validate_keyword_cloud_one_sentence(one_sentence):
+    text = _text(one_sentence)
+    failures = []
+    if not (
+        KEYWORD_CLOUD_ONE_SENTENCE_MIN_LENGTH
+        <= len(text)
+        <= KEYWORD_CLOUD_ONE_SENTENCE_MAX_LENGTH
+    ):
+        failures.append(
+            "must contain 28-45 characters"
+        )
+    for detail_name, pattern in KEYWORD_CLOUD_ONE_SENTENCE_DETAIL_PATTERNS:
+        if pattern.search(text):
+            failures.append(f"must not repeat {detail_name}")
+    if KEYWORD_CLOUD_ONE_SENTENCE_MULTI_FOCUS_PATTERN.search(text):
+        failures.append("must express one core judgement")
+    return failures
+
+
+def _validate_keyword_cloud_summary(summary):
+    text = _text(summary)
+    if not (
+        KEYWORD_CLOUD_SUMMARY_MIN_LENGTH
+        <= len(text)
+        <= KEYWORD_CLOUD_SUMMARY_MAX_LENGTH
+    ):
+        return ["must contain 60-110 characters"]
+    return []
+
+
 def _validate_v2_analysis_quality(conclusion, material_cards):
     if not conclusion or conclusion.get("schemaVersion") not in {2, 3, 4, 5}:
         return
 
     failures = []
     minimums = AI_QUALITY_MINIMUMS
+    keyword_cloud_insight = conclusion.get("keywordCloudInsight")
+    if isinstance(keyword_cloud_insight, dict):
+        for failure in _validate_keyword_cloud_one_sentence(
+            keyword_cloud_insight.get("oneSentenceConclusion")
+        ):
+            failures.append(
+                "keywordCloudInsight.oneSentenceConclusion " + failure
+            )
+        for failure in _validate_keyword_cloud_summary(
+            keyword_cloud_insight.get("summary")
+        ):
+            failures.append("keywordCloudInsight.summary " + failure)
     if (
         conclusion.get("schemaVersion") in {2, 5}
         and len(conclusion["overallConclusion"]) < minimums["overallConclusion"]

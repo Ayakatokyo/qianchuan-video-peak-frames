@@ -141,6 +141,15 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
         self.assertIn("一二级内容公式", prompt)
         self.assertIn("脚本文案", prompt)
 
+    def test_prompt_constrains_keyword_cloud_one_sentence_to_one_concise_judgement(self):
+        prompt = DEFAULT_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("28-45 个中文字符", prompt)
+        self.assertIn("单一核心判断", prompt)
+        self.assertIn("不得重复关键词频次、卖点卡片和验证动作", prompt)
+        self.assertIn("验证动作放入 summary 或 sellingPoints", prompt)
+        self.assertIn("summary 控制在 60-110 个中文字符", prompt)
+
     def test_builds_preference_top_materials_above_batch_baseline_by_total_cost(self):
         top_payload = {
             "materials": [

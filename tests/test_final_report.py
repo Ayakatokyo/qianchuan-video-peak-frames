@@ -2051,6 +2051,85 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
 
 class FinalReportQualityGateTests(unittest.TestCase):
 
+    @staticmethod
+    def _keyword_cloud_quality_conclusion(one_sentence, summary="福利机制先抓住注意，再由燕窝品质与鲜炖工艺承接信任，场景化表达强化购买理由；下一轮对比不同福利组合对点击和成交的稳定提升。"):
+        long_text = "该结论包含足够的业务事实、谨慎判断和后续分析边界，用于覆盖标准 AI 质量门禁的其他字段要求。" * 5
+        return {
+            "schemaVersion": 5,
+            "overallConclusion": long_text,
+            "portfolioDimensionConclusions": {
+                topic: {"conclusion": long_text, "evidenceRefs": [f"{topic}:ref"]}
+                for topic in ("commercial", "audience", "script", "highlight", "interaction")
+            },
+            "highlightDashboard": {"groups": []},
+            "batchInsights": [
+                {"topic": "audience", "title": f"人群洞察{index}", "conclusion": long_text, "evidenceRefs": ["ref"]}
+                for index in range(3)
+            ] + [
+                {"topic": "script", "title": f"脚本洞察{index}", "conclusion": long_text, "evidenceRefs": ["ref"]}
+                for index in range(2)
+            ],
+            "materialAnalyses": [],
+            "keywordCloudInsight": {
+                "oneSentenceConclusion": one_sentence,
+                "summary": summary,
+                "sellingPoints": [],
+            },
+        }
+
+    def test_keyword_cloud_one_sentence_requires_28_to_45_characters(self):
+        for sentence in ("福利机制已成为脚本最突出的核心记忆与购买吸引力。", "福利机制已成为脚本建立记忆并推动购买决策的主导驱动。" * 2):
+            with self.subTest(sentence=sentence), self.assertRaisesRegex(
+                FinalReportError, "keywordCloudInsight.oneSentenceConclusion.*28.*45"
+            ):
+                _validate_standard_ai_quality(
+                    self._keyword_cloud_quality_conclusion(sentence), []
+                )
+
+    def test_keyword_cloud_one_sentence_is_one_judgement_without_repeated_details_or_actions(self):
+        for sentence in (
+            "关键词高频词出现67次，福利机制与品质工艺并列成为核心卖点。",
+            "福利机制已成为核心记忆点，下一轮建议拆分开场验证点击变化。",
+        ):
+            with self.subTest(sentence=sentence), self.assertRaisesRegex(
+                FinalReportError, "keywordCloudInsight.oneSentenceConclusion"
+            ):
+                _validate_standard_ai_quality(
+                    self._keyword_cloud_quality_conclusion(sentence), []
+                )
+
+    def test_keyword_cloud_one_sentence_accepts_a_single_concise_judgement(self):
+        _validate_standard_ai_quality(
+            self._keyword_cloud_quality_conclusion(
+                "福利机制已成为脚本建立记忆并持续推动购买决策的核心驱动。"
+            ),
+            [],
+        )
+
+    def test_keyword_cloud_summary_rejects_overlong_below_conclusion_copy(self):
+        with self.assertRaisesRegex(
+            FinalReportError, "keywordCloudInsight.summary.*110"
+        ):
+            _validate_standard_ai_quality(
+                self._keyword_cloud_quality_conclusion(
+                    "福利机制已成为脚本建立记忆并持续推动购买决策的核心驱动。",
+                    "验证动作和关键词关系放在摘要与卖点中。" * 6,
+                ),
+                [],
+            )
+
+    def test_keyword_cloud_summary_requires_compact_context(self):
+        with self.assertRaisesRegex(
+            FinalReportError, "keywordCloudInsight.summary.*60.*110"
+        ):
+            _validate_standard_ai_quality(
+                self._keyword_cloud_quality_conclusion(
+                    "福利机制已成为脚本建立记忆并持续推动购买决策的核心驱动。",
+                    "摘要太短。",
+                ),
+                [],
+            )
+
     def test_schema5_quality_gate_requires_ai_interaction_conclusion(self):
         conclusion = {"schemaVersion": 5, "overallConclusion": "总体结论。" * 80,
             "portfolioDimensionConclusions": {}, "batchInsights": [], "materialAnalyses": [{

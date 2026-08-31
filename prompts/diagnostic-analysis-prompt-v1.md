@@ -38,6 +38,7 @@
 ### Chapter 03：脚本洞察
 
 只以 `chapter03-script-input.json` 的完整脚本、一二级标签、真实证据句、标签汇总和确定性 `keywordCloud` 生成 `batchInsights[topic=script]`、`keywordCloudReview` 及 `keywordCloudInsight`。`keywordCloudReview` 只能对 NLP 候选词做 `accept`、`exclude` 或 `merge` 审查，不得修改原始频次；后端会依据审查结果重新汇总。不要将脚本句子与高光帧秒点做无依据对齐；关键词原始频次不得由 AI 改写。
+`keywordCloudInsight.oneSentenceConclusion` 写约 28-45 个中文字符的单一核心判断，可补充关键词所反映的业务含义或承接关系；不得重复关键词频次、卖点卡片和验证动作，不要列举多个关键词或并列卖点。summary 控制在 60-110 个中文字符，适度补充关键词组合、品质/场景承接与验证方向；验证动作放入 summary 或 sellingPoints，不要塞进一句话结论。
 
 ### Chapter 04：高光画面洞察
 
@@ -84,7 +85,7 @@
 - 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion`、`interactionConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`interactionConclusion` 不得为空、不得使用固定模板或只复述峰值摘要；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，互动时序分析必须解释互动时序事实为什么影响素材放量、改写或保留判断，并结合峰值/走势给出验证建议；不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
 - 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
 - 必须输出至少 3 条 audience、2 条 script 洞察；`audience` 洞察需覆盖展现次数、点击次数、成交金额三个角度，事实不足时仍需给出下一步补充或验证方向。不得为了填充素材榜单数据洞察而输出 `batchInsights.topic=integrated`。
-- `keywordCloudInsight` 必须包含 `oneSentenceConclusion`、`summary` 和 `sellingPoints`；卖点最多 4 条。每条卖点必须引用 `keywordCloud.keywords[*].keyword` 和合法 `evidenceRefs`，不得引入关键词云与脚本文本之外的新事实；前端展示顺序固定为 AI 二次分析、关键词云模块、脚本汇总数据。
+- `keywordCloudInsight` 必须包含 `oneSentenceConclusion`、`summary` 和 `sellingPoints`；`oneSentenceConclusion` 控制在 28-45 个中文字符，可补充关键词所反映的业务含义或承接关系，但只保留一个核心判断，不重复关键词频次、卖点卡片和验证动作；summary 控制在 60-110 个中文字符，适度补充关键词组合、品质/场景承接与验证方向；验证动作放入 summary 或 sellingPoints。卖点最多 4 条。每条卖点必须引用 `keywordCloud.keywords[*].keyword` 和合法 `evidenceRefs`，不得引入关键词云与脚本文本之外的新事实；前端展示顺序固定为 AI 二次分析、关键词云模块、脚本汇总数据。
 - `script` 洞察固定输出 2 条且按以下顺序：第一条标题以“`一二级内容公式：`”开头，分析一级/二级标签的高频结构、组合方式和差异；第二条标题以“`脚本文案：`”开头，分析真实文案中的利益点、表达方式与证据句。两条都必须引用对应的 `script:*` 证据，且不能只复述标签或原句。
 
 ## 页面结构映射
@@ -143,8 +144,8 @@
     }
   ],
   "keywordCloudInsight": {
-    "oneSentenceConclusion": "基于脚本高频词给出的可读结论，必须引用事实中的场景、商品、优惠或动作表达。",
-    "summary": "对高频关键词组合关系的总结，不改写关键词频次。",
+    "oneSentenceConclusion": "脚本以大促福利制造购买冲动，再用鲜炖品质与日常场景承接信任。",
+    "summary": "高频表达呈现“福利促转化、鲜炖品质稳信任、早餐与三伏天强化代入”的递进结构；下一轮可对照福利强弱与品质承接比例，观察点击和成交变化。",
     "sellingPoints": [
       {
         "title": "卖点标题",
