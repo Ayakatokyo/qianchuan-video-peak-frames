@@ -2793,6 +2793,9 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn(
             'data-highlight-export href="highlight-frames.xlsx" download', template
         )
+        self.assertIn(
+            'data-highlight-export href="highlight-frames.xlsx" download hidden', template
+        )
         self.assertNotIn("data-highlight-export-fallback", template)
         self.assertIn("background: #7d4a25;", css_text)
         self.assertNotIn("var(--accent-dark)", css_text)
@@ -2801,6 +2804,20 @@ class FinalReportRenderTests(unittest.TestCase):
             "background: linear-gradient(135deg, #160d09, #3b1f15 44%, #f5dfbd 44%, #fff8ec);",
             css_text,
         )
+
+    def test_highlight_dashboard_summary_has_explicit_default_expanded_toggle(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('createCollapsibleDataCard("", "高光画面数据")', template)
+        self.assertNotIn("createHighlightSummaryToggle", template)
+        self.assertNotIn("highlight-summary-toggle", template)
+        self.assertIn('className = "collapsible-toggle"', template)
+        self.assertIn('expanded ? `收起${label}` : `展开${label}`', template)
+        self.assertIn('card.classList.add("highlight-assets-card")', template)
+        summary_index = template.index('categoryRoot.append(common,')
+        card_index = template.index('createHighlightAssetsCard(categoryRoot, grid, frameRefs)')
+        self.assertLess(summary_index, card_index)
 
     def test_audience_region_card_header_lives_inside_card(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(

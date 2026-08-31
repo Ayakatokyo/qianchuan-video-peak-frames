@@ -64,7 +64,7 @@
   <section class="section" id="highlight-dashboard-section">
     <header class="section-header">
       <h2>04｜高光画面洞察</h2>
-      <a class="highlight-export-button" data-highlight-export href="highlight-frames.xlsx" download>导出高光帧资产（Excel）</a>
+      <a class="highlight-export-button" data-highlight-export href="highlight-frames.xlsx" download hidden>导出高光帧资产（Excel）</a>
     </header>
     <div class="highlight-dashboard" id="highlight-dashboard"></div>
   </section>
@@ -2208,6 +2208,14 @@ function renderHighlightPagination(panel, frameCount) {
   return pagination;
 }
 
+function createHighlightAssetsCard(panel, grid, frameRefs) {
+  const { card, body } = createCollapsibleDataCard("", "高光画面数据");
+  card.classList.add("highlight-assets-card");
+  body.append(grid);
+  if (frameRefs.length > 0) body.append(renderHighlightPagination(panel, frameRefs.length));
+  return card;
+}
+
 function activateHighlightCategoryTab(tab) {
   const dashboard = tab.closest(".highlight-dashboard");
   if (!dashboard) return;
@@ -2228,10 +2236,17 @@ function renderHighlightDashboard() {
   const root = document.getElementById("highlight-dashboard");
   if (root) root.replaceChildren();
   const headerExport = document.querySelector("[data-highlight-export]");
-  if (headerExport && !headerExport.href) headerExport.href = "highlight-frames.xlsx";
-  if (headerExport) headerExport.hidden = false;
+  if (headerExport) {
+    const exportHref = text(reportData.highlightExportHref);
+    headerExport.hidden = !exportHref;
+    if (exportHref) headerExport.href = exportHref;
+  }
   const legacyConclusion = reportData.conclusion || {};
   const groups = chapter04Groups();
+  if ((!presentation && ![3, 4, 5].includes(legacyConclusion.schemaVersion)) || groups.length === 0) {
+    root.append(element("p", "muted", "暂无可用的高光画面分类汇总。"));
+    return;
+  }
 
   const dimensionHighlight = chapter04Conclusion();
   if (!presentation && legacyConclusion.schemaVersion === 3 && dimensionHighlight?.conclusion) {
@@ -2247,14 +2262,8 @@ function renderHighlightDashboard() {
     });
     const common = element("div", "highlight-analysis-copy");
     common.append(element("b", "", "共性结论"), elementWithMaterialLinks("p", "", dimensionHighlight.conclusion));
-    if (grid.childElementCount > 0) categoryRoot.append(grid);
-    categoryRoot.append(common);
+    categoryRoot.append(common, createHighlightAssetsCard(categoryRoot, grid, []));
     root.append(categoryRoot);
-    return;
-  }
-
-  if ((!presentation && ![4, 5].includes(legacyConclusion.schemaVersion)) || groups.length === 0) {
-    root.append(element("p", "muted", "暂无可用的高光画面分类汇总。"));
     return;
   }
 
@@ -2302,8 +2311,7 @@ function renderHighlightDashboard() {
       ? group.derivativeDirections
       : [];
     if (directions.length === 0) {
-      categoryRoot.append(common);
-      if (frameRefs.length > 0) categoryRoot.append(grid, renderHighlightPagination(categoryRoot, frameRefs.length));
+      categoryRoot.append(common, createHighlightAssetsCard(categoryRoot, grid, frameRefs));
       categoryRoot._highlightFrameRefs = frameRefs.map(text);
       categoryRoot._highlightPage = 0;
       renderHighlightFramePage(categoryRoot);
@@ -2321,8 +2329,7 @@ function renderHighlightDashboard() {
     directionCopy.append(element("b", "", "裂变方向"), directionList);
     const analysisPair = element("div", "highlight-analysis-pair");
     analysisPair.append(common, directionCopy);
-    categoryRoot.append(analysisPair);
-    if (frameRefs.length > 0) categoryRoot.append(grid, renderHighlightPagination(categoryRoot, frameRefs.length));
+    categoryRoot.append(analysisPair, createHighlightAssetsCard(categoryRoot, grid, frameRefs));
     categoryRoot._highlightFrameRefs = frameRefs.map(text);
     categoryRoot._highlightPage = 0;
     renderHighlightFramePage(categoryRoot);

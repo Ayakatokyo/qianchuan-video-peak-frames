@@ -152,6 +152,11 @@ def _summary(request, paths, *, status, diagnostic_prompt=None,
                 if report and (Path(report).parent / "report-display-facts.json").is_file()
                 else None
             ),
+            "highlightExport": (
+                _relative(root, Path(report).parent / "highlight-frames.xlsx")
+                if report and (Path(report).parent / "highlight-frames.xlsx").is_file()
+                else None
+            ),
             "reportArchive": _relative(root, report_archive) if report_archive else None,
         },
         "failure": failure,

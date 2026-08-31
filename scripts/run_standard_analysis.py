@@ -104,6 +104,8 @@ def main(argv=None):
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"final_report_data={report_dir / 'final-report-data.json'}")
             print(f"final_report_html={Path(args.output_dir) / artifacts['report']}")
+            if artifacts.get("highlightExport"):
+                print(f"highlight_export={Path(args.output_dir) / artifacts['highlightExport']}")
             print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
         elif args.command == "validate-analysis":
             print(json.dumps(
