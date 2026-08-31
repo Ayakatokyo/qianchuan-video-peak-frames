@@ -98,6 +98,20 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(len(panel["sellingPoints"]), 1)
         self.assertEqual(panel["source"], "facts.scripts.keywordCloud + ai.keywordCloudInsight")
 
+    def test_chapter03_keeps_selling_point_with_canonical_label_evidence(self):
+        data = complete_presentation_data()
+        data["conclusion"]["keywordCloudInsight"]["sellingPoints"][0]["evidenceRefs"] = [
+            "script:m-1:商品卖点:适用场景"
+        ]
+
+        panel = build_presentation_report(data)["chapters"]["chapter03"]["keywordCloudPanel"]
+
+        self.assertEqual(len(panel["sellingPoints"]), 1)
+        self.assertEqual(
+            panel["sellingPoints"][0]["evidenceRefs"],
+            ["script:m-1:商品卖点:适用场景"],
+        )
+
     def test_chapter03_applies_ai_review_to_keyword_cloud(self):
         data = complete_presentation_data()
         data["scripts"]["keywordCloud"]["keywords"].append({"keyword": "小仙", "frequency": 3, "materialIds": ["m-1"], "evidenceRefs": ["script:m-1:text:小仙"]})

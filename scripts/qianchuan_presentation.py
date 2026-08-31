@@ -293,7 +293,7 @@ def _chapter03(data, material_ids):
     ai_cloud = _mapping(_mapping(data.get("conclusion")).get("keywordCloudInsight"))
     selling_points = []
     valid_keywords = {item["keyword"] for item in keywords}
-    valid_refs = set(cloud_refs)
+    valid_refs = set(cloud_refs) | set(evidence_refs)
     for raw in _list(ai_cloud.get("sellingPoints"))[:4]:
         if not isinstance(raw, dict):
             continue
