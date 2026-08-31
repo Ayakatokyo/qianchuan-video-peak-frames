@@ -134,6 +134,10 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
         self.assertIn("commercial.conclusion 不得重复 overallConclusion", prompt)
         self.assertIn("至少包含三项分析判断", prompt)
         self.assertIn("Chapter 01 事实包不包含 `netSettlementRoi` 或 `overallPaymentRoi`", prompt)
+        self.assertIn("不得读取 `topMaterialRoi`", prompt)
+        self.assertIn("不得使用 RPA 精选素材数量、消耗", prompt)
+        self.assertIn("不得使用候选补位结果", prompt)
+        self.assertIn("不得从 Chapter 05 回退", prompt)
         self.assertIn("一二级内容公式", prompt)
         self.assertIn("脚本文案", prompt)
 

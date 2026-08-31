@@ -11,6 +11,8 @@ import shutil
 import uuid
 import zipfile
 
+from portfolio_projection import project_portfolio_summary
+
 
 class ReportRenderingError(RuntimeError):
     """Raised when report assets or the HTML template cannot be published."""
@@ -32,23 +34,8 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
-PORTFOLIO_SUMMARY_KEYS = (
-    "schemaVersion",
-    "period",
-    "newMaterialCount7d",
-    "newMaterialStartDate",
-    "newMaterialEndDate",
-    "materialCount",
-    "summaryMetrics",
-    "hotMaterialRule",
-)
-
-
 def _portfolio_summary(value):
-    raw = value if isinstance(value, dict) else {}
-    if "summaryMetrics" not in raw:
-        return deepcopy(raw)
-    return {key: deepcopy(raw[key]) for key in PORTFOLIO_SUMMARY_KEYS if key in raw}
+    return project_portfolio_summary(value)
 
 
 def safe_component(value):

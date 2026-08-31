@@ -1,4 +1,5 @@
 import ast
+from copy import deepcopy
 import json
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ from report_renderer import (
     safe_component,
 )
 from highlight_export import export_highlight_workbook
+from portfolio_projection import project_portfolio_summary
 
 _safe_component = safe_component
 
@@ -57,6 +59,17 @@ COMMERCIAL_EVIDENCE_REFS = {
     "commercial:threeSecondCompletionRate",
     "commercial:cpm",
 }
+CHAPTER01_COMMERCIAL_EVIDENCE_KEYS = (
+    "cost",
+    "newMaterialCount7d",
+    "newMaterialStartDate",
+    "newMaterialEndDate",
+    "roi",
+    "ctr",
+    "conversionRate",
+    "threeSecondCompletionRate",
+    "cpm",
+)
 COMMERCIAL_SOURCE_TERMS = ("资产表", "数据来源")
 AUDIENCE_NONCANONICAL_TERMS = ("触达", "响应")
 AI_QUALITY_MINIMUMS = {
@@ -102,23 +115,8 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
-PORTFOLIO_SUMMARY_KEYS = (
-    "schemaVersion",
-    "period",
-    "newMaterialCount7d",
-    "newMaterialStartDate",
-    "newMaterialEndDate",
-    "materialCount",
-    "summaryMetrics",
-    "hotMaterialRule",
-)
-
-
 def _portfolio_summary(value):
-    raw = value if isinstance(value, dict) else {}
-    if "summaryMetrics" not in raw:
-        return dict(raw)
-    return {key: raw[key] for key in PORTFOLIO_SUMMARY_KEYS if key in raw}
+    return project_portfolio_summary(value)
 
 
 def _read_json(path, purpose):
@@ -1186,6 +1184,27 @@ def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
     return refs
 
 
+def _chapter01_evidence_refs(diagnostic):
+    """Return only evidence refs backed by the full Chapter 01 portfolio."""
+    portfolio = diagnostic.get("portfolio") if isinstance(diagnostic, dict) else None
+    if not isinstance(portfolio, dict):
+        return set()
+    refs = {
+        f"commercial:{key}"
+        for key in CHAPTER01_COMMERCIAL_EVIDENCE_KEYS
+        if key in portfolio.get("summaryMetrics", {})
+        or key in portfolio
+    }
+    hot_rule = portfolio.get("hotMaterialRule")
+    if isinstance(hot_rule, dict):
+        if "qualifyingCount" in hot_rule:
+            refs.add("commercial:hotMaterialCount")
+        for material in hot_rule.get("qualifyingMaterials", []):
+            if isinstance(material, dict) and _text(material.get("materialId")):
+                refs.add(f"commercial:hotMaterial:{_text(material['materialId'])}")
+    return refs
+
+
 def _validate_v2_evidence(
     conclusion, diagnostic, summaries_by_material, material_cards, top_material_roi
 ):
@@ -1194,6 +1213,7 @@ def _validate_v2_evidence(
     known_refs = _known_evidence_refs(
         diagnostic, summaries_by_material, top_material_roi
     )
+    chapter01_refs = _chapter01_evidence_refs(diagnostic)
     selected_ids = {material["materialId"] for material in material_cards}
     successful_ids = {
         material["materialId"]
@@ -1218,8 +1238,6 @@ def _validate_v2_evidence(
     if hot_rule is not None:
         if not isinstance(hot_rule, dict):
             raise FinalReportError("portfolio.hotMaterialRule must be an object")
-        if hot_insight is None:
-            raise FinalReportError("hotMaterialInsight is required when hotMaterialRule exists")
     if hot_insight is not None:
         if not isinstance(hot_rule, dict):
             raise FinalReportError("hotMaterialInsight requires portfolio.hotMaterialRule")
@@ -1299,6 +1317,14 @@ def _validate_v2_evidence(
                 f"portfolioDimensionConclusions.{topic}.evidenceRefs must not be empty"
             )
         for reference in dimension["evidenceRefs"]:
+            if (
+                conclusion.get("schemaVersion") == 5
+                and topic == "commercial"
+                and reference not in chapter01_refs
+            ):
+                raise FinalReportError(
+                    "portfolioDimensionConclusions.commercial has invalid evidence reference"
+                )
             if reference not in known_refs:
                 raise FinalReportError(f"unknown evidence reference: {reference}")
             if not reference.startswith(topic + ":"):

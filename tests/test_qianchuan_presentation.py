@@ -137,6 +137,71 @@ class PresentationTests(unittest.TestCase):
         )
         self.assertNotIn("materials", chapter01["portfolio"])
 
+    def test_chapter01_does_not_fallback_to_rpa_roi_when_portfolio_is_missing(self):
+        data = sample_data()
+        data["topMaterialRoi"] = {
+            "source": "verifiedAssetFacts",
+            "materialCount": 15,
+            "metrics": [{"key": "netSettlementRoi", "value": "1.20"}],
+        }
+
+        chapter01 = build_presentation_report(data)["chapters"]["chapter01"]
+
+        self.assertEqual(chapter01["portfolio"], {})
+        self.assertEqual(chapter01["hotMaterialPanel"]["availability"], "unavailable")
+        self.assertNotIn("topMaterialRoi", json.dumps(chapter01, ensure_ascii=False))
+        self.assertNotIn("netSettlementRoi", json.dumps(chapter01, ensure_ascii=False))
+
+    def test_chapter01_drops_rpa_shaped_portfolio_fields_from_presentation_and_html(self):
+        data = sample_data()
+        data["portfolio"] = {
+            "source": "verifiedAssetFacts",
+            "materialCount": 15,
+            "netSettlementRoi": "1.20",
+            "overallPaymentRoi": "1.50",
+        }
+        data["presentation"] = build_presentation_report(data)
+
+        chapter01 = data["presentation"]["chapters"]["chapter01"]
+        rendered = report_data_for_template(data, None)
+
+        self.assertEqual(chapter01["portfolio"], {})
+        self.assertEqual(
+            rendered["presentation"]["chapters"]["chapter01"]["portfolio"], {}
+        )
+        self.assertNotIn("netSettlementRoi", json.dumps(rendered, ensure_ascii=False))
+        self.assertNotIn("overallPaymentRoi", json.dumps(rendered, ensure_ascii=False))
+
+    def test_chapter01_filters_nested_rpa_metrics_from_portfolio_projection(self):
+        data = sample_data()
+        data["portfolio"] = {
+            "schemaVersion": 1,
+            "summaryMetrics": {
+                "cost": "100",
+                "roi": "2.0",
+                "netSettlementRoi": "1.20",
+                "overallPaymentRoi": "1.50",
+            },
+            "hotMaterialRule": {
+                "thresholdCost": "20000",
+                "comparison": "gte",
+                "qualifyingCount": 1,
+                "qualifyingMaterials": [{
+                    "materialId": "m-1",
+                    "materialName": "真实素材名",
+                    "totalCost": "20000",
+                    "metrics": {"roi": "2.0", "netSettlementRoi": "1.20"},
+                    "evidenceRef": "commercial:hotMaterial:m-1",
+                }],
+            },
+        }
+
+        chapter01 = build_presentation_report(data)["chapters"]["chapter01"]
+
+        self.assertEqual(chapter01["portfolio"]["summaryMetrics"], {"cost": "100", "roi": "2.0"})
+        self.assertEqual(chapter01["hotMaterialPanel"]["materials"][0]["metrics"], {"roi": "2.0"})
+        self.assertNotIn("netSettlementRoi", json.dumps(chapter01, ensure_ascii=False))
+
     def test_projects_hot_material_panel_with_only_qualifying_materials(self):
         data = sample_data()
         data["portfolio"] = {

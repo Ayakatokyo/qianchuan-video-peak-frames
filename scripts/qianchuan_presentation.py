@@ -2,21 +2,13 @@
 
 from copy import deepcopy
 
+from portfolio_projection import project_portfolio_summary
+
 
 CATEGORIES = ("portrait", "product", "other")
 TABS = ("highlight", "interaction", "audience", "script", "decision")
 CHAPTER01_POINTS = ("commercial",)
 CHAPTER_SECTIONS = tuple(f"chapter0{index}" for index in range(1, 6))
-PORTFOLIO_SUMMARY_KEYS = (
-    "schemaVersion",
-    "period",
-    "newMaterialCount7d",
-    "newMaterialStartDate",
-    "newMaterialEndDate",
-    "materialCount",
-    "summaryMetrics",
-    "hotMaterialRule",
-)
 
 
 def _text(value):
@@ -49,10 +41,7 @@ def _list(value):
 
 
 def _portfolio_summary(value):
-    raw = _mapping(value)
-    if "summaryMetrics" not in raw:
-        return deepcopy(raw)
-    return {key: deepcopy(raw[key]) for key in PORTFOLIO_SUMMARY_KEYS if key in raw}
+    return project_portfolio_summary(value)
 
 
 def _material_refs(value, material_ids):
@@ -161,7 +150,10 @@ def _ai_conclusion(conclusion, hot_material_rule):
 
 def _chapter01(data):
     conclusion = _mapping(data.get("conclusion"))
-    facts = {"commercial": _portfolio_summary(data.get("portfolio") or data.get("topMaterialRoi"))}
+    # Chapter 01 is intentionally sourced only from the full portfolio facts.
+    # RPA-selected ROI facts remain available to later chapters but are not a
+    # fallback source for the portfolio chapter.
+    facts = {"commercial": _portfolio_summary(data.get("portfolio"))}
     points = []
     evidence_refs = []
     labels = {

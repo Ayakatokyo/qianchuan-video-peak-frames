@@ -1558,6 +1558,16 @@ class FinalReportV3ConclusionTests(unittest.TestCase):
 class FinalReportV4HighlightDashboardTests(unittest.TestCase):
     def setUp(self):
         FinalReportV3ConclusionTests.setUp(self)
+        self.top_payload["portfolioFacts"] = {
+            "summaryMetrics": {
+                "cost": "100",
+                "roi": "1.5",
+                "ctr": "2.5",
+                "conversionRate": "1.2",
+                "threeSecondCompletionRate": "35",
+                "cpm": "200",
+            }
+        }
 
     def _roi_facts(self):
         return FinalReportV3ConclusionTests._roi_facts(self)
@@ -1565,6 +1575,10 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
     def _conclusion(self):
         conclusion = FinalReportV3ConclusionTests._conclusion(self)
         conclusion["schemaVersion"] = 4
+        conclusion["portfolioDimensionConclusions"]["commercial"] = {
+            "conclusion": "全量素材榜单应以当前成本事实为基线，分阶段验证效率变化后再决定扩量。",
+            "evidenceRefs": ["commercial:cost"],
+        }
         conclusion["highlightDashboard"] = {
             "groups": [
                 {
@@ -1601,6 +1615,53 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
             result["conclusion"]["highlightDashboard"]["groups"][0]["category"],
             "portrait",
         )
+
+    def test_v5_chapter01_rejects_rpa_roi_evidence(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["portfolioDimensionConclusions"]["commercial"] = {
+            "conclusion": "净成交 ROI 可作为素材组合验证基线，但不应进入全量素材榜单结论。",
+            "evidenceRefs": ["commercial:netSettlementRoi"],
+        }
+        conclusion["overallConclusion"] = "组合层结论应只基于全量素材榜单事实，并把高消耗规则作为独立确定性事实解释。"
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击时序可用于判断开场节奏风险，并应与素材改写后的成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:total"],
+        }
+        self.records_by_material["m-1"].append({
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 1,
+            "metricValue": 3,
+        })
+        self.top_payload["portfolioFacts"] = {
+            "summaryMetrics": {"cost": "100", "roi": "2.0"},
+        }
+
+        with self.assertRaisesRegex(FinalReportError, "commercial.*invalid evidence reference"):
+            self._build_data(conclusion)
+
+    def test_v5_chapter01_rejects_rpa_roi_evidence_without_portfolio_facts(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["portfolioDimensionConclusions"]["commercial"] = {
+            "conclusion": "净成交 ROI 可作为素材组合验证基线，但不应进入全量素材榜单结论。",
+            "evidenceRefs": ["commercial:netSettlementRoi"],
+        }
+        conclusion["overallConclusion"] = "组合层结论应只基于全量素材榜单事实，并把高消耗规则作为独立确定性事实解释。"
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击时序可用于判断开场节奏风险，并应与素材改写后的成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:total"],
+        }
+        self.records_by_material["m-1"].append({
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 1,
+            "metricValue": 3,
+        })
+
+        with self.assertRaisesRegex(FinalReportError, "commercial.*invalid evidence reference"):
+            self._build_data(conclusion)
 
     def test_accepts_v5_with_interaction_dimension_and_visible_overall_conclusion(self):
         conclusion = self._conclusion()
@@ -1660,6 +1721,7 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
             "metricValue": 3,
         })
         self.top_payload["portfolioFacts"] = {
+            "summaryMetrics": {"cost": "100", "roi": "1.5"},
             "hotMaterialRule": {
                 "thresholdCost": "20000",
                 "comparison": "gte",
@@ -1686,6 +1748,64 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
             ["commercial:hotMaterialCount", "commercial:hotMaterial:m-1"],
         )
 
+    def test_v5_allows_historical_ai_without_hot_material_insight(self):
+        conclusion = self._conclusion()
+        conclusion["schemaVersion"] = 5
+        conclusion["overallConclusion"] = "历史 AI 结论缺少爆款解释字段时，仍应保留全量榜单事实与确定性爆款面板。"
+        conclusion["portfolioDimensionConclusions"]["interaction"] = {
+            "conclusion": "点击时序可用于判断开场节奏风险，并应与素材改写后的成交表现共同验证。",
+            "evidenceRefs": ["interaction:CLICK_COUNT:total"],
+        }
+        self.records_by_material["m-1"].append({
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 1,
+            "metricValue": 3,
+        })
+
+        self.top_payload["portfolioFacts"]["hotMaterialRule"] = {
+            "thresholdCost": "20000",
+            "comparison": "gte",
+            "qualifyingCount": 1,
+            "qualifyingMaterials": [{
+                "materialId": "m-1",
+                "materialName": "真实素材名",
+                "totalCost": "20000",
+                "metrics": {"roi": "2.0"},
+                "evidenceRef": "commercial:hotMaterial:m-1",
+            }],
+        }
+
+        result = self._build_data(conclusion)
+
+        self.assertNotIn("hotMaterialInsight", result["conclusion"])
+        self.assertEqual(
+            result["portfolio"]["hotMaterialRule"]["qualifyingCount"], 1
+        )
+
+    def test_portfolio_projection_filters_nested_rpa_metrics(self):
+        self.top_payload["portfolioFacts"]["summaryMetrics"]["netSettlementRoi"] = "1.20"
+        self.top_payload["portfolioFacts"]["hotMaterialRule"] = {
+            "thresholdCost": "20000",
+            "comparison": "gte",
+            "qualifyingCount": 1,
+            "qualifyingMaterials": [{
+                "materialId": "m-1",
+                "materialName": "真实素材名",
+                "totalCost": "20000",
+                "metrics": {"roi": "2.0", "overallPaymentRoi": "1.50"},
+                "evidenceRef": "commercial:hotMaterial:m-1",
+            }],
+        }
+
+        result = self._build_data(self._conclusion())
+
+        self.assertNotIn("netSettlementRoi", result["portfolio"]["summaryMetrics"])
+        self.assertEqual(
+            result["portfolio"]["hotMaterialRule"]["qualifyingMaterials"][0]["metrics"],
+            {"roi": "2.0"},
+        )
+
     def test_v5_rejects_hot_material_insight_with_unknown_evidence_or_extra_fields(self):
         conclusion = self._conclusion()
         conclusion["schemaVersion"] = 5
@@ -1701,6 +1821,7 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
             "metricValue": 3,
         })
         self.top_payload["portfolioFacts"] = {
+            "summaryMetrics": {"cost": "100", "roi": "1.5"},
             "hotMaterialRule": {
                 "thresholdCost": "20000",
                 "comparison": "gte",
