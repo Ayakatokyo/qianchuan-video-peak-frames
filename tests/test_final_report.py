@@ -3291,6 +3291,58 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertNotIn("bar-track", html_text)
         self.assertNotIn("bar-fill", html_text)
 
+    def test_script_overview_hint_sits_in_chart_header(self):
+        html_text = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(encoding="utf-8")
+
+        self.assertIn('const header = element("div", "chart-card-heading");', html_text)
+        self.assertIn(
+            'header.append(element("h3", "", title), element("p", "chart-card-hint", options.headerHint));',
+            html_text,
+        )
+        self.assertIn('headerHint: "点击一级标签柱可查看二级标签分布"', html_text)
+        self.assertIn('const { chartGrid } = buildScriptDashboard();', html_text)
+        self.assertIn('body.append(chartGrid);', html_text)
+        self.assertNotIn(
+            'control.append(element("p", "script-dashboard-hint", "点击一级标签柱可查看二级标签分布"));',
+            html_text,
+        )
+        self.assertIn(".unified-report .chart-card-heading {", css_text)
+        self.assertIn("justify-content: space-between;", css_text)
+        self.assertIn(
+            ".unified-report .chart-card-hint {\n"
+            "  flex: 0 1 auto;\n"
+            "  margin: 0;\n"
+            "  color: var(--unified-muted);\n"
+            "  font-size: 15px;\n"
+            "  font-weight: 700;",
+            css_text,
+        )
+
+    def test_script_overview_columns_have_visible_hover_card_feedback(self):
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            ".unified-report #script-dashboard .script-dashboard-overview .column-item {",
+            css_text,
+        )
+        self.assertIn("padding: 4px 4px 2px;", css_text)
+        self.assertIn("border-radius: 4px;", css_text)
+        self.assertIn("transition: background-color .15s ease;", css_text)
+        self.assertIn(
+            ".unified-report #script-dashboard .script-dashboard-overview .column-item:hover,",
+            css_text,
+        )
+        self.assertIn(
+            ".unified-report #script-dashboard .script-dashboard-overview .column-item:focus-visible",
+            css_text,
+        )
+        self.assertIn("background: rgba(247, 230, 203, .58);", css_text)
+        self.assertIn("filter: brightness(.9);", css_text)
+        self.assertIn("transform: translateY(-1px);", css_text)
+
     def test_prompt_explains_material_ai_summary_complements_raw_fact_cards(self):
         prompt_text = (ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md").read_text(
             encoding="utf-8"

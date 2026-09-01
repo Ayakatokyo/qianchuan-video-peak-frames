@@ -2767,6 +2767,27 @@ body.unified-report {
   font-size: 18px;
 }
 
+.unified-report .chart-card-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.unified-report .chart-card-heading h3 {
+  margin-bottom: 0;
+}
+
+.unified-report .chart-card-hint {
+  flex: 0 1 auto;
+  margin: 0;
+  color: var(--unified-muted);
+  font-size: 15px;
+  font-weight: 700;
+  text-align: right;
+}
+
 .unified-report #audience-dashboard .collapsible-body {
   grid-template-columns: minmax(0, 1fr) max-content;
   align-items: center;
@@ -3188,6 +3209,23 @@ body.unified-report {
 .unified-report #script-dashboard .script-drill-layout > .chart-card {
   min-height: 0;
   padding: 12px;
+}
+
+.unified-report #script-dashboard .script-dashboard-overview .column-item {
+  padding: 4px 4px 2px;
+  border-radius: 4px;
+  transition: background-color .15s ease;
+}
+
+.unified-report #script-dashboard .script-dashboard-overview .column-item:hover,
+.unified-report #script-dashboard .script-dashboard-overview .column-item:focus-visible {
+  background: rgba(247, 230, 203, .58);
+}
+
+.unified-report #script-dashboard .script-dashboard-overview .column-item:hover .column-bar,
+.unified-report #script-dashboard .script-dashboard-overview .column-item:focus-visible .column-bar {
+  filter: brightness(.9);
+  transform: translateY(-1px);
 }
 
 /* Keep the audience overview and its selected-group detail compact. */

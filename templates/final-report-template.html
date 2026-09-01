@@ -425,7 +425,13 @@ function appendTooltipLines(tooltip, title, lines) {
 function renderColumnChart(title, buckets, valueFormatter, options = {}) {
   const card = element("div", `chart-card chart-card-full column-chart-card${options.cardClass ? ` ${options.cardClass}` : ""}`);
   if (!options.hideTitle) {
-    card.append(element("h3", "", title));
+    if (options.headerHint) {
+      const header = element("div", "chart-card-heading");
+      header.append(element("h3", "", title), element("p", "chart-card-hint", options.headerHint));
+      card.append(header);
+    } else {
+      card.append(element("h3", "", title));
+    }
   }
   if (!Array.isArray(buckets) || buckets.length === 0) {
     card.append(element("p", "muted", "暂无可视化数据"));
@@ -976,9 +982,10 @@ function buildScriptDashboard() {
     ? projectedSummary
     : [];
   if (summary.length === 0) {
+    const chartGrid = element("div", "chart-grid script-dashboard-overview");
+    chartGrid.append(element("p", "muted", "暂无脚本标签数据"));
     return {
-      control: element("p", "muted", "暂无脚本标签数据"),
-      chartGrid: element("div", "chart-grid script-dashboard-overview"),
+      chartGrid,
     };
   }
   const level1 = {};
@@ -989,10 +996,9 @@ function buildScriptDashboard() {
   const level1Buckets = sortScriptBuckets(Object.entries(level1).map(([label, value]) => ({ bucket: label, value })));
   const totalOccurrences = level1Buckets.reduce((sum, bucket) => sum + Number(bucket.value || 0), 0) || 1;
   const maxCount = Math.max(...level1Buckets.map((bucket) => Number(bucket.value || 0)), 0);
-  const control = element("div", "script-dashboard-control");
-  control.append(element("p", "script-dashboard-hint", "点击一级标签柱可查看二级标签分布"));
   const chartGrid = element("div", "chart-grid script-dashboard-overview");
   chartGrid.append(renderColumnChart("内容公式一级标签分布", level1Buckets, (bucket) => `${formatNumber(bucket.value ?? bucket.metricPercentage)} 次`, {
+    headerHint: "点击一级标签柱可查看二级标签分布",
     axisTicks: [maxCount, Math.round(maxCount * 0.75), Math.round(maxCount * 0.5), Math.round(maxCount * 0.25), 0],
     axisValueFormatter: (value) => `${Math.round(value)} 次`,
     tooltipLines: (bucket) => [
@@ -1002,14 +1008,14 @@ function buildScriptDashboard() {
     bucketDataKey: "scriptLevel1",
     onBucketClick: (bucket, item) => renderScriptDrill(bucket.bucket, summary, bucket, item),
   }));
-  return { control, chartGrid };
+  return { chartGrid };
 }
 
 function renderScriptDashboard(options = {}) {
   const root = document.getElementById("script-dashboard");
-  const { control, chartGrid } = buildScriptDashboard();
+  const { chartGrid } = buildScriptDashboard();
   const { card, body } = createCollapsibleDataCard("", "脚本汇总数据");
-  body.append(control, chartGrid);
+  body.append(chartGrid);
   root.replaceChildren(card);
   if (options.level1) {
     const targetItem = Array.from(chartGrid.querySelectorAll("[data-script-level1]")).find((item) => item.dataset.scriptLevel1 === options.level1);
