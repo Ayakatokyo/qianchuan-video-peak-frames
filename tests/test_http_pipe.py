@@ -144,6 +144,21 @@ class DelayedWriteStdin(FakeStdin):
         return super().write(chunk)
 
 
+class SlowCleanupProcess(FakeProcess):
+    def __init__(self, stdin, delay=0.25):
+        super().__init__(stdin)
+        self.delay = delay
+        self.wait_started = threading.Event()
+        self.wait_finished = threading.Event()
+
+    def wait(self, timeout=None):
+        self.wait_calls.append(timeout)
+        self.wait_started.set()
+        time.sleep(self.delay)
+        self.wait_finished.set()
+        return 0
+
+
 def wait_until(predicate, timeout=1.0):
     deadline = time.perf_counter() + timeout
     while time.perf_counter() < deadline:
@@ -426,6 +441,30 @@ def test_stream_video_deadline_cancels_delayed_stdin_write(monkeypatch):
     assert elapsed < 0.15
     assert stdin.closed
     assert process.terminated
+    assert response.closed
+
+
+def test_stream_video_deadline_returns_before_slow_ffmpeg_cleanup(monkeypatch):
+    response = DelayedReadResponse()
+    process = SlowCleanupProcess(FakeStdin())
+    monkeypatch.setattr(rpa_adapter.time, "monotonic", time.monotonic)
+
+    started = time.perf_counter()
+    with pytest.raises(rpa_adapter.RpaAdapterError, match="total deadline"):
+        rpa_adapter.stream_video_to_ffmpeg(
+            "https://video.example/video.mp4",
+            process,
+            session=FakeSession(response),
+            max_bytes=100,
+            deadline_sec=0.02,
+        )
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.15
+    assert process.terminated
+    assert process.wait_started.wait(0.1)
+    assert process.wait_finished.wait(1.0)
+    assert process.stdin.closed
     assert response.closed
 
 

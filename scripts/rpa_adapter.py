@@ -599,7 +599,7 @@ def _close_response(response):
             pass
 
 
-def _terminate_ffmpeg_process(ffmpeg_process):
+def _request_ffmpeg_termination(ffmpeg_process):
     terminate = getattr(ffmpeg_process, "terminate", None)
     if callable(terminate):
         try:
@@ -607,6 +607,8 @@ def _terminate_ffmpeg_process(ffmpeg_process):
         except Exception:
             pass
 
+
+def _wait_for_ffmpeg_termination(ffmpeg_process):
     wait = getattr(ffmpeg_process, "wait", None)
     if callable(wait):
         try:
@@ -628,6 +630,21 @@ def _terminate_ffmpeg_process(ffmpeg_process):
                 pass
 
 
+def _terminate_ffmpeg_process(ffmpeg_process):
+    _request_ffmpeg_termination(ffmpeg_process)
+    _wait_for_ffmpeg_termination(ffmpeg_process)
+
+
+def _terminate_ffmpeg_process_in_background(ffmpeg_process):
+    _request_ffmpeg_termination(ffmpeg_process)
+    cleanup = threading.Thread(
+        target=_wait_for_ffmpeg_termination,
+        args=(ffmpeg_process,),
+        daemon=True,
+    )
+    cleanup.start()
+
+
 class _VideoStreamState:
     def __init__(self):
         self.cancelled = threading.Event()
@@ -635,6 +652,7 @@ class _VideoStreamState:
         self.response = None
         self.result = None
         self.error = None
+        self.deadline_exceeded = False
 
 
 def _bounded_stream_timeout(timeout, remaining):
@@ -724,6 +742,9 @@ def _stream_video_worker(
     except RpaAdapterError as exc:
         if not state.cancelled.is_set():
             state.error = exc
+            state.deadline_exceeded = str(exc) == (
+                "video stream exceeded total deadline"
+            )
     except Exception as exc:
         if not state.cancelled.is_set():
             try:
@@ -736,11 +757,14 @@ def _stream_video_worker(
         _close_response(response)
 
 
-def _abort_video_stream(state, ffmpeg_process):
+def _abort_video_stream(state, ffmpeg_process, *, background_cleanup=False):
     state.cancelled.set()
     _close_stream_response(state)
     _close_ffmpeg_stdin(ffmpeg_process)
-    _terminate_ffmpeg_process(ffmpeg_process)
+    if background_cleanup:
+        _terminate_ffmpeg_process_in_background(ffmpeg_process)
+    else:
+        _terminate_ffmpeg_process(ffmpeg_process)
 
 
 def stream_video_to_ffmpeg(
@@ -775,11 +799,16 @@ def stream_video_to_ffmpeg(
     worker.start()
     worker.join(remaining)
     if worker.is_alive():
-        _abort_video_stream(state, ffmpeg_process)
-        worker.join(0.05)
+        _abort_video_stream(
+            state, ffmpeg_process, background_cleanup=True
+        )
         raise RpaAdapterError("video stream exceeded total deadline")
     if state.error is not None:
-        _abort_video_stream(state, ffmpeg_process)
+        _abort_video_stream(
+            state,
+            ffmpeg_process,
+            background_cleanup=state.deadline_exceeded,
+        )
         raise state.error
     if state.result is None:
         _abort_video_stream(state, ffmpeg_process)
