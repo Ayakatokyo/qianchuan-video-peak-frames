@@ -26,6 +26,7 @@ from peak_frame_lib import (  # noqa: E402
     build_summary,
     extract_frame,
     extract_frames_batch,
+    extract_frames_from_stream,
     find_local_peaks,
     format_frame_filename,
     format_seconds_token,
@@ -2624,6 +2625,121 @@ class ProcessingPipelineTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+
+    def test_video_input_mode_defaults_to_local_and_accepts_pipe(self):
+        parser = extract_peak_frames.build_parser()
+
+        self.assertEqual(parser.parse_args([]).video_input_mode, "local")
+        self.assertEqual(
+            parser.parse_args(["--video-input-mode", "pipe"]).video_input_mode,
+            "pipe",
+        )
+
+    def test_wave_postprocess_pipe_uses_url_without_downloading_video(self):
+        material_id = "m-pipe-cli"
+        records = stream_records(material_id)
+        entry = {
+            "materialId": material_id,
+            "records": records,
+            "timingsSec": extract_peak_frames._empty_material_timings(),
+        }
+        args = type(
+            "Args",
+            (),
+            {
+                "output_dir": "/tmp/qianchuan-test-output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+                "video_input_mode": "pipe",
+            },
+        )()
+        result = (Path("result"), Path("summary.json"), Path("summary.md"))
+
+        with patch.object(
+            extract_peak_frames,
+            "extract_frames_from_stream",
+            return_value=result,
+        ) as stream, patch.object(
+            extract_peak_frames,
+            "download_video",
+        ) as download, patch.object(
+            extract_peak_frames,
+            "process_records",
+        ) as local:
+            attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+
+        self.assertIsNone(attempt["error"])
+        stream.assert_called_once()
+        self.assertEqual(
+            stream.call_args.args[:3],
+            (records, records[0]["videoUrl"], "/tmp/qianchuan-test-output"),
+        )
+        self.assertEqual(stream.call_args.kwargs["video_source"], "rpa-http-pipe")
+        self.assertIs(stream.call_args.kwargs["timings"], attempt["timingsSec"])
+        download.assert_not_called()
+        local.assert_not_called()
+
+    def test_pipe_mode_rejects_explicit_local_video(self):
+        args = type(
+            "Args",
+            (),
+            {
+                "input_csv": "records.csv",
+                "input_json": None,
+                "video": "local.mp4",
+                "output_dir": "output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+                "diagnosis_records_dir": None,
+                "video_input_mode": "pipe",
+            },
+        )()
+        with patch.object(
+            extract_peak_frames, "parse_diagnosis_csv", return_value=stream_records()
+        ):
+            with self.assertRaises(InputDataError) as raised:
+                extract_peak_frames.process_local_input(args)
+
+        self.assertIn("cannot be used with --video", str(raised.exception))
+
+    def test_pipe_mode_accepts_json_without_local_video(self):
+        records = stream_records("m-json-pipe")
+        args = type(
+            "Args",
+            (),
+            {
+                "input_csv": None,
+                "input_json": None,
+                "video": None,
+                "output_dir": "output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+                "diagnosis_records_dir": None,
+                "video_input_mode": "pipe",
+            },
+        )()
+        result = (Path("result"), Path("summary.json"), Path("summary.md"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "records.json"
+            input_path.write_text(json.dumps(records), encoding="utf-8")
+            args.input_json = str(input_path)
+            with patch.object(
+                extract_peak_frames,
+                "extract_frames_from_stream",
+                return_value=result,
+            ) as stream:
+                processed = extract_peak_frames.process_local_input(args)
+
+        self.assertEqual(processed, result)
+        stream.assert_called_once()
+        self.assertEqual(stream.call_args.args[:2], (records, records[0]["videoUrl"]))
+        self.assertEqual(stream.call_args.kwargs["video_source"], "http-pipe")
+
+    def test_pipe_timing_fields_are_part_of_material_timing_contract(self):
+        timings = extract_peak_frames._empty_material_timings()
+
+        self.assertEqual(timings["videoStreamBytes"], 0.0)
+        self.assertEqual(timings["videoStreamSec"], 0.0)
 
     def test_wave_postprocess_passes_timings_to_process_records_once(self):
         entry = {

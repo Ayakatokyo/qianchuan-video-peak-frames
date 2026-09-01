@@ -17,6 +17,7 @@ from peak_frame_lib import (
     DEFAULT_FFMPEG_TIMEOUT_SEC,
     FfmpegError,
     InputDataError,
+    extract_frames_from_stream,
     parse_click_series,
     process_local,
     process_records,
@@ -68,6 +69,8 @@ MATERIAL_TIMING_FIELDS = (
     "diagnosisRecordWriteSec",
     "videoDownloadSec",
     "videoProbeSec",
+    "videoStreamBytes",
+    "videoStreamSec",
     "ffmpegBatchSec",
     "ffmpegFallbackSec",
     "summaryWriteSec",
@@ -124,6 +127,12 @@ def build_parser():
     input_group.add_argument("--input-json")
     input_group.add_argument("--input-csv")
     parser.add_argument("--video")
+    parser.add_argument(
+        "--video-input-mode",
+        choices=("local", "pipe"),
+        default="local",
+        help="read video from --video or stream material_info.videoUrl through FFmpeg",
+    )
     parser.add_argument("--output-dir")
     parser.add_argument("--ffmpeg-bin")
     parser.add_argument("--ffmpeg-timeout-sec", type=_positive_timeout, default=DEFAULT_FFMPEG_TIMEOUT_SEC)
@@ -1184,6 +1193,27 @@ def _attempt_wave_postprocess(args, entry):
         if records is None:
             raise RpaAdapterError("persisted RPA diagnosis records are unavailable")
         video_url = find_material_video_url(records, material_id)
+        if getattr(args, "video_input_mode", "local") == "pipe":
+            substage = "frame_extraction"
+            result = _time_call(
+                timings,
+                "frameExtractionSec",
+                extract_frames_from_stream,
+                records,
+                video_url,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                video_source="rpa-http-pipe",
+                timings=timings,
+            )
+            timings["totalSec"] = _elapsed_since(started_at)
+            return {
+                "result": result,
+                "error": None,
+                "timingsSec": timings,
+                "substage": "completed",
+            }
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = artifact_path(temp_dir, material_id, ".mp4")
             substage = "download"
@@ -1407,6 +1437,13 @@ def _wave_batch_status(args):
 
 def process_local_input(args):
     """Process local JSON/CSV input without entering the RPA workflow."""
+    video_input_mode = getattr(args, "video_input_mode", "local")
+    if video_input_mode == "pipe" and args.video:
+        raise InputDataError(
+            "--video-input-mode pipe cannot be used with --video; "
+            "omit the local video so material_info.videoUrl can be streamed"
+        )
+
     if args.input_csv:
         records = parse_diagnosis_csv(args.input_csv)
         material_id = ""
@@ -1429,6 +1466,15 @@ def process_local_input(args):
             )
 
         video_url = find_material_video_url(records, material_id)
+        if video_input_mode == "pipe":
+            return extract_frames_from_stream(
+                records,
+                video_url,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                video_source="http-pipe",
+            )
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = Path(temp_dir) / (
                 f"{material_id or Path(args.input_csv).stem}.mp4"
@@ -1443,12 +1489,33 @@ def process_local_input(args):
                 ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
             )
 
-    return process_local(
-        args.input_json,
-        args.video,
+    if video_input_mode != "pipe":
+        return process_local(
+            args.input_json,
+            args.video,
+            args.output_dir,
+            ffmpeg_bin=args.ffmpeg_bin,
+            ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+        )
+
+    input_path = Path(args.input_json)
+    if not input_path.is_file():
+        raise InputDataError(f"input JSON does not exist: {input_path}")
+    try:
+        records = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InputDataError(
+            f"input must contain valid JSON: {input_path}"
+        ) from exc
+    material_id, _points = parse_click_series(records)
+    video_url = find_material_video_url(records, material_id)
+    return extract_frames_from_stream(
+        records,
+        video_url,
         args.output_dir,
         ffmpeg_bin=args.ffmpeg_bin,
         ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+        video_source="http-pipe",
     )
 
 
@@ -1458,6 +1525,11 @@ def main(argv=None):
     args = parser.parse_args(parsed_argv)
     resolve_concurrency(args, parsed_argv)
     try:
+        if args.video_input_mode == "pipe" and args.video:
+            parser.error(
+                "--video-input-mode pipe cannot be used with --video; "
+                "omit --video to stream material_info.videoUrl"
+            )
         if args.list_shop_accounts:
             return _list_shop_accounts()
         if (args.resume or args.batch_manifest or args.verify) and not (
@@ -1538,7 +1610,7 @@ def main(argv=None):
             if not args.output_dir:
                 parser.error("--output-dir is required")
             if not (args.input_json or args.input_csv) or (
-                args.input_json and not args.video
+                args.input_json and not args.video and args.video_input_mode != "pipe"
             ):
                 parser.error(
                     "--input-json requires --video; --input-csv can use "
