@@ -2296,6 +2296,52 @@ class UrlBatchSafetyTests(unittest.TestCase):
         self.assertNotIn("secret-value", summary_text)
         self.assertEqual(leftovers, [])
 
+    def test_url_batch_failure_keeps_signed_url_out_of_isolated_missing_frame(self):
+        records = [
+            click_record(second, value, material_id="m-url-batch-error")
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        records.append(
+            {
+                "recordType": "material_info",
+                "materialId": "m-url-batch-error",
+                "videoUrl": self.URL,
+                "videoDuration": "6.0",
+            }
+        )
+
+        def extract_one(_ffmpeg, _video, _timestamp, output, **_kwargs):
+            if Path(output).name.startswith("peak_top_2"):
+                raise FfmpegError(f"isolated failure for {self.URL}")
+            Path(output).write_bytes(DECODABLE_JPEG)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch("peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"), patch(
+                "peak_frame_lib.probe_video_duration", return_value=6.0
+            ), patch(
+                "peak_frame_lib.extract_frames_batch",
+                side_effect=FfmpegError(f"batch failure for {self.URL}"),
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=extract_one
+            ):
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records,
+                    "records.json",
+                    self.URL,
+                    root / "output",
+                    source_kind="url",
+                    url_capabilities={
+                        "supportsRange": True,
+                        "moovPosition": "head",
+                    },
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertNotIn("do-not-log", json.dumps(summary))
+        self.assertNotIn("secret-value", json.dumps(summary))
+
 
 class TimestampValidationTests(unittest.TestCase):
     def test_accepts_zero_and_timestamp_just_under_video_duration(self):

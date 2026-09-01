@@ -1268,7 +1268,9 @@ def process_records(
                         "metricValue": peak.metric_value,
                         "requestedTimestampSec": peak.duration_sec,
                         "errorType": type(exc).__name__,
-                        "errorMessage": _stderr_excerpt(str(exc)),
+                        "errorMessage": _safe_ffmpeg_stderr(
+                            str(exc), video, resolved_kind
+                        ),
                     }
                 )
             else:

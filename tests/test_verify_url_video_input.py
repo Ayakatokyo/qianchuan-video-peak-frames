@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 import sys
 import unittest
 from types import SimpleNamespace
@@ -73,7 +74,7 @@ class VerifyUrlVideoInputTests(unittest.TestCase):
         )
 
     def test_cleanup_scan_finds_mp4_and_hidden_staging_files(self):
-        with __import__("tempfile").TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "material.mp4").touch()
             (root / ".frame.123.jpg").touch()
