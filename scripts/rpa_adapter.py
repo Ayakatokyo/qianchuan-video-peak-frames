@@ -46,6 +46,7 @@ class GatewayFile:
 DEFAULT_CSV_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_DOWNLOAD_DEADLINE_SEC = 600
+HTTP_PIPE_CHUNK_SIZE = 1024 * 1024
 
 
 def _default_session():
@@ -565,6 +566,106 @@ def download_video(
             ):
                 raise
             time.sleep(retry_backoff_sec * (2**attempt_index))
+
+
+def _close_ffmpeg_stdin(ffmpeg_process):
+    stdin = getattr(ffmpeg_process, "stdin", None)
+    close = getattr(stdin, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _terminate_ffmpeg_process(ffmpeg_process):
+    terminate = getattr(ffmpeg_process, "terminate", None)
+    if not callable(terminate):
+        return
+    try:
+        terminate()
+    except Exception:
+        return
+
+    wait = getattr(ffmpeg_process, "wait", None)
+    if not callable(wait):
+        return
+    try:
+        wait(timeout=5)
+        return
+    except Exception:
+        pass
+
+    kill = getattr(ffmpeg_process, "kill", None)
+    if callable(kill):
+        try:
+            kill()
+        except Exception:
+            return
+        try:
+            wait(timeout=5)
+        except Exception:
+            pass
+
+
+def stream_video_to_ffmpeg(
+    video_url,
+    ffmpeg_process,
+    session=None,
+    timeout=300,
+    max_bytes=DEFAULT_VIDEO_MAX_BYTES,
+    deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+):
+    if not str(video_url or "").strip():
+        raise RpaAdapterError("videoUrl is required")
+    session = _default_session() if session is None else session
+    response = None
+    started = time.monotonic()
+    try:
+        response = session.get(video_url, stream=True, timeout=timeout)
+        _raise_for_status(response, "stream video to FFmpeg")
+        headers = getattr(response, "headers", {})
+        content_length = headers.get("Content-Length")
+        if content_length is None:
+            content_length = headers.get("content-length")
+        try:
+            declared_size = int(content_length) if content_length is not None else None
+        except (TypeError, ValueError):
+            declared_size = None
+        if declared_size is not None and declared_size > max_bytes:
+            raise RpaAdapterError("streamed video exceeds maximum size")
+
+        written = 0
+        for chunk in response.iter_content(chunk_size=HTTP_PIPE_CHUNK_SIZE):
+            if time.monotonic() - started >= deadline_sec:
+                raise RpaAdapterError("video stream exceeded total deadline")
+            if not chunk:
+                continue
+            written += len(chunk)
+            if written > max_bytes:
+                raise RpaAdapterError("streamed video exceeds maximum size")
+            ffmpeg_process.stdin.write(chunk)
+        ffmpeg_process.stdin.close()
+        return {
+            "bytes": written,
+            "networkSec": round(time.monotonic() - started, 6),
+        }
+    except RpaAdapterError:
+        _close_ffmpeg_stdin(ffmpeg_process)
+        _terminate_ffmpeg_process(ffmpeg_process)
+        raise
+    except Exception as exc:
+        _close_ffmpeg_stdin(ffmpeg_process)
+        _terminate_ffmpeg_process(ffmpeg_process)
+        raise RpaAdapterError("unable to stream video to FFmpeg") from exc
+    finally:
+        if response is not None:
+            close = getattr(response, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
 
 def _retryable_video_download_error(error):
