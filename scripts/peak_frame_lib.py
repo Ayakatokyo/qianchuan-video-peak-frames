@@ -709,8 +709,6 @@ def extract_frames_from_stream(
         f"select={_stream_select_expression(timestamps)}",
         "-vsync",
         "0",
-        "-frames:v",
-        str(len(ordered_targets)),
         "-q:v",
         "2",
         "-y",
@@ -740,6 +738,7 @@ def extract_frames_from_stream(
             timeout=DEFAULT_HTTP_STREAM_TIMEOUT_SEC,
             max_bytes=max_bytes,
             deadline_sec=deadline_sec,
+            normalize_mp4=True,
         )
         if isinstance(timings, dict):
             timings["videoStreamBytes"] = int(stream_stats.get("bytes", 0))

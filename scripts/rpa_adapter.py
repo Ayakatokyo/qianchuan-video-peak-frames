@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import struct
 import threading
 import time
 import uuid
@@ -48,6 +49,8 @@ DEFAULT_CSV_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_DOWNLOAD_DEADLINE_SEC = 600
 HTTP_PIPE_CHUNK_SIZE = 1024 * 1024
+MP4_METADATA_PROBE_BYTES = 64 * 1024
+MAX_MP4_MOOV_BYTES = 16 * 1024 * 1024
 
 
 def _default_session():
@@ -671,6 +674,292 @@ def _close_stream_response(state):
     _close_response(response)
 
 
+def _set_stream_response(state, response):
+    with state.lock:
+        state.response = response
+        cancelled = state.cancelled.is_set()
+    return cancelled
+
+
+def _response_header(response, name):
+    headers = getattr(response, "headers", {}) or {}
+    value = headers.get(name)
+    if value is None:
+        value = headers.get(name.lower())
+    if value is None:
+        value = headers.get(name.title())
+    return value
+
+
+def _parse_content_range(value):
+    match = re.fullmatch(r"\s*bytes\s+(\d+)-(\d+)/(\d+)\s*", str(value or ""))
+    if match is None:
+        return None
+    start, end, total = (int(item) for item in match.groups())
+    if end < start or total <= end:
+        return None
+    return start, end, total
+
+
+def _iter_response_chunks(response):
+    try:
+        for chunk in response.iter_content(chunk_size=HTTP_PIPE_CHUNK_SIZE):
+            if not chunk:
+                continue
+            for offset in range(0, len(chunk), HTTP_PIPE_CHUNK_SIZE):
+                yield chunk[offset : offset + HTTP_PIPE_CHUNK_SIZE]
+    finally:
+        _close_response(response)
+
+
+def _read_response_prefix(response, limit):
+    chunks = []
+    size = 0
+    try:
+        for chunk in response.iter_content(chunk_size=HTTP_PIPE_CHUNK_SIZE):
+            if not chunk:
+                continue
+            remaining = limit - size
+            if remaining <= 0:
+                break
+            piece = chunk[:remaining]
+            chunks.append(piece)
+            size += len(piece)
+            if size >= limit:
+                break
+    finally:
+        _close_response(response)
+    return b"".join(chunks)
+
+
+def _mp4_box_header(data, offset):
+    if offset < 0 or offset + 8 > len(data):
+        return None
+    size = struct.unpack_from(">I", data, offset)[0]
+    kind = bytes(data[offset + 4 : offset + 8])
+    header_size = 8
+    if size == 1:
+        if offset + 16 > len(data):
+            return None
+        size = struct.unpack_from(">Q", data, offset + 8)[0]
+        header_size = 16
+    elif size == 0:
+        size = len(data) - offset
+    if size < header_size:
+        return None
+    return kind, size, header_size
+
+
+def _find_mp4_mdat(data):
+    offset = 0
+    while offset + 8 <= len(data):
+        header = _mp4_box_header(data, offset)
+        if header is None:
+            return None
+        kind, size, header_size = header
+        if kind == b"mdat":
+            return offset, size, header_size
+        if size > len(data) - offset:
+            return None
+        offset += size
+    return None
+
+
+_MP4_CONTAINER_BOXES = {
+    b"moov",
+    b"trak",
+    b"mdia",
+    b"minf",
+    b"stbl",
+    b"edts",
+    b"dinf",
+    b"mvex",
+    b"moof",
+    b"traf",
+    b"mfra",
+    b"udta",
+    b"meta",
+    b"ilst",
+}
+
+
+def _patch_mp4_chunk_offsets(moov, shift):
+    patched = bytearray(moov)
+
+    def walk(start, end):
+        offset = start
+        while offset + 8 <= end:
+            header = _mp4_box_header(patched, offset)
+            if header is None:
+                raise RpaAdapterError("invalid MP4 metadata box")
+            kind, size, header_size = header
+            box_end = offset + size
+            if box_end > end or box_end > len(patched):
+                raise RpaAdapterError("truncated MP4 metadata box")
+            payload = offset + header_size
+            if kind == b"stco":
+                if payload + 8 > box_end:
+                    raise RpaAdapterError("invalid MP4 stco box")
+                count = struct.unpack_from(">I", patched, payload + 4)[0]
+                table_end = payload + 8 + count * 4
+                if table_end > box_end:
+                    raise RpaAdapterError("truncated MP4 stco table")
+                for index in range(count):
+                    entry_offset = payload + 8 + index * 4
+                    value = struct.unpack_from(">I", patched, entry_offset)[0] + shift
+                    if value > 0xFFFFFFFF:
+                        raise RpaAdapterError("MP4 chunk offset exceeds stco range")
+                    struct.pack_into(">I", patched, entry_offset, value)
+            elif kind == b"co64":
+                if payload + 8 > box_end:
+                    raise RpaAdapterError("invalid MP4 co64 box")
+                count = struct.unpack_from(">I", patched, payload + 4)[0]
+                table_end = payload + 8 + count * 8
+                if table_end > box_end:
+                    raise RpaAdapterError("truncated MP4 co64 table")
+                for index in range(count):
+                    entry_offset = payload + 8 + index * 8
+                    value = struct.unpack_from(">Q", patched, entry_offset)[0] + shift
+                    struct.pack_into(">Q", patched, entry_offset, value)
+            elif kind in _MP4_CONTAINER_BOXES:
+                child_start = payload + 4 if kind == b"meta" else payload
+                if child_start <= box_end:
+                    walk(child_start, box_end)
+            offset = box_end
+
+    walk(0, len(patched))
+    return bytes(patched)
+
+
+def _range_request(session, video_url, byte_range, timeout, deadline_at, state):
+    remaining = max(0.0, deadline_at - time.monotonic())
+    if remaining <= 0:
+        raise RpaAdapterError("video stream exceeded total deadline")
+    response = session.get(
+        video_url,
+        headers={"Range": f"bytes={byte_range}"},
+        stream=True,
+        timeout=_bounded_stream_timeout(timeout, remaining),
+    )
+    if _set_stream_response(state, response):
+        _close_response(response)
+        return None
+    return response
+
+
+def _iter_reordered_mp4(video_url, session, timeout, deadline_at, max_bytes, state):
+    """Yield an EOF-moov MP4 as faststart bytes using bounded HTTP ranges.
+
+    A non-seekable FFmpeg input cannot consume the common ``mdat`` then
+    ``moov`` layout. Range requests let us hold only the small metadata box,
+    relocate it before the media payload, and keep the payload streamed.
+    """
+    probe = _range_request(
+        session,
+        video_url,
+        f"0-{MP4_METADATA_PROBE_BYTES - 1}",
+        timeout,
+        deadline_at,
+        state,
+    )
+    if probe is None:
+        return
+    try:
+        _raise_for_status(probe, "stream video to FFmpeg", include_body=False)
+        content_range = _parse_content_range(_response_header(probe, "Content-Range"))
+        if getattr(probe, "status_code", None) != 206 or content_range is None:
+            yield from _iter_response_chunks(probe)
+            return
+        _start, _end, total_size = content_range
+        if total_size > max_bytes:
+            raise RpaAdapterError("streamed video exceeds maximum size")
+        prefix_probe = _read_response_prefix(probe, MP4_METADATA_PROBE_BYTES)
+        mdat = _find_mp4_mdat(prefix_probe)
+        if mdat is None:
+            response = _range_request(
+                session, video_url, "0-", timeout, deadline_at, state
+            )
+            if response is None:
+                return
+            try:
+                _raise_for_status(response, "stream video to FFmpeg", include_body=False)
+                declared_size = _response_header(response, "Content-Length")
+                try:
+                    if declared_size is not None and int(declared_size) > max_bytes:
+                        raise RpaAdapterError("streamed video exceeds maximum size")
+                except (TypeError, ValueError):
+                    pass
+                yield from _iter_response_chunks(response)
+            finally:
+                _close_response(response)
+            return
+
+        mdat_offset, mdat_size, _mdat_header_size = mdat
+        if mdat_size == 0 or mdat_offset + mdat_size > total_size:
+            raise RpaAdapterError("streamed MP4 has an invalid mdat range")
+        moov_offset = mdat_offset + mdat_size
+        moov_size = total_size - moov_offset
+        if moov_size <= 8 or moov_size > MAX_MP4_MOOV_BYTES:
+            raise RpaAdapterError("streamed MP4 metadata exceeds bounded range")
+
+        moov_response = _range_request(
+            session,
+            video_url,
+            f"{moov_offset}-{total_size - 1}",
+            timeout,
+            deadline_at,
+            state,
+        )
+        if moov_response is None:
+            return
+        try:
+            _raise_for_status(
+                moov_response, "stream video to FFmpeg", include_body=False
+            )
+            moov = _read_response_prefix(moov_response, moov_size)
+        finally:
+            _close_response(moov_response)
+        moov_header = _mp4_box_header(moov, 0)
+        if (
+            len(moov) != moov_size
+            or moov_header is None
+            or moov_header[0] != b"moov"
+            or moov_header[1] != moov_size
+        ):
+            raise RpaAdapterError("streamed MP4 moov range is invalid")
+        relocated_moov = _patch_mp4_chunk_offsets(moov, moov_size)
+
+        yield prefix_probe[:mdat_offset]
+        yield relocated_moov
+
+        mdat_response = _range_request(
+            session,
+            video_url,
+            f"{mdat_offset}-{moov_offset - 1}",
+            timeout,
+            deadline_at,
+            state,
+        )
+        if mdat_response is None:
+            return
+        mdat_bytes = 0
+        try:
+            _raise_for_status(
+                mdat_response, "stream video to FFmpeg", include_body=False
+            )
+            for chunk in _iter_response_chunks(mdat_response):
+                mdat_bytes += len(chunk)
+                if mdat_bytes > mdat_size:
+                    raise RpaAdapterError("streamed MP4 mdat range is too large")
+                yield chunk
+        finally:
+            _close_response(mdat_response)
+        if mdat_bytes != mdat_size:
+            raise RpaAdapterError("streamed MP4 mdat range is truncated")
+    finally:
+        _close_response(probe)
+
+
 def _stream_video_worker(
     video_url,
     ffmpeg_process,
@@ -680,6 +969,7 @@ def _stream_video_worker(
     started,
     deadline_at,
     state,
+    normalize_mp4,
 ):
     response = None
     try:
@@ -688,32 +978,37 @@ def _stream_video_worker(
         remaining = max(0.0, deadline_at - time.monotonic())
         if remaining <= 0:
             raise RpaAdapterError("video stream exceeded total deadline")
-        response = session.get(
-            video_url,
-            stream=True,
-            timeout=_bounded_stream_timeout(timeout, remaining),
-        )
-        with state.lock:
-            state.response = response
-            cancelled = state.cancelled.is_set()
-        if cancelled:
-            return
-        _raise_for_status(
-            response, "stream video to FFmpeg", include_body=False
-        )
-        headers = getattr(response, "headers", {})
-        content_length = headers.get("Content-Length")
-        if content_length is None:
-            content_length = headers.get("content-length")
-        try:
-            declared_size = int(content_length) if content_length is not None else None
-        except (TypeError, ValueError):
-            declared_size = None
-        if declared_size is not None and declared_size > max_bytes:
-            raise RpaAdapterError("streamed video exceeds maximum size")
-
         written = 0
-        for chunk in response.iter_content(chunk_size=HTTP_PIPE_CHUNK_SIZE):
+        if normalize_mp4:
+            chunks = _iter_reordered_mp4(
+                video_url,
+                session,
+                timeout,
+                deadline_at,
+                max_bytes,
+                state,
+            )
+        else:
+            response = session.get(
+                video_url,
+                stream=True,
+                timeout=_bounded_stream_timeout(timeout, remaining),
+            )
+            if _set_stream_response(state, response):
+                return
+            _raise_for_status(
+                response, "stream video to FFmpeg", include_body=False
+            )
+            content_length = _response_header(response, "Content-Length")
+            try:
+                declared_size = int(content_length) if content_length is not None else None
+            except (TypeError, ValueError):
+                declared_size = None
+            if declared_size is not None and declared_size > max_bytes:
+                raise RpaAdapterError("streamed video exceeds maximum size")
+            chunks = _iter_response_chunks(response)
+
+        for chunk in chunks:
             if state.cancelled.is_set():
                 return
             if time.monotonic() >= deadline_at:
@@ -774,6 +1069,7 @@ def stream_video_to_ffmpeg(
     timeout=300,
     max_bytes=DEFAULT_VIDEO_MAX_BYTES,
     deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+    normalize_mp4=False,
 ):
     if not str(video_url or "").strip():
         raise RpaAdapterError("videoUrl is required")
@@ -793,6 +1089,7 @@ def stream_video_to_ffmpeg(
             started,
             deadline_at,
             state,
+            normalize_mp4,
         ),
         daemon=True,
     )

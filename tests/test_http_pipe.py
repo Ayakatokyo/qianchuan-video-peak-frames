@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import sys
 import threading
 import time
@@ -11,6 +12,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import rpa_adapter  # noqa: E402
 import peak_frame_lib  # noqa: E402
+import benchmark_http_pipe  # noqa: E402
 
 
 class FakeResponse:
@@ -247,6 +249,65 @@ def test_stream_video_uses_fixed_chunks_backpressure_and_returns_stats(monkeypat
     assert stdin.closed
     assert response.closed
     assert not process.terminated
+
+
+def test_stream_video_reorders_eof_moov_with_bounded_ranges(monkeypatch):
+    def box(kind, payload):
+        return (len(payload) + 8).to_bytes(4, "big") + kind + payload
+
+    prefix = box(b"ftyp", b"")
+    mdat = box(b"mdat", b"payload")
+    moov = box(b"moov", b"x")
+    total_size = len(prefix) + len(mdat) + len(moov)
+    responses = [
+        FakeResponse(
+            [prefix + mdat],
+            status_code=206,
+            headers={"Content-Range": f"bytes 0-{len(prefix) + len(mdat) - 1}/{total_size}"},
+        ),
+        FakeResponse(
+            [moov],
+            status_code=206,
+            headers={"Content-Range": f"bytes {len(prefix) + len(mdat)}-{total_size - 1}/{total_size}"},
+        ),
+        FakeResponse(
+            [mdat],
+            status_code=206,
+            headers={"Content-Range": f"bytes {len(prefix)}-{len(prefix) + len(mdat) - 1}/{total_size}"},
+        ),
+    ]
+
+    class RangeSession:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+            self.get_calls = []
+
+        def get(self, url, **kwargs):
+            self.get_calls.append((url, kwargs))
+            return next(self.responses)
+
+    session = RangeSession(responses)
+    stdin = FakeStdin()
+    process = FakeProcess(stdin)
+    monkeypatch.setattr(rpa_adapter.time, "monotonic", SequenceClock([0.0]).monotonic)
+
+    stats = rpa_adapter.stream_video_to_ffmpeg(
+        "https://video.example/video.mp4",
+        process,
+        session=session,
+        max_bytes=total_size,
+        deadline_sec=60,
+        normalize_mp4=True,
+    )
+
+    assert [call[1]["headers"]["Range"] for call in session.get_calls] == [
+        f"bytes=0-{rpa_adapter.MP4_METADATA_PROBE_BYTES - 1}",
+        f"bytes={len(prefix) + len(mdat)}-{total_size - 1}",
+        f"bytes={len(prefix)}-{len(prefix) + len(mdat) - 1}",
+    ]
+    assert stdin.writes == [prefix, moov, mdat]
+    assert stats["bytes"] == total_size
+    assert all(response.closed for response in responses)
 
 
 def test_stream_video_rejects_bytes_over_limit_before_writing_excess(monkeypatch):
@@ -584,3 +645,100 @@ def test_stream_extractor_cleans_process_after_transport_failure(monkeypatch, tm
         "httpStatus": 503,
     }
     assert list((tmp_path / "output" / "m-transport-failure").glob(".stream-*.jpg")) == []
+
+
+def test_stream_extractor_cleans_process_after_stream_deadline(monkeypatch, tmp_path):
+    records = stream_records("m-stream-deadline")
+    process_holder = {}
+
+    class DeadlineProcess:
+        def __init__(self, command):
+            self.command = command
+            self.stdin = FakeStdin()
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -15
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def kill(self):
+            self.terminated = True
+            self.returncode = -9
+
+    def fake_popen(command, **_kwargs):
+        process_holder["process"] = DeadlineProcess(command)
+        return process_holder["process"]
+
+    def fail_transport(_url, _process, **_kwargs):
+        raise rpa_adapter.RpaAdapterError(
+            "video stream exceeded total deadline",
+            diagnostics={"gatewayPhase": "stream"},
+        )
+
+    monkeypatch.setattr(peak_frame_lib.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(peak_frame_lib, "resolve_ffmpeg", lambda **_kwargs: "ffmpeg")
+    monkeypatch.setattr(peak_frame_lib, "stream_video_to_ffmpeg", fail_transport)
+
+    with pytest.raises(rpa_adapter.RpaAdapterError, match="total deadline"):
+        peak_frame_lib.extract_frames_from_stream(
+            records,
+            records[0]["videoUrl"],
+            tmp_path / "output",
+        )
+
+    process = process_holder["process"]
+    assert process.terminated
+    assert process.stdin.closed
+    assert list((tmp_path / "output" / "m-stream-deadline").glob(".stream-*.jpg")) == []
+    assert list((tmp_path / "output").rglob("*.mp4")) == []
+
+
+def test_benchmark_report_compares_frames_without_persisting_signed_url(tmp_path):
+    signed_url = "https://cdn.example/video.mp4?X-Amz-Signature=do-not-log"
+    pipe_case = {
+        "status": "succeeded",
+        "elapsedSec": 2.5,
+        "videoStreamBytes": 1234,
+        "videoStreamSec": 1.25,
+        "pythonRssBytes": 100,
+        "ffmpegRssBytes": 200,
+        "summary": {
+            "frames": [
+                {
+                    "rankType": "zero_second",
+                    "durationSec": 0.0,
+                    "framePath": "zero_second_0000s_0.jpg",
+                }
+            ]
+        },
+        "frameHashes": {"zero_second": "abc"},
+    }
+    local_case = {
+        "status": "succeeded",
+        "elapsedSec": 4.0,
+        "videoBytes": 1234,
+        "pythonRssBytes": 110,
+        "ffmpegRssBytes": 210,
+        "summary": pipe_case["summary"],
+        "frameHashes": {"zero_second": "abc"},
+    }
+
+    report = benchmark_http_pipe.build_comparison_report(
+        "m-benchmark", signed_url, pipe_case, local_case
+    )
+    serialized = json.dumps(report, ensure_ascii=False)
+
+    assert signed_url not in serialized
+    assert report["video"]["host"] == "cdn.example"
+    assert report["frameConsistency"]["sameTimestamps"] is True
+    assert report["frameConsistency"]["sameFrameHashes"] is True
+    assert report["pipe"]["videoStreamBytes"] == 1234
+    assert report["local"]["videoBytes"] == 1234
