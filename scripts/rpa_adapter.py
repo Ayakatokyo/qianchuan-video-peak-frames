@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import threading
 import time
 import uuid
 
@@ -139,14 +140,23 @@ def list_accounts(environ=None, session=None):
     return response.json()
 
 
-def _raise_for_status(response, action):
+def _raise_for_status(response, action, *, include_body=True):
     try:
         response.raise_for_status()
-    except Exception as exc:
+    except Exception:
+        diagnostics = _gateway_response_diagnostics(
+            response, include_body=include_body
+        )
+        status = diagnostics.get("httpStatus")
+        detail = (
+            f"gateway response HTTP {status}"
+            if status is not None
+            else "gateway response error"
+        )
         raise RpaAdapterError(
-            f"unable to {action}: {exc}",
-            _gateway_response_diagnostics(response),
-        ) from exc
+            f"unable to {action}: {detail}",
+            diagnostics,
+        ) from None
 
 
 def _redact_gateway_summary(value):
@@ -172,7 +182,7 @@ def _redact_gateway_summary(value):
     return text[:1024]
 
 
-def _gateway_response_diagnostics(response):
+def _gateway_response_diagnostics(response, *, include_body=True):
     diagnostics = {"gatewayPhase": "response"}
     status = getattr(response, "status_code", None)
     if isinstance(status, int):
@@ -184,10 +194,12 @@ def _gateway_response_diagnostics(response):
         elif 400 <= status <= 499:
             diagnostics["rpaFailureClass"] = "gateway_client_error"
     headers = getattr(response, "headers", {})
-    if isinstance(headers, dict):
+    if hasattr(headers, "get"):
         request_id = headers.get("X-Request-Id") or headers.get("x-request-id")
         if isinstance(request_id, str) and request_id.strip():
             diagnostics["requestId"] = request_id.strip()
+    if not include_body:
+        return diagnostics
     try:
         payload = response.json()
     except Exception:
@@ -578,52 +590,99 @@ def _close_ffmpeg_stdin(ffmpeg_process):
             pass
 
 
+def _close_response(response):
+    close = getattr(response, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
 def _terminate_ffmpeg_process(ffmpeg_process):
     terminate = getattr(ffmpeg_process, "terminate", None)
-    if not callable(terminate):
-        return
-    try:
-        terminate()
-    except Exception:
-        return
+    if callable(terminate):
+        try:
+            terminate()
+        except Exception:
+            pass
 
     wait = getattr(ffmpeg_process, "wait", None)
-    if not callable(wait):
-        return
-    try:
-        wait(timeout=5)
-        return
-    except Exception:
-        pass
+    if callable(wait):
+        try:
+            wait(timeout=5)
+            return
+        except Exception:
+            pass
 
     kill = getattr(ffmpeg_process, "kill", None)
     if callable(kill):
         try:
             kill()
         except Exception:
-            return
-        try:
-            wait(timeout=5)
-        except Exception:
             pass
+        if callable(wait):
+            try:
+                wait(timeout=5)
+            except Exception:
+                pass
 
 
-def stream_video_to_ffmpeg(
+class _VideoStreamState:
+    def __init__(self):
+        self.cancelled = threading.Event()
+        self.lock = threading.Lock()
+        self.response = None
+        self.result = None
+        self.error = None
+
+
+def _bounded_stream_timeout(timeout, remaining):
+    if timeout is None:
+        return remaining
+    if isinstance(timeout, tuple):
+        return tuple(_bounded_stream_timeout(value, remaining) for value in timeout)
+    if isinstance(timeout, (int, float)):
+        return min(float(timeout), remaining)
+    return timeout
+
+
+def _close_stream_response(state):
+    with state.lock:
+        response = state.response
+    _close_response(response)
+
+
+def _stream_video_worker(
     video_url,
     ffmpeg_process,
-    session=None,
-    timeout=300,
-    max_bytes=DEFAULT_VIDEO_MAX_BYTES,
-    deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+    session,
+    timeout,
+    max_bytes,
+    started,
+    deadline_at,
+    state,
 ):
-    if not str(video_url or "").strip():
-        raise RpaAdapterError("videoUrl is required")
-    session = _default_session() if session is None else session
     response = None
-    started = time.monotonic()
     try:
-        response = session.get(video_url, stream=True, timeout=timeout)
-        _raise_for_status(response, "stream video to FFmpeg")
+        if state.cancelled.is_set():
+            return
+        remaining = max(0.0, deadline_at - time.monotonic())
+        if remaining <= 0:
+            raise RpaAdapterError("video stream exceeded total deadline")
+        response = session.get(
+            video_url,
+            stream=True,
+            timeout=_bounded_stream_timeout(timeout, remaining),
+        )
+        with state.lock:
+            state.response = response
+            cancelled = state.cancelled.is_set()
+        if cancelled:
+            return
+        _raise_for_status(
+            response, "stream video to FFmpeg", include_body=False
+        )
         headers = getattr(response, "headers", {})
         content_length = headers.get("Content-Length")
         if content_length is None:
@@ -637,7 +696,9 @@ def stream_video_to_ffmpeg(
 
         written = 0
         for chunk in response.iter_content(chunk_size=HTTP_PIPE_CHUNK_SIZE):
-            if time.monotonic() - started >= deadline_sec:
+            if state.cancelled.is_set():
+                return
+            if time.monotonic() >= deadline_at:
                 raise RpaAdapterError("video stream exceeded total deadline")
             if not chunk:
                 continue
@@ -645,27 +706,85 @@ def stream_video_to_ffmpeg(
             if written > max_bytes:
                 raise RpaAdapterError("streamed video exceeds maximum size")
             ffmpeg_process.stdin.write(chunk)
+            if state.cancelled.is_set():
+                return
+            if time.monotonic() >= deadline_at:
+                raise RpaAdapterError("video stream exceeded total deadline")
+        if state.cancelled.is_set():
+            return
+        if time.monotonic() >= deadline_at:
+            raise RpaAdapterError("video stream exceeded total deadline")
         ffmpeg_process.stdin.close()
-        return {
+        if state.cancelled.is_set():
+            return
+        state.result = {
             "bytes": written,
             "networkSec": round(time.monotonic() - started, 6),
         }
-    except RpaAdapterError:
-        _close_ffmpeg_stdin(ffmpeg_process)
-        _terminate_ffmpeg_process(ffmpeg_process)
-        raise
+    except RpaAdapterError as exc:
+        if not state.cancelled.is_set():
+            state.error = exc
     except Exception as exc:
-        _close_ffmpeg_stdin(ffmpeg_process)
-        _terminate_ffmpeg_process(ffmpeg_process)
-        raise RpaAdapterError("unable to stream video to FFmpeg") from exc
+        if not state.cancelled.is_set():
+            try:
+                raise RpaAdapterError(
+                    "unable to stream video to FFmpeg"
+                ) from exc
+            except RpaAdapterError as wrapped:
+                state.error = wrapped
     finally:
-        if response is not None:
-            close = getattr(response, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    pass
+        _close_response(response)
+
+
+def _abort_video_stream(state, ffmpeg_process):
+    state.cancelled.set()
+    _close_stream_response(state)
+    _close_ffmpeg_stdin(ffmpeg_process)
+    _terminate_ffmpeg_process(ffmpeg_process)
+
+
+def stream_video_to_ffmpeg(
+    video_url,
+    ffmpeg_process,
+    session=None,
+    timeout=300,
+    max_bytes=DEFAULT_VIDEO_MAX_BYTES,
+    deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+):
+    if not str(video_url or "").strip():
+        raise RpaAdapterError("videoUrl is required")
+    session = _default_session() if session is None else session
+    started = time.monotonic()
+    deadline_at = started + max(0.0, float(deadline_sec))
+    remaining = max(0.0, deadline_at - time.monotonic())
+    state = _VideoStreamState()
+    worker = threading.Thread(
+        target=_stream_video_worker,
+        args=(
+            video_url,
+            ffmpeg_process,
+            session,
+            timeout,
+            max_bytes,
+            started,
+            deadline_at,
+            state,
+        ),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(remaining)
+    if worker.is_alive():
+        _abort_video_stream(state, ffmpeg_process)
+        worker.join(0.05)
+        raise RpaAdapterError("video stream exceeded total deadline")
+    if state.error is not None:
+        _abort_video_stream(state, ffmpeg_process)
+        raise state.error
+    if state.result is None:
+        _abort_video_stream(state, ffmpeg_process)
+        raise RpaAdapterError("unable to stream video to FFmpeg")
+    return state.result
 
 
 def _retryable_video_download_error(error):

@@ -1,5 +1,7 @@
 from pathlib import Path
 import sys
+import threading
+import time
 
 import pytest
 
@@ -11,12 +13,23 @@ import rpa_adapter  # noqa: E402
 
 
 class FakeResponse:
-    def __init__(self, chunks, *, status_code=200, status_error=None, headers=None, events=None):
+    def __init__(
+        self,
+        chunks,
+        *,
+        status_code=200,
+        status_error=None,
+        headers=None,
+        events=None,
+        json_payload=None,
+    ):
         self.chunks = list(chunks)
         self.status_code = status_code
         self.status_error = status_error
         self.headers = {} if headers is None else headers
         self.events = [] if events is None else events
+        self.json_payload = json_payload
+        self.json_calls = 0
         self.chunk_sizes = []
         self.closed = False
 
@@ -31,7 +44,8 @@ class FakeResponse:
             yield chunk
 
     def json(self):
-        return None
+        self.json_calls += 1
+        return self.json_payload
 
     def close(self):
         self.closed = True
@@ -66,12 +80,77 @@ class FakeStdin:
 
 
 class FakeProcess:
-    def __init__(self, stdin):
+    def __init__(self, stdin, *, terminate_error=None, wait_errors=None):
         self.stdin = stdin
+        self.terminate_error = terminate_error
+        self.wait_errors = [] if wait_errors is None else list(wait_errors)
         self.terminated = False
+        self.terminate_calls = 0
+        self.wait_calls = []
+        self.killed = False
 
     def terminate(self):
+        self.terminate_calls += 1
+        if self.terminate_error is not None:
+            raise self.terminate_error
         self.terminated = True
+
+    def wait(self, timeout=None):
+        self.wait_calls.append(timeout)
+        if self.wait_errors:
+            raise self.wait_errors.pop(0)
+        return 0
+
+    def kill(self):
+        self.killed = True
+        self.terminated = True
+
+
+class DelayedGetSession:
+    def __init__(self, response, delay=0.25):
+        self.response = response
+        self.delay = delay
+        self.release = threading.Event()
+        self.get_calls = []
+
+    def get(self, _url, **kwargs):
+        self.get_calls.append(kwargs)
+        self.release.wait(self.delay)
+        return self.response
+
+
+class DelayedReadResponse(FakeResponse):
+    def __init__(self, delay=0.25):
+        super().__init__([b"chunk"])
+        self.delay = delay
+        self.release = threading.Event()
+
+    def iter_content(self, chunk_size):
+        self.chunk_sizes.append(chunk_size)
+        self.release.wait(self.delay)
+        yield b"chunk"
+
+
+class DelayedWriteStdin(FakeStdin):
+    def __init__(self, delay=0.25):
+        super().__init__()
+        self.delay = delay
+        self.release = threading.Event()
+
+    def write(self, chunk):
+        self.release.wait(self.delay)
+        if self.closed:
+            raise BrokenPipeError("ffmpeg stdin closed")
+        return super().write(chunk)
+
+
+def wait_until(predicate, timeout=1.0):
+    deadline = time.perf_counter() + timeout
+    while time.perf_counter() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.001)
+    return predicate()
 
 
 class SequenceClock:
@@ -172,7 +251,7 @@ def test_stream_video_stops_at_total_deadline_and_closes_everything(monkeypatch)
     session = FakeSession(response)
     stdin = FakeStdin()
     process = FakeProcess(stdin)
-    clock = SequenceClock([0.0, 0.1, 2.0])
+    clock = SequenceClock([0.0, 0.1, 0.15, 0.2, 2.0])
     monkeypatch.setattr(rpa_adapter.time, "monotonic", clock.monotonic)
 
     with pytest.raises(rpa_adapter.RpaAdapterError, match="total deadline"):
@@ -242,3 +321,133 @@ def test_stream_video_wraps_stdin_write_error_and_closes_response(monkeypatch):
     assert stdin.closed
     assert response.closed
     assert process.terminated
+
+
+def test_stream_video_status_error_does_not_expose_signed_url_or_read_body(monkeypatch):
+    signed_url = "https://cdn.example/video.mp4?X-Amz-Signature=secret-signature"
+    response = FakeResponse(
+        [],
+        status_code=403,
+        status_error=RuntimeError(f"GET {signed_url} returned 403"),
+        headers={"X-Request-Id": "req-signed"},
+        json_payload={"error": signed_url},
+    )
+    process = FakeProcess(FakeStdin())
+    monkeypatch.setattr(rpa_adapter.time, "monotonic", SequenceClock([0.0]).monotonic)
+
+    with pytest.raises(rpa_adapter.RpaAdapterError) as raised:
+        rpa_adapter.stream_video_to_ffmpeg(
+            signed_url,
+            process,
+            session=FakeSession(response),
+            max_bytes=100,
+            deadline_sec=60,
+        )
+
+    assert signed_url not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert response.json_calls == 0
+    assert raised.value.diagnostics == {
+        "gatewayPhase": "response",
+        "httpStatus": 403,
+        "rpaFailureClass": "gateway_client_error",
+        "requestId": "req-signed",
+    }
+    assert response.closed
+    assert process.terminated
+
+
+def test_stream_video_deadline_cancels_delayed_request(monkeypatch):
+    response = FakeResponse([b"chunk"])
+    session = DelayedGetSession(response)
+    process = FakeProcess(FakeStdin())
+    monkeypatch.setattr(rpa_adapter.time, "monotonic", time.monotonic)
+
+    started = time.perf_counter()
+    with pytest.raises(rpa_adapter.RpaAdapterError, match="total deadline"):
+        rpa_adapter.stream_video_to_ffmpeg(
+            "https://video.example/video.mp4",
+            process,
+            session=session,
+            max_bytes=100,
+            deadline_sec=0.02,
+        )
+    elapsed = time.perf_counter() - started
+    session.release.set()
+
+    assert elapsed < 0.15
+    assert session.get_calls[0]["timeout"] <= 0.02
+    assert process.terminated
+    assert wait_until(lambda: response.closed)
+
+
+def test_stream_video_deadline_cancels_delayed_read(monkeypatch):
+    response = DelayedReadResponse()
+    session = FakeSession(response)
+    process = FakeProcess(FakeStdin())
+    monkeypatch.setattr(rpa_adapter.time, "monotonic", time.monotonic)
+
+    started = time.perf_counter()
+    with pytest.raises(rpa_adapter.RpaAdapterError, match="total deadline"):
+        rpa_adapter.stream_video_to_ffmpeg(
+            "https://video.example/video.mp4",
+            process,
+            session=session,
+            max_bytes=100,
+            deadline_sec=0.02,
+        )
+    elapsed = time.perf_counter() - started
+    response.release.set()
+
+    assert elapsed < 0.15
+    assert process.terminated
+    assert process.stdin.writes == []
+    assert response.closed
+
+
+def test_stream_video_deadline_cancels_delayed_stdin_write(monkeypatch):
+    response = FakeResponse([b"chunk"])
+    stdin = DelayedWriteStdin()
+    process = FakeProcess(stdin)
+    monkeypatch.setattr(rpa_adapter.time, "monotonic", time.monotonic)
+
+    started = time.perf_counter()
+    with pytest.raises(rpa_adapter.RpaAdapterError, match="total deadline"):
+        rpa_adapter.stream_video_to_ffmpeg(
+            "https://video.example/video.mp4",
+            process,
+            session=FakeSession(response),
+            max_bytes=100,
+            deadline_sec=0.02,
+        )
+    elapsed = time.perf_counter() - started
+    stdin.release.set()
+
+    assert elapsed < 0.15
+    assert stdin.closed
+    assert process.terminated
+    assert response.closed
+
+
+def test_stream_video_cleanup_uses_wait_and_kill_when_terminate_fails(monkeypatch):
+    response = FakeResponse([b"chunk"])
+    process = FakeProcess(
+        FakeStdin(write_error=BrokenPipeError("ffmpeg stdin closed")),
+        terminate_error=RuntimeError("terminate failed"),
+        wait_errors=[RuntimeError("still running")],
+    )
+    monkeypatch.setattr(rpa_adapter.time, "monotonic", SequenceClock([0.0, 0.1]).monotonic)
+
+    with pytest.raises(rpa_adapter.RpaAdapterError, match="stream"):
+        rpa_adapter.stream_video_to_ffmpeg(
+            "https://video.example/video.mp4",
+            process,
+            session=FakeSession(response),
+            max_bytes=100,
+            deadline_sec=60,
+        )
+
+    assert process.terminate_calls == 1
+    assert process.wait_calls == [5, 5]
+    assert process.killed
+    assert response.closed
