@@ -8,11 +8,16 @@ import re
 import shutil
 import subprocess
 import time
+from urllib.parse import urlsplit
 import uuid
 from typing import Optional
 
+from rpa_adapter import probe_url_capabilities
+
 
 DEFAULT_FFMPEG_TIMEOUT_SEC = 120.0
+DEFAULT_URL_BATCH_MEMORY_BUDGET_BYTES = 64 * 1024 * 1024
+DEFAULT_URL_ESTIMATED_FRAME_BYTES = 16 * 1024 * 1024
 
 
 class PeakFrameError(Exception):
@@ -25,6 +30,62 @@ class InputDataError(PeakFrameError):
 
 class FfmpegError(PeakFrameError):
     """Raised when FFmpeg cannot be resolved or inspect a video."""
+
+
+class UrlExtractionDegraded(FfmpegError):
+    """Signals that a URL batch is unsafe and should use single-frame reads."""
+
+    def __init__(self, reason, source, diagnostics=None):
+        self.reason = str(reason)
+        self.source_host = _video_source_host(source)
+        self.diagnostics = dict(diagnostics or {})
+        super().__init__(
+            "URL batch extraction degraded on host "
+            f"{self.source_host}: {self.reason}"
+        )
+
+
+UrlBatchDegraded = UrlExtractionDegraded
+
+
+def _video_source_host(source):
+    parsed = urlsplit(str(source or "").strip())
+    return parsed.hostname or "<invalid-host>"
+
+
+def _normalize_video_source(video_source, source_kind=None):
+    value = str(video_source or "").strip()
+    inferred_kind = source_kind
+    if inferred_kind is None:
+        parsed = urlsplit(value)
+        inferred_kind = "url" if parsed.scheme.lower() in {"http", "https"} else "local"
+    if inferred_kind not in {"local", "url"}:
+        raise InputDataError(
+            f"source_kind must be 'local' or 'url', got {source_kind!r}"
+        )
+    if not value:
+        raise InputDataError("video source is required")
+    if inferred_kind == "url":
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise InputDataError("video source must be an absolute HTTP(S) URL")
+        return value, inferred_kind
+    return Path(video_source), inferred_kind
+
+
+def _source_display(video_source, source_kind):
+    if source_kind == "url":
+        return f"video URL host {_video_source_host(video_source)}"
+    return str(video_source)
+
+
+def _safe_ffmpeg_stderr(stderr, video_source, source_kind):
+    excerpt = _stderr_excerpt(stderr)
+    if source_kind != "url":
+        return excerpt
+    source_text = str(video_source or "").strip()
+    safe_text = f"https://{_video_source_host(video_source)}/[redacted]"
+    return excerpt.replace(source_text, safe_text)
 
 
 @dataclass(frozen=True)
@@ -134,15 +195,32 @@ def resolve_ffmpeg(
 
 
 def probe_video_duration(
-    ffmpeg_bin, video_path, timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC
+    ffmpeg_bin,
+    video_path,
+    timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    *,
+    source_kind=None,
+    known_duration=None,
 ):
-    video = Path(video_path)
-    if not video.is_file():
-        raise InputDataError(f"video does not exist or is not a file: {video}")
+    source, resolved_kind = _normalize_video_source(video_path, source_kind)
+    display_source = _source_display(source, resolved_kind)
+    if known_duration is not None:
+        duration, _ = _canonical_seconds(
+            known_duration, "video duration", FfmpegError
+        )
+        if duration <= 0:
+            raise FfmpegError(
+                f"video duration {known_duration!r} must be greater than 0"
+            )
+        return duration
+    if resolved_kind == "local" and not source.is_file():
+        raise InputDataError(
+            f"video does not exist or is not a file: {display_source}"
+        )
 
     try:
         process = subprocess.run(
-            [str(ffmpeg_bin), "-hide_banner", "-i", str(video)],
+            [str(ffmpeg_bin), "-hide_banner", "-i", str(source)],
             capture_output=True,
             text=True,
             check=False,
@@ -151,11 +229,11 @@ def probe_video_duration(
     except subprocess.TimeoutExpired as exc:
         raise FfmpegError(
             f"FFmpeg timed out after {timeout_sec} seconds while probing "
-            f"video duration for {video}"
+            f"video duration for {display_source}"
         ) from exc
     except OSError as exc:
         raise FfmpegError(
-            f"Unable to decode video duration for {video}: {exc}"
+            f"Unable to decode video duration for {display_source}: {exc}"
         ) from exc
 
     match = re.search(
@@ -164,11 +242,11 @@ def probe_video_duration(
         re.MULTILINE,
     )
     if match is None:
-        stderr_excerpt = process.stderr[:500]
-        if len(process.stderr) > 500:
-            stderr_excerpt += "..."
+        stderr_excerpt = _safe_ffmpeg_stderr(
+            process.stderr, source, resolved_kind
+        )
         raise FfmpegError(
-            f"Unable to decode video duration for {video}; FFmpeg return "
+            f"Unable to decode video duration for {display_source}; FFmpeg return "
             f"code {process.returncode}; stderr excerpt: {stderr_excerpt}"
         )
 
@@ -216,14 +294,25 @@ def _raise_frame_error(message, staging_path, cause=None):
     raise error
 
 
+def _frame_input_arguments(video, timestamp_text, source_kind):
+    if source_kind == "url":
+        # Input seeking lets FFmpeg request the relevant byte ranges instead
+        # of downloading the complete stream before applying -ss.
+        return ["-ss", timestamp_text, "-i", str(video)]
+    return ["-i", str(video), "-ss", timestamp_text]
+
+
 def extract_frame(
     ffmpeg_bin,
     video_path,
     timestamp_sec,
     output_path,
     timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    *,
+    source_kind=None,
 ):
-    video = Path(video_path)
+    video, resolved_kind = _normalize_video_source(video_path, source_kind)
+    display_source = _source_display(video, resolved_kind)
     output = Path(output_path)
     _, timestamp_text = _canonical_seconds(
         timestamp_sec, "frame timestamp", FfmpegError
@@ -249,10 +338,7 @@ def extract_frame(
         "-hide_banner",
         "-loglevel",
         "error",
-        "-i",
-        str(video),
-        "-ss",
-        timestamp_text,
+        *_frame_input_arguments(video, timestamp_text, resolved_kind),
         "-frames:v",
         "1",
         "-q:v",
@@ -272,13 +358,13 @@ def extract_frame(
     except subprocess.TimeoutExpired as exc:
         _raise_frame_error(
             f"FFmpeg timed out after {timeout_sec} seconds while extracting "
-            f"frame at {timestamp_text}s from {video} to {output}",
+            f"frame at {timestamp_text}s from {display_source} to {output}",
             staging,
             exc,
         )
     except OSError as exc:
         _raise_frame_error(
-            f"Unable to extract frame at {timestamp_text}s from {video} "
+            f"Unable to extract frame at {timestamp_text}s from {display_source} "
             f"to {output} with FFmpeg: {exc}",
             staging,
             exc,
@@ -294,10 +380,7 @@ def extract_frame(
             "1",
             "-filter_threads",
             "1",
-            "-i",
-            str(video),
-            "-ss",
-            timestamp_text,
+            *_frame_input_arguments(video, timestamp_text, resolved_kind),
             "-frames:v",
             "1",
             "-q:v",
@@ -317,7 +400,7 @@ def extract_frame(
         except subprocess.TimeoutExpired as exc:
             _raise_frame_error(
                 f"FFmpeg low-resource retry timed out after {timeout}s while "
-                f"extracting frame at {timestamp_text}s from {video}; first "
+                f"extracting frame at {timestamp_text}s from {display_source}; first "
                 f"return code {first_return_code}",
                 staging,
                 cause=exc,
@@ -325,7 +408,7 @@ def extract_frame(
         except OSError as exc:
             _raise_frame_error(
                 f"Unable to start FFmpeg low-resource retry for frame at "
-                f"{timestamp_text}s from {video}; first return code "
+                f"{timestamp_text}s from {display_source}; first return code "
                 f"{first_return_code}: {exc}",
                 staging,
                 cause=exc,
@@ -333,18 +416,18 @@ def extract_frame(
         if process.returncode != 0:
             _raise_frame_error(
                 f"FFmpeg low-resource retry failed to extract frame at "
-                f"{timestamp_text}s from {video} to {output}; first return "
+                f"{timestamp_text}s from {display_source} to {output}; first return "
                 f"code {first_return_code}; retry return code "
                 f"{process.returncode}; stderr excerpt: "
-                f"{_stderr_excerpt(process.stderr)}",
+                f"{_safe_ffmpeg_stderr(process.stderr, video, resolved_kind)}",
                 staging,
             )
 
     if process.returncode != 0:
         _raise_frame_error(
             f"FFmpeg failed to extract frame at {timestamp_text}s from "
-            f"{video} to {output}; return code {process.returncode}; stderr "
-            f"excerpt: {_stderr_excerpt(process.stderr)}",
+            f"{display_source} to {output}; return code {process.returncode}; stderr "
+            f"excerpt: {_safe_ffmpeg_stderr(process.stderr, video, resolved_kind)}",
             staging,
         )
 
@@ -353,14 +436,14 @@ def extract_frame(
     except FileNotFoundError as exc:
         _raise_frame_error(
             f"FFmpeg reported success extracting frame at {timestamp_text}s "
-            f"from {video}, but staging output is missing: {staging}",
+            f"from {display_source}, but staging output is missing: {staging}",
             staging,
             exc,
         )
     except OSError as exc:
         _raise_frame_error(
             f"Unable to verify extracted frame at {timestamp_text}s from "
-            f"{video} at {staging}: {exc}",
+            f"{display_source} at {staging}: {exc}",
             staging,
             exc,
         )
@@ -368,7 +451,7 @@ def extract_frame(
     if output_size == 0:
         _raise_frame_error(
             f"FFmpeg reported success extracting frame at {timestamp_text}s "
-            f"from {video}, but staging output is empty: {staging}",
+            f"from {display_source}, but staging output is empty: {staging}",
             staging,
         )
 
@@ -380,14 +463,14 @@ def extract_frame(
     except OSError as exc:
         _raise_frame_error(
             f"Unable to validate JPEG frame at {timestamp_text}s from "
-            f"{video} at {staging}: {exc}",
+            f"{display_source} at {staging}: {exc}",
             staging,
             exc,
         )
 
     if start_marker != b"\xff\xd8" or end_marker != b"\xff\xd9":
         _raise_frame_error(
-            f"FFmpeg output for frame at {timestamp_text}s from {video} "
+            f"FFmpeg output for frame at {timestamp_text}s from {display_source} "
             f"is not a valid JPEG: {staging}",
             staging,
         )
@@ -416,7 +499,7 @@ def extract_frame(
     except subprocess.TimeoutExpired as exc:
         _raise_frame_error(
             f"FFmpeg timed out after {timeout_sec} seconds while attempting "
-            f"to decode staged frame at {timestamp_text}s from {video}: "
+            f"to decode staged frame at {timestamp_text}s from {display_source}: "
             f"{staging}",
             staging,
             exc,
@@ -424,7 +507,7 @@ def extract_frame(
     except OSError as exc:
         _raise_frame_error(
             f"Unable to decode staged frame at {timestamp_text}s from "
-            f"{video} with FFmpeg at {staging}: {exc}",
+            f"{display_source} with FFmpeg at {staging}: {exc}",
             staging,
             exc,
         )
@@ -432,8 +515,8 @@ def extract_frame(
     if decode_process.returncode != 0:
         _raise_frame_error(
             f"FFmpeg failed to decode staged frame at {timestamp_text}s "
-            f"from {video}; return code {decode_process.returncode}; stderr "
-            f"excerpt: {_stderr_excerpt(decode_process.stderr)}",
+            f"from {display_source}; return code {decode_process.returncode}; stderr "
+            f"excerpt: {_safe_ffmpeg_stderr(decode_process.stderr, video, resolved_kind)}",
             staging,
         )
 
@@ -442,7 +525,7 @@ def extract_frame(
     except OSError as exc:
         _raise_frame_error(
             f"Unable to publish extracted frame at {timestamp_text}s from "
-            f"{video} to {output}: {exc}",
+            f"{display_source} to {output}: {exc}",
             staging,
             exc,
         )
@@ -450,16 +533,104 @@ def extract_frame(
     return output
 
 
+def _capability_value(capabilities, name, default=None):
+    if isinstance(capabilities, dict):
+        aliases = {
+            "url_host": "urlHost",
+            "status_code": "statusCode",
+            "content_length": "contentLength",
+            "accept_ranges": "acceptRanges",
+            "supports_range": "supportsRange",
+            "moov_offset": "moovOffset",
+            "moov_position": "moovPosition",
+            "probe_method": "probeMethod",
+            "bytes_read": "bytesRead",
+            "elapsed_sec": "elapsedSec",
+            "response_headers": "responseHeaders",
+            "head_status_code": "headStatusCode",
+            "range_status_code": "rangeStatusCode",
+            "content_type": "contentType",
+        }
+        if name in capabilities:
+            return capabilities[name]
+        return capabilities.get(aliases.get(name), default)
+    return getattr(capabilities, name, default)
+
+
+def _ensure_url_batch_safe(
+    source,
+    targets,
+    capabilities,
+    memory_budget_bytes,
+    estimated_frame_bytes,
+):
+    if capabilities is None:
+        raise UrlExtractionDegraded(
+            "url_capabilities_missing", source
+        )
+    supports_range = _capability_value(capabilities, "supports_range")
+    if supports_range is None:
+        supports_range = _capability_value(capabilities, "accept_ranges", False)
+    if not supports_range:
+        raise UrlExtractionDegraded(
+            "url_range_unsupported",
+            source,
+            {"supportsRange": False},
+        )
+    moov_position = _capability_value(capabilities, "moov_position", "unknown")
+    if moov_position != "head":
+        raise UrlExtractionDegraded(
+            "moov_not_at_head",
+            source,
+            {"moovPosition": moov_position},
+        )
+    try:
+        memory_budget = int(memory_budget_bytes)
+        frame_estimate = int(estimated_frame_bytes)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            "URL batch memory budget and frame estimate must be integers"
+        ) from exc
+    if memory_budget <= 0 or frame_estimate <= 0:
+        raise ValueError(
+            "URL batch memory budget and frame estimate must be greater than zero"
+        )
+    estimated_memory = len(targets) * frame_estimate
+    if estimated_memory > memory_budget:
+        raise UrlExtractionDegraded(
+            "url_batch_memory_budget_exceeded",
+            source,
+            {
+                "estimatedMemoryBytes": estimated_memory,
+                "memoryBudgetBytes": memory_budget,
+            },
+        )
+
+
 def extract_frames_batch(
     ffmpeg_bin,
     video_path,
     targets,
     timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    *,
+    source_kind=None,
+    url_capabilities=None,
+    memory_budget_bytes=DEFAULT_URL_BATCH_MEMORY_BUDGET_BYTES,
+    estimated_frame_bytes=DEFAULT_URL_ESTIMATED_FRAME_BYTES,
 ):
     """Decode one video stream and emit exact requested timestamps together."""
     if not targets:
         return []
-    video = Path(video_path)
+    video, resolved_kind = _normalize_video_source(video_path, source_kind)
+    display_source = _source_display(video, resolved_kind)
+    if resolved_kind == "url":
+        _ensure_url_batch_safe(
+            video,
+            targets,
+            url_capabilities,
+            memory_budget_bytes,
+            estimated_frame_bytes,
+        )
     output_targets = [(float(timestamp), Path(output)) for timestamp, output in targets]
     staging_paths = []
     filter_parts = []
@@ -491,13 +662,16 @@ def extract_frames_batch(
     except (subprocess.TimeoutExpired, OSError) as exc:
         for staging in staging_paths:
             staging.unlink(missing_ok=True)
-        raise FfmpegError(f"FFmpeg batch extraction failed for {video}: {exc}") from exc
+        raise FfmpegError(
+            f"FFmpeg batch extraction failed for {display_source}: {exc}"
+        ) from exc
     if process.returncode != 0:
         for staging in staging_paths:
             staging.unlink(missing_ok=True)
         raise FfmpegError(
-            f"FFmpeg batch extraction failed for {video}; return code {process.returncode}; "
-            f"stderr excerpt: {_stderr_excerpt(process.stderr)}"
+            f"FFmpeg batch extraction failed for {display_source}; return code "
+            f"{process.returncode}; stderr excerpt: "
+            f"{_safe_ffmpeg_stderr(process.stderr, video, resolved_kind)}"
         )
     for staging, (_timestamp, output) in zip(staging_paths, output_targets):
         try:
@@ -513,7 +687,9 @@ def extract_frames_batch(
         except (OSError, ValueError) as exc:
             for pending in staging_paths:
                 pending.unlink(missing_ok=True)
-            raise FfmpegError(f"FFmpeg batch output validation failed for {output}: {exc}") from exc
+            raise FfmpegError(
+                f"FFmpeg batch output validation failed for {output}: {exc}"
+            ) from exc
     return [output for _timestamp, output in output_targets]
 
 
@@ -834,20 +1010,64 @@ def process_local(
     )
 
 
+def _recorded_video_duration(records, material_id):
+    wanted_material_id = str(material_id or "").strip()
+    for record in records:
+        if not isinstance(record, dict) or record.get("recordType") != "material_info":
+            continue
+        record_material_id = str(record.get("materialId") or "").strip()
+        if wanted_material_id and record_material_id != wanted_material_id:
+            continue
+        value = record.get("videoDuration")
+        if value in (None, ""):
+            continue
+        try:
+            duration = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(duration) and duration > 0:
+            return duration
+    return None
+
+
 def process_records(
     records,
     input_label,
-    video_path,
-    output_dir,
+    video_path=None,
+    output_dir=None,
     ffmpeg_bin=None,
     ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
     video_source=None,
     timings=None,
+    *,
+    source_kind=None,
+    video_source_label=None,
+    url_capabilities=None,
+    url_probe_session=None,
+    url_probe_timeout_sec=30,
+    url_probe_bytes=1024 * 1024,
+    url_memory_budget_bytes=DEFAULT_URL_BATCH_MEMORY_BUDGET_BYTES,
+    url_estimated_frame_bytes=DEFAULT_URL_ESTIMATED_FRAME_BYTES,
 ):
     """Run the peak-frame pipeline with already-loaded RPA records."""
-    video = Path(video_path)
-    if not video.is_file():
-        raise InputDataError(f"video does not exist or is not a file: {video}")
+    if video_path is None:
+        video_path = video_source
+        if video_path is None:
+            raise InputDataError("video source is required")
+        legacy_source_label = None
+    else:
+        legacy_source_label = video_source
+    video, resolved_kind = _normalize_video_source(video_path, source_kind)
+    if resolved_kind == "local" and not video.is_file():
+        raise InputDataError(
+            f"video does not exist or is not a file: {_source_display(video, resolved_kind)}"
+        )
+    summary_source = video_source_label
+    if summary_source is None:
+        if resolved_kind == "url":
+            summary_source = "direct-url"
+        else:
+            summary_source = legacy_source_label
     material_id, points = parse_click_series(records)
     selected_peaks = select_peak_frames(points)
     timeout_sec, _ = _canonical_seconds(
@@ -858,16 +1078,57 @@ def process_records(
             f"FFmpeg timeout {ffmpeg_timeout_sec!r} must be greater than 0 seconds"
         )
     ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
-    probe_started = time.perf_counter()
-    try:
-        video_duration = probe_video_duration(
-            ffmpeg, video, timeout_sec=timeout_sec
+    if resolved_kind == "url" and url_capabilities is None:
+        url_capabilities = probe_url_capabilities(
+            video,
+            session=url_probe_session,
+            timeout=url_probe_timeout_sec,
+            probe_bytes=url_probe_bytes,
         )
-    finally:
-        if isinstance(timings, dict):
-            timings["videoProbeSec"] = round(
-                max(0.0, time.perf_counter() - probe_started), 6
+    if resolved_kind == "url" and isinstance(timings, dict):
+        timings["urlProbeBytes"] = int(
+            _capability_value(url_capabilities, "bytes_read", 0) or 0
+        )
+        timings["urlCapabilityProbeSec"] = float(
+            _capability_value(url_capabilities, "elapsed_sec", 0.0) or 0.0
+        )
+        supports_range = _capability_value(url_capabilities, "supports_range")
+        if supports_range is None:
+            supports_range = _capability_value(
+                url_capabilities, "accept_ranges", False
             )
+        timings["urlSupportsRange"] = bool(
+            supports_range
+        )
+        timings["urlMoovPosition"] = str(
+            _capability_value(url_capabilities, "moov_position", "unknown")
+        )
+    probe_started = time.perf_counter()
+    known_duration = _recorded_video_duration(records, material_id)
+    if known_duration is not None:
+        video_duration = known_duration
+        if isinstance(timings, dict):
+            timings["videoProbeSec"] = 0.0
+            timings["videoDurationSource"] = "material_info"
+    else:
+        try:
+            if resolved_kind == "url":
+                video_duration = probe_video_duration(
+                    ffmpeg,
+                    video,
+                    timeout_sec=timeout_sec,
+                    source_kind="url",
+                )
+            else:
+                video_duration = probe_video_duration(
+                    ffmpeg, video, timeout_sec=timeout_sec
+                )
+        finally:
+            if isinstance(timings, dict):
+                timings["videoProbeSec"] = round(
+                    max(0.0, time.perf_counter() - probe_started), 6
+                )
+                timings["videoDurationSource"] = "ffmpeg"
     out_of_range_peaks = [
         peak for peak in selected_peaks
         if peak.duration_sec < 0 or peak.duration_sec >= video_duration
@@ -878,7 +1139,9 @@ def process_records(
     ]
     validate_timestamps(selected_peaks, video_duration)
 
-    summary_material_id = material_id or video.stem
+    summary_material_id = material_id or (
+        "url-video" if resolved_kind == "url" else video.stem
+    )
     result_dir = Path(output_dir) / _safe_component(summary_material_id)
     try:
         result_dir.mkdir(parents=True, exist_ok=True)
@@ -899,6 +1162,7 @@ def process_records(
     successful_peaks = []
     frame_paths = []
     missing_frames = []
+    url_batch_degradation_reasons = []
     target_paths = [
         (
             peak,
@@ -914,12 +1178,63 @@ def process_records(
             return
         batch_started = time.perf_counter()
         try:
+            batch_kwargs = {"timeout_sec": timeout_sec}
+            if resolved_kind == "url":
+                batch_kwargs.update(
+                    {
+                        "source_kind": "url",
+                        "url_capabilities": url_capabilities,
+                        "memory_budget_bytes": url_memory_budget_bytes,
+                        "estimated_frame_bytes": url_estimated_frame_bytes,
+                    }
+                )
             extract_frames_batch(
                 ffmpeg,
                 video,
                 [(peak.duration_sec, path) for peak, path in targets],
-                timeout_sec=timeout_sec,
+                **batch_kwargs,
             )
+        except UrlExtractionDegraded as batch_error:
+            url_batch_degradation_reasons.append(batch_error.reason)
+            if isinstance(timings, dict):
+                timings["urlBatchFallbackReason"] = batch_error.reason
+            for peak, frame_path in targets:
+                fallback_started = time.perf_counter()
+                try:
+                    frame_kwargs = {"timeout_sec": timeout_sec}
+                    if resolved_kind == "url":
+                        frame_kwargs["source_kind"] = "url"
+                    extract_frame(
+                        ffmpeg,
+                        video,
+                        peak.duration_sec,
+                        frame_path,
+                        **frame_kwargs,
+                    )
+                except FfmpegError as exc:
+                    missing_frames.append(
+                        {
+                            "rankType": peak.rank_type,
+                            "durationSec": peak.duration_sec,
+                            "metricValue": peak.metric_value,
+                            "requestedTimestampSec": peak.duration_sec,
+                            "errorType": type(exc).__name__,
+                            "errorMessage": _safe_ffmpeg_stderr(
+                                str(exc), video, resolved_kind
+                            ),
+                        }
+                    )
+                else:
+                    successful_peaks.append(peak)
+                    frame_paths.append(frame_path)
+                finally:
+                    if isinstance(timings, dict):
+                        timings["ffmpegFallbackSec"] = round(
+                            timings.get("ffmpegFallbackSec", 0.0)
+                            + max(0.0, time.perf_counter() - fallback_started),
+                            6,
+                        )
+            return
         except FfmpegError as batch_error:
             if isinstance(timings, dict):
                 timings["ffmpegBatchSec"] = round(
@@ -935,12 +1250,11 @@ def process_records(
             peak, frame_path = targets[0]
             fallback_started = time.perf_counter()
             try:
+                frame_kwargs = {"timeout_sec": timeout_sec}
+                if resolved_kind == "url":
+                    frame_kwargs["source_kind"] = "url"
                 extract_frame(
-                    ffmpeg,
-                    video,
-                    peak.duration_sec,
-                    frame_path,
-                    timeout_sec=timeout_sec,
+                    ffmpeg, video, peak.duration_sec, frame_path, **frame_kwargs
                 )
             except FfmpegError as exc:
                 missing_frames.append(
@@ -1004,13 +1318,16 @@ def process_records(
             video,
             successful_peaks,
             frame_paths,
-            video_source=video_source,
+            video_source=summary_source,
             expected_peaks=selected_peaks,
             missing_frames=missing_frames,
-            additional_warnings=[
+            additional_warnings=(url_batch_degradation_reasons and [
+                "URL batch extraction degraded: "
+                + ", ".join(dict.fromkeys(url_batch_degradation_reasons))
+            ] or []) + ([
                 "excluded %s curve peak(s) outside video duration %.6g seconds"
                 % (len(out_of_range_peaks), video_duration)
-            ] if out_of_range_peaks else None,
+            ] if out_of_range_peaks else []),
         )
         json_path, markdown_path = write_summaries(summary, result_dir)
     finally:

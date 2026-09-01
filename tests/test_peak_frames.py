@@ -23,6 +23,7 @@ from peak_frame_lib import (  # noqa: E402
     Peak,
     SelectedPeak,
     SeriesPoint,
+    UrlExtractionDegraded,
     build_summary,
     extract_frame,
     extract_frames_batch,
@@ -2027,6 +2028,274 @@ class FrameExtractionTests(unittest.TestCase):
                     )
 
 
+class UrlVideoInputTests(unittest.TestCase):
+    URL = "https://video.example/material.mp4?token=do-not-log&sig=secret-value"
+
+    def test_extract_frame_passes_url_unchanged_to_ffmpeg(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "frame.jpg"
+
+            def record_success(command, **_kwargs):
+                commands.append(command)
+                if command[-1] != "-":
+                    Path(command[-1]).write_bytes(DECODABLE_JPEG)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("peak_frame_lib.subprocess.run", side_effect=record_success):
+                result = extract_frame(
+                    "ffmpeg", self.URL, 1.25, output_path, source_kind="url"
+                )
+            self.assertEqual(output_path.read_bytes(), DECODABLE_JPEG)
+
+        self.assertEqual(result, output_path)
+        self.assertEqual(commands[0][commands[0].index("-i") + 1], self.URL)
+
+    def test_url_frame_uses_input_seek_to_allow_http_range_reads(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "frame.jpg"
+
+            def record_success(command, **_kwargs):
+                commands.append(command)
+                if command[-1] != "-":
+                    Path(command[-1]).write_bytes(DECODABLE_JPEG)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("peak_frame_lib.subprocess.run", side_effect=record_success):
+                extract_frame(
+                    "ffmpeg", self.URL, 12.0, output_path, source_kind="url"
+                )
+
+        self.assertLess(commands[0].index("-ss"), commands[0].index("-i"))
+
+    def test_probe_video_duration_accepts_url_without_local_path_validation(self):
+        process = subprocess.CompletedProcess(
+            ["ffmpeg"],
+            1,
+            "",
+            "Duration: 00:00:06.25, start: 0.000000, bitrate: 100 kb/s",
+        )
+        with patch("peak_frame_lib.subprocess.run", return_value=process) as run:
+            duration = probe_video_duration(
+                "ffmpeg", self.URL, source_kind="url"
+            )
+
+        self.assertEqual(duration, 6.25)
+        self.assertEqual(run.call_args.args[0][-1], self.URL)
+
+    def test_url_ffmpeg_error_does_not_leak_signed_query(self):
+        def fail(command, **_kwargs):
+            if command[-1] == "-":
+                return subprocess.CompletedProcess(command, 0, "", "")
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                f"failed to open {self.URL}",
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "frame.jpg"
+            with patch("peak_frame_lib.subprocess.run", side_effect=fail):
+                with self.assertRaises(FfmpegError) as context:
+                    extract_frame(
+                        "ffmpeg",
+                        self.URL,
+                        1.25,
+                        output_path,
+                        source_kind="url",
+                    )
+
+        self.assertNotIn("do-not-log", str(context.exception))
+        self.assertNotIn("secret-value", str(context.exception))
+        self.assertIn("video.example", str(context.exception))
+
+    def test_process_records_uses_video_duration_metadata_for_url(self):
+        records = [
+            click_record(second, value, material_id="m-url")
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        records.append(
+            {
+                "recordType": "material_info",
+                "materialId": "m-url",
+                "videoUrl": self.URL,
+                "videoDuration": "6.0",
+            }
+        )
+        capabilities = rpa_adapter.UrlCapabilities(
+            url_host="video.example",
+            status_code=206,
+            content_length=1234,
+            accept_ranges=True,
+            moov_offset=16,
+            moov_position="head",
+            probe_method="HEAD+GET",
+            bytes_read=64,
+            elapsed_sec=0.001,
+            response_headers={"content-type": "video/mp4"},
+            range_status_code=206,
+        )
+
+        def write_batch(_ffmpeg, video, targets, **kwargs):
+            self.assertEqual(video, self.URL)
+            self.assertEqual(kwargs["source_kind"], "url")
+            for _timestamp, output in targets:
+                Path(output).write_bytes(DECODABLE_JPEG)
+            return [output for _timestamp, output in targets]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch("peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"), patch(
+                "peak_frame_lib.probe_url_capabilities",
+                return_value=capabilities,
+            ) as probe_url, patch(
+                "peak_frame_lib.probe_video_duration"
+            ) as probe_duration, patch(
+                "peak_frame_lib.extract_frames_batch", side_effect=write_batch
+            ):
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records,
+                    "records.json",
+                    self.URL,
+                    root / "output",
+                    source_kind="url",
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary_text = summary_path.read_text(encoding="utf-8")
+
+        probe_url.assert_called_once()
+        probe_duration.assert_not_called()
+        self.assertEqual(summary["videoSource"], "direct-url")
+        self.assertNotIn("do-not-log", summary_text)
+        self.assertEqual(summary["frameCoverage"]["succeededFrameCount"], 3)
+
+
+class UrlBatchSafetyTests(unittest.TestCase):
+    URL = "https://video.example/material.mp4?token=do-not-log&sig=secret-value"
+
+    def test_batch_rejects_unsafe_capabilities_before_starting_ffmpeg(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "frame.jpg"
+            with patch("peak_frame_lib.subprocess.run") as run:
+                with self.assertRaises(UrlExtractionDegraded) as context:
+                    extract_frames_batch(
+                        "ffmpeg",
+                        self.URL,
+                        [(1.0, output)],
+                        source_kind="url",
+                        url_capabilities={
+                            "supportsRange": False,
+                            "moovPosition": "head",
+                        },
+                    )
+
+        self.assertEqual(context.exception.reason, "url_range_unsupported")
+        self.assertEqual(context.exception.diagnostics, {"supportsRange": False})
+        run.assert_not_called()
+
+    def test_url_batch_reports_memory_budget_degradation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "frame.jpg"
+            with self.assertRaises(UrlExtractionDegraded) as context:
+                extract_frames_batch(
+                    "ffmpeg",
+                    self.URL,
+                    [(1.0, output), (2.0, output.with_name("frame-2.jpg"))],
+                    source_kind="url",
+                    url_capabilities={
+                        "supportsRange": True,
+                        "moovPosition": "head",
+                    },
+                    memory_budget_bytes=100,
+                    estimated_frame_bytes=60,
+                )
+
+        self.assertEqual(
+            context.exception.reason, "url_batch_memory_budget_exceeded"
+        )
+        self.assertEqual(
+            context.exception.diagnostics,
+            {"estimatedMemoryBytes": 120, "memoryBudgetBytes": 100},
+        )
+
+    def test_process_records_falls_back_to_single_url_reads_and_keeps_missing_frame(self):
+        records = [
+            click_record(second, value, material_id="m-url-safe")
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        records.append(
+            {
+                "recordType": "material_info",
+                "materialId": "m-url-safe",
+                "videoUrl": self.URL,
+                "videoDuration": "6.0",
+            }
+        )
+        timings = {}
+        capabilities = {
+            "urlHost": "video.example",
+            "statusCode": 206,
+            "supportsRange": False,
+            "moovPosition": "head",
+            "bytesRead": 123,
+            "elapsedSec": 0.25,
+        }
+
+        def extract_one(_ffmpeg, _video, _timestamp, output, **_kwargs):
+            if Path(output).name.startswith("peak_top_2"):
+                raise FfmpegError(f"failed to read {self.URL}")
+            Path(output).write_bytes(DECODABLE_JPEG)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch("peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"), patch(
+                "peak_frame_lib.extract_frames_batch",
+                side_effect=UrlExtractionDegraded(
+                    "url_range_unsupported", self.URL
+                ),
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=extract_one
+            ) as extract:
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records,
+                    "records.json",
+                    self.URL,
+                    root / "output",
+                    source_kind="url",
+                    url_capabilities=capabilities,
+                    timings=timings,
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary_text = summary_path.read_text(encoding="utf-8")
+            leftovers = list(summary_path.parent.glob("*.stage")) + list(
+                summary_path.parent.glob(".*.stage.jpg")
+            )
+
+        self.assertEqual(extract.call_count, 3)
+        self.assertEqual(timings["urlProbeBytes"], 123)
+        self.assertEqual(timings["urlCapabilityProbeSec"], 0.25)
+        self.assertFalse(timings["urlSupportsRange"])
+        self.assertEqual(timings["urlBatchFallbackReason"], "url_range_unsupported")
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["zero_second", "peak_top_1"],
+        )
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["missingFrames"]],
+            ["peak_top_2"],
+        )
+        self.assertTrue(
+            any("URL batch extraction degraded" in warning for warning in summary["warnings"])
+        )
+        self.assertNotIn("do-not-log", summary_text)
+        self.assertNotIn("secret-value", summary_text)
+        self.assertEqual(leftovers, [])
+
+
 class TimestampValidationTests(unittest.TestCase):
     def test_accepts_zero_and_timestamp_just_under_video_duration(self):
         selected = [
@@ -2443,6 +2712,134 @@ class ProcessingPipelineTests(unittest.TestCase):
 
 
 class CliTests(unittest.TestCase):
+
+    def test_video_input_mode_defaults_to_local_and_accepts_url(self):
+        parser = extract_peak_frames.build_parser()
+
+        self.assertEqual(parser.parse_args([]).video_input_mode, "local")
+        self.assertEqual(
+            parser.parse_args(["--video-input-mode", "url"]).video_input_mode,
+            "url",
+        )
+
+    def test_local_csv_url_mode_passes_signed_url_to_direct_pipeline(self):
+        records = [
+            click_record(0, 10, material_id="m-url-cli"),
+            {
+                "recordType": "material_info",
+                "materialId": "m-url-cli",
+                "videoUrl": "https://video.example/m-url-cli.mp4?sig=secret",
+            },
+        ]
+        args = type(
+            "Args",
+            (),
+            {
+                "input_csv": "diagnosis.csv",
+                "input_json": None,
+                "video": None,
+                "output_dir": "output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+                "diagnosis_records_dir": None,
+                "video_input_mode": "url",
+            },
+        )()
+
+        with patch.object(
+            extract_peak_frames, "parse_diagnosis_csv", return_value=records
+        ), patch.object(
+            extract_peak_frames,
+            "process_records",
+            return_value=(Path("result"), Path("summary.json"), Path("summary.md")),
+        ) as process, patch.object(extract_peak_frames, "download_video") as download:
+            result = extract_peak_frames.process_local_input(args)
+
+        self.assertEqual(result[0], Path("result"))
+        download.assert_not_called()
+        process.assert_called_once()
+        self.assertEqual(
+            process.call_args.args[2],
+            "https://video.example/m-url-cli.mp4?sig=secret",
+        )
+        self.assertEqual(process.call_args.kwargs["source_kind"], "url")
+
+    def test_local_json_url_mode_uses_material_video_url(self):
+        records = [
+            click_record(0, 10, material_id="m-json-url"),
+            {
+                "recordType": "material_info",
+                "materialId": "m-json-url",
+                "videoUrl": "https://video.example/m-json-url.mp4",
+            },
+        ]
+        args = type(
+            "Args",
+            (),
+            {
+                "input_csv": None,
+                "input_json": "records.json",
+                "video": None,
+                "output_dir": "output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+                "diagnosis_records_dir": None,
+                "video_input_mode": "url",
+            },
+        )()
+
+        with patch.object(
+            extract_peak_frames.Path,
+            "read_text",
+            return_value=json.dumps(records),
+        ), patch.object(
+            extract_peak_frames,
+            "process_records",
+            return_value=(Path("result"), Path("summary.json"), Path("summary.md")),
+        ) as process, patch.object(extract_peak_frames, "download_video") as download:
+            with patch.object(extract_peak_frames.Path, "is_file", return_value=True):
+                extract_peak_frames.process_local_input(args)
+
+        download.assert_not_called()
+        process.assert_called_once()
+        self.assertEqual(process.call_args.args[2], "https://video.example/m-json-url.mp4")
+        self.assertEqual(process.call_args.kwargs["source_kind"], "url")
+
+    def test_wave_postprocess_url_mode_skips_video_download(self):
+        entry = {
+            "materialId": "m-url-wave",
+            "records": [
+                {
+                    "recordType": "material_info",
+                    "materialId": "m-url-wave",
+                    "videoUrl": "https://video.example/m-url-wave.mp4",
+                }
+            ],
+            "timingsSec": {},
+        }
+        args = type(
+            "Args",
+            (),
+            {
+                "output_dir": "/tmp/qianchuan-test-output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+                "video_input_mode": "url",
+            },
+        )()
+
+        with patch.object(extract_peak_frames, "download_video") as download, patch.object(
+            extract_peak_frames,
+            "process_records",
+            return_value=(Path("result"), Path("summary.json"), Path("summary.md")),
+        ) as process:
+            attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+
+        self.assertIsNone(attempt["error"])
+        download.assert_not_called()
+        process.assert_called_once()
+        self.assertEqual(process.call_args.args[2], "https://video.example/m-url-wave.mp4")
+        self.assertEqual(process.call_args.kwargs["source_kind"], "url")
 
     def test_wave_postprocess_passes_timings_to_process_records_once(self):
         entry = {

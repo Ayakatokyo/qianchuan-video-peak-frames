@@ -124,6 +124,12 @@ def build_parser():
     input_group.add_argument("--input-json")
     input_group.add_argument("--input-csv")
     parser.add_argument("--video")
+    parser.add_argument(
+        "--video-input-mode",
+        choices=("local", "url"),
+        default="local",
+        help="read the video from a local file or let FFmpeg read material_info.videoUrl directly",
+    )
     parser.add_argument("--output-dir")
     parser.add_argument("--ffmpeg-bin")
     parser.add_argument("--ffmpeg-timeout-sec", type=_positive_timeout, default=DEFAULT_FFMPEG_TIMEOUT_SEC)
@@ -1184,10 +1190,7 @@ def _attempt_wave_postprocess(args, entry):
         if records is None:
             raise RpaAdapterError("persisted RPA diagnosis records are unavailable")
         video_url = find_material_video_url(records, material_id)
-        with tempfile.TemporaryDirectory() as temp_dir:
-            video_path = artifact_path(temp_dir, material_id, ".mp4")
-            substage = "download"
-            _time_call(timings, "videoDownloadSec", download_video, video_url, video_path)
+        if getattr(args, "video_input_mode", "local") == "url":
             substage = "frame_extraction"
             result = _time_call(
                 timings,
@@ -1195,13 +1198,35 @@ def _attempt_wave_postprocess(args, entry):
                 process_records,
                 records,
                 f"rpa://{FUNCTION_CODE}/{material_id}",
-                video_path,
+                video_url,
                 args.output_dir,
                 ffmpeg_bin=args.ffmpeg_bin,
                 ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
-                video_source="rpa-temporary-download",
+                source_kind="url",
+                video_source_label="direct-url",
                 timings=timings,
             )
+        else:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                video_path = artifact_path(temp_dir, material_id, ".mp4")
+                substage = "download"
+                _time_call(
+                    timings, "videoDownloadSec", download_video, video_url, video_path
+                )
+                substage = "frame_extraction"
+                result = _time_call(
+                    timings,
+                    "frameExtractionSec",
+                    process_records,
+                    records,
+                    f"rpa://{FUNCTION_CODE}/{material_id}",
+                    video_path,
+                    args.output_dir,
+                    ffmpeg_bin=args.ffmpeg_bin,
+                    ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                    video_source="rpa-temporary-download",
+                    timings=timings,
+                )
     except HANDLED_MATERIAL_ERRORS as exc:
         timings["totalSec"] = _elapsed_since(started_at)
         return {
@@ -1405,8 +1430,22 @@ def _wave_batch_status(args):
     return WAVE_BATCH_RUNNING, None
 
 
+def _load_records_json(input_json_path):
+    input_path = Path(input_json_path)
+    if not input_path.is_file():
+        raise InputDataError(f"input JSON does not exist: {input_path}")
+    try:
+        records = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise InputDataError(
+            f"input must contain valid JSON: {input_path}"
+        ) from exc
+    return input_path, records
+
+
 def process_local_input(args):
     """Process local JSON/CSV input without entering the RPA workflow."""
+    video_input_mode = getattr(args, "video_input_mode", "local")
     if args.input_csv:
         records = parse_diagnosis_csv(args.input_csv)
         material_id = ""
@@ -1416,9 +1455,14 @@ def process_local_input(args):
             _write_diagnosis_records(
                 records,
                 args.diagnosis_records_dir,
-                material_id or Path(args.video).stem,
+                material_id or Path(args.video or args.input_csv).stem,
             )
         if args.video:
+            if video_input_mode == "url":
+                raise InputDataError(
+                    "--video cannot be used with --video-input-mode url; "
+                    "use material_info.videoUrl"
+                )
             return process_records(
                 records,
                 args.input_csv,
@@ -1429,6 +1473,16 @@ def process_local_input(args):
             )
 
         video_url = find_material_video_url(records, material_id)
+        if video_input_mode == "url":
+            return process_records(
+                records,
+                args.input_csv,
+                video_url,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                source_kind="url",
+            )
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = Path(temp_dir) / (
                 f"{material_id or Path(args.input_csv).stem}.mp4"
@@ -1442,6 +1496,20 @@ def process_local_input(args):
                 ffmpeg_bin=args.ffmpeg_bin,
                 ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
             )
+
+    if video_input_mode == "url":
+        input_path, records = _load_records_json(args.input_json)
+        material_id, _points = parse_click_series(records)
+        video_url = find_material_video_url(records, material_id)
+        return process_records(
+            records,
+            input_path,
+            video_url,
+            args.output_dir,
+            ffmpeg_bin=args.ffmpeg_bin,
+            ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+            source_kind="url",
+        )
 
     return process_local(
         args.input_json,
@@ -1457,6 +1525,12 @@ def main(argv=None):
     parsed_argv = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(parsed_argv)
     resolve_concurrency(args, parsed_argv)
+    if args.video_input_mode == "url" and not any(
+        token == "--postprocess-concurrency"
+        or token.startswith("--postprocess-concurrency=")
+        for token in parsed_argv
+    ):
+        args.postprocess_concurrency = 1
     try:
         if args.list_shop_accounts:
             return _list_shop_accounts()
@@ -1537,11 +1611,17 @@ def main(argv=None):
         else:
             if not args.output_dir:
                 parser.error("--output-dir is required")
+            if args.video_input_mode == "url" and args.video:
+                parser.error(
+                    "--video cannot be used with --video-input-mode url; "
+                    "use material_info.videoUrl"
+                )
             if not (args.input_json or args.input_csv) or (
-                args.input_json and not args.video
+                args.input_json and not args.video and args.video_input_mode != "url"
             ):
                 parser.error(
-                    "--input-json requires --video; --input-csv can use "
+                    "--input-json requires --video unless "
+                    "--video-input-mode url is selected; --input-csv can use "
                     "material_info.videoUrl when --video is omitted"
                 )
             result_dir, json_path, markdown_path = process_local_input(args)
