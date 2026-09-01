@@ -2886,6 +2886,30 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("filter: brightness(.9);", css_text)
         self.assertIn("transform: translateY(-1px);", css_text)
 
+    def test_audience_pie_cards_use_compact_equal_scale(self):
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            ".unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(2),\n"
+            ".unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(3) {",
+            css_text,
+        )
+        self.assertIn("padding: 12px;", css_text)
+        self.assertIn(
+            ".unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(2) .pie-layout,\n"
+            ".unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(3) .pie-layout {",
+            css_text,
+        )
+        self.assertIn("gap: 10px;", css_text)
+        self.assertIn(
+            ".unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(2) .pie-chart,\n"
+            ".unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(3) .pie-chart {",
+            css_text,
+        )
+        self.assertIn("width: min(240px, 100%) !important;", css_text)
+
     def test_region_columns_stay_within_plot_when_many_buckets_are_visible(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(
             encoding="utf-8"

@@ -3213,6 +3213,21 @@ body.unified-report {
   transform: translateY(-1px);
 }
 
+.unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(2),
+.unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(3) {
+  padding: 12px;
+}
+
+.unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(2) .pie-layout,
+.unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(3) .pie-layout {
+  gap: 10px;
+}
+
+.unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(2) .pie-chart,
+.unified-report #audience-dashboard .dashboard-data-card .chart-grid > .chart-card:nth-child(3) .pie-chart {
+  width: min(240px, 100%) !important;
+}
+
 .unified-report #audience-dashboard .script-dashboard-overview,
 .unified-report #audience-dashboard .script-drill-detail {
   min-height: 0;
