@@ -1068,6 +1068,10 @@ def process_records(
             summary_source = "direct-url"
         else:
             summary_source = legacy_source_label
+    elif resolved_kind == "url":
+        label_url = urlsplit(str(summary_source).strip())
+        if label_url.scheme.lower() in {"http", "https"}:
+            summary_source = "direct-url"
     material_id, points = parse_click_series(records)
     selected_peaks = select_peak_frames(points)
     timeout_sec, _ = _canonical_seconds(

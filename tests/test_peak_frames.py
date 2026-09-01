@@ -2161,6 +2161,7 @@ class UrlVideoInputTests(unittest.TestCase):
                     self.URL,
                     root / "output",
                     source_kind="url",
+                    video_source_label=self.URL,
                 )
 
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
