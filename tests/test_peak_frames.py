@@ -37,6 +37,7 @@ from peak_frame_lib import (  # noqa: E402
     validate_timestamps,
     write_summaries,
 )
+import peak_frame_lib  # noqa: E402
 import rpa_adapter  # noqa: E402
 import rpa_artifact_receipts  # noqa: E402
 import extract_peak_frames  # noqa: E402
@@ -55,6 +56,26 @@ def click_record(second, value, material_id="m-123"):
         "metricValue": value,
         "materialId": material_id,
     }
+
+
+def stream_records(material_id="m-stream"):
+    return [
+        {
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": "https://cdn.example/video.mp4?signature=secret",
+            "videoDuration": "8.0",
+        },
+        click_record(0, 0, material_id=material_id),
+        click_record(1, 10, material_id=material_id),
+        click_record(2, 0, material_id=material_id),
+        click_record(3, 9, material_id=material_id),
+        click_record(4, 0, material_id=material_id),
+        click_record(5, 8, material_id=material_id),
+        click_record(6, 0, material_id=material_id),
+        click_record(7, 7, material_id=material_id),
+        click_record(8, 0, material_id=material_id),
+    ]
 
 
 DECODABLE_JPEG = None
@@ -1217,6 +1238,166 @@ class FfmpegResolutionTests(unittest.TestCase):
 
 
 class FrameExtractionTests(unittest.TestCase):
+
+    def test_stream_extractor_matches_local_frame_targets_and_uses_one_pipe_decode(self):
+        ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+        records = stream_records()
+        video_url = records[0]["videoUrl"]
+        commands = []
+        with tempfile.TemporaryDirectory(prefix="stream parity ") as temp_dir:
+            root = Path(temp_dir)
+            video_path = root / "source video.mp4"
+            generated = subprocess.run(
+                [
+                    ffmpeg_bin,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=s=64x64:r=25:d=8",
+                    "-c:v",
+                    "mpeg4",
+                    "-movflags",
+                    "+faststart",
+                    "-y",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            local_result = process_records(
+                records,
+                "records.json",
+                video_path,
+                root / "local-output",
+                ffmpeg_bin=ffmpeg_bin,
+            )
+            response = FakeResponse(None, content=video_path.read_bytes())
+            session = RecordingSession(FakeResponse(None), response)
+            original_popen = peak_frame_lib.subprocess.Popen
+
+            def recording_popen(command, **kwargs):
+                commands.append(command)
+                return original_popen(command, **kwargs)
+
+            with patch.object(
+                peak_frame_lib.subprocess, "Popen", side_effect=recording_popen
+            ), patch.object(
+                peak_frame_lib, "probe_video_duration", side_effect=AssertionError(
+                    "stream extraction must use material_info.videoDuration"
+                ),
+            ):
+                stream_result = peak_frame_lib.extract_frames_from_stream(
+                    records,
+                    video_url,
+                    root / "stream-output",
+                    ffmpeg_bin=ffmpeg_bin,
+                    session=session,
+                    deadline_sec=60,
+                )
+
+            local_summary = json.loads(Path(local_result[1]).read_text(encoding="utf-8"))
+            stream_summary = json.loads(Path(stream_result[1]).read_text(encoding="utf-8"))
+
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0][commands[0].index("-i") + 1], "pipe:0")
+        self.assertNotIn("split=6", " ".join(commands[0]))
+        self.assertNotIn("trim", " ".join(commands[0]))
+        self.assertEqual(
+            [
+                (frame["rankType"], frame["durationSec"], frame["framePath"])
+                for frame in stream_summary["frames"]
+            ],
+            [
+                (frame["rankType"], frame["durationSec"], frame["framePath"])
+                for frame in local_summary["frames"]
+            ],
+        )
+        self.assertEqual(stream_summary["expectedFrames"], local_summary["expectedFrames"])
+        self.assertTrue(response.closed)
+        self.assertTrue(session.gets[0][1]["stream"])
+        self.assertTrue(
+            all(
+                frame_path.read_bytes().startswith(b"\xff\xd8")
+                and frame_path.read_bytes().endswith(b"\xff\xd9")
+                for frame_path in Path(stream_result[0]).glob("*.jpg")
+            )
+        )
+        self.assertEqual(
+            list(Path(stream_result[0]).glob(".stream-*.jpg")), []
+        )
+
+    def test_stream_extractor_cleans_staging_after_invalid_ffmpeg_output(self):
+        records = stream_records("m-invalid-stream")
+        process_holder = {}
+
+        class FakeStreamProcess:
+            def __init__(self, command):
+                self.command = command
+                self.stdin = io.BytesIO()
+                self.returncode = None
+                self.terminated = False
+                self.wait_calls = []
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.wait_calls.append(timeout)
+                self.returncode = 0
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def kill(self):
+                self.terminated = True
+                self.returncode = -9
+
+        def fake_popen(command, **_kwargs):
+            process_holder["process"] = FakeStreamProcess(command)
+            return process_holder["process"]
+
+        def write_invalid_outputs(_url, process, **_kwargs):
+            pattern = process.command[-1]
+            for index in range(1, 5 + 1):
+                Path(pattern.replace("%06d", f"{index:06d}")).write_bytes(
+                    b"not a jpeg"
+                )
+            return {"bytes": 1, "networkSec": 0.1}
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir) / "output"
+            with patch.object(
+                peak_frame_lib.subprocess, "Popen", side_effect=fake_popen
+            ), patch.object(
+                peak_frame_lib, "resolve_ffmpeg", return_value="ffmpeg"
+            ), patch.object(
+                peak_frame_lib,
+                "stream_video_to_ffmpeg",
+                side_effect=write_invalid_outputs,
+                create=True,
+            ):
+                with self.assertRaises(FfmpegError) as context:
+                    peak_frame_lib.extract_frames_from_stream(
+                        records,
+                        records[0]["videoUrl"],
+                        output_dir,
+                    )
+
+            result_dir = output_dir / "m-invalid-stream"
+            self.assertIn("JPEG", str(context.exception))
+            self.assertTrue(process_holder["process"].stdin.closed)
+            self.assertEqual(
+                list(result_dir.glob(".stream-*.jpg")), []
+            )
+            self.assertEqual(list(result_dir.glob("*.jpg")), [])
 
     def test_signal_killed_frame_retries_once_with_single_thread_ffmpeg(self):
         commands = []

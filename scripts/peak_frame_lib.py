@@ -11,8 +11,16 @@ import time
 import uuid
 from typing import Optional
 
+from rpa_adapter import (
+    DEFAULT_DOWNLOAD_DEADLINE_SEC,
+    DEFAULT_VIDEO_MAX_BYTES,
+    stream_video_to_ffmpeg,
+)
+
 
 DEFAULT_FFMPEG_TIMEOUT_SEC = 120.0
+DEFAULT_HTTP_STREAM_TIMEOUT_SEC = 300
+STREAM_STDERR_MAX_BYTES = 8 * 1024
 
 
 class PeakFrameError(Exception):
@@ -515,6 +523,312 @@ def extract_frames_batch(
                 pending.unlink(missing_ok=True)
             raise FfmpegError(f"FFmpeg batch output validation failed for {output}: {exc}") from exc
     return [output for _timestamp, output in output_targets]
+
+
+def _recorded_video_duration(records, material_id):
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if record.get("recordType") != "material_info":
+            continue
+        record_material_id = str(record.get("materialId") or "").strip()
+        if material_id and record_material_id != material_id:
+            continue
+        duration = record.get("videoDuration")
+        if str(duration or "").strip():
+            return duration
+    raise InputDataError(
+        "stream extraction requires material_info.videoDuration for "
+        f"material {material_id or '<unknown>'}"
+    )
+
+
+def _stream_select_expression(timestamps):
+    """Select the first decoded frame at or after each ordered timestamp."""
+    if not timestamps:
+        raise ValueError("timestamps must not be empty")
+    parts = [
+        f"isnan(prev_selected_t)*gte(t\\,{timestamp!r})"
+        for timestamp in timestamps[:1]
+    ]
+    parts.extend(
+        f"lt(prev_selected_t\\,{timestamp!r})*gte(t\\,{timestamp!r})"
+        for timestamp in timestamps[1:]
+    )
+    return "+".join(parts)
+
+
+def _terminate_stream_process(process):
+    stdin = getattr(process, "stdin", None)
+    close = getattr(stdin, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+    poll = getattr(process, "poll", None)
+    try:
+        if callable(poll) and poll() is not None:
+            return
+    except Exception:
+        pass
+
+    terminate = getattr(process, "terminate", None)
+    if callable(terminate):
+        try:
+            terminate()
+        except Exception:
+            pass
+    wait = getattr(process, "wait", None)
+    if callable(wait):
+        try:
+            wait(timeout=5)
+            return
+        except Exception:
+            pass
+    kill = getattr(process, "kill", None)
+    if callable(kill):
+        try:
+            kill()
+        except Exception:
+            pass
+        if callable(wait):
+            try:
+                wait(timeout=5)
+            except Exception:
+                pass
+
+
+def _read_stream_stderr(process):
+    stderr = getattr(process, "stderr", None)
+    read = getattr(stderr, "read", None)
+    if not callable(read):
+        return ""
+    try:
+        value = read(STREAM_STDERR_MAX_BYTES + 1)
+    except Exception:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return _stderr_excerpt(str(value), STREAM_STDERR_MAX_BYTES)
+
+
+def extract_frames_from_stream(
+    records,
+    video_url,
+    output_dir,
+    ffmpeg_bin=None,
+    ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    session=None,
+    max_bytes=DEFAULT_VIDEO_MAX_BYTES,
+    deadline_sec=DEFAULT_DOWNLOAD_DEADLINE_SEC,
+    video_source="http-stream",
+    timings=None,
+):
+    """Extract selected frames with one sequential FFmpeg process fed by HTTP."""
+    if not str(video_url or "").strip():
+        raise InputDataError("videoUrl is required for stream extraction")
+    material_id, points = parse_click_series(records)
+    selected_peaks = select_peak_frames(points)
+    video_duration = _recorded_video_duration(records, material_id)
+    duration, duration_text = _canonical_seconds(
+        video_duration, "video duration", InputDataError
+    )
+    if duration <= 0:
+        raise InputDataError(
+            f"video duration {video_duration!r} must be greater than 0"
+        )
+    out_of_range_peaks = [
+        peak
+        for peak in selected_peaks
+        if peak.duration_sec < 0 or peak.duration_sec >= duration
+    ]
+    selected_peaks = [
+        peak
+        for peak in selected_peaks
+        if 0 <= peak.duration_sec < duration
+    ]
+    validate_timestamps(selected_peaks, duration)
+    timeout_sec, _ = _canonical_seconds(
+        ffmpeg_timeout_sec, "FFmpeg timeout", FfmpegError
+    )
+    if timeout_sec <= 0:
+        raise FfmpegError(
+            f"FFmpeg timeout {ffmpeg_timeout_sec!r} must be greater than 0 seconds"
+        )
+    if not selected_peaks:
+        raise FfmpegError("stream extraction has no frame targets")
+
+    ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
+    summary_material_id = material_id or "stream-material"
+    result_dir = Path(output_dir) / _safe_component(summary_material_id)
+    try:
+        result_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise InputDataError(
+            f"unable to create result directory {result_dir}: {exc}"
+        ) from exc
+
+    summary_markers = (result_dir / "summary.json", result_dir / "summary.md")
+    previously_owned_frames = _read_owned_frame_paths(
+        summary_markers[0], result_dir
+    )
+    _remove_owned_paths(summary_markers, "summary")
+
+    targets = [
+        (
+            peak,
+            result_dir / format_frame_filename(
+                peak.rank_type, peak.duration_sec, peak.metric_value
+            ),
+        )
+        for peak in selected_peaks
+    ]
+    ordered_targets = sorted(
+        targets, key=lambda item: (item[0].duration_sec, item[0].rank_type)
+    )
+    timestamps = [peak.duration_sec for peak, _path in ordered_targets]
+    stage_pattern = result_dir / f".stream-{uuid.uuid4().hex}-%06d.jpg"
+    stage_paths = [
+        Path(str(stage_pattern).replace("%06d", f"{index:06d}"))
+        for index in range(1, len(ordered_targets) + 1)
+    ]
+    command = [
+        str(ffmpeg),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-i",
+        "pipe:0",
+        "-vf",
+        f"select={_stream_select_expression(timestamps)}",
+        "-vsync",
+        "0",
+        "-frames:v",
+        str(len(ordered_targets)),
+        "-q:v",
+        "2",
+        "-y",
+        str(stage_pattern),
+    ]
+
+    process = None
+    published_paths = []
+    stream_stats = None
+    try:
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise FfmpegError(
+                f"Unable to start FFmpeg stream extraction: {exc}"
+            ) from exc
+
+        stream_stats = stream_video_to_ffmpeg(
+            video_url,
+            process,
+            session=session,
+            timeout=DEFAULT_HTTP_STREAM_TIMEOUT_SEC,
+            max_bytes=max_bytes,
+            deadline_sec=deadline_sec,
+        )
+        if isinstance(timings, dict):
+            timings["videoStreamBytes"] = int(stream_stats.get("bytes", 0))
+            timings["videoStreamSec"] = float(
+                stream_stats.get("networkSec", 0.0)
+            )
+
+        try:
+            return_code = process.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired as exc:
+            raise FfmpegError(
+                f"FFmpeg timed out after {timeout_sec} seconds while extracting "
+                f"stream frames for {summary_material_id}"
+            ) from exc
+        stderr_excerpt = _read_stream_stderr(process)
+        if return_code != 0:
+            raise FfmpegError(
+                f"FFmpeg stream extraction failed for {summary_material_id}; "
+                f"return code {return_code}; stderr excerpt: {stderr_excerpt}"
+            )
+
+        for stage_path, (_peak, _output) in zip(stage_paths, ordered_targets):
+            try:
+                with stage_path.open("rb") as frame_file:
+                    if frame_file.read(2) != b"\xff\xd8":
+                        raise OSError("invalid JPEG start marker")
+                    frame_file.seek(-2, os.SEEK_END)
+                    if frame_file.read(2) != b"\xff\xd9":
+                        raise OSError("invalid JPEG end marker")
+            except FileNotFoundError as exc:
+                raise FfmpegError(
+                    f"FFmpeg did not produce expected JPEG staging output {stage_path}"
+                ) from exc
+            except (OSError, ValueError) as exc:
+                raise FfmpegError(
+                    f"FFmpeg stream JPEG validation failed for {stage_path}: {exc}"
+                ) from exc
+
+        frame_paths_by_target = {}
+        for stage_path, (peak, output_path) in zip(stage_paths, ordered_targets):
+            try:
+                os.replace(stage_path, output_path)
+            except OSError as exc:
+                raise FfmpegError(
+                    f"Unable to publish streamed frame {output_path}: {exc}"
+                ) from exc
+            published_paths.append(output_path)
+            frame_paths_by_target[peak] = output_path
+
+        frame_paths = [frame_paths_by_target[peak] for peak, _path in targets]
+        stale_frames = previously_owned_frames - set(frame_paths)
+        _remove_owned_paths(stale_frames, "frame")
+        summary = build_summary(
+            summary_material_id,
+            f"rpa://http-stream/{summary_material_id}",
+            video_url,
+            selected_peaks,
+            frame_paths,
+            video_source=video_source,
+            expected_peaks=selected_peaks,
+            additional_warnings=[
+                "excluded %s curve peak(s) outside video duration %s seconds"
+                % (len(out_of_range_peaks), duration_text)
+            ]
+            if out_of_range_peaks
+            else None,
+        )
+        json_path, markdown_path = write_summaries(summary, result_dir)
+        return result_dir, json_path, markdown_path
+    except Exception:
+        for stage_path in stage_paths:
+            try:
+                stage_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for output_path in published_paths:
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if process is not None:
+            _terminate_stream_process(process)
+        raise
+    finally:
+        if isinstance(timings, dict) and stream_stats is not None:
+            timings.setdefault("videoStreamBytes", int(stream_stats.get("bytes", 0)))
+            timings.setdefault(
+                "videoStreamSec", float(stream_stats.get("networkSec", 0.0))
+            )
 
 
 def validate_timestamps(selected_peaks, video_duration):

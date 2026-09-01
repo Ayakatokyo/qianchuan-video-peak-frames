@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import rpa_adapter  # noqa: E402
+import peak_frame_lib  # noqa: E402
 
 
 class FakeResponse:
@@ -166,6 +167,38 @@ def wait_until(predicate, timeout=1.0):
             return True
         time.sleep(0.001)
     return predicate()
+
+
+def stream_records(material_id="m-transport-failure"):
+    return [
+        {
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": "https://cdn.example/video.mp4?X-Amz-Signature=secret",
+            "videoDuration": "3.0",
+        },
+        {
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 0,
+            "metricValue": 0,
+            "materialId": material_id,
+        },
+        {
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 1,
+            "metricValue": 9,
+            "materialId": material_id,
+        },
+        {
+            "recordType": "interaction_series",
+            "interactionMetric": "CLICK_COUNT",
+            "durationSec": 2,
+            "metricValue": 0,
+            "materialId": material_id,
+        },
+    ]
 
 
 class SequenceClock:
@@ -490,3 +523,64 @@ def test_stream_video_cleanup_uses_wait_and_kill_when_terminate_fails(monkeypatc
     assert process.wait_calls == [5, 5]
     assert process.killed
     assert response.closed
+
+
+def test_stream_extractor_cleans_process_after_transport_failure(monkeypatch, tmp_path):
+    records = stream_records()
+    process_holder = {}
+
+    class FailingProcess:
+        def __init__(self, command):
+            self.command = command
+            self.stdin = FakeStdin()
+            self.returncode = None
+            self.terminated = False
+            self.wait_calls = []
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            self.returncode = -15
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def kill(self):
+            self.terminated = True
+            self.returncode = -9
+
+    def fake_popen(command, **_kwargs):
+        process_holder["process"] = FailingProcess(command)
+        return process_holder["process"]
+
+    def fail_transport(_url, _process, **_kwargs):
+        raise rpa_adapter.RpaAdapterError(
+            "stream transport failed",
+            diagnostics={"gatewayPhase": "response", "httpStatus": 503},
+        )
+
+    monkeypatch.setattr(peak_frame_lib.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(peak_frame_lib, "resolve_ffmpeg", lambda **_kwargs: "ffmpeg")
+    monkeypatch.setattr(
+        peak_frame_lib, "stream_video_to_ffmpeg", fail_transport, raising=False
+    )
+
+    with pytest.raises(rpa_adapter.RpaAdapterError, match="stream transport failed") as raised:
+        peak_frame_lib.extract_frames_from_stream(
+            records,
+            records[0]["videoUrl"],
+            tmp_path / "output",
+        )
+
+    process = process_holder["process"]
+    assert process.terminated
+    assert process.stdin.closed
+    assert raised.value.diagnostics == {
+        "gatewayPhase": "response",
+        "httpStatus": 503,
+    }
+    assert list((tmp_path / "output" / "m-transport-failure").glob(".stream-*.jpg")) == []
