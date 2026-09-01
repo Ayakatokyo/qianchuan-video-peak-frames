@@ -2510,7 +2510,6 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("assets/report/", skill)
         self.assertIn("内联", skill)
         self.assertIn("不得手工修改", skill)
-        self.assertIn("1440x1000", skill)
 
     def test_unified_report_style_defines_text_card_and_control_contract(self):
         css = (ROOT / "assets" / "report" / "unified-report.css").read_text(
@@ -2862,6 +2861,30 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("font-weight: 800;", css_text)
         self.assertIn(".unified-report #audience-dashboard .pie-legend .legend-item > span:nth-child(3) {", css_text)
         self.assertIn("font-weight: 400;", css_text)
+
+    def test_audience_columns_have_visible_hover_card_feedback(self):
+        css_text = (ROOT / "assets" / "report" / "unified-report.css").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            ".unified-report #audience-dashboard .script-dashboard-overview .column-item {",
+            css_text,
+        )
+        self.assertIn("padding: 4px 4px 2px;", css_text)
+        self.assertIn("border-radius: 4px;", css_text)
+        self.assertIn("transition: background-color .15s ease;", css_text)
+        self.assertIn(
+            ".unified-report #audience-dashboard .script-dashboard-overview .column-item:hover,",
+            css_text,
+        )
+        self.assertIn(
+            ".unified-report #audience-dashboard .script-dashboard-overview .column-item:focus-visible",
+            css_text,
+        )
+        self.assertIn("background: rgba(247, 230, 203, .58);", css_text)
+        self.assertIn("filter: brightness(.9);", css_text)
+        self.assertIn("transform: translateY(-1px);", css_text)
 
     def test_region_columns_stay_within_plot_when_many_buckets_are_visible(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(

@@ -3197,6 +3197,20 @@ body.unified-report {
 
 .unified-report #audience-dashboard .script-dashboard-overview .column-item {
   height: 180px;
+  padding: 4px 4px 2px;
+  border-radius: 4px;
+  transition: background-color .15s ease;
+}
+
+.unified-report #audience-dashboard .script-dashboard-overview .column-item:hover,
+.unified-report #audience-dashboard .script-dashboard-overview .column-item:focus-visible {
+  background: rgba(247, 230, 203, .58);
+}
+
+.unified-report #audience-dashboard .script-dashboard-overview .column-item:hover .column-bar,
+.unified-report #audience-dashboard .script-dashboard-overview .column-item:focus-visible .column-bar {
+  filter: brightness(.9);
+  transform: translateY(-1px);
 }
 
 .unified-report #audience-dashboard .script-dashboard-overview,
