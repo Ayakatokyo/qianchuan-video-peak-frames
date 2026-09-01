@@ -1,10 +1,12 @@
 from datetime import datetime
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import time
+from urllib.parse import urlsplit
 import uuid
 
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
@@ -46,6 +48,66 @@ class GatewayFile:
 DEFAULT_CSV_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_DOWNLOAD_DEADLINE_SEC = 600
+DEFAULT_URL_PROBE_BYTES = 1024 * 1024
+DEFAULT_URL_PROBE_TIMEOUT_SEC = 30
+
+
+@dataclass(frozen=True)
+class UrlCapabilities:
+    """Bounded HTTP observations for a video URL.
+
+    The signed URL itself is deliberately not retained in this value.  It is
+    needed only as an in-process FFmpeg/request argument and must not become a
+    log or report field.
+    """
+
+    url_host: str
+    status_code: int
+    content_length: int | None
+    accept_ranges: bool
+    moov_offset: int | None
+    moov_position: str
+    probe_method: str
+    bytes_read: int
+    elapsed_sec: float
+    response_headers: dict[str, str]
+    head_status_code: int | None = None
+    range_status_code: int | None = None
+    content_type: str | None = None
+
+    @property
+    def supports_range(self):
+        return self.accept_ranges or self.range_status_code == 206
+
+    @property
+    def moov_at_head(self):
+        return self.moov_position == "head"
+
+    @property
+    def headers(self):
+        """Compatibility alias exposing only the selected safe headers."""
+        return dict(self.response_headers)
+
+    def as_dict(self):
+        return {
+            "urlHost": self.url_host,
+            "statusCode": self.status_code,
+            "contentLength": self.content_length,
+            "acceptRanges": self.accept_ranges,
+            "supportsRange": self.supports_range,
+            "moovOffset": self.moov_offset,
+            "moovPosition": self.moov_position,
+            "moovAtHead": self.moov_at_head,
+            "probeMethod": self.probe_method,
+            "bytesRead": self.bytes_read,
+            "elapsedSec": self.elapsed_sec,
+            "responseHeaders": dict(self.response_headers),
+            "headStatusCode": self.head_status_code,
+            "rangeStatusCode": self.range_status_code,
+            "contentType": self.content_type,
+        }
+
+    to_dict = as_dict
 
 
 def _default_session():
@@ -56,6 +118,323 @@ def _default_session():
             "requests must be installed to call the Yuce RPA gateway"
         ) from exc
     return requests.Session()
+
+
+def _video_url_host(video_url):
+    parsed = urlsplit(str(video_url or "").strip())
+    return parsed.hostname or "<invalid-host>"
+
+
+def redact_url(video_url):
+    """Return a host-only URL description suitable for diagnostics."""
+    parsed = urlsplit(str(video_url or "").strip())
+    scheme = parsed.scheme.lower() if parsed.scheme else "unknown"
+    host = parsed.hostname or "<invalid-host>"
+    return f"{scheme}://{host}/[redacted]"
+
+
+_redact_video_url = redact_url
+
+
+def _header_value(headers, name):
+    wanted = str(name).lower()
+    for key, value in (headers or {}).items():
+        if str(key).lower() == wanted:
+            return value
+    return None
+
+
+def _safe_header_snapshot(headers):
+    allowed = {
+        "accept-ranges",
+        "content-length",
+        "content-range",
+        "content-type",
+        "etag",
+        "last-modified",
+    }
+    snapshot = {}
+    for key, value in (headers or {}).items():
+        normalized_key = str(key).lower()
+        if normalized_key in allowed:
+            snapshot[normalized_key] = str(value)
+    return snapshot
+
+
+def _parse_content_length(headers):
+    value = _header_value(headers, "Content-Length")
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _parse_content_range(headers):
+    value = _header_value(headers, "Content-Range")
+    if value is None:
+        return None
+    match = re.fullmatch(
+        r"\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*", str(value), re.IGNORECASE
+    )
+    if match is None:
+        return None
+    start, end, total = match.groups()
+    return int(start), int(end), None if total == "*" else int(total)
+
+
+def _find_mp4_moov_offset(payload, base_offset=0):
+    """Find a top-level MP4 moov atom without scanning beyond *payload*."""
+    data = bytes(payload or b"")
+    offset = 0
+    data_length = len(data)
+    while offset + 8 <= data_length:
+        size = int.from_bytes(data[offset : offset + 4], "big")
+        box_type = data[offset + 4 : offset + 8]
+        header_size = 8
+        if size == 1:
+            if offset + 16 > data_length:
+                break
+            size = int.from_bytes(data[offset + 8 : offset + 16], "big")
+            header_size = 16
+        elif size == 0:
+            size = data_length - offset
+        if size < header_size or offset + size > data_length:
+            break
+        if box_type == b"moov":
+            return base_offset + offset
+        offset += size
+
+    # A tail range can start inside the moov header.  The marker still gives
+    # a useful diagnostic offset, while the bounded scan above remains the
+    # authority whenever a complete top-level atom is present.
+    marker = data.find(b"moov")
+    if marker >= 0:
+        return max(0, base_offset + marker - 4)
+    return None
+
+
+def _read_probe_bytes(response, limit):
+    collected = bytearray()
+    iterator = response.iter_content(chunk_size=min(64 * 1024, limit))
+    for chunk in iterator:
+        if not chunk:
+            continue
+        if isinstance(chunk, str):
+            chunk = chunk.encode()
+        remaining = limit - len(collected)
+        if remaining <= 0:
+            break
+        collected.extend(chunk[:remaining])
+        if len(collected) >= limit:
+            break
+    return bytes(collected)
+
+
+def _close_response(response):
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
+def _response_status(response):
+    value = getattr(response, "status_code", None)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _raise_url_response_error(response, host):
+    status = _response_status(response)
+    if status >= 400:
+        raise RpaAdapterError(
+            f"video URL probe on host {host} returned HTTP {status}"
+        )
+    try:
+        response.raise_for_status()
+    except Exception:
+        raise RpaAdapterError(
+            f"video URL probe on host {host} returned HTTP {status or 'error'}"
+        )
+
+
+def probe_url_capabilities(
+    video_url,
+    *,
+    session=None,
+    timeout=DEFAULT_URL_PROBE_TIMEOUT_SEC,
+    probe_bytes=DEFAULT_URL_PROBE_BYTES,
+    logger=None,
+):
+    """Probe a signed video URL using bounded HEAD and Range GET requests.
+
+    The GET body is capped and closed as soon as enough bytes have been
+    inspected, so a server that ignores Range cannot make Python buffer the
+    complete MP4.  The URL is passed to the HTTP client only in-process; all
+    diagnostics use its host instead.
+    """
+    url = str(video_url or "").strip()
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise RpaAdapterError("videoUrl must be an absolute HTTP(S) URL")
+    try:
+        timeout_value = float(timeout)
+        probe_limit = int(probe_bytes)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("timeout and probe_bytes must be numeric") from exc
+    if timeout_value <= 0 or probe_limit <= 0:
+        raise ValueError("timeout and probe_bytes must be greater than zero")
+
+    session = _default_session() if session is None else session
+    logger = logging.getLogger(__name__) if logger is None else logger
+    host = _video_url_host(url)
+    started = time.monotonic()
+    head_status = None
+    head_headers = {}
+    head_ok = False
+    head = getattr(session, "head", None)
+    if callable(head):
+        response = None
+        try:
+            response = head(url, allow_redirects=True, timeout=timeout_value)
+            head_status = _response_status(response)
+            head_headers = dict(getattr(response, "headers", {}) or {})
+            head_ok = 200 <= head_status < 400
+        except Exception:
+            # A number of object stores reject HEAD even though GET works.
+            head_ok = False
+        finally:
+            if response is not None:
+                _close_response(response)
+
+    range_end = probe_limit - 1
+    response = None
+    try:
+        response = session.get(
+            url,
+            headers={"Range": f"bytes=0-{range_end}"},
+            stream=True,
+            timeout=timeout_value,
+        )
+        _raise_url_response_error(response, host)
+        get_status = _response_status(response)
+        get_headers = dict(getattr(response, "headers", {}) or {})
+        prefix = _read_probe_bytes(response, probe_limit)
+        get_range = _parse_content_range(get_headers)
+    except RpaAdapterError:
+        logger.error(
+            "video URL capability probe failed host=%s phase=range-get",
+            host,
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "video URL capability probe failed host=%s phase=range-get", host
+        )
+        raise RpaAdapterError(
+            f"unable to probe video URL on host {host}"
+        ) from None
+    finally:
+        if response is not None:
+            _close_response(response)
+
+    total_length = None
+    if get_range is not None and get_range[2] is not None:
+        total_length = get_range[2]
+    if total_length is None and head_ok:
+        total_length = _parse_content_length(head_headers)
+    if total_length is None and get_status != 206:
+        total_length = _parse_content_length(get_headers)
+
+    accept_ranges_header = _header_value(get_headers, "Accept-Ranges")
+    accept_ranges = str(accept_ranges_header or "").strip().lower() == "bytes"
+    range_status = get_status if get_status == 206 else None
+    supports_range = accept_ranges or range_status == 206
+
+    prefix_moov_offset = _find_mp4_moov_offset(prefix, 0)
+    moov_offset = prefix_moov_offset
+    moov_position = None
+    if prefix_moov_offset is not None:
+        moov_position = "head"
+
+    bytes_read = len(prefix)
+    if (
+        moov_position is None
+        and supports_range
+        and total_length is not None
+        and total_length > probe_limit
+    ):
+        tail_start = max(0, total_length - probe_limit)
+        tail_response = None
+        try:
+            tail_response = session.get(
+                url,
+                headers={"Range": f"bytes={tail_start}-{total_length - 1}"},
+                stream=True,
+                timeout=timeout_value,
+            )
+            _raise_url_response_error(tail_response, host)
+            tail = _read_probe_bytes(tail_response, probe_limit)
+            bytes_read += len(tail)
+            tail_moov_offset = _find_mp4_moov_offset(tail, tail_start)
+            if tail_moov_offset is not None:
+                moov_offset = tail_moov_offset
+                moov_position = "tail"
+        except RpaAdapterError:
+            raise
+        except Exception:
+            # The prefix capability remains useful even when a tail probe is
+            # unavailable; direct FFmpeg will decide whether sequential read
+            # can still decode the source.
+            logger.warning(
+                "video URL tail probe unavailable host=%s", host
+            )
+        finally:
+            if tail_response is not None:
+                _close_response(tail_response)
+
+    if moov_position is None:
+        moov_position = "unknown"
+
+    effective_headers = _safe_header_snapshot(head_headers)
+    effective_headers.update(_safe_header_snapshot(get_headers))
+    elapsed_sec = round(max(0.0, time.monotonic() - started), 6)
+    capabilities = UrlCapabilities(
+        url_host=host,
+        status_code=get_status,
+        content_length=total_length,
+        accept_ranges=accept_ranges,
+        moov_offset=moov_offset,
+        moov_position=moov_position,
+        probe_method="HEAD+GET" if head_ok else "GET",
+        bytes_read=bytes_read,
+        elapsed_sec=elapsed_sec,
+        response_headers=effective_headers,
+        head_status_code=head_status,
+        range_status_code=range_status,
+        content_type=_header_value(get_headers, "Content-Type")
+        or _header_value(head_headers, "Content-Type"),
+    )
+    logger.info(
+        "video URL capability probe host=%s method=%s status=%s "
+        "content_length=%s accept_ranges=%s moov_position=%s "
+        "bytes_read=%s elapsed_sec=%.6f",
+        capabilities.url_host,
+        capabilities.probe_method,
+        capabilities.status_code,
+        capabilities.content_length,
+        capabilities.accept_ranges,
+        capabilities.moov_position,
+        capabilities.bytes_read,
+        capabilities.elapsed_sec,
+    )
+    return capabilities
+
+
+def probe_video_url(video_url, **kwargs):
+    """Backward-compatible descriptive alias for URL capability probing."""
+    return probe_url_capabilities(video_url, **kwargs)
 
 
 def runtime_config(environ=None):
