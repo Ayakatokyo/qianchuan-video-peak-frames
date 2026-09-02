@@ -24,6 +24,8 @@ class Material:
     material_type: str
     video_type: str
     total_cost: Decimal
+    video_url: str | None = None
+    video_url_candidates: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -39,11 +41,15 @@ class _MaterialAggregate:
     material_id: str
     total_cost: Decimal
     metadata_costs: dict
+    video_url_candidates: list
 
-    def add(self, name, material_type, video_type, cost):
+    def add(self, name, material_type, video_type, cost, video_urls=()):
         self.total_cost += cost
         key = (name, material_type, video_type)
         self.metadata_costs[key] = self.metadata_costs.get(key, Decimal("0")) + cost
+        for url in video_urls:
+            if url not in self.video_url_candidates:
+                self.video_url_candidates.append(url)
 
     def to_material(self):
         name, material_type, video_type = sorted(
@@ -55,6 +61,8 @@ class _MaterialAggregate:
             material_type=material_type,
             video_type=video_type,
             total_cost=self.total_cost,
+            video_url=(self.video_url_candidates[0] if self.video_url_candidates else None),
+            video_url_candidates=tuple(self.video_url_candidates),
         )
 
 
@@ -71,7 +79,7 @@ class MaterialAggregator:
         self.aigc_cost = Decimal("0")
 
     def add_raw_origin_data(self, raw_row):
-        material_id, name, material_type, video_type, cost = _parse_origin_data(raw_row)
+        material_id, name, material_type, video_type, cost, video_urls = _parse_origin_data(raw_row)
         if self.pattern is not None and self.pattern.search(name) is None:
             return
         if self.allowed_types and material_type not in self.allowed_types:
@@ -88,9 +96,10 @@ class MaterialAggregator:
                 material_id=material_id,
                 total_cost=Decimal("0"),
                 metadata_costs={},
+                video_url_candidates=[],
             )
             self.grouped[material_id] = previous
-        previous.add(name, material_type, video_type, cost)
+        previous.add(name, material_type, video_type, cost, video_urls)
 
     def select(self):
         materials = sorted(
@@ -175,6 +184,10 @@ def build_output(
                 "materialType": material.material_type,
                 "videoType": material.video_type,
                 "totalCost": float(material.total_cost),
+                **({
+                    "videoUrl": material.video_url,
+                    "videoUrlCandidates": list(material.video_url_candidates),
+                } if material.video_url_candidates else {}),
             }
             for rank, material in enumerate(materials, start=1)
         ],
@@ -217,7 +230,45 @@ def _parse_origin_data(raw_row):
     cost = _normalise_cost(
         _nested_value(row, "metrics", "stat_cost_for_overall_roi2", "Value")
     )
-    return material_id, name, material_type, video_type, cost
+    video_urls = _parse_video_url_candidates(
+        row.get("dimensions", {}).get("roi2_material_video_play_info")
+    )
+    return material_id, name, material_type, video_type, cost, video_urls
+
+
+def _parse_video_url_candidates(field):
+    """Extract ordered HTTP(S) URLs from the API play-resource dimension."""
+    if not isinstance(field, dict):
+        return ()
+    values = []
+    for key in ("Value", "ValueStr"):
+        value = field.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        values.append(value)
+
+    urls = []
+    def visit(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key.lower() == "urllist":
+                    visit(value)
+                elif key.lower() in {"url", "playurl"} and isinstance(value, str):
+                    candidate = value.strip()
+                    if candidate.startswith(("http://", "https://")) and candidate not in urls:
+                        urls.append(candidate)
+                else:
+                    visit(value)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    for value in values:
+        visit(value)
+    return tuple(urls)
 
 
 def _nested_value(row, *path):

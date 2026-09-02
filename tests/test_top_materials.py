@@ -46,7 +46,41 @@ def origin_data(
     )
 
 
+def origin_data_with_video_urls(material_id="m-video"):
+    payload = json.loads(origin_data(material_id=material_id, cost="9"))
+    payload["dimensions"]["roi2_material_video_play_info"] = {
+        "Value": {
+            "PlayResource": {
+                "UrlList": [
+                    {"Url": "https://video.example/first.mp4?sig=one"},
+                    {"Url": "https://video.example/second.mp4?sig=two"},
+                ]
+            }
+        }
+    }
+    return json.dumps(payload)
+
+
 class MaterialSelectionTests(unittest.TestCase):
+    def test_build_output_preserves_api_video_url_candidates(self):
+        materials, excluded = select_materials(
+            [origin_data_with_video_urls()], None, [], 50
+        )
+
+        output = build_output(
+            "2026-05-01", "2026-05-05", None, [], None,
+            materials, excluded,
+        )
+
+        self.assertEqual(output["materials"][0]["videoUrl"], "https://video.example/first.mp4?sig=one")
+        self.assertEqual(
+            output["materials"][0]["videoUrlCandidates"],
+            [
+                "https://video.example/first.mp4?sig=one",
+                "https://video.example/second.mp4?sig=two",
+            ],
+        )
+
     def test_aggregates_costs_and_orders_ties_by_material_id(self):
         materials, excluded = select_materials(
             [
