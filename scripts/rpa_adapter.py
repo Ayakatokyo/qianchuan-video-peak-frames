@@ -524,9 +524,11 @@ def fetch_material_preflight(
         result = preflight_material_availability(records, material_id)
     except Exception as exc:
         return _preflight_failure_result(material_id, "rpa_payload_invalid", exc)
-    if result["rpaAvailable"]:
-        result["records"] = records
-        result["diagnosisCsvPath"] = diagnosis_csv_path
+    # A structurally valid CSV is durable evidence even when its video URL is
+    # empty; persist the records first and let downstream URL resolution decide
+    # whether post-processing can proceed.
+    result["records"] = records
+    result["diagnosisCsvPath"] = diagnosis_csv_path
     return result
 
 

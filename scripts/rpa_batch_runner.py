@@ -335,6 +335,9 @@ def run_wave_batch(
         entry["timingsSec"] = merge_timings(
             entry["timingsSec"], attempt.get("timingsSec", {})
         )
+        for field in ("videoUrlSource", "videoUrlFallbackReason"):
+            if field in attempt:
+                entry[field] = attempt[field]
         state_changed_at = elapsed(batch_started_at)
         attempt_entry = entry.setdefault("postprocessAttempts", [])[-1]
         attempt_entry.update(

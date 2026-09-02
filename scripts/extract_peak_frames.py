@@ -292,7 +292,14 @@ def _read_diagnosis_records(path, material_id):
         raise RpaAdapterError(
             f"diagnosis records for material {material_id} must be a list"
         )
-    find_material_video_url(records, material_id)
+    if not any(
+        isinstance(record, dict)
+        and str(record.get("materialId") or "").strip() == str(material_id).strip()
+        for record in records
+    ):
+        raise RpaAdapterError(
+            f"diagnosis records for material {material_id} do not match material ID"
+        )
     return records
 
 
@@ -1081,6 +1088,16 @@ def _attempt_wave_rpa(args, entry):
         {"timingsSec": timings, "rpaClientAttemptId": client_attempt_id}
     )
     if not outcome.get("rpaAvailable"):
+        records = None
+        records_path = None
+        try:
+            if isinstance(outcome.get("records"), list) or outcome.get("diagnosisRecordsPath"):
+                records, records_path = _materialize_preflight_records(
+                    args, outcome, material_id, timings
+                )
+        except RpaAdapterError:
+            records = None
+            records_path = None
         updated.update(
             {
                 "rpaStatus": "rejected",
@@ -1099,6 +1116,16 @@ def _attempt_wave_rpa(args, entry):
                 "httpStatus": outcome.get("httpStatus"),
                 "requestId": outcome.get("requestId"),
                 "responseSummary": outcome.get("responseSummary"),
+                "diagnosisRecordsPath": (
+                    _run_relative_path(args, records_path) if records_path else None
+                ),
+                "diagnosisCsvPath": (
+                    _run_relative_path(args, outcome["diagnosisCsvPath"])
+                    if outcome.get("diagnosisCsvPath")
+                    else None
+                ),
+                "recordsPersisted": bool(records_path),
+                "records": records,
             }
         )
         if outcome.get("timeoutExceeded"):
@@ -1183,11 +1210,17 @@ def _attempt_wave_postprocess(args, entry):
             records, _records_path = _existing_wave_records(args, material_id, entry)
         if records is None:
             raise RpaAdapterError("persisted RPA diagnosis records are unavailable")
-        video_url = find_material_video_url(records, material_id)
         with tempfile.TemporaryDirectory() as temp_dir:
             video_path = artifact_path(temp_dir, material_id, ".mp4")
             substage = "download"
-            _time_call(timings, "videoDownloadSec", download_video, video_url, video_path)
+            resolution = _time_call(
+                timings,
+                "videoDownloadSec",
+                _resolve_video_source,
+                records,
+                entry,
+                video_path,
+            )
             substage = "frame_extraction"
             result = _time_call(
                 timings,
@@ -1216,6 +1249,8 @@ def _attempt_wave_postprocess(args, entry):
         "error": None,
         "timingsSec": timings,
         "substage": "completed",
+        "videoUrlSource": resolution["source"],
+        "videoUrlFallbackReason": resolution.get("fallbackReason"),
     }
 
 
@@ -1238,6 +1273,44 @@ def _merge_wave_postprocess_timings(entry_timings, attempt_timings):
     merged["endToEndSec"] = end_to_end
     merged["totalSec"] = end_to_end
     return merged
+
+
+def _resolve_video_source(records, entry, target_path):
+    """Download the first usable RPA/API video URL for one material."""
+    material_id = str(entry.get("materialId") or "").strip()
+    rpa_url = None
+    try:
+        rpa_url = find_material_video_url(records, material_id)
+    except RpaAdapterError:
+        pass
+
+    candidates = []
+    if rpa_url:
+        candidates.append((rpa_url, "rpa", None))
+    for raw_url in entry.get("videoUrlCandidates") or ():
+        url = str(raw_url or "").strip()
+        if url and url.startswith(("http://", "https://")) and url not in {
+            item[0] for item in candidates
+        }:
+            candidates.append((url, "api_fallback", "missing_rpa_video_url" if not rpa_url else "rpa_video_url_invalid"))
+
+    if not candidates:
+        raise RpaAdapterError("missing_video_url")
+
+    last_error = None
+    for url, source, fallback_reason in candidates:
+        try:
+            download_video(url, target_path)
+            return {
+                "videoUrl": url,
+                "source": source,
+                "fallbackReason": fallback_reason,
+            }
+        except (RpaAdapterError, OSError) as exc:
+            last_error = exc
+    if any(source == "api_fallback" for _url, source, _reason in candidates):
+        raise RpaAdapterError("api_video_url_invalid") from last_error
+    raise RpaAdapterError("rpa_video_url_invalid") from last_error
 
 
 def _run_wave_rpa_batch(args, candidate_payload, *, is_interrupted=None):

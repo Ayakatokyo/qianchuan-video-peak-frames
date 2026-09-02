@@ -31,12 +31,7 @@ def _worker_entry(
         records = outcome.get("records")
         records_dir = params.get("diagnosis_records_dir")
         material_id = params.get("material_id")
-        if (
-            outcome.get("rpaAvailable")
-            and isinstance(records, list)
-            and records_dir
-            and persist_records is not None
-        ):
+        if isinstance(records, list) and records_dir and persist_records is not None:
             stage = "persist_records"
             if publish_receipt is not None and outcome.get("diagnosisCsvPath"):
                 stage = "publish_artifact_receipt"

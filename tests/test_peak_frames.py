@@ -533,6 +533,28 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertEqual(result["records"], records)
         self.assertIsNone(result["diagnosisCsvPath"])
 
+    def test_fetch_material_preflight_exposes_records_when_video_url_is_empty(self):
+        records = [
+            {
+                "recordType": "material_info",
+                "materialId": "m-empty-records",
+                "videoUrl": "",
+            }
+        ]
+        session = RecordingSession(FakeResponse({"payload": records}))
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-empty-records",
+            date_range_type="LAST_7_DAYS",
+            environ=self._env(),
+            session=session,
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result["failureReason"], "missing_video_url")
+        self.assertEqual(result["records"], records)
+
     def test_fetch_material_preflight_exposes_files_csv_path_and_records(self):
         csv_bytes = (
             b"recordType\x01materialId\x01videoUrl\n"
@@ -2241,6 +2263,85 @@ class SummaryTests(unittest.TestCase):
 
 
 class ProcessingPipelineTests(unittest.TestCase):
+    def test_video_resolver_prefers_rpa_url(self):
+        records = [{"recordType": "material_info", "materialId": "m-resolve", "videoUrl": "https://rpa.example/video.mp4"}]
+        entry = {"materialId": "m-resolve", "videoUrlCandidates": ["https://api.example/video.mp4"]}
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            extract_peak_frames, "download_video", return_value=Path(temp_dir) / "video.mp4"
+        ) as download:
+            resolved = extract_peak_frames._resolve_video_source(
+                records, entry, Path(temp_dir) / "video.mp4"
+            )
+        self.assertEqual(resolved["source"], "rpa")
+        self.assertEqual(resolved["videoUrl"], "https://rpa.example/video.mp4")
+        download.assert_called_once()
+
+    def test_video_resolver_uses_api_fallback_when_rpa_url_empty(self):
+        records = [{"recordType": "material_info", "materialId": "m-fallback", "videoUrl": ""}]
+        entry = {"materialId": "m-fallback", "videoUrlCandidates": ["https://api.example/video.mp4"]}
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            extract_peak_frames, "download_video", return_value=Path(temp_dir) / "video.mp4"
+        ) as download:
+            resolved = extract_peak_frames._resolve_video_source(
+                records, entry, Path(temp_dir) / "video.mp4"
+            )
+        self.assertEqual(resolved["source"], "api_fallback")
+        self.assertEqual(resolved["videoUrl"], "https://api.example/video.mp4")
+        self.assertEqual(resolved["fallbackReason"], "missing_rpa_video_url")
+        download.assert_called_once()
+
+    def test_video_resolver_tries_api_candidates_in_order(self):
+        records = [{"recordType": "material_info", "materialId": "m-candidates", "videoUrl": ""}]
+        entry = {"materialId": "m-candidates", "videoUrlCandidates": ["https://api.example/bad.mp4", "https://api.example/good.mp4"]}
+        def download(url, _target):
+            if url.endswith("bad.mp4"):
+                raise rpa_adapter.RpaAdapterError("download failed")
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            extract_peak_frames, "download_video", side_effect=download
+        ) as download_mock:
+            resolved = extract_peak_frames._resolve_video_source(
+                records, entry, Path(temp_dir) / "video.mp4"
+            )
+        self.assertEqual(resolved["videoUrl"], "https://api.example/good.mp4")
+        self.assertEqual(download_mock.call_args_list[0].args[0], "https://api.example/bad.mp4")
+
+    def test_video_resolver_reports_missing_or_invalid_api_urls(self):
+        records = [{"recordType": "material_info", "materialId": "m-no-url", "videoUrl": ""}]
+        entry = {"materialId": "m-no-url", "videoUrlCandidates": []}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "missing_video_url"):
+                extract_peak_frames._resolve_video_source(
+                    records, entry, Path(temp_dir) / "video.mp4"
+                )
+
+    def test_wave_postprocess_uses_api_fallback_and_reports_source(self):
+        material_id = "m-postprocess-fallback"
+        records = [{"recordType": "material_info", "materialId": material_id, "videoUrl": ""}]
+        entry = {
+            "materialId": material_id,
+            "videoUrlCandidates": ["https://api.example/video.mp4"],
+            "records": records,
+            "timingsSec": extract_peak_frames._empty_material_timings(),
+        }
+        args = type("Args", (), {
+            "output_dir": tempfile.mkdtemp(),
+            "ffmpeg_bin": None,
+            "ffmpeg_timeout_sec": 10,
+        })()
+        try:
+            with patch.object(extract_peak_frames, "download_video") as download, patch.object(
+                extract_peak_frames, "process_records",
+                return_value=(Path(args.output_dir), Path(args.output_dir) / "summary.json", Path(args.output_dir) / "summary.md"),
+            ):
+                attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+        finally:
+            import shutil
+            shutil.rmtree(args.output_dir, ignore_errors=True)
+        self.assertIsNone(attempt["error"])
+        self.assertEqual(attempt["videoUrlSource"], "api_fallback")
+        self.assertEqual(attempt["videoUrlFallbackReason"], "missing_rpa_video_url")
+        download.assert_called_once_with("https://api.example/video.mp4", download.call_args.args[1])
+
     def test_process_records_reports_stage_timings(self):
         records = [
             click_record(second, value)

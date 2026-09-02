@@ -1,4 +1,5 @@
 import queue
+import json
 import os
 import tempfile
 import time
@@ -111,7 +112,6 @@ class RpaRuntimeReceiptTests(unittest.TestCase):
             )
 
             outcome = result_queue.get_nowait()
-
         self.assertEqual(
             events,
             [
@@ -120,6 +120,50 @@ class RpaRuntimeReceiptTests(unittest.TestCase):
             ],
         )
         self.assertEqual(outcome["diagnosisRecordsPath"], str(records_dir / f"{material_id}.json"))
+        self.assertNotIn("records", outcome)
+
+    def test_worker_persists_valid_records_even_when_video_url_preflight_fails(self):
+        material_id = "m-empty-url"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / f"{material_id}.csv"
+            csv_path.write_text("material_info", encoding="utf-8")
+            records_dir = root / "records"
+            result_queue = queue.Queue()
+
+            def worker(_params):
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": False,
+                    "failureReason": "missing_video_url",
+                    "videoUrl": None,
+                    "records": [{"materialId": material_id, "videoUrl": ""}],
+                    "diagnosisCsvPath": str(csv_path),
+                }
+
+            def persist_records(records, directory, identifier):
+                target = Path(directory) / f"{identifier}.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(records), encoding="utf-8")
+                return target
+
+            _worker_entry(
+                {
+                    "material_id": material_id,
+                    "diagnosis_records_dir": records_dir,
+                },
+                worker,
+                lambda *_args: {"rpaAvailable": False},
+                result_queue,
+                persist_records=persist_records,
+            )
+
+            outcome = result_queue.get_nowait()
+            records_were_persisted = Path(outcome["diagnosisRecordsPath"]).is_file()
+
+        self.assertEqual(outcome["failureReason"], "missing_video_url")
+        self.assertEqual(outcome["diagnosisRecordsPath"], str(records_dir / f"{material_id}.json"))
+        self.assertTrue(records_were_persisted)
         self.assertNotIn("records", outcome)
 
 
