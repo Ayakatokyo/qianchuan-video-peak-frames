@@ -274,6 +274,13 @@ def _stream_download(
     try:
         response = session.get(url, stream=True, timeout=timeout)
         response.raise_for_status()
+        content_type = str(getattr(response, "headers", {}).get("Content-Type") or "").lower()
+        if content_type and not (
+            content_type.startswith("video/")
+            or content_type.startswith("application/octet-stream")
+            or content_type.startswith("binary/octet-stream")
+        ):
+            raise RpaAdapterError("downloaded RPA video content type is invalid")
         content_length = getattr(response, "headers", {}).get("Content-Length")
         try:
             declared_size = int(content_length) if content_length is not None else None

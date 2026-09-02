@@ -183,6 +183,18 @@ class RpaAdapterTests(unittest.TestCase):
             self.assertFalse(target.exists())
         self.assertTrue(response.closed)
 
+    def test_video_download_rejects_non_video_content_type(self):
+        response = FakeResponse(None, content=b"not-video", headers={"Content-Type": "text/html"})
+        session = RecordingSession(FakeResponse(None), response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "content type"):
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    Path(temp_dir) / "video.mp4",
+                    session=session,
+                )
+        self.assertTrue(response.closed)
+
     def test_video_download_enforces_total_deadline_and_closes_response(self):
         response = FakeResponse(None, content=b"1")
         session = RecordingSession(FakeResponse(None), response)
