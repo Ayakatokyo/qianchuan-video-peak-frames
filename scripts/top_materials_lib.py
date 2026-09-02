@@ -247,6 +247,9 @@ def _parse_video_url_candidates(field):
             try:
                 value = json.loads(value)
             except (TypeError, ValueError, json.JSONDecodeError):
+                value = value.strip()
+                if value.startswith(("http://", "https://")):
+                    values.append({"Url": value})
                 continue
         values.append(value)
 

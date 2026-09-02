@@ -81,6 +81,20 @@ class MaterialSelectionTests(unittest.TestCase):
             ],
         )
 
+    def test_video_url_parser_accepts_value_str_json_and_ignores_thumbnail(self):
+        payload = json.loads(origin_data(material_id="m-value-str"))
+        payload["dimensions"]["roi2_material_video_play_info"] = {
+            "ValueStr": json.dumps({
+                "PlayResource": {
+                    "ThumbnailUrl": "https://image.example/thumb.jpg",
+                    "UrlList": [{"Url": "https://video.example/value-str.mp4"}],
+                }
+            })
+        }
+        materials, _excluded = select_materials([json.dumps(payload)], None, [], 50)
+        output = build_output("2026-05-01", "2026-05-05", None, [], None, materials, [])
+        self.assertEqual(output["materials"][0]["videoUrl"], "https://video.example/value-str.mp4")
+
     def test_aggregates_costs_and_orders_ties_by_material_id(self):
         materials, excluded = select_materials(
             [
