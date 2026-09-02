@@ -2342,6 +2342,32 @@ class ProcessingPipelineTests(unittest.TestCase):
         self.assertEqual(attempt["videoUrlFallbackReason"], "missing_rpa_video_url")
         download.assert_called_once_with("https://api.example/video.mp4", download.call_args.args[1])
 
+    def test_wave_postprocess_classifies_invalid_api_candidates(self):
+        material_id = "m-postprocess-invalid"
+        entry = {
+            "materialId": material_id,
+            "videoUrlCandidates": ["https://api.example/bad.mp4"],
+            "records": [{"recordType": "material_info", "materialId": material_id, "videoUrl": ""}],
+            "timingsSec": extract_peak_frames._empty_material_timings(),
+        }
+        args = type("Args", (), {
+            "output_dir": tempfile.mkdtemp(),
+            "ffmpeg_bin": None,
+            "ffmpeg_timeout_sec": 10,
+        })()
+        try:
+            with patch.object(
+                extract_peak_frames,
+                "download_video",
+                side_effect=rpa_adapter.RpaAdapterError("HTTP 404"),
+            ):
+                attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+        finally:
+            import shutil
+            shutil.rmtree(args.output_dir, ignore_errors=True)
+        self.assertIsNotNone(attempt["error"])
+        self.assertEqual(attempt["failureReason"], "api_video_url_invalid")
+
     def test_process_records_reports_stage_timings(self):
         records = [
             click_record(second, value)

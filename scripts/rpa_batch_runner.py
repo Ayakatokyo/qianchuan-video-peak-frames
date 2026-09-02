@@ -375,6 +375,8 @@ def run_wave_batch(
                     "lastProgressAtSec": state_changed_at,
                 }
             )
+            if attempt.get("failureReason"):
+                entry["failureReason"] = attempt["failureReason"]
             if entry.get("postprocessPhase") == "serial_compensation":
                 entry["compensationStatus"] = "failed"
         else:

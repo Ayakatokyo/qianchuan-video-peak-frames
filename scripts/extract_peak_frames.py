@@ -1242,6 +1242,7 @@ def _attempt_wave_postprocess(args, entry):
             "error": exc,
             "timingsSec": timings,
             "substage": substage,
+            "failureReason": str(exc) if isinstance(exc, RpaAdapterError) else None,
         }
     timings["totalSec"] = _elapsed_since(started_at)
     return {
