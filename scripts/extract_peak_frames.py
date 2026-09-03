@@ -139,7 +139,7 @@ def build_parser():
     parser.add_argument("--batch-manifest")
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
-    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=480)
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=4260)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
     parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
     parser.add_argument("--rpa-fast-failure-threshold-sec", type=_positive_timeout, default=60)
@@ -527,6 +527,17 @@ def _fetch_material_preflight_worker(params):
             "rpa_client_attempt_id",
         }
     }
+    if params.get("rpa_receipts_dir") and params.get("rpa_client_attempt_id"):
+        def on_task_submitted(task_group_id):
+            publish_receipt(
+                params["rpa_receipts_dir"],
+                material_id=params["material_id"],
+                client_attempt_id=params["rpa_client_attempt_id"],
+                state="submitted",
+                remote_task_group_id=task_group_id,
+            )
+
+        adapter_params["on_task_submitted"] = on_task_submitted
     return fetch_material_preflight(**adapter_params)
 
 
@@ -580,7 +591,12 @@ def _call_mock_preflight_with_timeout(params, timeout_sec):
 
 
 def _fetch_material_preflight_for_cli(
-    args, material_id, *, recover_late_artifacts=True, client_attempt_id=None
+    args,
+    material_id,
+    *,
+    recover_late_artifacts=True,
+    client_attempt_id=None,
+    task_group_id=None,
 ):
     started_at_epoch = time.time()
     params = {
@@ -595,6 +611,8 @@ def _fetch_material_preflight_for_cli(
         "rpa_client_attempt_id": client_attempt_id or uuid.uuid4().hex,
         "timeout_sec": args.rpa_preflight_timeout_sec,
     }
+    if task_group_id:
+        params["task_group_id"] = task_group_id
     if hasattr(fetch_material_preflight, "mock_calls"):
         if threading.current_thread() is threading.main_thread():
             with _rpa_preflight_deadline(args.rpa_preflight_timeout_sec):
@@ -635,6 +653,8 @@ def _rpa_recovery_attempt(number, outcome, source="request"):
         "httpStatus": outcome.get("httpStatus"),
         "requestId": outcome.get("requestId"),
         "responseSummary": outcome.get("responseSummary"),
+        "remoteTaskGroupId": outcome.get("remoteTaskGroupId"),
+        "rpaPartialErrors": outcome.get("rpaPartialErrors"),
     }
 
 
@@ -900,6 +920,7 @@ def _reconcile_submitted_wave_receipt(args, entry):
                 "rpaCsvVerified": True,
                 "rpaResultStatus": "available",
                 "rpaClientAttemptId": receipt["clientAttemptId"],
+                "remoteTaskGroupId": receipt.get("remoteTaskGroupId"),
                 "records": recovered["records"],
             }
         )
@@ -1028,11 +1049,16 @@ def _resume_wave_state(args, candidates, entries):
 
         restored = _wave_entry(candidates[index], index + 1)
         if entry.get("rpaStatus") == "submitted":
-            restored["resumeRecovery"] = {
+            recovery = {
                 "reason": "local_artifact_unavailable",
                 "previousClientAttemptId": entry.get("rpaClientAttemptId"),
                 "previousReceiptState": receipt.get("state") if receipt else None,
             }
+            if receipt and receipt.get("remoteTaskGroupId"):
+                restored["rpaClientAttemptId"] = receipt["clientAttemptId"]
+                restored["remoteTaskGroupId"] = receipt["remoteTaskGroupId"]
+                recovery["reason"] = "remote_task_resume"
+            restored["resumeRecovery"] = recovery
         entries[index] = restored
     return submitted, selected, rejected, cancelled, postprocess_queue
 
@@ -1042,12 +1068,14 @@ def _attempt_wave_rpa(args, entry):
     started_at_epoch = time.time()
     timings = _empty_material_timings()
     material_id = entry["materialId"]
-    client_attempt_id = uuid.uuid4().hex
+    remote_task_group_id = str(entry.get("remoteTaskGroupId") or "").strip() or None
+    client_attempt_id = str(entry.get("rpaClientAttemptId") or "").strip() or uuid.uuid4().hex
     publish_receipt(
         _rpa_receipts_dir(args),
         material_id=material_id,
         client_attempt_id=client_attempt_id,
         state="submitted",
+        remote_task_group_id=remote_task_group_id,
     )
 
     def fetch_once():
@@ -1058,6 +1086,7 @@ def _attempt_wave_rpa(args, entry):
                 material_id,
                 recover_late_artifacts=False,
                 client_attempt_id=client_attempt_id,
+                task_group_id=remote_task_group_id,
             )
             if isinstance(outcome, dict):
                 outcome = dict(outcome)
@@ -1081,10 +1110,24 @@ def _attempt_wave_rpa(args, entry):
         started_at_epoch=started_at_epoch,
         fetch_once=fetch_once,
     )
+    remote_task_group_id = (
+        outcome.get("remoteTaskGroupId") or remote_task_group_id
+    )
+    if not remote_task_group_id:
+        try:
+            remote_task_group_id = load_artifact_receipt(
+                _rpa_receipts_dir(args), material_id=material_id
+            )["receipt"].get("remoteTaskGroupId")
+        except RpaArtifactReceiptError:
+            pass
 
     updated = dict(entry)
     updated.update(
-        {"timingsSec": timings, "rpaClientAttemptId": client_attempt_id}
+        {
+            "timingsSec": timings,
+            "rpaClientAttemptId": client_attempt_id,
+            "remoteTaskGroupId": remote_task_group_id,
+        }
     )
     if not outcome.get("rpaAvailable"):
         updated.update(
@@ -1105,6 +1148,7 @@ def _attempt_wave_rpa(args, entry):
                 "httpStatus": outcome.get("httpStatus"),
                 "requestId": outcome.get("requestId"),
                 "responseSummary": outcome.get("responseSummary"),
+                "rpaErrors": outcome.get("rpaErrors"),
             }
         )
         if outcome.get("timeoutExceeded"):
@@ -1143,6 +1187,7 @@ def _attempt_wave_rpa(args, entry):
             client_attempt_id=client_attempt_id,
             state="artifact_downloaded",
             csv_path=outcome["diagnosisCsvPath"],
+            remote_task_group_id=remote_task_group_id,
         )
         publish_receipt(
             _rpa_receipts_dir(args),
@@ -1151,6 +1196,7 @@ def _attempt_wave_rpa(args, entry):
             state="records_persisted",
             csv_path=outcome["diagnosisCsvPath"],
             records_path=records_path,
+            remote_task_group_id=remote_task_group_id,
         )
 
     updated.update(
@@ -1170,6 +1216,8 @@ def _attempt_wave_rpa(args, entry):
             "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
             "rpaResultStatus": outcome.get("rpaResultStatus"),
             "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
+            "rpaPartialErrors": outcome.get("rpaPartialErrors"),
+            "rpaErrors": outcome.get("rpaErrors"),
             "errorType": outcome.get("errorType"),
             "errorMessage": outcome.get("errorMessage"),
         }

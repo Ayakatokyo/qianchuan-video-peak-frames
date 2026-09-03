@@ -10,7 +10,7 @@ from batch_runtime import write_json_atomically
 from path_safety import artifact_path, validate_material_id
 
 
-RECEIPT_SCHEMA_VERSION = 1
+RECEIPT_SCHEMA_VERSION = 2
 RECEIPT_STATES = ("submitted", "artifact_downloaded", "records_persisted")
 
 
@@ -72,6 +72,7 @@ def publish_receipt(
     state,
     csv_path=None,
     records_path=None,
+    remote_task_group_id=None,
 ):
     """Atomically publish one lifecycle state after its artifact is visible."""
     try:
@@ -87,17 +88,29 @@ def publish_receipt(
         raise RpaArtifactReceiptError("RPA records receipt requires records path")
     if state in {"artifact_downloaded", "records_persisted"} and not csv_path:
         raise RpaArtifactReceiptError("RPA artifact receipt requires CSV path")
+    if remote_task_group_id is not None and (
+        not isinstance(remote_task_group_id, str) or not remote_task_group_id.strip()
+    ):
+        raise RpaArtifactReceiptError("RPA receipt remote task group ID is invalid")
 
     target = receipt_path(receipts_dir, material_id)
     previous = _load_existing(target)
     if previous is not None and previous.get("clientAttemptId") != client_attempt_id:
         previous = None
+    inherited_task_group_id = (previous or {}).get("remoteTaskGroupId")
+    if inherited_task_group_id is not None and (
+        not isinstance(inherited_task_group_id, str)
+        or not inherited_task_group_id.strip()
+    ):
+        raise RpaArtifactReceiptError("RPA receipt remote task group ID is invalid")
+    remote_task_group_id = remote_task_group_id or inherited_task_group_id
     now = _now()
     receipt = {
         "schemaVersion": RECEIPT_SCHEMA_VERSION,
         "materialId": material_id,
         "clientAttemptId": client_attempt_id,
         "state": state,
+        "remoteTaskGroupId": remote_task_group_id,
         "submittedAt": (previous or {}).get("submittedAt") or now,
         "artifactDownloadedAt": (previous or {}).get("artifactDownloadedAt"),
         "recordsPersistedAt": (previous or {}).get("recordsPersistedAt"),
@@ -152,8 +165,11 @@ def load_artifact_receipt(receipts_dir, *, material_id, base_dir=None):
     payload = _load_existing(receipt_path(receipts_dir, material_id))
     if payload is None:
         raise RpaArtifactReceiptError("RPA receipt file is missing")
-    if payload.get("schemaVersion") != RECEIPT_SCHEMA_VERSION:
+    schema_version = payload.get("schemaVersion")
+    if schema_version not in (1, RECEIPT_SCHEMA_VERSION):
         raise RpaArtifactReceiptError("RPA receipt schema version is invalid")
+    if schema_version == RECEIPT_SCHEMA_VERSION and payload.get("remoteTaskGroupId") is not None:
+        _require_text(payload, "remoteTaskGroupId")
     if payload.get("materialId") != material_id:
         raise RpaArtifactReceiptError("RPA receipt material ID does not match")
     _require_text(payload, "clientAttemptId")

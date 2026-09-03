@@ -29,6 +29,16 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("`rpa-receipts/<materialId>.json`", contract)
         self.assertIn("records_persisted", runbook)
 
+    def test_rpa_contract_documents_async_resume_budget_and_partial_success(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+        combined = skill + contract
+
+        self.assertIn("4260", combined)
+        self.assertIn("task_group_id", combined)
+        self.assertIn("partial_success", combined)
+        self.assertIn("不得重复提交", combined)
+
     def test_entry_prompt_requires_shop_id_for_report_and_rpa_authorization(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 

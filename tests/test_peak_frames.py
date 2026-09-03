@@ -144,6 +144,38 @@ class RecordingSession:
 
     def post(self, url, **kwargs):
         self.posts.append((url, kwargs))
+        if self.post_response._status_error is not None:
+            return self.post_response
+        if url.endswith("/adg/v1/agent/fetch/tasks"):
+            return FakeResponse({"data": {"task_group_id": "group-test"}})
+        if url.endswith("/adg/v1/agent/fetch/tasks/status"):
+            payload = self.post_response._payload
+            if isinstance(payload, dict):
+                data = payload.get("data")
+                content = data.get("result_content") if isinstance(data, dict) else None
+                if isinstance(content, dict) and data.get("result_type") == "files":
+                    terminal = {
+                        "status": (
+                            "failed"
+                            if str(content.get("status") or "").lower() == "running"
+                            else str(content.get("status") or "").lower()
+                        ),
+                        "files": content.get("files"),
+                        "success": payload.get("success"),
+                        "code": payload.get("code"),
+                        "failedInstances": content.get("failedInstances"),
+                    }
+                    if content.get("errors") is not None:
+                        terminal["errors"] = content["errors"]
+                    return FakeResponse({"data": terminal})
+            terminal_payload = (
+                payload.get("payload")
+                if isinstance(payload, dict) and "payload" in payload
+                else payload
+            )
+            return FakeResponse(
+                {"data": {"status": "completed", "payload": terminal_payload}}
+            )
         return self.post_response
 
     def get(self, url, **kwargs):
@@ -316,6 +348,207 @@ class RpaAdapterTests(unittest.TestCase):
             ],
         )
 
+    def test_fetch_material_diagnosis_submits_polls_and_downloads_files(self):
+        submitted = []
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-1\x01CLICK_COUNT\x011\x012\n"
+        )
+
+        class SequencedSession:
+            def __init__(self):
+                self.posts = []
+                self.gets = []
+                self.responses = [
+                    FakeResponse({"data": {"task_group_id": "group-1"}}),
+                    FakeResponse({"data": {"status": "pending"}}),
+                    FakeResponse(
+                        {
+                            "data": {
+                                "status": "completed",
+                                "files": [{"fileUrl": "https://files.example/diagnosis.csv"}],
+                            }
+                        }
+                    ),
+                ]
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return self.responses.pop(0)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return FakeResponse(None, content=csv_bytes)
+
+        session = SequencedSession()
+        with tempfile.TemporaryDirectory() as temp_dir, patch("rpa_adapter.time.sleep"):
+            records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=Path(temp_dir),
+                session=session,
+                environ=self._env(),
+                timeout_sec=30,
+                on_task_submitted=submitted.append,
+                return_metadata=True,
+            )
+            csv_exists = Path(csv_path).is_file()
+
+        self.assertEqual(submitted, ["group-1"])
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+        self.assertTrue(csv_exists)
+        self.assertEqual(
+            session.posts[0][0],
+            "https://gateway.example/adg/v1/agent/fetch/tasks",
+        )
+        self.assertEqual(
+            session.posts[1][0],
+            "https://gateway.example/adg/v1/agent/fetch/tasks/status",
+        )
+
+    def test_fetch_material_diagnosis_resumes_task_without_second_submit(self):
+        class ResumeSession:
+            def __init__(self):
+                self.posts = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return FakeResponse(
+                    {
+                        "data": {
+                            "status": "completed",
+                            "payload": [
+                                {
+                                    "recordType": "material_info",
+                                    "materialId": "m-1",
+                                    "videoUrl": "https://video.example/video.mp4",
+                                }
+                            ],
+                        }
+                    }
+                )
+
+        session = ResumeSession()
+        with patch("rpa_adapter.time.sleep"):
+            records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                environ=self._env(),
+                session=session,
+                task_group_id="group-1",
+                return_metadata=True,
+            )
+
+        self.assertEqual(len(session.posts), 1)
+        self.assertTrue(session.posts[0][0].endswith("/fetch/tasks/status"))
+        self.assertEqual(session.posts[0][1]["json"]["task_group_id"], "group-1")
+        self.assertIsNone(csv_path)
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+        self.assertEqual(records[0]["materialId"], "m-1")
+
+    def _fetch_terminal(self, *, status="completed", files=None, errors=None, result_type=None):
+        root = tempfile.TemporaryDirectory()
+        csv_dir = Path(root.name)
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-1\x01CLICK_COUNT\x011\x012\n"
+        )
+        terminal = {"status": status}
+        if files is not None:
+            terminal["files"] = files
+        if errors is not None:
+            terminal["errors"] = errors
+        if result_type == "payload":
+            terminal["payload"] = [
+                {"recordType": "material_info", "materialId": "m-1"}
+            ]
+
+        class Session:
+            def __init__(self):
+                self.posts = []
+                self.responses = [
+                    FakeResponse({"data": {"task_group_id": "group-1"}}),
+                    FakeResponse({"data": terminal}),
+                ]
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return self.responses.pop(0)
+
+            def get(self, _url, **_kwargs):
+                return FakeResponse(None, content=csv_bytes)
+
+        session = Session()
+        try:
+            result = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=csv_dir,
+                environ=self._env(),
+                session=session,
+                timeout_sec=30,
+                return_metadata=True,
+            )
+        except BaseException:
+            root.cleanup()
+            raise
+        return root, session, result
+
+    def test_partial_success_downloads_available_csv_and_preserves_errors(self):
+        root, _session, result = self._fetch_terminal(
+            status="partial_success",
+            files=[{"fileUrl": "https://files.example/diagnosis.csv"}],
+            errors=[{"message": "one account failed"}],
+        )
+        try:
+            records, csv_path, metadata = result
+            self.assertTrue(Path(csv_path).is_file())
+            self.assertEqual(metadata["rpaPartialErrors"], [{"message": "one account failed"}])
+            self.assertEqual(records[0]["materialId"], "m-1")
+        finally:
+            root.cleanup()
+
+    def test_task_errors_do_not_retain_urls_or_credentials(self):
+        root, _session, result = self._fetch_terminal(
+            status="partial_success",
+            files=[{"fileUrl": "https://files.example/diagnosis.csv"}],
+            errors=[
+                {
+                    "message": "failed https://files.example/error.csv",
+                    "fileUrl": "https://files.example/error.csv",
+                    "authorization": "secret-token",
+                }
+            ],
+        )
+        try:
+            _records, _csv_path, metadata = result
+            error = metadata["rpaPartialErrors"][0]
+            self.assertNotIn("fileUrl", error)
+            self.assertNotIn("authorization", error)
+            self.assertNotIn("https://files.example/error.csv", error["message"])
+        finally:
+            root.cleanup()
+
+    def test_failed_fetch_task_exposes_remote_task_group_id(self):
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            self._fetch_terminal(status="failed", errors=[{"message": "denied"}])
+        self.assertEqual(
+            raised.exception.diagnostics["remoteTaskGroupId"], "group-1"
+        )
+
+    def test_payload_response_returns_no_csv_metadata(self):
+        root, _session, result = self._fetch_terminal(result_type="payload")
+        try:
+            records, csv_path, metadata = result
+            self.assertIsNone(csv_path)
+            self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+            self.assertEqual(records[0]["recordType"], "material_info")
+        finally:
+            root.cleanup()
+
     def test_fetch_material_diagnosis_uses_fixed_connector_payload(self):
         records = [
             click_record(0, 0, material_id="764"),
@@ -339,7 +572,7 @@ class RpaAdapterTests(unittest.TestCase):
 
         self.assertEqual(result, records)
         self.assertEqual(
-            session.posts[0][0], "https://gateway.example/adg/v1/agent/invoke"
+            session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks"
         )
         payload = session.posts[0][1]["json"]
         self.assertEqual(payload["authorization"], "auth-token")
@@ -4321,10 +4554,139 @@ class CliTests(unittest.TestCase):
         self.assertEqual(timings["endToEndSec"], 7.0)
         self.assertEqual(timings["totalSec"], 7.0)
 
-    def test_rpa_preflight_uses_one_eight_minute_timeout(self):
+    def test_worker_persists_task_group_id_before_preflight_returns(self):
+        material_id = "m-submitted"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def fetch(**kwargs):
+                kwargs["on_task_submitted"]("group-1")
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": False,
+                    "failureReason": "rpa_request_failed",
+                }
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ):
+                extract_peak_frames._fetch_material_preflight_worker(
+                    {
+                        "shop_id": "shop-1",
+                        "material_id": material_id,
+                        "date_range_type": "LAST_7_DAYS",
+                        "diagnosis_csv_dir": root / "diagnosis-csv",
+                        "diagnosis_records_dir": root / "diagnosis-records",
+                        "rpa_receipts_dir": root / "rpa-receipts",
+                        "rpa_client_attempt_id": "attempt-1",
+                    }
+                )
+
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(receipt["state"], "submitted")
+        self.assertEqual(receipt["remoteTaskGroupId"], "group-1")
+
+    def test_resume_preserves_remote_task_group_id_for_rpa_attempt(self):
+        material_id = "m-resume-remote"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            receipts_dir = root / "rpa-receipts"
+            rpa_artifact_receipts.publish_receipt(
+                receipts_dir,
+                material_id=material_id,
+                client_attempt_id="attempt-1",
+                state="submitted",
+                remote_task_group_id="group-1",
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(
+                        entries[0],
+                        rpaStatus="submitted",
+                        status="running",
+                        rpaClientAttemptId="attempt-1",
+                    )
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                extract_peak_frames._resume_wave_state(args, candidates, entries)
+
+        self.assertEqual(entries[0]["remoteTaskGroupId"], "group-1")
+        self.assertEqual(entries[0]["rpaClientAttemptId"], "attempt-1")
+
+    def test_rpa_attempt_reuses_remote_task_and_client_attempt(self):
+        material_id = "m-resume-attempt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_path = root / "diagnosis-csv" / f"{material_id}.csv"
+            csv_path.parent.mkdir()
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/video.mp4\n",
+                encoding="utf-8",
+            )
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+                "rpa_result_recovery_attempts": 1,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+            entry.update(
+                {
+                    "rpaClientAttemptId": "attempt-1",
+                    "remoteTaskGroupId": "group-1",
+                }
+            )
+            outcome = {
+                "materialId": material_id,
+                "rpaAvailable": True,
+                "videoUrl": "https://video.example/video.mp4",
+                "diagnosisCsvPath": str(csv_path),
+                "records": [
+                    {
+                        "recordType": "material_info",
+                        "materialId": material_id,
+                        "videoUrl": "https://video.example/video.mp4",
+                    }
+                ],
+                "remoteTaskGroupId": "group-1",
+            }
+            seen = {}
+
+            def fetch(_args, _material_id, **kwargs):
+                seen.update(kwargs)
+                return outcome
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ):
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        self.assertEqual(seen["client_attempt_id"], "attempt-1")
+        self.assertEqual(seen["task_group_id"], "group-1")
+        self.assertEqual(result["remoteTaskGroupId"], "group-1")
+
+    def test_rpa_preflight_default_covers_poll_and_csv_download_budget(self):
         args = extract_peak_frames.build_parser().parse_args([])
 
-        self.assertEqual(args.rpa_preflight_timeout_sec, 480)
+        self.assertEqual(args.rpa_preflight_timeout_sec, 4260)
         self.assertFalse(hasattr(args, "rpa_preflight_soft_timeout_sec"))
         self.assertEqual(args.rpa_late_artifact_grace_sec, 30)
 

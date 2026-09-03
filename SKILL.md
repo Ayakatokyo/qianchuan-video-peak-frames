@@ -66,7 +66,7 @@ python scripts/run_standard_analysis.py fetch-metadata \
 
 将 `prepare` 视为单一长任务：不要因没有实时进度而另起运行，也不要手工干预 RPA、波次或后处理。出现中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时，保留运行目录并遵循[运维手册](references/qianchuan-operations-runbook.md)；连接器与波次约束见 [RPA 输出契约](references/rpa-output-contract.md)。
 
-RPA 执行只有一个 480 秒截止时间。超过截止时间时，系统终止该素材的本地 RPA worker，将其记录为不可重试的终态失败，并在同一波其余素材全部进入终态后接入下一整波候选素材补位；该超时素材不再占用本地 RPA 并发位。迟到的 CSV 或记录不回写已推进的运行，只能通过显式恢复流程核对。
+RPA 使用异步 `task_group_id`：提交成功后立即把远端 ID 写入 receipt，轮询允许最长 3600 秒，CSV 下载另有 600 秒预算，因此本地 worker 默认时限为 4260 秒。中断后的恢复运行使用 receipt 中的 `task_group_id` 和原 `clientAttemptId` 只查询同一远端任务，不得重复提交；没有合法远端 ID 时才按当前重新提交行为处理。`partial_success` 只要有可用文件仍照常落盘并保留 errors，`payload` 没有 CSV 时仍受 CSV 强契约约束。显式 CLI 短时限可用于测试或运维，但可能早于远端完成。
 
 ### 2. 生成 AI 二次分析
 
