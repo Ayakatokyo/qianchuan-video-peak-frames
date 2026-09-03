@@ -161,12 +161,63 @@ class RaisingPostSession:
 
 
 class RpaAdapterTests(unittest.TestCase):
+    def setUp(self):
+        self._sleep_patch = patch("rpa_adapter.time.sleep")
+        self._sleep_patch.start()
+
+    def tearDown(self):
+        self._sleep_patch.stop()
+
     def _env(self):
         return {
             "ENV_BACKEND_HOST": "https://gateway.example/",
             "YUCE_AUTHORIZATION": "auth-token",
             "YUCE_SESSION_ID": "session-123",
         }
+
+    def _async_session(self, terminal, csv_response=None):
+        if isinstance(terminal, list):
+            terminal = {
+                "success": True,
+                "data": {
+                    "status": "completed",
+                    "result_type": "payload",
+                    "payload": terminal,
+                },
+            }
+        else:
+            terminal = json.loads(json.dumps(terminal))
+            if "data" not in terminal:
+                terminal = {
+                    "success": True,
+                    "data": {
+                        "status": "completed",
+                        "result_type": "payload",
+                        **terminal,
+                    },
+                }
+            data = terminal.setdefault("data", {})
+            data.setdefault("status", "completed")
+        responses = [
+            FakeResponse({"success": True, "data": {"task_group_id": "group-1"}}),
+            FakeResponse({"success": True, "data": {"status": "pending"}}),
+            FakeResponse(terminal),
+        ]
+
+        class AsyncSession:
+            def __init__(self):
+                self.posts = []
+                self.gets = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return responses.pop(0)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return csv_response
+
+        return AsyncSession()
 
     def test_video_download_rejects_maximum_size_and_closes_response(self):
         response = FakeResponse(None, content=b"12345")
@@ -290,8 +341,8 @@ class RpaAdapterTests(unittest.TestCase):
             b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
             b"\x02interaction_series\x01m-files\x01CLICK_COUNT\x011\x012\n"
         )
-        session = RecordingSession(
-            FakeResponse(envelope), FakeResponse(None, content=csv_bytes)
+        session = self._async_session(
+            envelope, FakeResponse(None, content=csv_bytes)
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -327,13 +378,71 @@ class RpaAdapterTests(unittest.TestCase):
             ],
         )
 
+    def test_fetch_material_diagnosis_submits_polls_and_downloads_files(self):
+        submitted = []
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-1\x01CLICK_COUNT\x011\x012\n"
+        )
+
+        class AsyncSession:
+            def __init__(self):
+                self.posts = []
+                self.responses = [
+                    FakeResponse({"success": True, "data": {"task_group_id": "group-1"}}),
+                    FakeResponse({"success": True, "data": {"status": "pending"}}),
+                    FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "status": "completed",
+                                "result_type": "files",
+                                "result_content": {
+                                    "files": [
+                                        {"fileUrl": "https://files.example/m-1.csv"}
+                                    ]
+                                },
+                            },
+                        }
+                    ),
+                ]
+                self.gets = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return self.responses.pop(0)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return FakeResponse(
+                    None,
+                    content=csv_bytes,
+                    headers={"Content-Type": "text/csv"},
+                )
+
+        session = AsyncSession()
+        with tempfile.TemporaryDirectory() as temp_dir, patch("rpa_adapter.time.sleep"):
+            records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1", material_id="m-1", date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=Path(temp_dir), session=session,
+                environ=self._env(), timeout_sec=30, on_task_submitted=submitted.append,
+                return_metadata=True,
+            )
+            self.assertTrue(Path(csv_path).is_file())
+            self.assertEqual(records[0]["materialId"], "m-1")
+
+        self.assertEqual(submitted, ["group-1"])
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+        self.assertEqual(session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks")
+        self.assertEqual(session.posts[1][0], "https://gateway.example/adg/v1/agent/fetch/tasks/status")
+
     def test_fetch_material_diagnosis_uses_fixed_connector_payload(self):
         records = [
             click_record(0, 0, material_id="764"),
             click_record(1, 5, material_id="764"),
             click_record(2, 0, material_id="764"),
         ]
-        session = RecordingSession(FakeResponse(records))
+        session = self._async_session(records)
 
         try:
             result = rpa_adapter.fetch_material_diagnosis(
@@ -350,7 +459,7 @@ class RpaAdapterTests(unittest.TestCase):
 
         self.assertEqual(result, records)
         self.assertEqual(
-            session.posts[0][0], "https://gateway.example/adg/v1/agent/invoke"
+            session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks"
         )
         payload = session.posts[0][1]["json"]
         self.assertEqual(payload["authorization"], "auth-token")
@@ -486,7 +595,7 @@ class RpaAdapterTests(unittest.TestCase):
         )
 
     def test_fetch_material_preflight_classifies_invalid_payload(self):
-        session = RecordingSession(FakeResponse({"payload": {"not": "a-list"}}))
+        session = self._async_session({"payload": {"not": "a-list"}})
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -509,7 +618,7 @@ class RpaAdapterTests(unittest.TestCase):
                 "videoUrl": "https://video.example/m-timeout.mp4",
             }
         ]
-        session = RecordingSession(FakeResponse(records))
+        session = self._async_session(records)
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -531,7 +640,7 @@ class RpaAdapterTests(unittest.TestCase):
                 "videoUrl": "https://video.example/m-records.mp4",
             }
         ]
-        session = RecordingSession(FakeResponse({"payload": records}))
+        session = self._async_session({"payload": records})
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -553,7 +662,7 @@ class RpaAdapterTests(unittest.TestCase):
                 "videoUrl": "",
             }
         ]
-        session = RecordingSession(FakeResponse({"payload": records}))
+        session = self._async_session({"payload": records})
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -572,9 +681,8 @@ class RpaAdapterTests(unittest.TestCase):
             b"recordType\x01materialId\x01videoUrl\n"
             b"material_info\x01m-files-preflight\x01https://video.example/m-files.mp4\n"
         )
-        session = RecordingSession(
-            FakeResponse(self._files_envelope()),
-            FakeResponse(None, content=csv_bytes),
+        session = self._async_session(
+            self._files_envelope(), FakeResponse(None, content=csv_bytes)
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -665,7 +773,7 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertNotIn("secret-token", result["responseSummary"])
 
     def test_fetch_material_preflight_marks_invalid_payload_final(self):
-        session = RecordingSession(FakeResponse({"payload": {"not": "a-list"}}))
+        session = self._async_session({"payload": {"not": "a-list"}})
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -708,8 +816,8 @@ class RpaAdapterTests(unittest.TestCase):
                 self.assertEqual(session.gets, [])
 
     def test_fetch_redacts_download_error_url(self):
-        session = RecordingSession(
-            FakeResponse(self._files_envelope()),
+        session = self._async_session(
+            self._files_envelope(),
             FakeResponse(
                 None,
                 status_error=RuntimeError(
@@ -733,9 +841,8 @@ class RpaAdapterTests(unittest.TestCase):
 
     def test_fetch_retains_malformed_diagnostic_csv(self):
         csv_bytes = b"recordType,materialId\ninteraction_series,m-files\n"
-        session = RecordingSession(
-            FakeResponse(self._files_envelope()),
-            FakeResponse(None, content=csv_bytes),
+        session = self._async_session(
+            self._files_envelope(), FakeResponse(None, content=csv_bytes)
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
