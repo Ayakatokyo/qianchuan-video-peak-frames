@@ -222,6 +222,27 @@ class RpaAdapterTests(unittest.TestCase):
 
         return AsyncSession()
 
+    def _result_content_session(self, terminal, csv_bytes):
+        responses = [
+            FakeResponse({"success": True, "data": {"task_group_id": "group-1"}}),
+            FakeResponse(terminal),
+        ]
+
+        class ResultContentSession:
+            def __init__(self):
+                self.posts = []
+                self.gets = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return responses.pop(0)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return FakeResponse(None, content=csv_bytes)
+
+        return ResultContentSession()
+
     def test_video_download_rejects_maximum_size_and_closes_response(self):
         response = FakeResponse(None, content=b"12345")
         session = RecordingSession(FakeResponse(None), response)
@@ -381,6 +402,45 @@ class RpaAdapterTests(unittest.TestCase):
             ],
         )
 
+    def test_fetch_material_diagnosis_downloads_direct_files_response(self):
+        envelope = {
+            "success": True,
+            "code": "200",
+            "data": {
+                "status": "completed",
+                "total_instances": 1,
+                "completed_instances": 1,
+                "failed_instances": 0,
+                "files": [
+                    {"fileUrl": "https://files.example/direct.csv"}
+                ],
+                "errors": None,
+            },
+        }
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-direct\x01CLICK_COUNT\x011\x012\n"
+        )
+        session = self._async_session(
+            envelope, FakeResponse(None, content=csv_bytes)
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_dir = Path(temp_dir) / "diagnosis-csv"
+            records = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-direct",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=csv_dir,
+                environ=self._env(),
+                session=session,
+            )
+
+            self.assertEqual(records[0]["materialId"], "m-direct")
+            self.assertEqual(
+                (csv_dir / "m-direct.csv").read_bytes(), csv_bytes
+            )
+
     def test_fetch_material_diagnosis_submits_polls_and_downloads_files(self):
         submitted = []
         csv_bytes = (
@@ -438,6 +498,124 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
         self.assertEqual(session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks")
         self.assertEqual(session.posts[1][0], "https://gateway.example/adg/v1/agent/fetch/tasks/status")
+
+    def test_fetch_material_diagnosis_polls_with_complete_request_context(self):
+        session = self._result_content_session(
+            {
+                "success": True,
+                "code": "200",
+                "data": {
+                    "result_content": {
+                        "status": "COMPLETED",
+                        "files": [
+                            {"fileUrl": "https://files.example/m-context.csv"}
+                        ],
+                        "errors": [],
+                    }
+                },
+            },
+            b"recordType\x01materialId\n\x02material_info\x01m-context\n",
+        )
+
+        rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-context",
+            date_range_type="LAST_7_DAYS",
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+        )
+
+        poll_payload = session.posts[1][1]["json"]
+        self.assertEqual(
+            poll_payload,
+            {
+                "authorization": "auth-token",
+                "agent_session_id": "session-123",
+                "data_source_type": "rpa",
+                "platform": rpa_adapter.PLATFORM,
+                "function_code": rpa_adapter.FUNCTION_CODE,
+                "business_params": {
+                    "material_id": "m-context",
+                    "date_range_type": "LAST_7_DAYS",
+                },
+                "shop_id": "shop-1",
+                "task_group_id": "group-1",
+            },
+        )
+
+    def test_result_content_completed_envelope_downloads_csv(self):
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-completed\x01https://video.example/m.mp4\n"
+        )
+        session = self._result_content_session(
+            {
+                "success": True,
+                "code": "200",
+                "data": {
+                    "result_content": {
+                        "status": "COMPLETED",
+                        "files": [
+                            {"fileUrl": "https://files.example/m-completed.csv"}
+                        ],
+                        "errors": [],
+                    }
+                },
+            },
+            csv_bytes,
+        )
+
+        records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-completed",
+            date_range_type="LAST_7_DAYS",
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+            return_metadata=True,
+        )
+
+        self.assertEqual(records[0]["materialId"], "m-completed")
+        self.assertEqual(Path(csv_path).read_bytes(), csv_bytes)
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+
+    def test_result_content_partial_success_downloads_csv_and_preserves_errors(self):
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-partial\x01https://video.example/m.mp4\n"
+        )
+        partial_errors = [{"message": "one account failed"}]
+        session = self._result_content_session(
+            {
+                "success": True,
+                "code": "200",
+                "data": {
+                    "result_content": {
+                        "status": "partial_success",
+                        "files": [
+                            {"fileUrl": "https://files.example/m-partial.csv"}
+                        ],
+                        "errors": partial_errors,
+                    }
+                },
+            },
+            csv_bytes,
+        )
+
+        records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-partial",
+            date_range_type="LAST_7_DAYS",
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+            return_metadata=True,
+        )
+
+        self.assertEqual(records[0]["materialId"], "m-partial")
+        self.assertEqual(Path(csv_path).read_bytes(), csv_bytes)
+        self.assertEqual(metadata["rpaPartialErrors"], partial_errors)
 
     def _fetch_terminal(self, *, status="completed", result_type="files", files=None, errors=None):
         data = {"status": status, "result_type": result_type}

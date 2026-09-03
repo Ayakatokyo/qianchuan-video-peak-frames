@@ -230,19 +230,30 @@ def normalize_gateway_records(result):
 def unpack_gateway_result(result):
     if isinstance(result, dict):
         data = result.get("data")
-        if isinstance(data, dict) and data.get("result_type") == "files":
-            content = data.get("result_content")
-            if not isinstance(content, dict):
-                content = data
-            errors = content.get("errors", []) if isinstance(content, dict) else []
-            return GatewayFile(
-                _files_response_url(result),
-                tuple(errors) if isinstance(errors, list) else (),
-            )
-        if isinstance(data, dict) and data.get("result_type") == "payload":
-            return normalize_gateway_records(data)
-        if isinstance(data, dict) and "payload" in data:
-            return normalize_gateway_records(data)
+        candidates = []
+        if isinstance(data, dict):
+            nested_result = data.get("result")
+            if isinstance(nested_result, dict):
+                candidates.append(nested_result)
+            candidates.append(data)
+        for candidate in candidates:
+            content = candidate.get("result_content")
+            if isinstance(content, dict) and isinstance(content.get("files"), list):
+                errors = content.get("errors", [])
+                return GatewayFile(
+                    _files_response_url(result),
+                    tuple(errors) if isinstance(errors, list) else (),
+                )
+            if candidate.get("result_type") == "files" or isinstance(
+                candidate.get("files"), list
+            ):
+                errors = candidate.get("errors", [])
+                return GatewayFile(
+                    _files_response_url(result),
+                    tuple(errors) if isinstance(errors, list) else (),
+                )
+            if candidate.get("result_type") == "payload" or "payload" in candidate:
+                return normalize_gateway_records(candidate)
     return normalize_gateway_records(result)
 
 
@@ -253,14 +264,29 @@ def _files_response_url(result):
         raise RpaAdapterError("RPA gateway files response was not successful")
 
     data = result.get("data")
-    content = data.get("result_content") if isinstance(data, dict) else None
-    if content is None and isinstance(data, dict):
-        content = data
+    candidates = []
+    if isinstance(data, dict):
+        nested_result = data.get("result")
+        if isinstance(nested_result, dict):
+            candidates.append(nested_result)
+        candidates.append(data)
+    content = None
+    for candidate in candidates:
+        nested_content = candidate.get("result_content")
+        if isinstance(nested_content, dict):
+            content = nested_content
+            break
+        if candidate.get("result_type") == "files" or isinstance(
+            candidate.get("files"), list
+        ):
+            content = candidate
+            break
     if not isinstance(content, dict):
         raise RpaAdapterError("RPA gateway files response is missing result_content")
-    if content.get("status") not in (None, "COMPLETED", "completed"):
+    status = str(content.get("status") or "").strip().lower()
+    if status and status not in SUCCESS_TASK_STATUSES:
         raise RpaAdapterError("RPA gateway files task did not complete successfully")
-    if content.get("failedInstances", 0) != 0:
+    if status == "completed" and content.get("failedInstances", 0) != 0:
         raise RpaAdapterError("RPA gateway files task did not complete successfully")
 
     files = content.get("files")
@@ -434,6 +460,8 @@ def fetch_material_diagnosis(
             on_task_submitted(remote_task_group_id)
 
     deadline = time.monotonic() + min(float(timeout_sec), POLL_TIMEOUT_SECONDS)
+    poll_payload = dict(submit_payload)
+    poll_payload["task_group_id"] = remote_task_group_id
     gateway_result = None
     while True:
         if time.monotonic() >= deadline:
@@ -444,7 +472,7 @@ def fetch_material_diagnosis(
         try:
             response = session.post(
                 f"{api_base}/adg/v1/agent/fetch/tasks/status",
-                json={"task_group_id": remote_task_group_id},
+                json=poll_payload,
                 headers=HEADERS,
                 cookies=cookies,
                 timeout=timeout_sec,
