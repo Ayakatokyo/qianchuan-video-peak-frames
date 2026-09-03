@@ -4187,7 +4187,7 @@ class CliTests(unittest.TestCase):
     def test_rpa_preflight_uses_one_eight_minute_timeout(self):
         args = extract_peak_frames.build_parser().parse_args([])
 
-        self.assertEqual(args.rpa_preflight_timeout_sec, 480)
+        self.assertEqual(args.rpa_preflight_timeout_sec, 4260)
         self.assertFalse(hasattr(args, "rpa_preflight_soft_timeout_sec"))
         self.assertEqual(args.rpa_late_artifact_grace_sec, 30)
 

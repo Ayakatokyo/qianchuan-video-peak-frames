@@ -133,7 +133,7 @@ def build_parser():
     parser.add_argument("--batch-manifest")
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
-    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=480)
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=4260)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
     parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
     parser.add_argument("--rpa-fast-failure-threshold-sec", type=_positive_timeout, default=60)

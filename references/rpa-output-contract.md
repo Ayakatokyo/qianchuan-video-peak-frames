@@ -22,7 +22,7 @@ Online mode requires:
 The adapter calls:
 
 - `POST /adg/v1/agent/rpa/authorizations/query` to list authorized 巨量千川 accounts.
-- `POST /adg/v1/agent/invoke` with a 3600 second timeout to fetch diagnosis records.
+- `POST /adg/v1/agent/fetch/tasks` to submit diagnosis records, followed by `POST /adg/v1/agent/fetch/tasks/status` using the returned `task_group_id`.
 
 ## Required Local Records
 
@@ -91,7 +91,9 @@ Failure reasons:
 - `rpa_request_failed`: gateway, HTTP, network, or configured RPA request failure. Its initial state is `rpaResultStatus: pending` and `retryable: true`.
 - `rpa_request_timeout`: the single local RPA execution deadline expired. It is immediately `final_failed` and not retryable.
 
-The isolated RPA preflight has one 8 分钟 (480 seconds) execution deadline. On expiry, it terminates the local worker and records `failureReason: rpa_request_timeout`, `rpaTimeoutExceeded: true`, `rpaTimeoutSec: 480`, and `rpaResultStatus: final_failed`. A duration timeout is terminal and never retries or consumes a local-artifact grace budget; it releases its local RPA concurrency slot. Existing manifests may retain legacy `rpaSoftTimeoutExceeded` and `rpaHardTimeoutExceeded` fields for read compatibility, but new runs do not write them.
+The connector uses asynchronous `task_group_id` submission and status polling. Remote polling is bounded at 3600 seconds, diagnostic CSV download has a 600-second total deadline, and the isolated RPA preflight default is 4260 seconds to cover both budgets plus a 60-second margin. An explicit shorter CLI timeout remains supported for tests or operations and may expire before the remote task completes. On expiry, it terminates the local worker and records `failureReason: rpa_request_timeout`, `rpaTimeoutExceeded: true`, the configured `rpaTimeoutSec` (4260 by default), and `rpaResultStatus: final_failed`. A duration timeout is terminal and never retries or consumes a local-artifact grace budget; it releases its local RPA concurrency slot. Existing manifests may retain legacy `rpaSoftTimeoutExceeded` and `rpaHardTimeoutExceeded` fields for read compatibility, but new runs do not write them.
+
+For `completed` and `partial_success` tasks, the first usable `fileUrl` is downloaded atomically and parsed before the material is accepted. A `partial_success` response with files is persisted together with its safe errors; a payload response still has no CSV and therefore cannot satisfy the verified-CSV contract. If a worker is interrupted after submission, `--resume` uses the saved `task_group_id` to query the same task and 不得重复提交; a receipt without that ID follows the existing resubmission path.
 
 For a retryable `rpa_request_failed` that returns in less than 60 seconds, the next request waits 45 seconds before the first retry and doubles that wait for each later retry. The wait remains inside the current wave, so `rpaConcurrency=3` still caps parallel RPA calls and no later wave opens early. HTTP 429/5xx and transport failures are retryable; explicit gateway 4xx responses are final and not retried. A duration timeout is distinct: it does not retry, and the next full wave starts only after every material in the current wave reaches `available` or `final_failed` and each selected material's postprocess reaches a terminal result. Late CSV or records from a timed-out worker are not accepted into the advanced run; reconcile them only through explicit recovery. Every retry recovery attempt retains safe diagnostics when available: HTTP status, gateway request ID, a redacted response summary, worker stage, child exit code/signal, result-queue state, and an exception traceback summary.
 - `rpa_payload_invalid`: gateway payload could not be normalized into usable records; it is immediately `final_failed` and not retried.

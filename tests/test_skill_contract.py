@@ -19,6 +19,16 @@ ACTIVE_OPERATIONAL_DOCUMENTS = (
 
 
 class StandardWorkflowSkillContractTests(unittest.TestCase):
+    def test_rpa_contract_documents_async_resume_and_full_deadline(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        for document in (skill, contract):
+            self.assertIn("4260", document)
+            self.assertIn("task_group_id", document)
+            self.assertIn("partial_success", document)
+            self.assertIn("不得重复提交", document)
+
     def test_rpa_contract_requires_flat_material_info_probe_and_receipt_recovery(self):
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
