@@ -66,7 +66,7 @@ python scripts/run_standard_analysis.py fetch-metadata \
 
 将 `prepare` 视为单一长任务：不要因没有实时进度而另起运行，也不要手工干预 RPA、波次或后处理。出现中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时，保留运行目录并遵循[运维手册](references/qianchuan-operations-runbook.md)；连接器与波次约束见 [RPA 输出契约](references/rpa-output-contract.md)。
 
-RPA 使用异步 `task_group_id` 提交并轮询：远端轮询最多 3600 秒，CSV 下载总时限为 600 秒，外层 worker 默认截止时间为 4260 秒；显式 CLI 短时限仍可用于测试或运维，但可能早于远端任务完成。支持 `completed` 与 `partial_success`；有可用文件时照常落盘并保留脱敏错误。下发后中断时，`--resume` 只查询已保存的远端 ID，不得重复提交；没有远端 ID 或 receipt 不合法时才按现有策略重新提交。超过外层截止时间时，系统终止该素材的本地 RPA worker，将其记录为不可重试的终态失败，并在同一波其余素材全部进入终态后接入下一整波候选素材补位。
+RPA 使用异步 `task_group_id` 提交并轮询：远端轮询最多 3600 秒，CSV 下载总时限为 600 秒，外层 worker 默认截止时间为 4260 秒；显式 CLI 短时限仍可用于测试或运维，但可能早于远端任务完成。支持 `completed` 与 `partial_success`；有可用文件时照常落盘并保留脱敏错误。下发后中断时，恢复运行只查询已保存的远端 ID，不得重复提交；没有远端 ID 或 receipt 不合法时才按现有策略重新提交。超过外层截止时间时，系统终止该素材的本地 RPA worker，将其记录为不可重试的终态失败，并在同一波其余素材全部进入终态后接入下一整波候选素材补位。
 
 ### 2. 生成 AI 二次分析
 
