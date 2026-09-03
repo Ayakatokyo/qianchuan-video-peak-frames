@@ -41,6 +41,7 @@ class RpaNotConfiguredError(RpaAdapterError):
 @dataclass(frozen=True)
 class GatewayFile:
     file_url: str
+    partial_errors: tuple = ()
 
 
 DEFAULT_CSV_MAX_BYTES = 100 * 1024 * 1024
@@ -230,7 +231,14 @@ def unpack_gateway_result(result):
     if isinstance(result, dict):
         data = result.get("data")
         if isinstance(data, dict) and data.get("result_type") == "files":
-            return GatewayFile(_files_response_url(result))
+            content = data.get("result_content")
+            if not isinstance(content, dict):
+                content = data
+            errors = content.get("errors", []) if isinstance(content, dict) else []
+            return GatewayFile(
+                _files_response_url(result),
+                tuple(errors) if isinstance(errors, list) else (),
+            )
         if isinstance(data, dict) and data.get("result_type") == "payload":
             return normalize_gateway_records(data)
         if isinstance(data, dict) and "payload" in data:
@@ -482,7 +490,19 @@ def fetch_material_diagnosis(
             gateway_result = dict(gateway_result)
             gateway_result["data"] = task_data["result"]
     gateway_result["remoteTaskGroupId"] = remote_task_group_id
-    gateway_result = unpack_gateway_result(gateway_result)
+    try:
+        gateway_result = unpack_gateway_result(gateway_result)
+    except RpaAdapterError as exc:
+        diagnostics = dict(exc.diagnostics)
+        diagnostics["remoteTaskGroupId"] = remote_task_group_id
+        if isinstance(status_data, dict):
+            errors = status_data.get("errors")
+            if isinstance(errors, list):
+                diagnostics["rpaErrors"] = errors
+        raise RpaAdapterError(str(exc), diagnostics) from exc
+    metadata = {"remoteTaskGroupId": remote_task_group_id}
+    if isinstance(gateway_result, GatewayFile) and gateway_result.partial_errors:
+        metadata["rpaPartialErrors"] = list(gateway_result.partial_errors)
     if isinstance(gateway_result, list):
         records = gateway_result
         diagnosis_csv_path = None
@@ -495,7 +515,12 @@ def fetch_material_diagnosis(
             target = artifact_path(diagnosis_csv_dir, business_params["material_id"], ".csv")
         except ValueError as exc:
             raise RpaAdapterError(f"invalid material_id: {exc}") from exc
-        download_diagnosis_csv(gateway_result.file_url, target, session=session)
+        try:
+            download_diagnosis_csv(gateway_result.file_url, target, session=session)
+        except RpaAdapterError as exc:
+            diagnostics = dict(exc.diagnostics)
+            diagnostics["remoteTaskGroupId"] = remote_task_group_id
+            raise RpaAdapterError(str(exc), diagnostics) from exc
         try:
             records = parse_diagnosis_csv(target)
         except RpaCsvError as exc:
@@ -503,7 +528,7 @@ def fetch_material_diagnosis(
         diagnosis_csv_path = str(target)
 
     if return_metadata:
-        return records, diagnosis_csv_path, {"remoteTaskGroupId": remote_task_group_id}
+        return records, diagnosis_csv_path, metadata
     return records
 
 

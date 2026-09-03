@@ -164,9 +164,12 @@ class RpaAdapterTests(unittest.TestCase):
     def setUp(self):
         self._sleep_patch = patch("rpa_adapter.time.sleep")
         self._sleep_patch.start()
+        self._rpa_temp_dir = tempfile.TemporaryDirectory()
+        self.csv_dir = Path(self._rpa_temp_dir.name) / "diagnosis-csv"
 
     def tearDown(self):
         self._sleep_patch.stop()
+        self._rpa_temp_dir.cleanup()
 
     def _env(self):
         return {
@@ -435,6 +438,64 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
         self.assertEqual(session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks")
         self.assertEqual(session.posts[1][0], "https://gateway.example/adg/v1/agent/fetch/tasks/status")
+
+    def _fetch_terminal(self, *, status="completed", result_type="files", files=None, errors=None):
+        data = {"status": status, "result_type": result_type}
+        if result_type == "files":
+            data["result_content"] = {
+                "files": files or [],
+                "errors": errors or [],
+            }
+        else:
+            data["payload"] = [click_record(0, 0, material_id="m-1")]
+        terminal = {"success": True, "code": 200, "data": data}
+        csv_response = FakeResponse(
+            None,
+            content=(
+                b"recordType\x01materialId\x01videoUrl\n"
+                b"material_info\x01m-1\x01https://video.example/m-1.mp4\n"
+            ),
+            headers={"Content-Type": "text/csv"},
+        )
+        session = self._async_session(terminal, csv_response)
+        return rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-1",
+            date_range_type="LAST_7_DAYS",
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+            return_metadata=True,
+        ), session
+
+    def test_partial_success_downloads_available_csv_and_preserves_errors(self):
+        result, _session = self._fetch_terminal(
+            status="partial_success",
+            files=[{"fileUrl": "https://files.example/m-1.csv"}],
+            errors=[{"message": "one account failed"}],
+        )
+
+        records, csv_path, metadata = result
+        self.assertTrue(Path(csv_path).is_file())
+        self.assertEqual(records[0]["materialId"], "m-1")
+        self.assertEqual(metadata["rpaPartialErrors"], [{"message": "one account failed"}])
+
+    def test_failed_fetch_task_exposes_remote_task_group_id(self):
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            self._fetch_terminal(
+                status="failed",
+                errors=[{"message": "denied"}],
+            )
+
+        self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+
+    def test_payload_response_returns_no_csv_metadata(self):
+        result, _session = self._fetch_terminal(result_type="payload")
+
+        records, csv_path, metadata = result
+        self.assertIsNone(csv_path)
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+        self.assertEqual(records[0]["materialId"], "m-1")
 
     def test_fetch_material_diagnosis_uses_fixed_connector_payload(self):
         records = [
