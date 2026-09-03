@@ -300,8 +300,15 @@ def _poll_status_payload(result):
     data = result.get("data")
     if not isinstance(data, dict):
         data = result
+    result_content = data.get("result_content")
     nested = data.get("result")
-    result_payload = nested if isinstance(nested, dict) else data
+    result_payload = (
+        result_content
+        if isinstance(result_content, dict)
+        else nested
+        if isinstance(nested, dict)
+        else data
+    )
     status = data.get("status") or result_payload.get("status")
     if not isinstance(status, str) or not status.strip():
         raise RpaAdapterError("RPA task status is missing")
@@ -320,6 +327,8 @@ def _poll_status_payload(result):
     )
     if result_type == "files" or "files" in result_payload or "result_content" in result_payload:
         content = result_payload.get("result_content")
+        if not isinstance(content, dict):
+            content = result_payload
         if isinstance(content, dict):
             content_status = content.get("status")
             if content_status is not None and str(content_status).upper() not in {

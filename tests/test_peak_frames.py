@@ -352,6 +352,57 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertEqual(submitted, ["group-1"])
         self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
 
+    def test_fetch_material_diagnosis_unpacks_real_result_content_envelope(self):
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-real-envelope\x01https://video.example/m-real-envelope.mp4\n"
+        )
+        session = SequentialPostSession(
+            [
+                self._submit_response(),
+                FakeResponse(
+                    {
+                        "success": True,
+                        "code": "200",
+                        "data": {"result_content": {"status": "RUNNING"}},
+                    }
+                ),
+                FakeResponse(
+                    {
+                        "success": True,
+                        "code": "200",
+                        "data": {
+                            "result_content": {
+                                "status": "COMPLETED",
+                                "failedInstances": 0,
+                                "files": [
+                                    {"fileUrl": "https://files.example/m-real-envelope.csv"}
+                                ],
+                            }
+                        },
+                    }
+                ),
+            ],
+            get_response=FakeResponse(None, content=csv_bytes),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch("rpa_adapter.time.sleep"):
+            records = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-real-envelope",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=Path(temp_dir),
+                session=session,
+                environ=self._env(),
+            )
+
+        self.assertEqual(records[0]["materialId"], "m-real-envelope")
+        self.assertEqual(
+            session.gets[0][0],
+            "https://files.example/m-real-envelope.csv",
+        )
+        self.assertEqual(len(session.posts), 3)
+
     def test_partial_success_downloads_available_csv_and_preserves_errors(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             csv_bytes = (
