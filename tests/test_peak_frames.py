@@ -4235,6 +4235,87 @@ class CliTests(unittest.TestCase):
         self.assertEqual(receipt["state"], "records_persisted")
         self.assertEqual(receipt["clientAttemptId"], "attempt-receipt")
 
+    def test_isolated_preflight_persists_task_group_id_before_polling_completes(self):
+        material_id = "m-worker-timeout"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def submit_then_block(**kwargs):
+                kwargs["on_task_submitted"]("group-1")
+                time.sleep(1)
+
+            params = {
+                "shop_id": "shop-1",
+                "material_id": material_id,
+                "date_range_type": "LAST_7_DAYS",
+                "diagnosis_csv_dir": root / "diagnosis-csv",
+                "rpa_receipts_dir": root / "rpa-receipts",
+                "rpa_client_attempt_id": "attempt-1",
+            }
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                side_effect=submit_then_block,
+            ):
+                result = extract_peak_frames._fetch_material_preflight_isolated(
+                    params,
+                    timeout_sec=0.05,
+                    worker=extract_peak_frames._fetch_material_preflight_worker,
+                )
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertTrue(result["timeoutExceeded"])
+        self.assertEqual(receipt["state"], "submitted")
+        self.assertEqual(receipt["remoteTaskGroupId"], "group-1")
+
+    def test_resume_polls_submitted_remote_task_without_second_submit(self):
+        material_id = "m-resume-remote"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            receipts_dir = root / "rpa-receipts"
+            rpa_artifact_receipts.publish_receipt(
+                receipts_dir,
+                material_id=material_id,
+                client_attempt_id="attempt-1",
+                state="submitted",
+                remote_task_group_id="group-1",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "resume": True,
+                    "output_dir": str(root / "peak-frames"),
+                    "diagnosis_records_dir": str(root / "diagnosis-records"),
+                },
+            )()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(
+                        entries[0],
+                        rpaStatus="submitted",
+                        status="running",
+                        rpaClientAttemptId="attempt-1",
+                    )
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                submitted, _selected, _rejected, _cancelled, _queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+        self.assertEqual(submitted, {})
+        self.assertEqual(entries[0]["remoteTaskGroupId"], "group-1")
+        self.assertEqual(entries[0]["rpaClientAttemptId"], "attempt-1")
+
     def test_wave_rpa_recovers_failed_request_from_late_csv(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

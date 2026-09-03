@@ -620,6 +620,8 @@ def fetch_material_preflight(
     environ=None,
     session=None,
     timeout_sec=300,
+    task_group_id=None,
+    on_task_submitted=None,
 ):
     try:
         records, diagnosis_csv_path, metadata = fetch_material_diagnosis(
@@ -632,6 +634,8 @@ def fetch_material_preflight(
             environ=environ,
             session=session,
             timeout_sec=timeout_sec,
+            task_group_id=task_group_id,
+            on_task_submitted=on_task_submitted,
             return_metadata=True,
         )
     except RpaAdapterError as exc:
