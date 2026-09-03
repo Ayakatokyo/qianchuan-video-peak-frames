@@ -172,6 +172,16 @@ class RecordingSession:
         return self.get_response
 
 
+class SequentialPostSession(RecordingSession):
+    def __init__(self, post_responses, get_response=None):
+        super().__init__(post_responses[0], get_response=get_response)
+        self.post_responses = list(post_responses)
+
+    def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        return self.post_responses.pop(0)
+
+
 class RaisingPostSession:
     def __init__(self, error):
         self.error = error
@@ -281,6 +291,213 @@ class RpaAdapterTests(unittest.TestCase):
             },
         }
 
+    def _submit_response(self, task_group_id="group-1"):
+        return FakeResponse(
+            {"success": True, "code": "200", "data": {"task_group_id": task_group_id}}
+        )
+
+    def _status_response(self, status="completed", result=None, errors=None):
+        data = {"status": status}
+        if result is not None:
+            data.update(result)
+        if errors is not None:
+            data["errors"] = errors
+        return FakeResponse({"success": True, "code": "200", "data": data})
+
+    def test_fetch_material_diagnosis_submits_polls_and_downloads_files(self):
+        submitted = []
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-1\x01https://video.example/m-1.mp4\n"
+        )
+        session = SequentialPostSession(
+            [
+                self._submit_response(),
+                self._status_response("pending"),
+                self._status_response(
+                    "completed",
+                    {
+                        "result_type": "files",
+                        "result_content": {
+                            "files": [{"fileUrl": "https://files.example/m-1.csv"}]
+                        },
+                    },
+                ),
+            ],
+            get_response=FakeResponse(None, content=csv_bytes),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch("rpa_adapter.time.sleep"):
+            records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=Path(temp_dir),
+                session=session,
+                environ=self._env(),
+                timeout_sec=30,
+                on_task_submitted=submitted.append,
+                return_metadata=True,
+            )
+            self.assertTrue(Path(csv_path).is_file())
+            self.assertEqual(records[0]["materialId"], "m-1")
+        self.assertEqual(
+            session.posts[0][0],
+            "https://gateway.example/adg/v1/agent/fetch/tasks",
+        )
+        self.assertEqual(
+            session.posts[1][0],
+            "https://gateway.example/adg/v1/agent/fetch/tasks/status",
+        )
+        self.assertEqual(submitted, ["group-1"])
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+
+    def test_partial_success_downloads_available_csv_and_preserves_errors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_bytes = (
+                b"recordType\x01materialId\x01videoUrl\n"
+                b"material_info\x01m-1\x01https://video.example/m-1.mp4\n"
+            )
+            session = SequentialPostSession(
+                [
+                    self._submit_response(),
+                    self._status_response(
+                        "partial_success",
+                        {
+                            "result_type": "files",
+                            "result_content": {"files": [{"fileUrl": "https://files.example/m-1.csv"}]},
+                        },
+                        [{"message": "one account failed"}],
+                    ),
+                ],
+                get_response=FakeResponse(None, content=csv_bytes),
+            )
+            _records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=Path(temp_dir),
+                session=session,
+                environ=self._env(),
+                return_metadata=True,
+            )
+            self.assertTrue(Path(csv_path).is_file())
+            self.assertEqual(
+                metadata["rpaPartialErrors"], [{"message": "one account failed"}]
+            )
+
+    def test_failed_fetch_task_exposes_remote_task_group_id(self):
+        session = SequentialPostSession(
+            [
+                self._submit_response(),
+                self._status_response("failed", errors=[{"message": "denied"}]),
+            ]
+        )
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                session=session,
+                environ=self._env(),
+            )
+        self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+
+    def test_payload_response_returns_no_csv_metadata(self):
+        session = SequentialPostSession(
+            [
+                self._submit_response(),
+                self._status_response(
+                    "completed",
+                    {"result_type": "payload", "payload": [{"materialId": "m-1"}]},
+                ),
+            ]
+        )
+        records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-1",
+            date_range_type="LAST_7_DAYS",
+            session=session,
+            environ=self._env(),
+            return_metadata=True,
+        )
+        self.assertEqual(records, [{"materialId": "m-1"}])
+        self.assertIsNone(csv_path)
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+
+    def test_fetch_material_diagnosis_resumes_task_group_without_submit(self):
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-1\x01https://video.example/m-1.mp4\n"
+        )
+        session = SequentialPostSession(
+            [
+                self._status_response(
+                    "completed",
+                    {
+                        "result_type": "files",
+                        "result_content": {"files": [{"fileUrl": "https://files.example/m-1.csv"}]},
+                    },
+                )
+            ],
+            get_response=FakeResponse(None, content=csv_bytes),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _records, _csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                diagnosis_csv_dir=Path(temp_dir),
+                session=session,
+                environ=self._env(),
+                task_group_id="group-1",
+                return_metadata=True,
+            )
+
+        self.assertEqual(len(session.posts), 1)
+        self.assertEqual(
+            session.posts[0][0],
+            "https://gateway.example/adg/v1/agent/fetch/tasks/status",
+        )
+        self.assertEqual(session.posts[0][1]["json"]["task_group_id"], "group-1")
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+
+    def test_poll_timeout_preserves_remote_task_group_id(self):
+        session = SequentialPostSession([self._status_response("pending")])
+
+        with patch("rpa_adapter.time.sleep"), patch(
+            "rpa_adapter.time.monotonic", side_effect=[0.0, 0.002]
+        ):
+            with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+                rpa_adapter.fetch_material_diagnosis(
+                    shop_id="shop-1",
+                    material_id="m-1",
+                    date_range_type="LAST_7_DAYS",
+                    session=session,
+                    environ=self._env(),
+                    task_group_id="group-1",
+                    timeout_sec=0.001,
+                )
+
+        self.assertTrue(raised.exception.diagnostics["rpaTimeoutExceeded"])
+        self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+
+    def test_unknown_fetch_task_status_is_final_failure_with_remote_id(self):
+        session = SequentialPostSession([self._status_response("mystery")])
+
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-1",
+                date_range_type="LAST_7_DAYS",
+                session=session,
+                environ=self._env(),
+                task_group_id="group-1",
+            )
+
+        self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+
     def test_fetch_material_diagnosis_downloads_nested_files_envelope(self):
         envelope = {
             "success": True,
@@ -300,8 +517,9 @@ class RpaAdapterTests(unittest.TestCase):
             b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
             b"\x02interaction_series\x01m-files\x01CLICK_COUNT\x011\x012\n"
         )
-        session = RecordingSession(
-            FakeResponse(envelope), FakeResponse(None, content=csv_bytes)
+        session = SequentialPostSession(
+            [self._submit_response(), self._status_response("completed", envelope["data"])],
+            get_response=FakeResponse(None, content=csv_bytes),
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -327,15 +545,7 @@ class RpaAdapterTests(unittest.TestCase):
             self.assertEqual(
                 (csv_dir / "m-files.csv").read_bytes(), csv_bytes
             )
-        self.assertEqual(
-            session.gets,
-            [
-                (
-                    "https://files.example/diagnosis.csv",
-                    {"stream": True, "timeout": 300},
-                )
-            ],
-        )
+        self.assertEqual(session.gets[0][0], "https://files.example/diagnosis.csv")
 
     def test_fetch_material_diagnosis_uses_fixed_connector_payload(self):
         records = [
@@ -343,7 +553,14 @@ class RpaAdapterTests(unittest.TestCase):
             click_record(1, 5, material_id="764"),
             click_record(2, 0, material_id="764"),
         ]
-        session = RecordingSession(FakeResponse(records))
+        session = SequentialPostSession(
+            [
+                self._submit_response(),
+                self._status_response(
+                    "completed", {"result_type": "payload", "payload": records}
+                ),
+            ]
+        )
 
         try:
             result = rpa_adapter.fetch_material_diagnosis(
@@ -360,7 +577,7 @@ class RpaAdapterTests(unittest.TestCase):
 
         self.assertEqual(result, records)
         self.assertEqual(
-            session.posts[0][0], "https://gateway.example/adg/v1/agent/invoke"
+            session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks"
         )
         payload = session.posts[0][1]["json"]
         self.assertEqual(payload["authorization"], "auth-token")
@@ -496,7 +713,14 @@ class RpaAdapterTests(unittest.TestCase):
         )
 
     def test_fetch_material_preflight_classifies_invalid_payload(self):
-        session = RecordingSession(FakeResponse({"payload": {"not": "a-list"}}))
+        session = SequentialPostSession(
+            [
+                self._submit_response(),
+                self._status_response(
+                    "completed", {"result_type": "payload", "payload": {"not": "a-list"}}
+                ),
+            ]
+        )
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -510,6 +734,7 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertFalse(result["rpaAvailable"])
         self.assertEqual(result["failureReason"], "rpa_payload_invalid")
         self.assertIsNone(result["videoUrl"])
+        self.assertEqual(result["remoteTaskGroupId"], "group-1")
 
     def test_fetch_material_preflight_uses_configured_timeout(self):
         records = [
@@ -519,7 +744,9 @@ class RpaAdapterTests(unittest.TestCase):
                 "videoUrl": "https://video.example/m-timeout.mp4",
             }
         ]
-        session = RecordingSession(FakeResponse(records))
+        session = SequentialPostSession(
+            [self._submit_response(), self._status_response("completed", {"result_type": "payload", "payload": records})]
+        )
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -541,7 +768,9 @@ class RpaAdapterTests(unittest.TestCase):
                 "videoUrl": "https://video.example/m-records.mp4",
             }
         ]
-        session = RecordingSession(FakeResponse({"payload": records}))
+        session = SequentialPostSession(
+            [self._submit_response(), self._status_response("completed", {"result_type": "payload", "payload": records})]
+        )
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -560,9 +789,10 @@ class RpaAdapterTests(unittest.TestCase):
             b"recordType\x01materialId\x01videoUrl\n"
             b"material_info\x01m-files-preflight\x01https://video.example/m-files.mp4\n"
         )
-        session = RecordingSession(
-            FakeResponse(self._files_envelope()),
-            FakeResponse(None, content=csv_bytes),
+        envelope = self._files_envelope()
+        session = SequentialPostSession(
+            [self._submit_response(), self._status_response("completed", envelope["data"])],
+            get_response=FakeResponse(None, content=csv_bytes),
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -633,6 +863,8 @@ class RpaAdapterTests(unittest.TestCase):
                 "error": "rate limited",
                 "request_id": "req-123",
                 "authorization": "secret-token",
+                "cookie": "session-cookie",
+                "sessionId": "session-id",
             },
             status_error=RuntimeError("429 Client Error"),
             status_code=429,
@@ -651,9 +883,18 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertEqual(result["requestId"], "req-123")
         self.assertIn("rate limited", result["responseSummary"])
         self.assertNotIn("secret-token", result["responseSummary"])
+        self.assertNotIn("session-cookie", result["responseSummary"])
+        self.assertNotIn("session-id", result["responseSummary"])
 
     def test_fetch_material_preflight_marks_invalid_payload_final(self):
-        session = RecordingSession(FakeResponse({"payload": {"not": "a-list"}}))
+        session = SequentialPostSession(
+            [
+                self._submit_response(),
+                self._status_response(
+                    "completed", {"result_type": "payload", "payload": {"not": "a-list"}}
+                ),
+            ]
+        )
 
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
@@ -671,8 +912,6 @@ class RpaAdapterTests(unittest.TestCase):
 
     def test_fetch_rejects_invalid_files_envelopes_without_url_leakage(self):
         invalid_envelopes = [
-            self._files_envelope(success=False),
-            self._files_envelope(code="500"),
             self._files_envelope(status="RUNNING"),
             self._files_envelope(failed_instances=1),
             self._files_envelope(files=[]),
@@ -681,7 +920,9 @@ class RpaAdapterTests(unittest.TestCase):
 
         for envelope in invalid_envelopes:
             with self.subTest(envelope=envelope):
-                session = RecordingSession(FakeResponse(envelope))
+                session = SequentialPostSession(
+                    [self._submit_response(), self._status_response("completed", envelope["data"])]
+                )
                 with tempfile.TemporaryDirectory() as temp_dir:
                     with self.assertRaises(rpa_adapter.RpaAdapterError) as error:
                         rpa_adapter.fetch_material_diagnosis(
@@ -696,9 +937,10 @@ class RpaAdapterTests(unittest.TestCase):
                 self.assertEqual(session.gets, [])
 
     def test_fetch_redacts_download_error_url(self):
-        session = RecordingSession(
-            FakeResponse(self._files_envelope()),
-            FakeResponse(
+        envelope = self._files_envelope()
+        session = SequentialPostSession(
+            [self._submit_response(), self._status_response("completed", envelope["data"])],
+            get_response=FakeResponse(
                 None,
                 status_error=RuntimeError(
                     "download https://files.example/diagnosis.csv?secret=redacted"
@@ -721,9 +963,10 @@ class RpaAdapterTests(unittest.TestCase):
 
     def test_fetch_retains_malformed_diagnostic_csv(self):
         csv_bytes = b"recordType,materialId\ninteraction_series,m-files\n"
-        session = RecordingSession(
-            FakeResponse(self._files_envelope()),
-            FakeResponse(None, content=csv_bytes),
+        envelope = self._files_envelope()
+        session = SequentialPostSession(
+            [self._submit_response(), self._status_response("completed", envelope["data"])],
+            get_response=FakeResponse(None, content=csv_bytes),
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -4174,10 +4417,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(timings["endToEndSec"], 7.0)
         self.assertEqual(timings["totalSec"], 7.0)
 
-    def test_rpa_preflight_uses_one_eight_minute_timeout(self):
+    def test_rpa_preflight_default_covers_poll_and_csv_download_budget(self):
         args = extract_peak_frames.build_parser().parse_args([])
 
-        self.assertEqual(args.rpa_preflight_timeout_sec, 480)
+        self.assertEqual(args.rpa_preflight_timeout_sec, 4260)
         self.assertFalse(hasattr(args, "rpa_preflight_soft_timeout_sec"))
         self.assertEqual(args.rpa_late_artifact_grace_sec, 30)
 
@@ -4224,6 +4467,102 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result["diagnosisRecordsPath"], str(records_dir / f"{material_id}.json"))
         self.assertEqual(receipt["state"], "records_persisted")
         self.assertEqual(receipt["clientAttemptId"], "attempt-receipt")
+
+    def test_isolated_preflight_persists_task_group_id_before_polling_completes(self):
+        material_id = "m-rpa-timeout"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = {
+                "material_id": material_id,
+                "diagnosis_csv_dir": root / "diagnosis-csv",
+                "diagnosis_records_dir": root / "diagnosis-records",
+                "rpa_receipts_dir": root / "rpa-receipts",
+                "rpa_client_attempt_id": "attempt-1",
+            }
+
+            def blocked_fetch(**kwargs):
+                kwargs["on_task_submitted"]("group-1")
+                time.sleep(5)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=blocked_fetch
+            ):
+                result = extract_peak_frames._fetch_material_preflight_isolated(
+                    args, timeout_sec=1
+                )
+
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(receipt["state"], "submitted")
+        self.assertEqual(receipt["remoteTaskGroupId"], "group-1")
+        self.assertTrue(result["timeoutExceeded"])
+
+    def test_resume_polls_submitted_remote_task_without_second_submit(self):
+        material_id = "m-resume-task"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type(
+                "Args",
+                (),
+                {
+                    "resume": True,
+                    "output_dir": str(root / "peak-frames"),
+                    "diagnosis_records_dir": str(root / "diagnosis-records"),
+                    "batch_manifest": None,
+                    "rpa_late_artifact_grace_sec": 0,
+                    "rpa_result_recovery_attempts": 1,
+                    "rpa_fast_failure_threshold_sec": 60,
+                    "rpa_recovery_backoff_sec": 0,
+                },
+            )()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+            manifest = {
+                "schemaVersion": 2,
+                "materials": [
+                    dict(
+                        entry,
+                        rpaStatus="submitted",
+                        status="running",
+                        rpaClientAttemptId="attempt-1",
+                    )
+                ],
+                "materialIds": [material_id],
+            }
+            rpa_artifact_receipts.publish_receipt(
+                root / "rpa-receipts",
+                material_id=material_id,
+                client_attempt_id="attempt-1",
+                state="submitted",
+                remote_task_group_id="group-1",
+            )
+            candidates = [{"materialId": material_id}]
+            entries = {0: entry}
+
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                extract_peak_frames._resume_wave_state(args, candidates, entries)
+
+            resumed_entry = entries[0]
+            failure = {
+                "materialId": material_id,
+                "rpaAvailable": False,
+                "failureReason": "rpa_request_timeout",
+                "timeoutExceeded": True,
+                "remoteTaskGroupId": "group-1",
+            }
+            with patch.object(
+                extract_peak_frames, "_fetch_material_preflight_for_cli", return_value=failure
+            ) as fetch:
+                result = extract_peak_frames._attempt_wave_rpa(args, resumed_entry)
+
+        self.assertEqual(resumed_entry["rpaClientAttemptId"], "attempt-1")
+        self.assertEqual(resumed_entry["remoteTaskGroupId"], "group-1")
+        self.assertEqual(fetch.call_args.kwargs["client_attempt_id"], "attempt-1")
+        self.assertEqual(fetch.call_args.kwargs["task_group_id"], "group-1")
+        self.assertEqual(result["remoteTaskGroupId"], "group-1")
 
     def test_wave_rpa_recovers_failed_request_from_late_csv(self):
         with tempfile.TemporaryDirectory() as temp_dir:

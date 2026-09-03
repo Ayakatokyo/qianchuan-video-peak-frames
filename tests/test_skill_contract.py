@@ -58,7 +58,6 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertNotIn("python scripts/extract_peak_frames.py", skill)
         self.assertNotIn("repair_manifest.py", skill)
         self.assertNotIn("--rpa-concurrency", skill)
-        self.assertNotIn("--resume", skill)
 
     def test_skill_uses_runs_directory_for_new_standard_runs(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -354,6 +353,16 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         ):
             self.assertNotIn(removed_flag, skill)
             self.assertNotIn(removed_flag, contract)
+
+    def test_rpa_contract_documents_async_task_resume_without_duplicate_submit(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        for document in (skill, contract):
+            self.assertIn("4260", document)
+            self.assertIn("task_group_id", document)
+            self.assertIn("partial_success", document)
+            self.assertIn("不得重复提交", document)
 
     def test_entry_prompt_matches_report_workflow(self):
         prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")

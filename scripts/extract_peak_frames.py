@@ -142,7 +142,7 @@ def build_parser():
     parser.add_argument("--batch-manifest")
     parser.add_argument("--target-top-n", type=_positive_int)
     parser.add_argument("--candidate-top-n", type=_positive_int)
-    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=480)
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=4260)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
     parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
     parser.add_argument("--rpa-fast-failure-threshold-sec", type=_positive_timeout, default=60)
@@ -388,13 +388,21 @@ def _preflight_failure(material_id, reason, error=None):
         "videoUrl": None,
     }
     diagnostics = getattr(error, "diagnostics", {}) if error is not None else {}
-    retryable = reason == "rpa_request_failed" and diagnostics.get(
-        "rpaFailureClass"
-    ) != "gateway_client_error"
+    terminal_remote_failure = bool(
+        diagnostics.get("rpaTimeoutExceeded")
+        or diagnostics.get("rpaTaskStatus") not in (None, "pending", "running")
+    )
+    retryable = (
+        reason == "rpa_request_failed"
+        and not terminal_remote_failure
+        and diagnostics.get("rpaFailureClass") != "gateway_client_error"
+    )
     result.update(
         {
             "rpaResultStatus": (
-                "pending" if reason == "rpa_request_failed" else "final_failed"
+                "pending"
+                if reason == "rpa_request_failed" and not terminal_remote_failure
+                else "final_failed"
             ),
             "retryable": retryable,
             "errorType": type(error).__name__ if error is not None else None,
@@ -528,9 +536,24 @@ def _fetch_material_preflight_worker(params):
             "diagnosis_records_dir",
             "rpa_receipts_dir",
             "rpa_client_attempt_id",
+            "remote_task_group_id",
         }
     }
-    return fetch_material_preflight(**adapter_params)
+
+    def on_task_submitted(task_group_id):
+        publish_receipt(
+            params["rpa_receipts_dir"],
+            material_id=params["material_id"],
+            client_attempt_id=params["rpa_client_attempt_id"],
+            state="submitted",
+            remote_task_group_id=task_group_id,
+        )
+
+    return fetch_material_preflight(
+        **adapter_params,
+        task_group_id=params.get("remote_task_group_id"),
+        on_task_submitted=on_task_submitted,
+    )
 
 
 def _publish_worker_rpa_receipt(params, outcome, state, records_path=None):
@@ -541,6 +564,7 @@ def _publish_worker_rpa_receipt(params, outcome, state, records_path=None):
         state=state,
         csv_path=outcome.get("diagnosisCsvPath"),
         records_path=records_path,
+        remote_task_group_id=outcome.get("remoteTaskGroupId"),
     )
 
 
@@ -583,7 +607,12 @@ def _call_mock_preflight_with_timeout(params, timeout_sec):
 
 
 def _fetch_material_preflight_for_cli(
-    args, material_id, *, recover_late_artifacts=True, client_attempt_id=None
+    args,
+    material_id,
+    *,
+    recover_late_artifacts=True,
+    client_attempt_id=None,
+    task_group_id=None,
 ):
     started_at_epoch = time.time()
     params = {
@@ -596,6 +625,7 @@ def _fetch_material_preflight_for_cli(
         "diagnosis_records_dir": _diagnosis_records_dir(args),
         "rpa_receipts_dir": _rpa_receipts_dir(args),
         "rpa_client_attempt_id": client_attempt_id or uuid.uuid4().hex,
+        "remote_task_group_id": task_group_id,
         "timeout_sec": args.rpa_preflight_timeout_sec,
     }
     if hasattr(fetch_material_preflight, "mock_calls"):
@@ -1036,6 +1066,9 @@ def _resume_wave_state(args, candidates, entries):
                 "previousClientAttemptId": entry.get("rpaClientAttemptId"),
                 "previousReceiptState": receipt.get("state") if receipt else None,
             }
+            if receipt is not None and receipt.get("remoteTaskGroupId"):
+                restored["rpaClientAttemptId"] = receipt.get("clientAttemptId")
+                restored["remoteTaskGroupId"] = receipt.get("remoteTaskGroupId")
         entries[index] = restored
     return submitted, selected, rejected, cancelled, postprocess_queue
 
@@ -1045,12 +1078,14 @@ def _attempt_wave_rpa(args, entry):
     started_at_epoch = time.time()
     timings = _empty_material_timings()
     material_id = entry["materialId"]
-    client_attempt_id = uuid.uuid4().hex
+    client_attempt_id = entry.get("rpaClientAttemptId") or uuid.uuid4().hex
+    task_group_id = entry.get("remoteTaskGroupId")
     publish_receipt(
         _rpa_receipts_dir(args),
         material_id=material_id,
         client_attempt_id=client_attempt_id,
         state="submitted",
+        remote_task_group_id=task_group_id,
     )
 
     def fetch_once():
@@ -1061,6 +1096,7 @@ def _attempt_wave_rpa(args, entry):
                 material_id,
                 recover_late_artifacts=False,
                 client_attempt_id=client_attempt_id,
+                task_group_id=task_group_id,
             )
             if isinstance(outcome, dict):
                 outcome = dict(outcome)
@@ -1087,7 +1123,11 @@ def _attempt_wave_rpa(args, entry):
 
     updated = dict(entry)
     updated.update(
-        {"timingsSec": timings, "rpaClientAttemptId": client_attempt_id}
+        {
+            "timingsSec": timings,
+            "rpaClientAttemptId": client_attempt_id,
+            "remoteTaskGroupId": outcome.get("remoteTaskGroupId") or task_group_id,
+        }
     )
     if not outcome.get("rpaAvailable"):
         updated.update(
@@ -1146,6 +1186,7 @@ def _attempt_wave_rpa(args, entry):
             client_attempt_id=client_attempt_id,
             state="artifact_downloaded",
             csv_path=outcome["diagnosisCsvPath"],
+            remote_task_group_id=updated.get("remoteTaskGroupId"),
         )
         publish_receipt(
             _rpa_receipts_dir(args),
@@ -1154,6 +1195,7 @@ def _attempt_wave_rpa(args, entry):
             state="records_persisted",
             csv_path=outcome["diagnosisCsvPath"],
             records_path=records_path,
+            remote_task_group_id=updated.get("remoteTaskGroupId"),
         )
 
     updated.update(

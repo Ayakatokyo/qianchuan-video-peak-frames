@@ -48,6 +48,10 @@ class GatewayFile:
 DEFAULT_CSV_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_VIDEO_MAX_BYTES = 1024 * 1024 * 1024
 DEFAULT_DOWNLOAD_DEADLINE_SEC = 600
+POLL_INTERVAL_SECONDS = 10
+POLL_TIMEOUT_SECONDS = 3600
+RUNNING_TASK_STATUSES = {"pending", "running"}
+SUCCESS_TASK_STATUSES = {"completed", "partial_success"}
 HTTP_PIPE_CHUNK_SIZE = 1024 * 1024
 MP4_METADATA_PROBE_BYTES = 64 * 1024
 MAX_MP4_MOOV_BYTES = 16 * 1024 * 1024
@@ -178,7 +182,12 @@ def _redact_gateway_summary(value):
         text,
     )
     text = re.sub(
-        r'(?i)("(?:authorization|secret|session(?:_id)?)"\s*:\s*")[^"]*',
+        r'(?i)("(?:authorization|secret|cookie|cookies|session(?:_id|id)?|agent_session_id)"\s*:\s*")[^"]*',
+        r'\1[redacted]',
+        text,
+    )
+    text = re.sub(
+        r'(?i)("(?:fileUrl|file_url)"\s*:\s*")[^"]*',
         r'\1[redacted]',
         text,
     )
@@ -244,6 +253,97 @@ def unpack_gateway_result(result):
         if isinstance(data, dict) and data.get("result_type") == "files":
             return GatewayFile(_files_response_url(result))
     return normalize_gateway_records(result)
+
+
+def _task_group_id_from_submit(result):
+    if not isinstance(result, dict):
+        raise RpaAdapterError("RPA task submission response must be an object")
+    if result.get("success") is False:
+        raise RpaAdapterError("RPA task submission was not successful")
+    data = result.get("data")
+    candidates = [
+        data.get("task_group_id") if isinstance(data, dict) else None,
+        data.get("taskGroupId") if isinstance(data, dict) else None,
+        result.get("task_group_id"),
+        result.get("taskGroupId"),
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    raise RpaAdapterError("RPA task submission response is missing task_group_id")
+
+
+def _normalize_task_group_id(value):
+    if not isinstance(value, str) or not value.strip():
+        raise RpaAdapterError("task_group_id must be a non-empty string")
+    return value.strip()
+
+
+def _first_file_url(payload):
+    candidates = []
+    if isinstance(payload, dict):
+        content = payload.get("result_content")
+        if isinstance(content, dict):
+            candidates.extend(content.get("files") or [])
+        candidates.extend(payload.get("files") or [])
+    for item in candidates:
+        if isinstance(item, dict):
+            file_url = item.get("fileUrl")
+            if isinstance(file_url, str) and file_url.strip():
+                return GatewayFile(file_url.strip())
+    raise RpaAdapterError("RPA task result has no diagnostic CSV")
+
+
+def _poll_status_payload(result):
+    if not isinstance(result, dict):
+        raise RpaAdapterError("RPA task status response must be an object")
+    data = result.get("data")
+    if not isinstance(data, dict):
+        data = result
+    nested = data.get("result")
+    result_payload = nested if isinstance(nested, dict) else data
+    status = data.get("status") or result_payload.get("status")
+    if not isinstance(status, str) or not status.strip():
+        raise RpaAdapterError("RPA task status is missing")
+    status = status.strip().lower()
+    errors = data.get("errors")
+    if errors is None and isinstance(result_payload, dict):
+        errors = result_payload.get("errors")
+    if status not in SUCCESS_TASK_STATUSES:
+        return {"status": status, "errors": errors}
+
+    result_type = (
+        result_payload.get("result_type")
+        or result_payload.get("resultType")
+        or data.get("result_type")
+        or data.get("resultType")
+    )
+    if result_type == "files" or "files" in result_payload or "result_content" in result_payload:
+        content = result_payload.get("result_content")
+        if isinstance(content, dict):
+            content_status = content.get("status")
+            if content_status is not None and str(content_status).upper() not in {
+                "COMPLETED",
+                "PARTIAL_SUCCESS",
+            }:
+                raise RpaAdapterError("RPA task files result is not completed")
+            failed_instances = content.get("failedInstances")
+            if failed_instances not in (None, 0):
+                raise RpaAdapterError("RPA task files result has failed instances")
+        return {
+            "status": status,
+            "resultType": "files",
+            "result": _first_file_url(result_payload),
+            "errors": errors,
+        }
+    if result_type == "payload" or "payload" in result_payload:
+        return {
+            "status": status,
+            "resultType": "payload",
+            "result": result_payload,
+            "errors": errors,
+        }
+    return {"status": status, "resultType": None, "result": None, "errors": errors}
 
 
 def _files_response_url(result):
@@ -363,6 +463,8 @@ def fetch_material_diagnosis(
     environ=None,
     session=None,
     timeout_sec=3600,
+    task_group_id=None,
+    on_task_submitted=None,
     return_metadata=False,
 ):
     if not str(shop_id or "").strip():
@@ -375,54 +477,145 @@ def fetch_material_diagnosis(
     )
     session = _default_session() if session is None else session
     api_base, authorization, session_id, cookies = runtime_config(environ)
-    try:
-        response = session.post(
-            f"{api_base}/adg/v1/agent/invoke",
-            json={
-                "authorization": authorization,
-                "agent_session_id": session_id,
-                "data_source_type": DATA_SOURCE_TYPE,
-                "platform": PLATFORM,
-                "function_code": FUNCTION_CODE,
-                "business_params": business_params,
-                "shop_id": str(shop_id).strip(),
-            },
-            headers=HEADERS,
-            cookies=cookies,
-            timeout=timeout_sec,
-        )
-    except Exception as exc:
-        raise RpaAdapterError(
-            f"unable to fetch RPA material diagnosis: {exc}",
-            {
-                "gatewayPhase": "request",
-                "rpaFailureClass": "transport_error",
-                "transportErrorType": type(exc).__name__,
-            },
-        ) from exc
-    _raise_for_status(response, "fetch RPA material diagnosis")
-    gateway_result = unpack_gateway_result(response.json())
-    if isinstance(gateway_result, list):
-        records = gateway_result
+    remote_task_group_id = None
+    if task_group_id is not None:
+        remote_task_group_id = _normalize_task_group_id(task_group_id)
+    if remote_task_group_id is None:
+        try:
+            response = session.post(
+                f"{api_base}/adg/v1/agent/fetch/tasks",
+                json={
+                    "authorization": authorization,
+                    "agent_session_id": session_id,
+                    "data_source_type": DATA_SOURCE_TYPE,
+                    "platform": PLATFORM,
+                    "function_code": FUNCTION_CODE,
+                    "business_params": business_params,
+                    "shop_id": str(shop_id).strip(),
+                },
+                headers=HEADERS,
+                cookies=cookies,
+                timeout=timeout_sec,
+            )
+            _raise_for_status(response, "submit RPA material diagnosis")
+            remote_task_group_id = _normalize_task_group_id(
+                _task_group_id_from_submit(response.json())
+            )
+        except RpaAdapterError:
+            raise
+        except Exception as exc:
+            raise RpaAdapterError(
+                f"unable to submit RPA material diagnosis: {exc}",
+                {
+                    "gatewayPhase": "submit",
+                    "rpaFailureClass": "transport_error",
+                    "transportErrorType": type(exc).__name__,
+                },
+            ) from exc
+        if callable(on_task_submitted):
+            on_task_submitted(remote_task_group_id)
+
+    deadline = time.monotonic() + min(float(timeout_sec), POLL_TIMEOUT_SECONDS)
+    terminal = None
+    while True:
+        try:
+            response = session.post(
+                f"{api_base}/adg/v1/agent/fetch/tasks/status",
+                json={
+                    "authorization": authorization,
+                    "agent_session_id": session_id,
+                    "task_group_id": remote_task_group_id,
+                },
+                headers=HEADERS,
+                cookies=cookies,
+                timeout=timeout_sec,
+            )
+            _raise_for_status(response, "poll RPA material diagnosis", include_body=True)
+            terminal = _poll_status_payload(response.json())
+        except RpaAdapterError as exc:
+            if not exc.diagnostics.get("remoteTaskGroupId"):
+                exc.diagnostics["remoteTaskGroupId"] = remote_task_group_id
+            raise
+        except Exception as exc:
+            raise RpaAdapterError(
+                f"unable to poll RPA material diagnosis: {exc}",
+                {
+                    "gatewayPhase": "poll",
+                    "rpaFailureClass": "transport_error",
+                    "transportErrorType": type(exc).__name__,
+                    "remoteTaskGroupId": remote_task_group_id,
+                },
+            ) from exc
+
+        status = terminal["status"]
+        if status in SUCCESS_TASK_STATUSES:
+            break
+        if status not in RUNNING_TASK_STATUSES:
+            raise RpaAdapterError(
+                f"RPA material diagnosis task ended with status {status}",
+                {
+                    "gatewayPhase": "poll",
+                    "remoteTaskGroupId": remote_task_group_id,
+                    "rpaTaskStatus": status,
+                    "rpaErrors": terminal.get("errors"),
+                },
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RpaAdapterError(
+                "RPA material diagnosis polling exceeded deadline",
+                {
+                    "gatewayPhase": "poll",
+                    "remoteTaskGroupId": remote_task_group_id,
+                    "rpaTaskStatus": status,
+                    "rpaTimeoutExceeded": True,
+                },
+            )
+        time.sleep(min(POLL_INTERVAL_SECONDS, remaining))
+
+    metadata = {"remoteTaskGroupId": remote_task_group_id}
+    if terminal.get("errors"):
+        metadata["rpaPartialErrors"] = terminal["errors"]
+    result = terminal.get("result")
+    if terminal.get("resultType") == "payload":
+        try:
+            records = normalize_gateway_records(result)
+        except RpaAdapterError as exc:
+            exc.diagnostics.setdefault("remoteTaskGroupId", remote_task_group_id)
+            raise
         diagnosis_csv_path = None
-    else:
+    elif terminal.get("resultType") == "files":
         if diagnosis_csv_dir is None:
             raise RpaAdapterError(
-                "diagnosis_csv_dir is required for RPA files responses"
+                "diagnosis_csv_dir is required for RPA files responses",
+                {"remoteTaskGroupId": remote_task_group_id},
             )
         try:
             target = artifact_path(diagnosis_csv_dir, business_params["material_id"], ".csv")
         except ValueError as exc:
             raise RpaAdapterError(f"invalid material_id: {exc}") from exc
-        download_diagnosis_csv(gateway_result.file_url, target, session=session)
         try:
+            download_diagnosis_csv(result.file_url, target, session=session)
             records = parse_diagnosis_csv(target)
         except RpaCsvError as exc:
-            raise RpaAdapterError(str(exc)) from exc
+            raise RpaAdapterError(
+                str(exc), {"remoteTaskGroupId": remote_task_group_id}
+            ) from exc
+        except RpaAdapterError as exc:
+            exc.diagnostics.setdefault("remoteTaskGroupId", remote_task_group_id)
+            raise
         diagnosis_csv_path = str(target)
+    else:
+        raise RpaAdapterError(
+            "RPA material diagnosis task has no usable result",
+            {
+                "remoteTaskGroupId": remote_task_group_id,
+                "rpaErrors": terminal.get("errors"),
+            },
+        )
 
     if return_metadata:
-        return records, diagnosis_csv_path
+        return records, diagnosis_csv_path, metadata
     return records
 
 
@@ -476,6 +669,8 @@ def _preflight_failure_reason(error):
         "payload",
         "record list",
         "files response",
+        "files result",
+        "task result",
         "diagnostic CSV",
     )
     if any(marker in message for marker in payload_markers):
@@ -486,13 +681,21 @@ def _preflight_failure_reason(error):
 def _preflight_failure_result(material_id, reason, error=None):
     result = _preflight_result(material_id, False, reason)
     diagnostics = getattr(error, "diagnostics", {}) if error is not None else {}
-    retryable = reason == "rpa_request_failed" and diagnostics.get(
-        "rpaFailureClass"
-    ) != "gateway_client_error"
+    terminal_remote_failure = bool(
+        diagnostics.get("rpaTimeoutExceeded")
+        or diagnostics.get("rpaTaskStatus") not in (None, *RUNNING_TASK_STATUSES)
+    )
+    retryable = (
+        reason == "rpa_request_failed"
+        and not terminal_remote_failure
+        and diagnostics.get("rpaFailureClass") != "gateway_client_error"
+    )
     result.update(
         {
             "rpaResultStatus": (
-                "pending" if reason == "rpa_request_failed" else "final_failed"
+                "pending"
+                if reason == "rpa_request_failed" and not terminal_remote_failure
+                else "final_failed"
             ),
             "retryable": retryable,
             "errorType": type(error).__name__ if error is not None else None,
@@ -514,9 +717,11 @@ def fetch_material_preflight(
     environ=None,
     session=None,
     timeout_sec=300,
+    task_group_id=None,
+    on_task_submitted=None,
 ):
     try:
-        records, diagnosis_csv_path = fetch_material_diagnosis(
+        records, diagnosis_csv_path, metadata = fetch_material_diagnosis(
             shop_id=shop_id,
             material_id=material_id,
             date_range_type=date_range_type,
@@ -526,6 +731,8 @@ def fetch_material_preflight(
             environ=environ,
             session=session,
             timeout_sec=timeout_sec,
+            task_group_id=task_group_id,
+            on_task_submitted=on_task_submitted,
             return_metadata=True,
         )
     except RpaAdapterError as exc:
@@ -543,6 +750,7 @@ def fetch_material_preflight(
     if result["rpaAvailable"]:
         result["records"] = records
         result["diagnosisCsvPath"] = diagnosis_csv_path
+        result.update(metadata)
     return result
 
 

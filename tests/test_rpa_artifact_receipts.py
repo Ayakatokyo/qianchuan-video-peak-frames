@@ -61,7 +61,7 @@ class RpaArtifactReceiptTests(unittest.TestCase):
             records_path=self.records_path,
         )
 
-        self.assertEqual(receipt["schemaVersion"], 1)
+        self.assertEqual(receipt["schemaVersion"], 2)
         self.assertEqual(receipt["materialId"], self.material_id)
         self.assertEqual(receipt["clientAttemptId"], self.attempt_id)
         self.assertEqual(receipt["state"], "records_persisted")
@@ -96,6 +96,54 @@ class RpaArtifactReceiptTests(unittest.TestCase):
 
         self.assertEqual(records["artifactDownloadedAt"], artifact["artifactDownloadedAt"])
         self.assertNotEqual(records["recordsPersistedAt"], None)
+
+    def test_receipt_retains_remote_task_group_id_through_lifecycle(self):
+        receipts_dir = self.root / "rpa-receipts"
+        publish_receipt(
+            receipts_dir,
+            material_id=self.material_id,
+            client_attempt_id=self.attempt_id,
+            state="submitted",
+            remote_task_group_id="group-1",
+        )
+        publish_receipt(
+            receipts_dir,
+            material_id=self.material_id,
+            client_attempt_id=self.attempt_id,
+            state="artifact_downloaded",
+            csv_path=self.csv_path,
+        )
+        receipt = publish_receipt(
+            receipts_dir,
+            material_id=self.material_id,
+            client_attempt_id=self.attempt_id,
+            state="records_persisted",
+            csv_path=self.csv_path,
+            records_path=self.records_path,
+        )
+
+        self.assertEqual(receipt["remoteTaskGroupId"], "group-1")
+
+    def test_loader_accepts_schema_v1_receipt_without_remote_task_group_id(self):
+        receipts_dir = self.root / "rpa-receipts"
+        receipt = publish_receipt(
+            receipts_dir,
+            material_id=self.material_id,
+            client_attempt_id=self.attempt_id,
+            state="artifact_downloaded",
+            csv_path=self.csv_path,
+        )
+        receipt["schemaVersion"] = 1
+        (receipts_dir / f"{self.material_id}.json").write_text(
+            json.dumps(receipt), encoding="utf-8"
+        )
+
+        recovered = load_artifact_receipt(
+            receipts_dir, material_id=self.material_id
+        )
+
+        self.assertEqual(recovered["receipt"]["schemaVersion"], 1)
+        self.assertNotIn("remoteTaskGroupId", recovered["receipt"])
 
     def test_loader_reads_verified_downloaded_csv_before_records_persist(self):
         receipts_dir = self.root / "rpa-receipts"
