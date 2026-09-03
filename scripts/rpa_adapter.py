@@ -477,9 +477,18 @@ def fetch_material_diagnosis(
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
         if status not in SUCCESS_TASK_STATUSES:
+            diagnostics = {"remoteTaskGroupId": remote_task_group_id}
+            if isinstance(status_data, dict):
+                errors = status_data.get("errors")
+                if not isinstance(errors, list):
+                    result_content = status_data.get("result_content")
+                    if isinstance(result_content, dict):
+                        errors = result_content.get("errors")
+                if isinstance(errors, list):
+                    diagnostics["rpaErrors"] = errors
             raise RpaAdapterError(
                 f"RPA material diagnosis task has unsupported status: {status or 'missing'}",
-                {"remoteTaskGroupId": remote_task_group_id},
+                diagnostics,
             )
         gateway_result = status_result
         break
@@ -497,6 +506,10 @@ def fetch_material_diagnosis(
         diagnostics["remoteTaskGroupId"] = remote_task_group_id
         if isinstance(status_data, dict):
             errors = status_data.get("errors")
+            if not isinstance(errors, list):
+                result_content = status_data.get("result_content")
+                if isinstance(result_content, dict):
+                    errors = result_content.get("errors")
             if isinstance(errors, list):
                 diagnostics["rpaErrors"] = errors
         raise RpaAdapterError(str(exc), diagnostics) from exc

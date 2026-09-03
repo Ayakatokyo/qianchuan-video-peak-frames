@@ -488,6 +488,21 @@ class RpaAdapterTests(unittest.TestCase):
             )
 
         self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+        self.assertEqual(
+            raised.exception.diagnostics["rpaErrors"], [{"message": "denied"}]
+        )
+
+    def test_partial_success_without_files_exposes_safe_errors_and_task_id(self):
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            self._fetch_terminal(
+                status="partial_success",
+                errors=[{"message": "no usable file"}],
+            )
+
+        self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+        self.assertEqual(
+            raised.exception.diagnostics["rpaErrors"], [{"message": "no usable file"}]
+        )
 
     def test_payload_response_returns_no_csv_metadata(self):
         result, _session = self._fetch_terminal(result_type="payload")
