@@ -903,11 +903,33 @@ def fetch_material_diagnosis(
             ) from exc
         _raise_for_status(response, "submit RPA material diagnosis")
         try:
-            task_group_id = _task_group_id(response.json())
+            submit_result = response.json()
         except Exception as exc:
             raise _task_failure(
                 "RPA submit response is not valid JSON", gatewayPhase="submit"
             ) from exc
+        response_code = submit_result.get("code") if isinstance(submit_result, dict) else None
+        if (
+            isinstance(submit_result, dict)
+            and (
+                submit_result.get("success") is False
+                or response_code not in (None, 200, "200")
+            )
+        ):
+            message = (
+                submit_result.get("msg")
+                or submit_result.get("message")
+                or submit_result.get("error")
+                or "RPA submit response was not successful"
+            )
+            raise _task_failure(
+                f"RPA submit response was rejected: {message}",
+                gatewayPhase="submit",
+                rpaFailureClass="gateway_client_error",
+                gatewayCode=response_code,
+                responseSummary=_redact_gateway_summary(submit_result),
+            )
+        task_group_id = _task_group_id(submit_result)
         if not task_group_id:
             raise _task_failure(
                 "RPA submit response is missing task_group_id", gatewayPhase="submit"

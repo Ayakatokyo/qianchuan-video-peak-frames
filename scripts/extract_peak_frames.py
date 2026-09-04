@@ -774,7 +774,10 @@ def _recover_wave_rpa_result(
             "rpaRecoveryAttempts": attempts,
         }
     )
-    if outcome.get("failureReason") == "rpa_request_failed":
+    if (
+        outcome.get("failureReason") == "rpa_request_failed"
+        and outcome.get("rpaFailureClass") != "gateway_client_error"
+    ):
         outcome["failureReason"] = "rpa_csv_artifact_unavailable"
     return outcome
 

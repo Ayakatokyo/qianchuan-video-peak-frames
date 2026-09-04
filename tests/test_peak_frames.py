@@ -864,6 +864,37 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertIn("rate limited", result["responseSummary"])
         self.assertNotIn("secret-token", result["responseSummary"])
 
+    def test_fetch_material_preflight_preserves_gateway_submit_business_error(self):
+        response = FakeResponse(
+            {
+                "success": False,
+                "code": 500,
+                "msg": "该店铺下未绑定任何有效的底层授权凭据",
+                "authorization": "secret-token",
+            }
+        )
+
+        class RejectedSubmitSession:
+            def post(self, url, **_kwargs):
+                self.url = url
+                return response
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-submit-business-error",
+            date_range_type="LAST_7_DAYS",
+            environ=self._env(),
+            session=RejectedSubmitSession(),
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result["failureReason"], "rpa_request_failed")
+        self.assertFalse(result["retryable"])
+        self.assertEqual(result["rpaFailureClass"], "gateway_client_error")
+        self.assertIn("未绑定任何有效的底层授权凭据", result["errorMessage"])
+        self.assertIn("code", result["responseSummary"])
+        self.assertNotIn("secret-token", result["responseSummary"])
+
     def test_fetch_material_preflight_marks_invalid_payload_final(self):
         session = RecordingSession(FakeResponse({"payload": {"not": "a-list"}}))
 
@@ -5178,6 +5209,7 @@ class CliTests(unittest.TestCase):
 
         fetch.assert_called_once()
         self.assertEqual(result["rpaResultStatus"], "final_failed")
+        self.assertEqual(result["failureReason"], "rpa_request_failed")
         self.assertEqual(result["rpaRecoveryAttempts"][0]["httpStatus"], 401)
 
     def test_wave_attempt_selects_only_after_fresh_expected_csv_is_verified(self):
