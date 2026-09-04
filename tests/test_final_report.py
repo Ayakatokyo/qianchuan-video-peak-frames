@@ -3509,6 +3509,13 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("一二级内容公式：", prompt_text)
         self.assertIn("脚本文案：", prompt_text)
         self.assertNotIn("必须输出至少 4 条 nextActions", prompt_text)
+        self.assertIn("不少于 12 张", prompt_text)
+        self.assertIn("5～8 个类别", prompt_text)
+        self.assertIn("6～11 张", prompt_text)
+        self.assertIn("4～6 个类别", prompt_text)
+        self.assertIn("少于 6 张", prompt_text)
+        self.assertIn("主导机制", prompt_text)
+        self.assertIn("不得输出或修正帧数、占比、覆盖率", prompt_text)
 
     def test_generates_html_with_required_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:
