@@ -535,6 +535,169 @@ def _validate_highlight_dashboard_group(raw, index):
     }
 
 
+def _validate_custom_classification(raw, expected_frame_refs=None):
+    """Normalize and validate the AI-owned, per-batch visual grouping.
+
+    ``expected_frame_refs`` is supplied by the deterministic report quality
+    gate.  Keeping it optional lets the conclusion loader validate the shape
+    before the verified frame registry is available.
+    """
+    if not isinstance(raw, dict):
+        raise FinalReportError("customClassification must be an object")
+    required_fields = (
+        "ruleId",
+        "ruleName",
+        "ruleDescription",
+        "ruleVersion",
+        "inputFrameManifestHash",
+    )
+    metadata = {}
+    for field in required_fields:
+        value = _text(raw.get(field))
+        if not value:
+            raise FinalReportError(f"customClassification.{field} is required")
+        metadata[field] = value
+
+    raw_groups = raw.get("groups")
+    if not isinstance(raw_groups, list) or len(raw_groups) < 2:
+        raise FinalReportError("customClassification.groups must contain at least 2 groups")
+    expected = None if expected_frame_refs is None else set(expected_frame_refs)
+    classified_refs = []
+    names = set()
+    groups = []
+
+    def normalize_insights(value, field_name, group_refs):
+        if not isinstance(value, list) or len(value) != 3:
+            raise FinalReportError(f"{field_name} must contain exactly 3 items")
+        normalized = []
+        for item_index, item in enumerate(value):
+            if not isinstance(item, dict):
+                raise FinalReportError(f"{field_name}[{item_index}] must be an object")
+            title = _text(item.get("title"))
+            body = _text(item.get("body"))
+            evidence_refs = _string_list(
+                item.get("evidenceRefs"),
+                f"{field_name}[{item_index}].evidenceRefs",
+            )
+            if not title or not body or not evidence_refs:
+                raise FinalReportError(
+                    f"{field_name}[{item_index}] requires title, body, and evidenceRefs"
+                )
+            if len(title) > HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH:
+                raise FinalReportError(
+                    f"{field_name}[{item_index}].title must contain at most "
+                    f"{HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH} characters"
+                )
+            if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
+                raise FinalReportError(
+                    f"{field_name}[{item_index}].body must contain at least "
+                    f"{HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters"
+                )
+            if any(reference not in group_refs for reference in evidence_refs):
+                raise FinalReportError(
+                    f"{field_name}[{item_index}].evidenceRefs must reference its group"
+                )
+            normalized.append(
+                {"title": title, "body": body, "evidenceRefs": evidence_refs}
+            )
+        return normalized
+
+    for index, raw_group in enumerate(raw_groups):
+        if not isinstance(raw_group, dict):
+            raise FinalReportError(f"customClassification.groups[{index}] must be an object")
+        group_id = _text(raw_group.get("groupId"))
+        group_name = _text(raw_group.get("groupName"))
+        description = _text(raw_group.get("description"))
+        if not group_id or not group_name or not description:
+            raise FinalReportError(
+                f"customClassification.groups[{index}] requires groupId, groupName, and description"
+            )
+        if re.fullmatch(r"其他\d+", group_name):
+            raise FinalReportError(
+                f"customClassification.groups[{index}].groupName must be semantic, not a placeholder"
+            )
+        if group_name in names:
+            raise FinalReportError("customClassification groupName must be unique")
+        names.add(group_name)
+        frame_refs = _string_list(
+            raw_group.get("frameRefs"),
+            f"customClassification.groups[{index}].frameRefs",
+        )
+        if not frame_refs:
+            raise FinalReportError(
+                f"customClassification.groups[{index}].frameRefs must not be empty"
+            )
+        if len(frame_refs) != len(set(frame_refs)):
+            raise FinalReportError(
+                "customClassification.groups frameRefs must contain each frame exactly once"
+            )
+        if set(frame_refs) & set(classified_refs):
+            raise FinalReportError(
+                "customClassification.groups must cover each frame exactly once"
+            )
+        if expected is not None:
+            unknown = [reference for reference in frame_refs if reference not in expected]
+            if unknown:
+                raise FinalReportError(
+                    f"customClassification has unknown frame reference: {unknown[0]}"
+                )
+        classified_refs.extend(frame_refs)
+        group_refs = set(frame_refs)
+        groups.append(
+            {
+                "groupId": group_id,
+                "groupName": group_name,
+                "description": description,
+                "frameRefs": frame_refs,
+                "commonConclusion": normalize_insights(
+                    raw_group.get("commonConclusion"),
+                    f"customClassification.groups[{index}].commonConclusion",
+                    group_refs,
+                ),
+                "derivativeDirections": normalize_insights(
+                    raw_group.get("derivativeDirections"),
+                    f"customClassification.groups[{index}].derivativeDirections",
+                    group_refs,
+                ),
+            }
+        )
+
+    if len(classified_refs) != len(set(classified_refs)):
+        raise FinalReportError(
+            "customClassification.groups must cover each frame exactly once"
+        )
+    raw_unclassified = raw.get("unclassifiedFrameRefs", [])
+    unclassified = _string_list(
+        raw_unclassified, "customClassification.unclassifiedFrameRefs"
+    )
+    if len(unclassified) != len(set(unclassified)):
+        raise FinalReportError(
+            "customClassification.unclassifiedFrameRefs must be unique"
+        )
+    if expected is not None:
+        unknown = [reference for reference in unclassified if reference not in expected]
+        if unknown:
+            raise FinalReportError(
+                f"customClassification has unknown frame reference: {unknown[0]}"
+            )
+        overlap = set(classified_refs) & set(unclassified)
+        if overlap:
+            raise FinalReportError(
+                "customClassification classified and unclassified frames must be disjoint"
+            )
+        covered = set(classified_refs) | set(unclassified)
+        if covered != expected or len(classified_refs) != len(set(classified_refs)):
+            raise FinalReportError(
+                "customClassification groups must cover each successful highlight frame exactly once"
+            )
+    return {
+        **metadata,
+        "groups": groups,
+        "unclassifiedFrameRefs": unclassified,
+        "availability": "partial" if unclassified else "available",
+    }
+
+
 def _normalize_v4_conclusion(payload):
     normalized = _normalize_v3_conclusion(payload)
     dashboard = payload.get("highlightDashboard")
@@ -614,6 +777,11 @@ def _normalize_v5_conclusion(payload):
                 if isinstance(item, dict)
             ],
         }
+    normalized_custom = (
+        _validate_custom_classification(payload.get("customClassification"))
+        if "customClassification" in payload
+        else None
+    )
     return {
         **normalized,
         "schemaVersion": 5,
@@ -631,6 +799,7 @@ def _normalize_v5_conclusion(payload):
             for item in payload.get("keywordCloudReview", [])
             if isinstance(item, dict) and _text(item.get("keyword")) and _text(item.get("decision")) in {"accept", "exclude", "merge"}
         ]} if isinstance(payload.get("keywordCloudReview"), list) else {}),
+        **({"customClassification": normalized_custom} if normalized_custom is not None else {}),
     }
 
 
@@ -1363,6 +1532,10 @@ def _validate_v2_evidence(
         if card["extractionStatus"] == "succeeded"
         for frame in card["highlightFrames"]
     }
+    if conclusion.get("customClassification") is not None:
+        conclusion["customClassification"] = _validate_custom_classification(
+            conclusion["customClassification"], expected_frame_refs
+        )
     actual_frame_refs = []
     for group in conclusion["highlightDashboard"]["groups"]:
         group_refs = set(group["frameRefs"])

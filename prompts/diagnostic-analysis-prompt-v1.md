@@ -95,7 +95,8 @@
 - `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。前端只直接展示 `overallConclusion` 单段文字；`portfolioDimensionConclusions.commercial` 仅作为结构化结论、证据和兼容字段，不另起可见段落。不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用该分类 JPEG 的共同可见信号写 3 个分点式 `commonConclusion`，并按相同顺序给出 3 个正文不少于 20 个字符的可验证 `derivativeDirections`；小标题必须是 8-24 个中文字符的短句式总结结论（最多 32 个字符），而不是统一的栏目名；每个分类的标题、正文、验证动作和 evidenceRefs 必须基于本分类独有画面，不得与其他分类复用相同标题或完全相同正文；不得把峰值同时性写成因果。
+- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的标准分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用该分类 JPEG 的共同可见信号写 3 个分点式 `commonConclusion`，并按相同顺序给出 3 个正文不少于 20 个字符的可验证 `derivativeDirections`；小标题必须是 8-24 个中文字符的短句式总结结论（最多 32 个字符），而不是统一的栏目名；每个分类的标题、正文、验证动作和 evidenceRefs 必须基于本分类独有画面，不得与其他分类复用相同标题或完全相同正文；不得把峰值同时性写成因果。
+  同一次视觉分析还必须输出一个对外名为“本批次分类”的 `customClassification`。它只能依据本批次成功高光帧 JPEG 中可观察的内容/画面机制建立至少 2 个互斥业务语义分组；不得依据文件名、素材标题、脚本文本或标准分类猜测。每个分组必须包含 `groupId`、语义化 `groupName`、`description`、`frameRefs`，且不得使用“其他1”“其他2”等占位名称；`frameRefs` 只能引用成功高光帧，所有未归类成功帧必须显式写入 `unclassifiedFrameRefs`，同一帧不得跨组重复。每组必须输出恰好 3 条 `commonConclusion` 和 3 条 `derivativeDirections`，每条都包含标题、正文和属于本组的 `evidenceRefs`。同时填写 `ruleId`、`ruleName`、`ruleDescription`、`ruleVersion`、`inputFrameManifestHash` 和 `availability`。AI 不得输出或修正帧数、占比、覆盖率等统计数字；这些数字由 Presentation 根据成功帧 registry 确定性计算。
 - `05｜单素材深度分析`：每个工作区先展示 `materialAnalyses` 中对应的 AI 二次分析，再展示确定性的真实事实数据（包括互动时序分析和脚本分析数据）；高光帧观察保留“视频/高光帧在上、文字分析在下”的事实优先排版。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧不得作为第 01 章证据。
@@ -134,6 +135,33 @@
         ]
       }
     ]
+  },
+  "customClassification": {
+    "ruleId": "batch_visual_mechanism_v1",
+    "ruleName": "本批次画面机制分类",
+    "ruleDescription": "按本批次成功高光帧中可观察的主要内容机制分组",
+    "ruleVersion": "v1",
+    "inputFrameManifestHash": "sha256:事实包 manifest 的哈希",
+    "groups": [
+      {
+        "groupId": "可解释的稳定 ID",
+        "groupName": "基于 JPEG 可观察机制的业务语义名称",
+        "description": "该机制在本批次画面中的可观察定义",
+        "frameRefs": ["highlight:事实包中的素材 ID:帧类型"],
+        "commonConclusion": [
+          {"title": "基于本组画面的结论", "body": "说明本组 JPEG 的共同可见信号及其业务含义。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "本组信息机制的结论", "body": "说明信息、动作或视觉焦点如何影响理解，并保持谨慎表述。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "本组机制的迁移结论", "body": "说明哪些画面变量值得在后续改写和对照测试中复用。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
+        ],
+        "derivativeDirections": [
+          {"title": "验证画面变量", "body": "说明下一轮保留或调整的画面变量、对照方式和观察指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "验证信息承接", "body": "说明下一轮如何测试信息或动作顺序，并比较点击与观看指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
+          {"title": "验证迁移边界", "body": "说明将本组机制迁移到新场景时的变量、风险和成交验证方法。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
+        ]
+      }
+    ],
+    "unclassifiedFrameRefs": [],
+    "availability": "available"
   },
   "batchInsights": [
     {

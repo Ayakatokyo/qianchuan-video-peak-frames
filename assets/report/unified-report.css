@@ -1663,6 +1663,93 @@
       gap: 18px;
     }
 
+    .highlight-mode-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f7ead8;
+    }
+
+    .highlight-mode-tabs button {
+      appearance: none;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 10px 14px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .highlight-mode-tabs button[aria-selected="true"] {
+      border-color: #2c1810;
+      background: #2c1810;
+      color: #fff;
+    }
+
+    .highlight-mode-tabs button:focus-visible {
+      outline: 3px solid var(--gold);
+      outline-offset: 2px;
+    }
+
+    .highlight-mode-panel[hidden] {
+      display: none;
+    }
+
+    .highlight-batch-content,
+    .highlight-batch-group {
+      display: grid;
+      gap: 16px;
+      min-width: 0;
+    }
+
+    .highlight-batch-group-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .highlight-batch-group-head h3 {
+      margin: 0;
+      font-size: 22px;
+    }
+
+    .highlight-batch-summary {
+      display: grid;
+      gap: 8px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fffaf2;
+    }
+
+    .highlight-batch-summary h3,
+    .highlight-batch-summary p {
+      margin: 0;
+    }
+
+    .highlight-batch-rule,
+    .highlight-batch-description {
+      color: var(--muted);
+      line-height: 1.65;
+    }
+
+    .highlight-batch-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
     .highlight-sample-overview {
       display: flex;
       flex-wrap: wrap;
@@ -2986,6 +3073,50 @@ body.unified-report {
   background: transparent;
   border-bottom: 1px solid var(--line);
   border-radius: 0;
+}
+
+.unified-report .highlight-mode-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  border: 0;
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+}
+
+.unified-report .highlight-mode-tabs button {
+  flex: 0 0 auto;
+  min-height: 0;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 9px 10px 8px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.unified-report .highlight-mode-tabs button:hover,
+.unified-report .highlight-mode-tabs button[aria-selected="true"] {
+  border-color: transparent;
+  border-bottom-color: #9b6a37;
+  background: transparent;
+  color: var(--ink);
+}
+
+.unified-report .highlight-mode-tabs button:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.unified-report .highlight-batch-content {
+  min-width: 0;
 }
 
 .unified-report .highlight-dashboard-tabs button {

@@ -433,6 +433,8 @@ def report_data_for_template(
                 "portfolioDimensionConclusions", {}
             ),
             "highlightDashboard": conclusion.get("highlightDashboard", {}),
+            **({"customClassification": deepcopy(conclusion["customClassification"])}
+               if isinstance(conclusion.get("customClassification"), dict) else {}),
         },
         "warnings": warnings,
     }
