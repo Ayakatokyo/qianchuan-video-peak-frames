@@ -413,6 +413,23 @@ def _chapter04(data, materials):
             or any(not group["frameRefs"] for group in projected_groups)
         ):
             batch_availability = "partial" if total_frame_count else "unavailable"
+        distribution = [
+            {
+                "groupId": group["groupId"],
+                "groupName": group["groupName"],
+                "frameCount": group["frameCount"],
+                "percentage": group["percentage"],
+            }
+            for group in projected_groups
+            if group["frameCount"] > 0
+        ]
+        if unclassified_refs:
+            distribution.append({
+                "groupId": "unclassified",
+                "groupName": "未归类",
+                "frameCount": len(unclassified_refs),
+                "percentage": round(len(unclassified_refs) / total_frame_count * 100, 2) if total_frame_count else 0,
+            })
         batch_classification = {
             "ruleId": _text(custom.get("ruleId")),
             "ruleName": _text(custom.get("ruleName")),
@@ -422,6 +439,7 @@ def _chapter04(data, materials):
             "inputFrameCount": total_frame_count,
             "groupCount": len(projected_groups),
             "groups": projected_groups,
+            "distribution": distribution,
             "unclassifiedFrameRefs": unclassified_refs,
             "coverage": round(len(covered_frame_refs) / total_frame_count, 4) if total_frame_count else 0,
             "availability": batch_availability,
@@ -616,6 +634,33 @@ def validate_presentation_report(report):
         batch_refs.extend(_list(batch.get("unclassifiedFrameRefs")))
         if len(batch_refs) != len(set(batch_refs)):
             raise ValueError("batch classification frameRef must belong to only one group")
+        distribution = batch.get("distribution")
+        if not isinstance(distribution, list):
+            raise ValueError("batch classification distribution must be a list")
+        expected_distribution = [
+            {
+                "groupId": group.get("groupId"),
+                "groupName": group.get("groupName"),
+                "frameCount": group.get("frameCount"),
+                "percentage": group.get("percentage"),
+            }
+            for group in _list(batch.get("groups"))
+            if group.get("frameCount", 0) > 0
+        ]
+        unclassified = _list(batch.get("unclassifiedFrameRefs"))
+        if unclassified:
+            total = batch.get("inputFrameCount", 0)
+            expected_distribution.append({
+                "groupId": "unclassified",
+                "groupName": "未归类",
+                "frameCount": len(unclassified),
+                "percentage": round(len(unclassified) / total * 100, 2) if total else 0,
+            })
+        distribution_ids = [item.get("groupId") for item in distribution if isinstance(item, dict)]
+        if len(distribution_ids) != len(distribution) or len(distribution_ids) != len(set(distribution_ids)):
+            raise ValueError("batch classification distribution groupId must be unique")
+        if distribution != expected_distribution:
+            raise ValueError("batch classification distribution does not match groups")
     chapter05 = chapters.get("chapter05", {})
     material_ids = {item.get("materialId") for item in materials}
     for item in chapter05.get("materials", []):

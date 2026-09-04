@@ -131,8 +131,16 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(list(chapter04["groups"]), ["portrait", "product", "other"])
         self.assertEqual(chapter04["batchClassification"]["groups"][0]["frameCount"], 1)
         self.assertEqual(chapter04["batchClassification"]["groups"][1]["frameCount"], 1)
+        self.assertEqual(
+            chapter04["batchClassification"]["distribution"],
+            [
+                {"groupId": "person-led", "groupName": "人物场景承接", "frameCount": 1, "percentage": 50.0},
+                {"groupId": "product-led", "groupName": "产品证据展示", "frameCount": 1, "percentage": 50.0},
+            ],
+        )
         self.assertEqual(chapter04["batchClassification"]["coverage"], 1.0)
         self.assertNotIn("framePath", json.dumps(chapter04["batchClassification"], ensure_ascii=False))
+        self.assertNotIn("frameRefs", json.dumps(chapter04["batchClassification"]["distribution"], ensure_ascii=False))
 
     def test_chapter04_omits_batch_mode_when_custom_classification_is_absent(self):
         chapter04 = build_presentation_report(sample_data())["chapters"]["chapter04"]
@@ -146,6 +154,16 @@ class PresentationTests(unittest.TestCase):
         chapter04 = build_presentation_report(data)["chapters"]["chapter04"]
         self.assertEqual(chapter04["batchClassification"]["availability"], "partial")
         self.assertEqual(chapter04["batchClassification"]["coverage"], 1.0)
+        self.assertEqual(
+            chapter04["batchClassification"]["distribution"][-1],
+            {"groupId": "unclassified", "groupName": "未归类", "frameCount": 1, "percentage": 50.0},
+        )
+
+    def test_presentation_rejects_inconsistent_batch_distribution(self):
+        report = build_presentation_report(self._with_batch_classification())
+        report["chapters"]["chapter04"]["batchClassification"]["distribution"][0]["frameCount"] = 2
+        with self.assertRaisesRegex(ValueError, "distribution"):
+            validate_presentation_report(report)
 
     def test_presentation_rejects_batch_frame_reference_in_two_groups(self):
         report = build_presentation_report(self._with_batch_classification())
