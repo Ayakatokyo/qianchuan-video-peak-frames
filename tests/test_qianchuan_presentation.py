@@ -90,6 +90,89 @@ def complete_presentation_data():
 
 
 class PresentationTests(unittest.TestCase):
+    @staticmethod
+    def _with_batch_classification():
+        data = sample_data()
+        data["materials"][0]["highlightFrames"].append(
+            {"rankType": "peak_top_2", "framePath": "/tmp/peak-2.jpg", "durationSec": 2.4}
+        )
+        data["conclusion"]["customClassification"] = {
+            "ruleId": "batch_visual_mechanism_v1",
+            "ruleName": "本批次画面机制分类",
+            "ruleDescription": "按本批次成功高光帧中可观察的主要内容机制分组",
+            "ruleVersion": "v1",
+            "inputFrameManifestHash": "sha256:fixture",
+            "groups": [
+                {
+                    "groupId": "person-led",
+                    "groupName": "人物场景承接",
+                    "description": "人物表达承担主要说服作用",
+                    "frameRefs": ["highlight:m-1:peak_top_1"],
+                    "commonConclusion": [{"title": "主体", "body": "共同画面结论", "evidenceRefs": ["highlight:m-1:peak_top_1"]}],
+                    "derivativeDirections": [{"title": "验证", "body": "验证方向", "evidenceRefs": ["highlight:m-1:peak_top_1"]}],
+                },
+                {
+                    "groupId": "product-led",
+                    "groupName": "产品证据展示",
+                    "description": "产品展示承担主要说服作用",
+                    "frameRefs": ["highlight:m-1:peak_top_2"],
+                    "commonConclusion": [{"title": "产品", "body": "共同画面结论", "evidenceRefs": ["highlight:m-1:peak_top_2"]}],
+                    "derivativeDirections": [{"title": "验证", "body": "验证方向", "evidenceRefs": ["highlight:m-1:peak_top_2"]}],
+                },
+            ],
+            "unclassifiedFrameRefs": [],
+            "availability": "available",
+        }
+        return data
+
+    def test_chapter04_projects_standard_and_batch_modes_without_frame_duplication(self):
+        chapter04 = build_presentation_report(self._with_batch_classification())["chapters"]["chapter04"]
+        self.assertEqual(chapter04["classificationModes"], ["standard", "batch"])
+        self.assertEqual(list(chapter04["groups"]), ["portrait", "product", "other"])
+        self.assertEqual(chapter04["batchClassification"]["groups"][0]["frameCount"], 1)
+        self.assertEqual(chapter04["batchClassification"]["groups"][1]["frameCount"], 1)
+        self.assertEqual(
+            chapter04["batchClassification"]["distribution"],
+            [
+                {"groupId": "person-led", "groupName": "人物场景承接", "frameCount": 1, "percentage": 50.0},
+                {"groupId": "product-led", "groupName": "产品证据展示", "frameCount": 1, "percentage": 50.0},
+            ],
+        )
+        self.assertEqual(chapter04["batchClassification"]["coverage"], 1.0)
+        self.assertNotIn("framePath", json.dumps(chapter04["batchClassification"], ensure_ascii=False))
+        self.assertNotIn("frameRefs", json.dumps(chapter04["batchClassification"]["distribution"], ensure_ascii=False))
+
+    def test_chapter04_omits_batch_mode_when_custom_classification_is_absent(self):
+        chapter04 = build_presentation_report(sample_data())["chapters"]["chapter04"]
+        self.assertEqual(chapter04["classificationModes"], ["standard"])
+        self.assertNotIn("batchClassification", chapter04)
+
+    def test_chapter04_projects_partial_batch_classification(self):
+        data = self._with_batch_classification()
+        data["conclusion"]["customClassification"]["unclassifiedFrameRefs"] = ["highlight:m-1:peak_top_2"]
+        data["conclusion"]["customClassification"]["groups"][1]["frameRefs"] = []
+        chapter04 = build_presentation_report(data)["chapters"]["chapter04"]
+        self.assertEqual(chapter04["batchClassification"]["availability"], "partial")
+        self.assertEqual(chapter04["batchClassification"]["coverage"], 1.0)
+        self.assertEqual(
+            chapter04["batchClassification"]["distribution"][-1],
+            {"groupId": "unclassified", "groupName": "未归类", "frameCount": 1, "percentage": 50.0},
+        )
+
+    def test_presentation_rejects_inconsistent_batch_distribution(self):
+        report = build_presentation_report(self._with_batch_classification())
+        report["chapters"]["chapter04"]["batchClassification"]["distribution"][0]["frameCount"] = 2
+        with self.assertRaisesRegex(ValueError, "distribution"):
+            validate_presentation_report(report)
+
+    def test_presentation_rejects_batch_frame_reference_in_two_groups(self):
+        report = build_presentation_report(self._with_batch_classification())
+        report["chapters"]["chapter04"]["batchClassification"]["groups"][1]["frameRefs"] = [
+            "highlight:m-1:peak_top_1"
+        ]
+        with self.assertRaisesRegex(ValueError, "batch.*frameRef"):
+            validate_presentation_report(report)
+
     def test_chapter03_projects_keyword_cloud_between_ai_and_script_summary(self):
         chapter03 = build_presentation_report(complete_presentation_data())["chapters"]["chapter03"]
         panel = chapter03["keywordCloudPanel"]

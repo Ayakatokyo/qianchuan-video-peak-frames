@@ -19,6 +19,7 @@ from final_report_lib import (  # noqa: E402
     _validate_v2_analysis_quality,
     _duplicate_highlight_observations,
     _duplicate_highlight_interpretations,
+    _validate_custom_classification,
 )
 from final_report_lib import generate_final_report  # noqa: E402
 import report_renderer  # noqa: E402
@@ -127,6 +128,87 @@ class FinalReportArchiveTests(unittest.TestCase):
 
 
 class FinalReportConclusionTests(unittest.TestCase):
+    @staticmethod
+    def _custom_classification():
+        def insight(title, body, ref):
+            return {"title": title, "body": body, "evidenceRefs": [ref]}
+
+        return {
+            "ruleId": "batch_visual_mechanism_v1",
+            "ruleName": "本批次画面机制分类",
+            "ruleDescription": "按本批次成功高光帧中可观察的主要内容机制分组",
+            "ruleVersion": "v1",
+            "inputFrameManifestHash": "sha256:fixture",
+            "groups": [
+                {
+                    "groupId": "person-led",
+                    "groupName": "人物场景承接",
+                    "description": "人物表达和生活场景承担主要说服作用的画面",
+                    "frameRefs": ["highlight:m-1:first_peak"],
+                    "commonConclusion": [
+                        insight("人物主体清晰", "人物主体在画面中保持清晰可见，便于观众快速理解场景。", "highlight:m-1:first_peak"),
+                        insight("动作承接自然", "人物动作与产品信息形成连续承接，降低观看者的理解成本。", "highlight:m-1:first_peak"),
+                        insight("场景具备迁移性", "生活化场景可以作为后续素材改写时的可复用视觉机制。", "highlight:m-1:first_peak"),
+                    ],
+                    "derivativeDirections": [
+                        insight("验证人物景别", "保留人物主体并对照近景与中景，观察首屏点击和三秒完播的变化。", "highlight:m-1:first_peak"),
+                        insight("验证动作前置", "将承接产品的动作提前到开场，对比前几秒点击率和有效观看变化。", "highlight:m-1:first_peak"),
+                        insight("验证生活场景", "保留生活化背景并替换使用情境，观察新场景的点击和成交承接。", "highlight:m-1:first_peak"),
+                    ],
+                },
+                {
+                    "groupId": "product-led",
+                    "groupName": "产品证据展示",
+                    "description": "包装、内容物或操作动作承担主要说服作用的画面",
+                    "frameRefs": ["highlight:m-1:product_peak"],
+                    "commonConclusion": [
+                        insight("产品信息突出", "产品或包装在画面中承担主要视觉焦点，规格信息更易被看到。", "highlight:m-1:product_peak"),
+                        insight("展示动作有效", "展示动作把抽象卖点落到可观察对象，帮助观众形成具体认知。", "highlight:m-1:product_peak"),
+                        insight("证据机制可复用", "产品证据展示适合迁移到不同利益点版本并保持信息可见。", "highlight:m-1:product_peak"),
+                    ],
+                    "derivativeDirections": [
+                        insight("验证产品距离", "对照产品近景和中景两种距离，观察首屏识别、点击率和转化变化。", "highlight:m-1:product_peak"),
+                        insight("验证操作细节", "保留操作动作并更换展示顺序，比较观看完成和商品点击的差异。", "highlight:m-1:product_peak"),
+                        insight("验证信息组合", "分别测试包装、内容物和规格信息的组合，观察成交承接是否稳定。", "highlight:m-1:product_peak"),
+                    ],
+                },
+            ],
+            "unclassifiedFrameRefs": [],
+            "availability": "available",
+        }
+
+    def test_custom_classification_covers_successful_frames_and_normalizes(self):
+        result = _validate_custom_classification(
+            self._custom_classification(),
+            {"highlight:m-1:first_peak", "highlight:m-1:product_peak"},
+        )
+        self.assertEqual(result["availability"], "available")
+        self.assertEqual([group["groupId"] for group in result["groups"]], ["person-led", "product-led"])
+
+    def test_custom_classification_rejects_unknown_frame_reference(self):
+        payload = self._custom_classification()
+        payload["groups"][0]["frameRefs"] = ["highlight:m-1:missing"]
+        with self.assertRaisesRegex(FinalReportError, "unknown frame reference"):
+            _validate_custom_classification(payload, {"highlight:m-1:first_peak", "highlight:m-1:product_peak"})
+
+    def test_custom_classification_rejects_duplicate_frame_reference_across_groups(self):
+        payload = self._custom_classification()
+        payload["groups"][1]["frameRefs"] = ["highlight:m-1:first_peak"]
+        with self.assertRaisesRegex(FinalReportError, "exactly once"):
+            _validate_custom_classification(payload, {"highlight:m-1:first_peak", "highlight:m-1:product_peak"})
+
+    def test_custom_classification_rejects_placeholder_group_name(self):
+        payload = self._custom_classification()
+        payload["groups"][0]["groupName"] = "其他1"
+        with self.assertRaisesRegex(FinalReportError, "groupName"):
+            _validate_custom_classification(payload, {"highlight:m-1:first_peak", "highlight:m-1:product_peak"})
+
+    def test_custom_classification_requires_three_common_and_derivative_items(self):
+        payload = self._custom_classification()
+        payload["groups"][0]["commonConclusion"] = payload["groups"][0]["commonConclusion"][:2]
+        with self.assertRaisesRegex(FinalReportError, "exactly 3"):
+            _validate_custom_classification(payload, {"highlight:m-1:first_peak", "highlight:m-1:product_peak"})
+
     def test_v5_preserves_keyword_cloud_insight_for_presentation(self):
         payload = {
             "schemaVersion": 5, "overallConclusion": "总览",
@@ -238,6 +320,54 @@ class FinalReportConclusionTests(unittest.TestCase):
 
 
 class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
+    def test_highlight_dashboard_exposes_standard_and_batch_mode_contract(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        script = (ROOT / "assets" / "report" / "unified-report.js").read_text(encoding="utf-8")
+        self.assertIn("标准分类", template + script)
+        self.assertIn("本批次分类", template + script)
+        self.assertIn("function activateHighlightModeTab", template + script)
+        self.assertIn("highlight-standard-panel", template + script)
+        self.assertIn("highlight-batch-panel", template + script)
+        self.assertNotIn("自定义规则分类", template + script)
+
+    def test_batch_classification_reuses_standard_tabbed_category_layout(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+
+        self.assertIn("function activateHighlightBatchTab", template)
+        self.assertIn('element("div", "highlight-dashboard-tabs highlight-batch-tabs")', template)
+        self.assertIn('element("div", "highlight-dashboard-panels highlight-batch-panels")', template)
+        self.assertIn("highlight-batch-category-panel", template)
+        self.assertIn('setAttribute("aria-label", "本批次分类")', template)
+        self.assertIn('const tabId = `highlight-batch-tab-${groupKey}`', template)
+        self.assertIn("highlight-batch-category-panel[role='tabpanel']", template)
+        self.assertIn("function batchClassificationDistribution", template)
+        self.assertIn('renderColumnChart("本批次分类分布"', template)
+        self.assertIn('axisLabel: "帧数"', template)
+        self.assertIn("bucket.frameCount", template)
+        self.assertIn("bucket.percentage", template)
+        self.assertLess(
+            template.index('renderColumnChart("本批次分类分布"'),
+            template.index('element("div", "highlight-dashboard-tabs highlight-batch-tabs")'),
+        )
+
+    def test_standard_and_batch_category_tabs_scope_activation_to_their_own_tablist(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+
+        self.assertIn('const categoryTabList = tab.closest(".highlight-dashboard-tabs");', template)
+        self.assertIn('categoryTabList.querySelectorAll("[role=\'tab\']")', template)
+        self.assertIn('batchContent.querySelectorAll(".highlight-batch-tabs [role=\'tab\']")', template)
+
+    def test_batch_rule_description_replaces_summary_card_before_batch_category_tabs(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        css = (ROOT / "assets" / "report" / "unified-report.css").read_text(encoding="utf-8")
+
+        self.assertIn('root.append(element("p", "highlight-batch-rule", text(batchClassification.ruleDescription, "本批次成功高光帧的视觉机制分类")));', template)
+        self.assertLess(template.index('root.append(element("p", "highlight-batch-rule"'), template.index('element("div", "highlight-dashboard-tabs highlight-batch-tabs")'))
+        self.assertNotIn("highlight-batch-summary", template)
+        self.assertNotIn("highlight-batch-metrics", template)
+        self.assertNotIn(".highlight-batch-summary", css)
+        self.assertNotIn(".highlight-batch-metrics", css)
+
     def test_template_payload_does_not_embed_chapter01_material_details(self):
         payload = {
             "presentation": {
@@ -3388,6 +3518,13 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("一二级内容公式：", prompt_text)
         self.assertIn("脚本文案：", prompt_text)
         self.assertNotIn("必须输出至少 4 条 nextActions", prompt_text)
+        self.assertIn("不少于 12 张", prompt_text)
+        self.assertIn("5～8 个类别", prompt_text)
+        self.assertIn("6～11 张", prompt_text)
+        self.assertIn("4～6 个类别", prompt_text)
+        self.assertIn("少于 6 张", prompt_text)
+        self.assertIn("主导机制", prompt_text)
+        self.assertIn("不得输出或修正帧数、占比、覆盖率", prompt_text)
 
     def test_generates_html_with_required_sections(self):
         with tempfile.TemporaryDirectory() as temp_dir:

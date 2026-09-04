@@ -364,11 +364,93 @@ def _chapter04(data, materials):
             "availability": group_availability,
         }
     availability = "available" if total_refs and available_refs == total_refs else ("partial" if available_refs else "unavailable")
-    return {
+    custom = conclusion.get("customClassification")
+    batch_classification = None
+    if isinstance(custom, dict):
+        successful_frame_refs = {
+            _frame_ref(material.get("materialId", ""), frame)
+            for material in materials
+            if material.get("extractionStatus") == "succeeded"
+            for frame in material.get("highlightFrames", [])
+            if isinstance(frame, dict) and _text(frame.get("framePath"))
+        }
+        total_frame_count = len(successful_frame_refs)
+        projected_groups = []
+        covered_frame_refs = set()
+        for raw in custom.get("groups", []):
+            if not isinstance(raw, dict):
+                continue
+            refs = [
+                _text(ref)
+                for ref in _list(raw.get("frameRefs"))
+                if _text(ref) in successful_frame_refs
+            ]
+            covered_frame_refs.update(refs)
+            frame_count = len(refs)
+            projected_groups.append({
+                "groupId": _text(raw.get("groupId")),
+                "groupName": _text(raw.get("groupName")),
+                "description": _text(raw.get("description")),
+                "frameRefs": refs,
+                "frameCount": frame_count,
+                "percentage": round(frame_count / total_frame_count * 100, 2) if total_frame_count else 0,
+                "commonConclusion": deepcopy(raw.get("commonConclusion", [])) if isinstance(raw.get("commonConclusion"), list) else [],
+                "derivativeDirections": deepcopy(raw.get("derivativeDirections", [])) if isinstance(raw.get("derivativeDirections"), list) else [],
+                "evidenceRefs": refs,
+                "availability": "available" if frame_count else "unavailable",
+            })
+        unclassified_refs = [
+            _text(ref)
+            for ref in _list(custom.get("unclassifiedFrameRefs"))
+            if _text(ref) in successful_frame_refs
+        ]
+        covered_frame_refs.update(unclassified_refs)
+        batch_availability = _text(custom.get("availability")) or "available"
+        if (
+            not total_frame_count
+            or len(covered_frame_refs) != total_frame_count
+            or unclassified_refs
+            or any(not group["frameRefs"] for group in projected_groups)
+        ):
+            batch_availability = "partial" if total_frame_count else "unavailable"
+        distribution = [
+            {
+                "groupId": group["groupId"],
+                "groupName": group["groupName"],
+                "frameCount": group["frameCount"],
+                "percentage": group["percentage"],
+            }
+            for group in projected_groups
+            if group["frameCount"] > 0
+        ]
+        if unclassified_refs:
+            distribution.append({
+                "groupId": "unclassified",
+                "groupName": "未归类",
+                "frameCount": len(unclassified_refs),
+                "percentage": round(len(unclassified_refs) / total_frame_count * 100, 2) if total_frame_count else 0,
+            })
+        batch_classification = {
+            "ruleId": _text(custom.get("ruleId")),
+            "ruleName": _text(custom.get("ruleName")),
+            "ruleDescription": _text(custom.get("ruleDescription")),
+            "ruleVersion": _text(custom.get("ruleVersion")),
+            "inputFrameManifestHash": _text(custom.get("inputFrameManifestHash")),
+            "inputFrameCount": total_frame_count,
+            "groupCount": len(projected_groups),
+            "groups": projected_groups,
+            "distribution": distribution,
+            "unclassifiedFrameRefs": unclassified_refs,
+            "coverage": round(len(covered_frame_refs) / total_frame_count, 4) if total_frame_count else 0,
+            "availability": batch_availability,
+            "source": "ai.customClassification + facts.materials.highlightFrames",
+        }
+    result = {
         "id": "chapter04",
         "title": "高光画面洞察",
         "availability": availability,
         "categoryOrder": list(CATEGORIES),
+        "classificationModes": ["standard"] + (["batch"] if batch_classification is not None else []),
         "groups": groups,
         "conclusion": {
             "text": conclusion_text,
@@ -379,6 +461,9 @@ def _chapter04(data, materials):
         "source": "facts.materials.highlightFrames + ai.highlightDashboard",
         "evidenceRefs": [ref for group in groups.values() for ref in group["frameRefs"]],
     }
+    if batch_classification is not None:
+        result["batchClassification"] = batch_classification
+    return result
 
 
 def _chapter05(materials, ai_schema_version, canonical_facts=None):
@@ -525,12 +610,57 @@ def validate_presentation_report(report):
     chapter04 = chapters.get("chapter04", {})
     if list(chapter04.get("groups", {})) != list(CATEGORIES):
         raise ValueError("chapter04 groups must use fixed category order")
+    classification_modes = chapter04.get("classificationModes")
+    if classification_modes is not None:
+        expected_modes = ["standard"] + (["batch"] if "batchClassification" in chapter04 else [])
+        if classification_modes != expected_modes:
+            raise ValueError("chapter04 classificationModes must use fixed order")
     frame_refs = []
     for category in CATEGORIES:
         group = chapter04.get("groups", {}).get(category, {})
         frame_refs.extend(group.get("frameRefs", []))
     if len(frame_refs) != len(set(frame_refs)):
         raise ValueError("frameRef must belong to only one category")
+    batch = chapter04.get("batchClassification")
+    if isinstance(batch, dict):
+        batch_refs = []
+        for group in _list(batch.get("groups")):
+            if not isinstance(group, dict):
+                raise ValueError("batch classification groups must be objects")
+            refs = _list(group.get("frameRefs"))
+            if group.get("frameCount") != len(refs):
+                raise ValueError("batch classification frameCount must match frameRefs")
+            batch_refs.extend(refs)
+        batch_refs.extend(_list(batch.get("unclassifiedFrameRefs")))
+        if len(batch_refs) != len(set(batch_refs)):
+            raise ValueError("batch classification frameRef must belong to only one group")
+        distribution = batch.get("distribution")
+        if not isinstance(distribution, list):
+            raise ValueError("batch classification distribution must be a list")
+        expected_distribution = [
+            {
+                "groupId": group.get("groupId"),
+                "groupName": group.get("groupName"),
+                "frameCount": group.get("frameCount"),
+                "percentage": group.get("percentage"),
+            }
+            for group in _list(batch.get("groups"))
+            if group.get("frameCount", 0) > 0
+        ]
+        unclassified = _list(batch.get("unclassifiedFrameRefs"))
+        if unclassified:
+            total = batch.get("inputFrameCount", 0)
+            expected_distribution.append({
+                "groupId": "unclassified",
+                "groupName": "未归类",
+                "frameCount": len(unclassified),
+                "percentage": round(len(unclassified) / total * 100, 2) if total else 0,
+            })
+        distribution_ids = [item.get("groupId") for item in distribution if isinstance(item, dict)]
+        if len(distribution_ids) != len(distribution) or len(distribution_ids) != len(set(distribution_ids)):
+            raise ValueError("batch classification distribution groupId must be unique")
+        if distribution != expected_distribution:
+            raise ValueError("batch classification distribution does not match groups")
     chapter05 = chapters.get("chapter05", {})
     material_ids = {item.get("materialId") for item in materials}
     for item in chapter05.get("materials", []):
