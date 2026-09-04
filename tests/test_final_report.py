@@ -340,6 +340,15 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
         self.assertIn('setAttribute("aria-label", "本批次分类")', template)
         self.assertIn('const tabId = `highlight-batch-tab-${groupKey}`', template)
         self.assertIn("highlight-batch-category-panel[role='tabpanel']", template)
+        self.assertIn("function batchClassificationDistribution", template)
+        self.assertIn('renderColumnChart("本批次分类分布"', template)
+        self.assertIn('axisLabel: "帧数"', template)
+        self.assertIn("bucket.frameCount", template)
+        self.assertIn("bucket.percentage", template)
+        self.assertLess(
+            template.index('renderColumnChart("本批次分类分布"'),
+            template.index('element("div", "highlight-dashboard-tabs highlight-batch-tabs")'),
+        )
 
     def test_standard_and_batch_category_tabs_scope_activation_to_their_own_tablist(self):
         template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")

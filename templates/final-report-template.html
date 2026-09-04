@@ -2294,6 +2294,42 @@ function renderHighlightInsightColumns(group) {
   return pair;
 }
 
+function batchClassificationDistribution(batchClassification, factsByReference) {
+  const rawDistribution = batchClassification?.distribution;
+  if (Array.isArray(rawDistribution)) {
+    return rawDistribution
+      .filter((item) => Number(item?.frameCount || 0) > 0)
+      .map((item) => ({
+        ...item,
+        bucket: text(item.groupName, item.groupId),
+        frameCount: Number(item.frameCount || 0),
+        percentage: Number(item.percentage || 0),
+      }));
+  }
+  const groups = Array.isArray(batchClassification?.groups) ? batchClassification.groups : [];
+  const isKnownFrame = (reference) => !factsByReference || factsByReference.has(text(reference));
+  const items = groups.map((group) => {
+    const refs = Array.isArray(group.frameRefs) ? group.frameRefs.filter(isKnownFrame) : [];
+    return {
+      groupId: text(group.groupId),
+      groupName: text(group.groupName, "未命名分类"),
+      frameCount: Number(group.frameCount ?? refs.length),
+    };
+  }).filter((item) => item.frameCount > 0);
+  const unclassifiedRefs = Array.isArray(batchClassification?.unclassifiedFrameRefs)
+    ? batchClassification.unclassifiedFrameRefs.filter(isKnownFrame)
+    : [];
+  if (unclassifiedRefs.length > 0) {
+    items.push({ groupId: "unclassified", groupName: "未归类", frameCount: unclassifiedRefs.length });
+  }
+  const total = items.reduce((sum, item) => sum + item.frameCount, 0);
+  return items.map((item) => ({
+    ...item,
+    bucket: item.groupName,
+    percentage: total ? Math.round(item.frameCount / total * 10000) / 100 : 0,
+  }));
+}
+
 function renderBatchClassificationPanel(batchClassification, factsByReference) {
   const root = element("div", "highlight-batch-content");
   if (!batchClassification || typeof batchClassification !== "object") {
@@ -2305,6 +2341,20 @@ function renderBatchClassificationPanel(batchClassification, factsByReference) {
   if (groups.length === 0) {
     root.append(element("p", "muted", "本批次未生成分类"));
     return root;
+  }
+  const distribution = batchClassificationDistribution(batchClassification, factsByReference);
+  if (distribution.length > 0) {
+    root.append(renderColumnChart("本批次分类分布", distribution, null, {
+      cardClass: "batch-classification-distribution",
+      axisLabel: "帧数",
+      valueAccessor: (bucket) => Number(bucket.frameCount || 0),
+      axisValueFormatter: (value) => `${formatNumber(value)} 帧`,
+      tooltipLines: (bucket) => [
+        `帧数 ${formatNumber(bucket.frameCount)}`,
+        `占比 ${formatNumber(bucket.percentage)}%`,
+      ],
+      itemTitleFormatter: (bucket) => `${text(bucket.groupName)}：${formatNumber(bucket.frameCount)} 帧 · ${formatNumber(bucket.percentage)}%`,
+    }));
   }
   const batchTabList = element("div", "highlight-dashboard-tabs highlight-batch-tabs");
   batchTabList.setAttribute("role", "tablist");
