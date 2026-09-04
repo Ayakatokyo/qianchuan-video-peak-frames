@@ -348,6 +348,17 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
         self.assertIn('categoryTabList.querySelectorAll("[role=\'tab\']")', template)
         self.assertIn('batchContent.querySelectorAll(".highlight-batch-tabs [role=\'tab\']")', template)
 
+    def test_batch_rule_description_replaces_summary_card_before_batch_category_tabs(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+        css = (ROOT / "assets" / "report" / "unified-report.css").read_text(encoding="utf-8")
+
+        self.assertIn('root.append(element("p", "highlight-batch-rule", text(batchClassification.ruleDescription, "本批次成功高光帧的视觉机制分类")));', template)
+        self.assertLess(template.index('root.append(element("p", "highlight-batch-rule"'), template.index('element("div", "highlight-dashboard-tabs highlight-batch-tabs")'))
+        self.assertNotIn("highlight-batch-summary", template)
+        self.assertNotIn("highlight-batch-metrics", template)
+        self.assertNotIn(".highlight-batch-summary", css)
+        self.assertNotIn(".highlight-batch-metrics", css)
+
     def test_template_payload_does_not_embed_chapter01_material_details(self):
         payload = {
             "presentation": {

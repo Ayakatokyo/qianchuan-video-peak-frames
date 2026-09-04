@@ -2300,17 +2300,7 @@ function renderBatchClassificationPanel(batchClassification, factsByReference) {
     root.append(element("p", "muted", "本批次未生成分类"));
     return root;
   }
-  const summary = element("article", "highlight-batch-summary");
-  summary.append(element("h3", "", "本批次分类"));
-  summary.append(element("p", "highlight-batch-rule", text(batchClassification.ruleDescription, "本批次成功高光帧的视觉机制分类")));
-  const metrics = element("div", "highlight-batch-metrics");
-  metrics.append(
-    element("span", "", `输入成功高光帧 ${formatNumber(batchClassification.inputFrameCount)} 张`),
-    element("span", "", `分类数 ${formatNumber(batchClassification.groupCount)}`),
-    element("span", "", `覆盖率 ${formatNumber(Number(batchClassification.coverage || 0) * 100)}%`),
-  );
-  summary.append(metrics);
-  root.append(summary);
+  root.append(element("p", "highlight-batch-rule", text(batchClassification.ruleDescription, "本批次成功高光帧的视觉机制分类")));
   const groups = Array.isArray(batchClassification.groups) ? batchClassification.groups : [];
   if (groups.length === 0) {
     root.append(element("p", "muted", "本批次未生成分类"));

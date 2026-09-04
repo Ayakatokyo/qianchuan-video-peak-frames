@@ -1721,33 +1721,10 @@
       font-size: 22px;
     }
 
-    .highlight-batch-summary {
-      display: grid;
-      gap: 8px;
-      padding: 16px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: #fffaf2;
-    }
-
-    .highlight-batch-summary h3,
-    .highlight-batch-summary p {
-      margin: 0;
-    }
-
     .highlight-batch-rule,
     .highlight-batch-description {
       color: var(--muted);
       line-height: 1.65;
-    }
-
-    .highlight-batch-metrics {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 18px;
-      color: var(--muted);
-      font-size: 14px;
-      font-weight: 700;
     }
 
     .highlight-sample-overview {
