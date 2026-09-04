@@ -330,6 +330,24 @@ class FinalReportFrameCoverageRenderingTests(unittest.TestCase):
         self.assertIn("highlight-batch-panel", template + script)
         self.assertNotIn("自定义规则分类", template + script)
 
+    def test_batch_classification_reuses_standard_tabbed_category_layout(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+
+        self.assertIn("function activateHighlightBatchTab", template)
+        self.assertIn('element("div", "highlight-dashboard-tabs highlight-batch-tabs")', template)
+        self.assertIn('element("div", "highlight-dashboard-panels highlight-batch-panels")', template)
+        self.assertIn("highlight-batch-category-panel", template)
+        self.assertIn('setAttribute("aria-label", "本批次分类")', template)
+        self.assertIn('const tabId = `highlight-batch-tab-${groupKey}`', template)
+        self.assertIn("highlight-batch-category-panel[role='tabpanel']", template)
+
+    def test_standard_and_batch_category_tabs_scope_activation_to_their_own_tablist(self):
+        template = (ROOT / "templates" / "final-report-template.html").read_text(encoding="utf-8")
+
+        self.assertIn('const categoryTabList = tab.closest(".highlight-dashboard-tabs");', template)
+        self.assertIn('categoryTabList.querySelectorAll("[role=\'tab\']")', template)
+        self.assertIn('batchContent.querySelectorAll(".highlight-batch-tabs [role=\'tab\']")', template)
+
     def test_template_payload_does_not_embed_chapter01_material_details(self):
         payload = {
             "presentation": {

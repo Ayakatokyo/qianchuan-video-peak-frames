@@ -2223,8 +2223,9 @@ function createHighlightAssetsCard(panel, grid, frameRefs) {
 
 function activateHighlightCategoryTab(tab) {
   const dashboard = tab.closest(".highlight-dashboard");
-  if (!dashboard) return;
-  dashboard.querySelectorAll(".highlight-dashboard-tabs [role='tab']").forEach((item) => {
+  const categoryTabList = tab.closest(".highlight-dashboard-tabs");
+  if (!dashboard || !categoryTabList) return;
+  categoryTabList.querySelectorAll("[role='tab']").forEach((item) => {
     const selected = item === tab;
     item.setAttribute("aria-selected", String(selected));
     item.tabIndex = selected ? 0 : -1;
@@ -2233,6 +2234,21 @@ function activateHighlightCategoryTab(tab) {
     const selected = panel.id === tab.getAttribute("aria-controls");
     panel.hidden = !selected;
     if (selected) renderHighlightFramePage(panel);
+  });
+  tab.focus();
+}
+
+function activateHighlightBatchTab(tab) {
+  const batchContent = tab.closest(".highlight-batch-content");
+  if (!batchContent) return;
+  batchContent.querySelectorAll(".highlight-batch-tabs [role='tab']").forEach((item) => {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  batchContent.querySelectorAll(".highlight-batch-category-panel[role='tabpanel']").forEach((panel) => {
+    const selected = panel.id === tab.getAttribute("aria-controls");
+    panel.hidden = !selected;
   });
   tab.focus();
 }
@@ -2300,9 +2316,33 @@ function renderBatchClassificationPanel(batchClassification, factsByReference) {
     root.append(element("p", "muted", "本批次未生成分类"));
     return root;
   }
+  const batchTabList = element("div", "highlight-dashboard-tabs highlight-batch-tabs");
+  batchTabList.setAttribute("role", "tablist");
+  batchTabList.setAttribute("aria-label", "本批次分类");
+  const batchPanelRoot = element("div", "highlight-dashboard-panels highlight-batch-panels");
   groups.forEach((group, index) => {
+    const groupKey = safeId(group.groupId || index);
+    const tabId = `highlight-batch-tab-${groupKey}`;
+    const panelId = `highlight-batch-panel-${groupKey}`;
+    const frameRefs = Array.isArray(group.frameRefs) ? group.frameRefs.map(text).filter(Boolean) : [];
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = tabId;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", panelId);
+    tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    tab.textContent = `${text(group.groupName, `本批次分组 ${index + 1}`)} · ${frameRefs.length} 帧`;
+    tab.addEventListener("click", () => activateHighlightBatchTab(tab));
+    batchTabList.append(tab);
+
+    const batchCategoryPanel = element("section", "highlight-batch-category-panel");
+    batchCategoryPanel.id = panelId;
+    batchCategoryPanel.setAttribute("role", "tabpanel");
+    batchCategoryPanel.setAttribute("aria-labelledby", tabId);
+    batchCategoryPanel.hidden = index !== 0;
     const groupRoot = element("section", "highlight-batch-group");
-    groupRoot.id = `highlight-batch-group-${safeId(group.groupId || index)}`;
+    groupRoot.id = `highlight-batch-group-${groupKey}`;
     const head = element("div", "highlight-batch-group-head");
     head.append(
       element("h3", "", text(group.groupName, `本批次分组 ${index + 1}`)),
@@ -2312,13 +2352,26 @@ function renderBatchClassificationPanel(batchClassification, factsByReference) {
     if (text(group.description)) groupRoot.append(element("p", "highlight-batch-description", group.description));
     groupRoot.append(renderHighlightInsightColumns(group));
     const grid = element("div", "highlight-frame-grid");
-    const frameRefs = Array.isArray(group.frameRefs) ? group.frameRefs.map(text).filter(Boolean) : [];
     groupRoot._highlightFrameRefs = frameRefs;
     groupRoot._highlightPage = 0;
     groupRoot.append(createHighlightAssetsCard(groupRoot, grid, frameRefs));
-    root.append(groupRoot);
+    batchCategoryPanel.append(groupRoot);
+    batchPanelRoot.append(batchCategoryPanel);
     renderHighlightFramePage(groupRoot, factsByReference);
   });
+  batchTabList.querySelectorAll('[role="tab"]').forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateHighlightBatchTab(allTabs[nextIndex]);
+    });
+  });
+  root.append(batchTabList, batchPanelRoot);
   return root;
 }
 
