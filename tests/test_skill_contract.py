@@ -117,7 +117,12 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("final-report.zip", skill)
         self.assertIn("final-report/final-report.html", skill)
         self.assertIn("图片不依赖三方链接", skill)
-        self.assertIn("视频仍使用平台返回的 URL", skill)
+        self.assertIn("RPA 下载原始 MP4", skill)
+        self.assertIn("原始视频提取高光帧", skill)
+        self.assertIn("生成报告预览 MP4", skill)
+        self.assertIn("报告引用预览 MP4", skill)
+        self.assertIn("原始 MP4 不进入 ZIP", skill)
+        self.assertNotIn("视频仍使用平台返回的 URL", skill)
         self.assertIn("不得交付草稿报告", skill)
 
     def test_skill_delivers_standalone_report_and_archive(self):
@@ -351,7 +356,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("records -> 后处理", contract)
         self.assertIn("run_standard_analysis.py finalize", contract)
         self.assertIn("final-report.zip", contract)
-        self.assertIn("Video bytes must never be downloaded", contract)
+        self.assertIn("report-video-assets.json", contract)
+        self.assertIn("preview MP4", contract)
+        self.assertIn("原始 MP4 不进入 ZIP", contract)
     def test_rpa_contract_documents_only_wave_top_n_execution(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")

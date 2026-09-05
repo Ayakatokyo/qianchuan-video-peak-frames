@@ -62,7 +62,7 @@ def write_diagnosis_csv(path, records):
 
 
 class FinalReportArchiveTests(unittest.TestCase):
-    def test_report_copies_persisted_video_and_uses_relative_reference(self):
+    def test_report_materializes_persisted_video_as_relative_preview_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             peak_output_dir = root / "peak-frames"
@@ -82,9 +82,18 @@ class FinalReportArchiveTests(unittest.TestCase):
                 },
             }
 
-            rendered = report_renderer.materialize_report_video_assets(
-                data, peak_output_dir, root / "final-report"
-            )
+            def fake_ffmpeg(command, **_kwargs):
+                if "-f" not in command:
+                    Path(command[-1]).write_bytes(b"preview-mp4")
+                return type("Process", (), {"returncode": 0, "stderr": ""})()
+
+            with patch.object(
+                report_renderer, "resolve_ffmpeg", create=True, return_value="ffmpeg"
+            ), patch.object(report_renderer, "subprocess", create=True) as subprocess_module:
+                subprocess_module.run.side_effect = fake_ffmpeg
+                rendered = report_renderer.materialize_report_video_assets(
+                    data, peak_output_dir, root / "final-report"
+                )
 
             self.assertEqual(
                 rendered["materials"][0]["video"]["src"],
@@ -96,8 +105,116 @@ class FinalReportArchiveTests(unittest.TestCase):
             )
             self.assertEqual(
                 (root / "final-report" / "assets" / "videos" / "m-1.mp4").read_bytes(),
-                b"persistent-mp4",
+                b"preview-mp4",
             )
+
+    def test_report_transcodes_video_and_records_portable_asset_manifest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            peak_output_dir = root / "peak-frames"
+            source = peak_output_dir / "video-assets" / "m-1.mp4"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"original-mp4")
+            report_dir = root / "final-report"
+            data = {
+                "materials": [{
+                    "materialId": "m-1",
+                    "video": {"src": "https://signed.example/m-1.mp4"},
+                }],
+            }
+
+            def fake_ffmpeg(command, **_kwargs):
+                if "-f" not in command:
+                    Path(command[-1]).write_bytes(b"preview-mp4")
+                return type("Process", (), {"returncode": 0, "stderr": ""})()
+
+            with patch.object(
+                report_renderer, "resolve_ffmpeg", create=True, return_value="ffmpeg"
+            ), patch.object(report_renderer, "subprocess", create=True) as subprocess_module:
+                subprocess_module.run.side_effect = fake_ffmpeg
+                rendered = report_renderer.materialize_report_video_assets(
+                    data,
+                    peak_output_dir,
+                    report_dir,
+                )
+
+            preview = report_dir / "assets" / "videos" / "m-1.mp4"
+            self.assertEqual(rendered["materials"][0]["video"]["src"], "assets/videos/m-1.mp4")
+            self.assertEqual(source.read_bytes(), b"original-mp4")
+            self.assertEqual(preview.read_bytes(), b"preview-mp4")
+            manifest = json.loads(
+                (peak_output_dir / "report-video-assets.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["schemaVersion"], 1)
+            self.assertEqual(manifest["materials"][0]["materialId"], "m-1")
+            self.assertEqual(manifest["materials"][0]["sourceBytes"], len(b"original-mp4"))
+            self.assertEqual(manifest["materials"][0]["previewBytes"], len(b"preview-mp4"))
+            self.assertEqual(subprocess_module.run.call_count, 2)
+            encode_command = subprocess_module.run.call_args_list[0].args[0]
+            self.assertIn("libx264", encode_command)
+            self.assertIn("-crf", encode_command)
+            self.assertIn("28", encode_command)
+            (report_dir / "final-report.html").write_text(
+                '<video src="assets/videos/m-1.mp4"></video>', encoding="utf-8"
+            )
+            (report_dir / "final-report-data.json").write_text("{}", encoding="utf-8")
+            (report_dir / "presentation-report.json").write_text(
+                '{"presentationSchemaVersion":1}', encoding="utf-8"
+            )
+            archive_path = create_report_archive(report_dir)
+            with zipfile.ZipFile(archive_path) as archive:
+                names = set(archive.namelist())
+            self.assertIn("final-report/assets/videos/m-1.mp4", names)
+            self.assertNotIn("final-report/video-assets/m-1.mp4", names)
+
+    def test_report_rejects_unreadable_preview_video(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            peak_output_dir = root / "peak-frames"
+            source = peak_output_dir / "video-assets" / "m-1.mp4"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"original-mp4")
+            data = {
+                "materials": [{
+                    "materialId": "m-1",
+                    "video": {"src": "https://signed.example/m-1.mp4"},
+                }],
+            }
+
+            def fake_ffmpeg(command, **_kwargs):
+                if "-f" not in command:
+                    Path(command[-1]).write_bytes(b"preview-mp4")
+                    return type("Process", (), {"returncode": 0, "stderr": ""})()
+                return type("Process", (), {"returncode": 1, "stderr": "decode failed"})()
+
+            with patch.object(
+                report_renderer, "resolve_ffmpeg", create=True, return_value="ffmpeg"
+            ), patch.object(report_renderer, "subprocess", create=True) as subprocess_module:
+                subprocess_module.run.side_effect = fake_ffmpeg
+                with self.assertRaisesRegex(report_renderer.ReportRenderingError, "decode"):
+                    report_renderer.materialize_report_video_assets(
+                        data,
+                        peak_output_dir,
+                        root / "final-report",
+                    )
+
+    def test_report_requires_persisted_video_for_strict_materialization(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            data = {
+                "materials": [{
+                    "materialId": "m-1",
+                    "video": {"src": "https://signed.example/m-1.mp4"},
+                }],
+            }
+
+            with self.assertRaisesRegex(report_renderer.ReportRenderingError, "original video"):
+                report_renderer.materialize_report_video_assets(
+                    data,
+                    root / "peak-frames",
+                    root / "final-report",
+                    require_local_video_assets=True,
+                )
 
     def test_creates_portable_archive_with_local_images(self):
         with tempfile.TemporaryDirectory() as temp_dir:

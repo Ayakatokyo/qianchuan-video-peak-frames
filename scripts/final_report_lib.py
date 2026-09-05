@@ -2207,6 +2207,7 @@ def generate_final_report(
     embed_assets=False,
     copy_assets=False,
     require_ai_quality=False,
+    require_local_video_assets=False,
 ):
     legacy_data, conclusion = _prepare_report_data(
         top_materials_json,
@@ -2232,7 +2233,12 @@ def generate_final_report(
         {**legacy_data, "chapter05Facts": chapter05_facts}
     )
     data = {"presentation": presentation, **legacy_data}
-    data = materialize_report_video_assets(data, peak_output_dir, output_root)
+    data = materialize_report_video_assets(
+        data,
+        peak_output_dir,
+        output_root,
+        require_local_video_assets=require_local_video_assets,
+    )
     export_path = export_highlight_workbook(
         legacy_data, presentation, output_root / "highlight-frames.xlsx"
     )

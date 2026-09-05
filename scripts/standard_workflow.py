@@ -457,6 +457,7 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
                     analysis_json=analysis_path,
                     copy_assets=True,
                     require_ai_quality=True,
+                    require_local_video_assets=True,
                 )
             except Exception as exc:
                 raise StandardWorkflowError("report", str(exc)) from exc

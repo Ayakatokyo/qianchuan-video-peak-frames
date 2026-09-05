@@ -645,6 +645,7 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(len(render_calls), 1)
         self.assertTrue(render_calls[0]["copy_assets"])
         self.assertTrue(render_calls[0]["require_ai_quality"])
+        self.assertTrue(render_calls[0]["require_local_video_assets"])
 
     def test_finalize_retries_pending_run_after_report_failure(self):
         render_calls = []

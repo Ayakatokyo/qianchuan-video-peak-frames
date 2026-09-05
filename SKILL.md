@@ -68,7 +68,19 @@ python scripts/run_standard_analysis.py fetch-metadata \
 
 RPA 使用异步 `task_group_id` 提交并轮询：远端轮询最多 3600 秒，CSV 下载总时限为 600 秒，外层 worker 默认截止时间为 4260 秒；显式 CLI 短时限仍可用于测试或运维，但可能早于远端任务完成。支持 `completed` 与 `partial_success`；有可用文件时照常落盘并保留脱敏错误。下发后中断时，恢复运行只查询已保存的远端 ID，不得重复提交；没有远端 ID 或 receipt 不合法时才按现有策略重新提交。超过外层截止时间时，系统终止该素材的本地 RPA worker，将其记录为不可重试的终态失败，并在同一波其余素材全部进入终态后接入下一整波候选素材补位。
 
-### 2. 生成 AI 二次分析
+### 2. 视频资产与报告预览
+
+标准入口必须按以下顺序完成视频处理，不能让报告直接依赖平台返回的临时签名 URL：
+
+1. **RPA 下载原始 MP4**：从已校验的 `material_info.videoUrl` 下载原始视频，持久化到本次运行目录的 `video-assets/<materialId>.mp4`；下载成功后才允许该素材进入后处理。
+2. **原始视频提取高光帧**：以运行目录中的原始 MP4 作为唯一视频输入，按[峰值帧口径](#峰值帧口径)提取 `zero_second` 和局部峰值 JPEG；不能再次从平台 URL取帧，也不能用报告预览视频代替原始视频提取高光帧。
+3. **生成报告预览 MP4**：原始 MP4 和高光帧处理成功后，使用 FFmpeg 生成可移植的报告预览 MP4。预览编码参数、源文件路径、预览文件路径、字节数和 SHA-256 必须写入本次运行的 `peak-frames/report-video-assets.json`；转码或清单写入失败时，该素材不得标记为后处理成功。
+4. **报告引用预览 MP4**：将预览 MP4 写入 `final-report/assets/videos/<materialId>.mp4`，HTML 和 `final-report-data.json` 只引用该相对本地路径；渲染前后都要校验每个引用文件存在、不是符号链接且可被 ZIP 收录。
+5. **打包 ZIP**：`final-report.zip` 收录 HTML、数据文件、高光帧和报告预览 MP4；原始 MP4 保留在运行目录的 `video-assets/` 供追溯和重新生成预览使用，但**原始 MP4 不进入 ZIP**，避免压缩包体积被源视频放大。
+
+预览 MP4 必须逐条执行可读性/解码校验，并在报告就绪门禁中确认 HTML 引用数、预览文件数和 ZIP 内文件数一致；任一校验失败都不得进入 `complete`。该步骤由标准入口在 `prepare`/后处理与 `finalize` 链路中完成，不要求手工下载、转码或改写成品 HTML。
+
+### 3. 生成 AI 二次分析
 
 Chapter 01 若事实包存在 `portfolio.hotMaterialRule`，AI 只能基于其中的阈值、命中数量、素材名称、素材指标和 `evidenceRef` 输出结构化 `hotMaterialInsight`，不得重新计算、改写或虚构爆款事实。该字段在 AI JSON 中独立保留以便证据追溯，但 Presentation 与前端必须将其合并到既有 AI 二次分析区域，爆款面板只展示确定性详情，不重复渲染第二个 AI 卡片；历史事实包缺失该字段时允许省略，前端仍显示确定性面板或空状态。
 
@@ -91,7 +103,7 @@ python scripts/run_standard_analysis.py validate-analysis \
 
 该命令复用报告渲染的 JSON、证据、帧覆盖、dashboard、枚举和内容长度门禁，不修改运行目录。校验失败时，当前主 Agent 仅修正报错字段后重新执行该命令；不得重新执行 `prepare`，不得调用子代理。校验通过后再进入 `finalize`；`finalize` 仍会重复执行同一质量门禁，防止跳过校验命令。
 
-### 3. 校验并交付报告
+### 4. 校验并交付报告
 
 ```bash
 python scripts/run_standard_analysis.py finalize \
@@ -102,9 +114,9 @@ python scripts/run_standard_analysis.py finalize \
 仅当 `run-summary.json` 状态为 `complete` 时交付，并**同时交付以下两个产物**：
 
 1. 独立报告：`final-report/final-report.html`（可直接打开的 HTML 报告）；
-2. 完整压缩包：`final-report.zip`（包含报告 HTML、数据文件和本地高光帧）。
+2. 完整压缩包：`final-report.zip`（包含报告 HTML、数据文件、本地高光帧和报告预览 MP4）。
 
-最终回复必须分别提供这两个文件的路径或下载附件，**不得只交付压缩包**，也不得把压缩包当作独立报告的唯一入口。压缩包内图片不依赖三方链接，视频仍使用平台返回的 URL。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。
+最终回复必须分别提供这两个文件的路径或下载附件，**不得只交付压缩包**，也不得把压缩包当作独立报告的唯一入口。压缩包内图片不依赖三方链接，视频也使用本地资源；视频为由原始 MP4 生成的报告预览 MP4，原始 MP4 保留在运行目录但不进入 ZIP。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。
 
 若状态仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；其余故障按[运维手册](references/qianchuan-operations-runbook.md)恢复。
 
