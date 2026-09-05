@@ -44,10 +44,6 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
-def _portfolio_summary(value):
-    return project_portfolio_summary(value)
-
-
 def safe_component(value):
     cleaned = "".join(
         character if character.isalnum() or character in "-_" else "_"
@@ -561,7 +557,7 @@ def report_data_for_template(
         chapters = result.get("chapters") if isinstance(result.get("chapters"), dict) else {}
         chapter01 = chapters.get("chapter01") if isinstance(chapters.get("chapter01"), dict) else {}
         if "portfolio" in chapter01:
-            chapter01["portfolio"] = _portfolio_summary(chapter01.get("portfolio"))
+            chapter01["portfolio"] = project_portfolio_summary(chapter01.get("portfolio"))
         chapter04 = chapters.get("chapter04") if isinstance(chapters.get("chapter04"), dict) else {}
         groups = chapter04.get("groups") if isinstance(chapter04.get("groups"), dict) else {}
         for group in groups.values():
@@ -710,7 +706,7 @@ def report_data_for_template(
         "status": data.get("status"),
         "period": data.get("period", {}),
         "pipelineSummary": data.get("pipelineSummary", {}),
-        "portfolio": _portfolio_summary(data.get("portfolio", {})),
+        "portfolio": project_portfolio_summary(data.get("portfolio", {})),
         "displayFacts": template_display_facts,
         "highlightExportHref": _text(data.get("highlightExportHref")),
         "materials": template_materials,

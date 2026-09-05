@@ -264,12 +264,6 @@ def _resolve_shop_id(args):
     return accounts[0]["shop_id"]
 
 
-def _load_top_materials(path, date_range_type, custom_start_date, custom_end_date):
-    return _load_top_materials_payload(
-        path, date_range_type, custom_start_date, custom_end_date
-    )
-
-
 def _write_diagnosis_records(records, records_dir, material_id):
     try:
         return _write_diagnosis_records_atomically(records, records_dir, material_id)
@@ -1583,7 +1577,7 @@ def main(argv=None):
                     "--custom-end-date"
                 )
             args.shop_id = _resolve_shop_id(args)
-            top_materials_payload, material_ids = _load_top_materials(
+            top_materials_payload, material_ids = _load_top_materials_payload(
                 args.top_materials_json,
                 args.date_range_type,
                 args.custom_start_date,

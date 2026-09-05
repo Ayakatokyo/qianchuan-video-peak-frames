@@ -128,10 +128,6 @@ def _text(value):
     return str(value).strip() if value is not None else ""
 
 
-def _portfolio_summary(value):
-    return project_portfolio_summary(value)
-
-
 def _read_json(path, purpose):
     source = Path(path)
     try:
@@ -2023,7 +2019,7 @@ def build_final_report_data(
         },
         "topMaterialRoi": top_material_roi_data,
         "displayFacts": display_facts,
-        "portfolio": _portfolio_summary(diagnostic.get("portfolio", {})),
+        "portfolio": project_portfolio_summary(diagnostic.get("portfolio", {})),
         "materials": material_cards,
         "defaultMaterialId": default_material_id,
         "pipelineSummary": _pipeline_summary(batch_manifest, batch_verification),
@@ -2126,78 +2122,6 @@ def load_top_material_roi_facts(peak_output_dir):
     )
 
 
-def _atomic_write_text(path, content):
-    return atomic_write_text(path, content)
-
-
-def _copy_html_asset(source_path, asset_base_dir, material_id):
-    from report_renderer import copy_html_asset
-
-    return copy_html_asset(source_path, asset_base_dir, material_id)
-
-
-def _html_asset_src(
-    path,
-    asset_base_dir,
-    embed_assets=False,
-    copy_assets=False,
-    material_id="",
-):
-    from report_renderer import html_asset_src
-
-    return html_asset_src(
-        path,
-        asset_base_dir,
-        embed_assets=embed_assets,
-        copy_assets=copy_assets,
-        material_id=material_id,
-    )
-
-
-def _load_report_template():
-    from report_renderer import _load_report_template
-
-    return _load_report_template()
-
-
-def _json_for_html_script(data):
-    from report_renderer import json_for_html_script
-
-    return json_for_html_script(data)
-
-
-def _report_data_for_template(
-    data,
-    asset_base_dir,
-    embed_assets=False,
-    copy_assets=False,
-):
-    from report_renderer import report_data_for_template
-
-    return report_data_for_template(
-        data,
-        asset_base_dir,
-        embed_assets=embed_assets,
-        copy_assets=copy_assets,
-        contains_execution_process_term=_contains_execution_process_term,
-    )
-
-
-def _render_html_report(
-    data,
-    asset_base_dir=None,
-    embed_assets=False,
-    copy_assets=False,
-):
-    return render_html_report(
-        data,
-        asset_base_dir,
-        embed_assets=embed_assets,
-        copy_assets=copy_assets,
-        contains_execution_process_term=_contains_execution_process_term,
-    )
-
-
 def generate_final_report(
     top_materials_json,
     peak_output_dir,
@@ -2244,23 +2168,24 @@ def generate_final_report(
     )
     if export_path is not None:
         data["highlightExportHref"] = export_path.name
-    _atomic_write_text(
+    atomic_write_text(
         data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     )
-    _atomic_write_text(
+    atomic_write_text(
         display_facts_path,
         json.dumps(data.get("displayFacts", {}), ensure_ascii=False, indent=2) + "\n",
     )
-    _atomic_write_text(
+    atomic_write_text(
         presentation_path, json.dumps(presentation, ensure_ascii=False, indent=2) + "\n"
     )
-    _atomic_write_text(
+    atomic_write_text(
         html_path,
-        _render_html_report(
+        render_html_report(
             data,
             output_root,
             embed_assets=embed_assets,
             copy_assets=copy_assets,
+            contains_execution_process_term=_contains_execution_process_term,
         ),
     )
     return data_path, html_path, data

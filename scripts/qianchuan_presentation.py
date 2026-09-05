@@ -40,10 +40,6 @@ def _list(value):
     return value if isinstance(value, list) else []
 
 
-def _portfolio_summary(value):
-    return project_portfolio_summary(value)
-
-
 def _material_refs(value, material_ids):
     return [ref for ref in (_text(item) for item in _list(value)) if ref in material_ids]
 
@@ -153,7 +149,7 @@ def _chapter01(data):
     # Chapter 01 is intentionally sourced only from the full portfolio facts.
     # RPA-selected ROI facts remain available to later chapters but are not a
     # fallback source for the portfolio chapter.
-    facts = {"commercial": _portfolio_summary(data.get("portfolio"))}
+    facts = {"commercial": project_portfolio_summary(data.get("portfolio"))}
     points = []
     evidence_refs = []
     labels = {
