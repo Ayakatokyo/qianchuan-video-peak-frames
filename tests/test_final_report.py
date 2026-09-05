@@ -62,6 +62,43 @@ def write_diagnosis_csv(path, records):
 
 
 class FinalReportArchiveTests(unittest.TestCase):
+    def test_report_copies_persisted_video_and_uses_relative_reference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            peak_output_dir = root / "peak-frames"
+            video_path = peak_output_dir / "video-assets" / "m-1.mp4"
+            video_path.parent.mkdir(parents=True)
+            video_path.write_bytes(b"persistent-mp4")
+            data = {
+                "materials": [{
+                    "materialId": "m-1",
+                    "video": {"src": "https://signed.example/m-1.mp4"},
+                }],
+                "presentation": {
+                    "chapters": {"chapter05": {"materials": [{
+                        "materialId": "m-1",
+                        "video": {"src": "https://signed.example/m-1.mp4"},
+                    }]}}
+                },
+            }
+
+            rendered = report_renderer.materialize_report_video_assets(
+                data, peak_output_dir, root / "final-report"
+            )
+
+            self.assertEqual(
+                rendered["materials"][0]["video"]["src"],
+                "assets/videos/m-1.mp4",
+            )
+            self.assertEqual(
+                rendered["presentation"]["chapters"]["chapter05"]["materials"][0]["video"]["src"],
+                "assets/videos/m-1.mp4",
+            )
+            self.assertEqual(
+                (root / "final-report" / "assets" / "videos" / "m-1.mp4").read_bytes(),
+                b"persistent-mp4",
+            )
+
     def test_creates_portable_archive_with_local_images(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -98,6 +135,30 @@ class FinalReportArchiveTests(unittest.TestCase):
                 self.assertEqual(
                     archive.read("final-report/final-report-data.json"),
                     b'{"video":{"src":"https://video.example/m-1.mp4"}}',
+                )
+
+    def test_creates_archive_with_referenced_local_video(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_dir = root / "final-report"
+            video_path = report_dir / "assets" / "videos" / "m-1.mp4"
+            video_path.parent.mkdir(parents=True)
+            video_path.write_bytes(b"persistent-mp4")
+            (report_dir / "final-report.html").write_text(
+                '<video src="assets/videos/m-1.mp4"></video>',
+                encoding="utf-8",
+            )
+            (report_dir / "final-report-data.json").write_text("{}", encoding="utf-8")
+            (report_dir / "presentation-report.json").write_text(
+                '{"presentationSchemaVersion":1}', encoding="utf-8"
+            )
+
+            archive_path = create_report_archive(report_dir)
+
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(
+                    archive.read("final-report/assets/videos/m-1.mp4"),
+                    b"persistent-mp4",
                 )
 
     def test_rejects_archive_when_referenced_local_image_is_missing(self):

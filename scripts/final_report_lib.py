@@ -22,6 +22,7 @@ from analysis_units_lib import build_display_facts
 from report_renderer import (
     ReportRenderingError,
     atomic_write_text,
+    materialize_report_video_assets,
     render_html_report,
     safe_component,
 )
@@ -2231,6 +2232,7 @@ def generate_final_report(
         {**legacy_data, "chapter05Facts": chapter05_facts}
     )
     data = {"presentation": presentation, **legacy_data}
+    data = materialize_report_video_assets(data, peak_output_dir, output_root)
     export_path = export_highlight_workbook(
         legacy_data, presentation, output_root / "highlight-frames.xlsx"
     )

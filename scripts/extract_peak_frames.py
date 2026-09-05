@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -1240,31 +1241,32 @@ def _attempt_wave_postprocess(args, entry):
             records, _records_path = _existing_wave_records(args, material_id, entry)
         if records is None:
             raise RpaAdapterError("persisted RPA diagnosis records are unavailable")
-        with tempfile.TemporaryDirectory() as temp_dir:
-            video_path = artifact_path(temp_dir, material_id, ".mp4")
-            substage = "download"
-            resolution = _time_call(
-                timings,
-                "videoDownloadSec",
-                _resolve_video_source,
-                records,
-                entry,
-                video_path,
-            )
-            substage = "frame_extraction"
-            result = _time_call(
-                timings,
-                "frameExtractionSec",
-                process_records,
-                records,
-                f"rpa://{FUNCTION_CODE}/{material_id}",
-                video_path,
-                args.output_dir,
-                ffmpeg_bin=args.ffmpeg_bin,
-                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
-                video_source="rpa-temporary-download",
-                timings=timings,
-            )
+        video_path = artifact_path(
+            Path(args.output_dir) / "video-assets", material_id, ".mp4"
+        )
+        substage = "download"
+        resolution = _time_call(
+            timings,
+            "videoDownloadSec",
+            _resolve_video_source,
+            records,
+            entry,
+            video_path,
+        )
+        substage = "frame_extraction"
+        result = _time_call(
+            timings,
+            "frameExtractionSec",
+            process_records,
+            records,
+            f"rpa://{FUNCTION_CODE}/{material_id}",
+            video_path,
+            args.output_dir,
+            ffmpeg_bin=args.ffmpeg_bin,
+            ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+            video_source="rpa-persistent-download",
+            timings=timings,
+        )
     except HANDLED_MATERIAL_ERRORS as exc:
         timings["totalSec"] = _elapsed_since(started_at)
         return {
@@ -1282,6 +1284,9 @@ def _attempt_wave_postprocess(args, entry):
         "substage": "completed",
         "videoUrlSource": resolution["source"],
         "videoUrlFallbackReason": resolution.get("fallbackReason"),
+        "videoPath": str(video_path),
+        "videoBytes": video_path.stat().st_size,
+        "videoSha256": hashlib.sha256(video_path.read_bytes()).hexdigest(),
     }
 
 

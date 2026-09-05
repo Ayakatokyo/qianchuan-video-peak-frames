@@ -2702,7 +2702,11 @@ class ProcessingPipelineTests(unittest.TestCase):
             "ffmpeg_timeout_sec": 10,
         })()
         try:
-            with patch.object(extract_peak_frames, "download_video") as download, patch.object(
+            def download_video(_url, target):
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+
+            with patch.object(extract_peak_frames, "download_video", side_effect=download_video) as download, patch.object(
                 extract_peak_frames, "process_records",
                 return_value=(Path(args.output_dir), Path(args.output_dir) / "summary.json", Path(args.output_dir) / "summary.md"),
             ):
@@ -2714,6 +2718,44 @@ class ProcessingPipelineTests(unittest.TestCase):
         self.assertEqual(attempt["videoUrlSource"], "api_fallback")
         self.assertEqual(attempt["videoUrlFallbackReason"], "missing_rpa_video_url")
         download.assert_called_once_with("https://api.example/video.mp4", download.call_args.args[1])
+
+    def test_wave_postprocess_persists_downloaded_video_in_output_cache(self):
+        material_id = "m-persistent-video"
+        records = [{
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": "https://rpa.example/video.mp4",
+        }]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "ffmpeg_bin": None,
+                "ffmpeg_timeout_sec": 10,
+            })()
+            def download_video(_url, target):
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+
+            with patch.object(extract_peak_frames, "download_video", side_effect=download_video), patch.object(
+                extract_peak_frames,
+                "process_records",
+                return_value=(root, root / "summary.json", root / "summary.md"),
+            ):
+                attempt = extract_peak_frames._attempt_wave_postprocess(
+                    args,
+                    {
+                        "materialId": material_id,
+                        "records": records,
+                        "timingsSec": extract_peak_frames._empty_material_timings(),
+                    },
+                )
+
+            video_path = root / "peak-frames" / "video-assets" / f"{material_id}.mp4"
+            self.assertEqual(attempt["videoPath"], str(video_path))
+            self.assertEqual(video_path.read_bytes(), b"persistent-mp4")
+            self.assertEqual(attempt["videoBytes"], len(b"persistent-mp4"))
+            self.assertRegex(attempt["videoSha256"], r"^[0-9a-f]{64}$")
 
     def test_wave_postprocess_classifies_invalid_api_candidates(self):
         material_id = "m-postprocess-invalid"
@@ -2967,6 +3009,7 @@ class CliTests(unittest.TestCase):
         )()
 
         def download_video(_url, target):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
             Path(target).touch()
 
         with patch.object(

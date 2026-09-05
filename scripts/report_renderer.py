@@ -28,6 +28,9 @@ REPORT_SCRIPT_PLACEHOLDER = "__REPORT_SCRIPT_JS__"
 REPORT_ARCHIVE_IMAGE_PATTERN = re.compile(
     r"assets/highlight-frames/[^\"'\s<>]+"
 )
+REPORT_ARCHIVE_VIDEO_PATTERN = re.compile(
+    r"assets/videos/[^\"'\s<>]+"
+)
 
 
 def _text(value):
@@ -98,13 +101,43 @@ def _report_image_references(report_dir, html_text):
     return references
 
 
-def _validate_report_archive(archive_path, report_name, references, include_display_facts=False):
+def _report_video_references(report_dir, html_text):
+    root = Path(report_dir).resolve()
+    references = set(REPORT_ARCHIVE_VIDEO_PATTERN.findall(html_text))
+    for reference in references:
+        relative_path = Path(reference)
+        if (
+            relative_path.is_absolute()
+            or relative_path.parts[:2] != ("assets", "videos")
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+        ):
+            raise ReportRenderingError(f"unsafe report video reference: {reference}")
+        candidate = (root / relative_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ReportRenderingError(
+                f"unsafe report video reference: {reference}"
+            ) from exc
+        if not candidate.is_file() or candidate.is_symlink():
+            raise ReportRenderingError(f"referenced report video is missing: {reference}")
+    return references
+
+
+def _validate_report_archive(
+    archive_path,
+    report_name,
+    image_references,
+    video_references,
+    include_display_facts=False,
+):
     prefix = f"{report_name}/"
     required = {
         f"{prefix}final-report.html",
         f"{prefix}final-report-data.json",
         f"{prefix}presentation-report.json",
-        *(f"{prefix}{reference}" for reference in references),
+        *(f"{prefix}{reference}" for reference in image_references),
+        *(f"{prefix}{reference}" for reference in video_references),
     }
     if include_display_facts:
         required.add(f"{prefix}report-display-facts.json")
@@ -144,7 +177,10 @@ def create_report_archive(report_dir, archive_path=None):
     if not target.parent.is_dir():
         raise ReportRenderingError(f"report archive parent is missing: {target.parent}")
 
-    references = _report_image_references(
+    image_references = _report_image_references(
+        root, html_path.read_text(encoding="utf-8")
+    )
+    video_references = _report_video_references(
         root, html_path.read_text(encoding="utf-8")
     )
     staging = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
@@ -156,7 +192,8 @@ def create_report_archive(report_dir, archive_path=None):
         _validate_report_archive(
             staging,
             root.name,
-            references,
+            image_references,
+            video_references,
             include_display_facts=(root / "report-display-facts.json").is_file(),
         )
         os.replace(staging, target)
@@ -186,6 +223,50 @@ def copy_html_asset(source_path, asset_base_dir, material_id):
         raise ReportRenderingError(
             f"unable to copy report image asset: {source_path}"
         ) from exc
+
+
+def copy_video_asset(source_path, asset_base_dir, material_id):
+    target_dir = Path(asset_base_dir) / "assets" / "videos"
+    target_path = target_dir / f"{safe_component(material_id)}.mp4"
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        resolved_source = Path(source_path).resolve()
+        resolved_target = target_path.resolve()
+        if resolved_source != resolved_target:
+            shutil.copy2(resolved_source, resolved_target)
+        return Path("assets/videos") / target_path.name
+    except OSError as exc:
+        raise ReportRenderingError(
+            f"unable to copy report video asset: {source_path}"
+        ) from exc
+
+
+def materialize_report_video_assets(data, peak_output_dir, report_dir):
+    """Copy retained MP4s into the portable report and rewrite video sources."""
+    result = deepcopy(data)
+    source_root = Path(peak_output_dir) / "video-assets"
+    published = {}
+
+    def visit(value):
+        if isinstance(value, dict):
+            material_id = _text(value.get("materialId"))
+            video = value.get("video")
+            if material_id and isinstance(video, dict):
+                source = source_root / f"{safe_component(material_id)}.mp4"
+                if source.is_file():
+                    if material_id not in published:
+                        published[material_id] = copy_video_asset(
+                            source, report_dir, material_id
+                        ).as_posix()
+                    video["src"] = published[material_id]
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(result)
+    return result
 
 
 def html_asset_src(path, asset_base_dir, embed_assets=False, copy_assets=False, material_id=""):
