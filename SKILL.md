@@ -1,99 +1,58 @@
 ---
 name: 千川短视频素材分析
-description: 面向千川短视频投放复盘，帮助识别高消耗素材的表现亮点、内容结构、转化触发点和可复用创意模式，支持素材优劣判断、预算分配复盘、内容迭代方向和投放优化决策。
+description: 面向千川短视频投放复盘，识别高消耗素材的表现亮点、内容结构、转化触发点和可复用创意模式。
 metadata:
-  argument_hint: 输入授权店铺 ID、分析周期（如 2026-06-01 至 2026-06-15）、Top素材数量（如 9 或 50）和广告主id，生成千川短视频素材分析报告。
+  argument_hint: 输入授权店铺 ID、分析周期、Top素材数量和广告主id，生成千川短视频素材分析报告。
   pre_input: 帮我生成千川短视频素材分析报告，店铺 ID 是 ____，分析周期是 ____，Top素材数量是 ____，广告主id是 ____。
 ---
 
 # 千川短视频素材分析
 
-收集授权店铺 ID、分析周期、Top 素材数量和广告主 ID 后，按以下流程生成报告。标准入口用该店铺授权一次查询素材视频报表，按素材聚合后将 `materialId` 传入同店铺的 RPA；候选扩容、RPA 波次、视频下载、峰值帧提取、重试、补位和产物校验均由标准入口处理，不作为业务输入或手工步骤。
+收集店铺 ID、分析周期、Top 素材数量和广告主 ID。标准入口用店铺授权查询素材视频报表，再将 `materialId` 交给同店铺 RPA；候选扩容、波次、下载、截帧、重试、补位和校验均自动完成。
 
-## 执行环境门禁
+## 约束
 
-这是所有后续步骤的第一步。执行 `prepare`、`fetch-metadata`、`status` 或 `finalize` 前，先检查当前 Python 解释器是否具备 `requirements.txt` 中的 `requests` 和 `imageio-ffmpeg`；缺失时先安装到当前解释器，安装失败立即停止，不发起报表、RPA 或报告请求。
-
-报表查询的 `--shop-id` 是授权店铺 ID，仅用于素材报表连接器。RPA 诊断使用 RPA 授权账户列表中的千川 ID；标准入口不会把报表店铺 ID 传给 RPA，而由 RPA 批处理自动解析当前授权的唯一千川 ID。无授权账户或多账户时，先处理授权选择错误，不重复提交素材诊断。
-
-## 单 Agent 执行边界
-
-本技能的完整流程由当前对话的主 Agent 直接执行，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。不要为进度等待、事实包核验、帧审阅、AI 分析、`finalize` 或归档拆分额外 Agent。
-
-## 周期换算
-
-相对周期使用 T+2 数据回流口径，先换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天。不得将执行日或前一日纳入分析；例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`（含首尾）。
+- **环境**：执行 `prepare`、`fetch-metadata`、`status` 或 `finalize` 前确认当前解释器有 `requests`、`imageio-ffmpeg`；缺失则安装，失败即停，不发起任何请求。`prepare` 也会再次执行该门禁。
+- **授权**：`--shop-id` 只用于报表连接器；RPA 使用授权账户中的唯一千川 ID。无授权或多账户先处理授权选择，不重复提交素材诊断。
+- **单 Agent 执行边界**：主 Agent 直接执行全流程，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。
+- **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
+- **长任务**：`prepare` 是单一长任务；无实时进度不要另起运行或手工干预。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复只查询已保存远端 ID，**不得重复提交**。
 
 ## 标准流程
 
 ### 1. 准备事实包
 
-在当前工作目录的 `$PWD/runs/<run-id>` 创建新的运行目录后执行。平台中 `$PWD` 是当前对话工作空间根目录；本地 Codex 从仓库执行时 `$PWD` 是技能仓库根目录。一次分析使用同一个 `run-id`，并在 `prepare`、`status`、AI 产物写入和 `finalize` 中复用；不得将运行目录设为技能安装目录。
+每次使用同一个 `$PWD/runs/<run-id>`，不得写入技能安装目录：
 
 ```bash
 python scripts/run_standard_analysis.py prepare \
-  --shop-id "<授权店铺 ID>" \
-  --start-date 2026-07-19 \
-  --end-date 2026-07-25 \
-  --top-n 9 \
-  --advertiser-id "1770096415226951" \
+  --shop-id "<授权店铺 ID>" --start-date 2026-07-19 --end-date 2026-07-25 \
+  --top-n 9 --advertiser-id "1770096415226951" \
   --output-dir "$PWD/runs/<run-id>"
+python scripts/run_standard_analysis.py status --output-dir "$PWD/runs/<run-id>"
 ```
 
-首次 `prepare` 会自动检查缺失依赖并安装 `requirements.txt`。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。
+只验证报表授权、不进入 RPA 时改用 `fetch-metadata`（仍写入同一类目录；只产生 `source-data/gateway-response.json` 与 `run-summary.json`，状态 `metadata_ready`）。仅当状态为 `analysis_pending` 才继续 AI。
 
-完成后确认状态：
+AI 只读本次运行生成的 `diagnostic-analysis/analysis-units/analysis-unit-manifest.json`、五个章节事实包和 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 组装事实，**不得手写 `missingRanks`**。历史运行可能仍有 `diagnostic-analysis/diagnostic-analysis-data.json`，但新运行不再生成且不得读取。
 
-```bash
-python scripts/run_standard_analysis.py status \
-  --output-dir "$PWD/runs/<run-id>"
-```
+### 2. 视频与预览
 
-只验证报表网关授权与元数据、且不进入 RPA 时，使用同一类运行目录：
+标准入口按顺序完成：**RPA 下载原始 MP4** 并持久化 `video-assets/<materialId>.mp4` → **原始视频提取高光帧**（以原始 MP4 提取 `zero_second` 与局部峰值 JPEG）→ **生成报告预览 MP4**（FFmpeg，并写入 `peak-frames/report-video-assets.json`）→ **报告引用预览 MP4**（放入 `final-report/assets/videos/<materialId>.mp4`，HTML/JSON 只引用相对本地路径）→ 打包 `final-report.zip`。每个引用文件须存在、非符号链接、可被 ZIP 收录并通过解码校验；图片不依赖三方链接；原始 MP4 保留追溯但**原始 MP4 不进入 ZIP**。任一失败都不能标记后处理成功或进入 `complete`。
 
-```bash
-python scripts/run_standard_analysis.py fetch-metadata \
-  --shop-id "<授权店铺 ID>" \
-  --start-date 2026-07-19 \
-  --end-date 2026-07-25 \
-  --advertiser-id "1770096415226951" \
-  --output-dir "$PWD/runs/<run-id>"
-```
+### 3. 一次 AI 分析
 
-该命令只落盘 `source-data/gateway-response.json` 和 `run-summary.json`（状态 `metadata_ready`），不下载结果文件、不生成候选素材，也不调用 RPA。完整 `prepare` 在内网可达时会在相同的 `source-data/` 目录保留网关元数据、原始 CSV 与结构化 JSON，并以结构化记录生成候选素材和 ROI 事实。
-
-仅当状态为 `analysis_pending` 时进入 AI 分析。必须使用本次 `prepare` 生成的 `diagnostic-analysis/analysis-units/analysis-unit-manifest.json`、manifest 声明的五个章节事实包与 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 或其他候选清单组装事实，也不得手写 `missingRanks`。历史运行可能仍有 `diagnostic-analysis/diagnostic-analysis-data.json`，但新运行不再生成，新分析不得读取该快照。
-
-将 `prepare` 视为单一长任务：不要因没有实时进度而另起运行，也不要手工干预 RPA、波次或后处理。出现中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时，保留运行目录并遵循[运维手册](references/qianchuan-operations-runbook.md)；连接器与波次约束见 [RPA 输出契约](references/rpa-output-contract.md)。
-
-RPA 使用异步 `task_group_id` 提交并轮询：远端轮询最多 3600 秒，CSV 下载总时限为 600 秒，外层 worker 默认截止时间为 4260 秒；显式 CLI 短时限仍可用于测试或运维，但可能早于远端任务完成。支持 `completed` 与 `partial_success`；有可用文件时照常落盘并保留脱敏错误。下发后中断时，恢复运行只查询已保存的远端 ID，不得重复提交；没有远端 ID 或 receipt 不合法时才按现有策略重新提交。超过外层截止时间时，系统终止该素材的本地 RPA worker，将其记录为不可重试的终态失败，并在同一波其余素材全部进入终态后接入下一整波候选素材补位。
-
-### 2. 视频资产与报告预览
-
-标准入口必须按以下顺序完成视频处理，不能让报告直接依赖平台返回的临时签名 URL：
-
-1. **RPA 下载原始 MP4**：从已校验的 `material_info.videoUrl` 下载原始视频，持久化到本次运行目录的 `video-assets/<materialId>.mp4`；下载成功后才允许该素材进入后处理。
-2. **原始视频提取高光帧**：以运行目录中的原始 MP4 作为唯一视频输入，按[峰值帧口径](#峰值帧口径)提取 `zero_second` 和局部峰值 JPEG；不能再次从平台 URL取帧，也不能用报告预览视频代替原始视频提取高光帧。
-3. **生成报告预览 MP4**：原始 MP4 和高光帧处理成功后，使用 FFmpeg 生成可移植的报告预览 MP4。预览编码参数、源文件路径、预览文件路径、字节数和 SHA-256 必须写入本次运行的 `peak-frames/report-video-assets.json`；转码或清单写入失败时，该素材不得标记为后处理成功。
-4. **报告引用预览 MP4**：将预览 MP4 写入 `final-report/assets/videos/<materialId>.mp4`，HTML 和 `final-report-data.json` 只引用该相对本地路径；渲染前后都要校验每个引用文件存在、不是符号链接且可被 ZIP 收录。
-5. **打包 ZIP**：`final-report.zip` 收录 HTML、数据文件、高光帧和报告预览 MP4；原始 MP4 保留在运行目录的 `video-assets/` 供追溯和重新生成预览使用，但**原始 MP4 不进入 ZIP**，避免压缩包体积被源视频放大。
-
-预览 MP4 必须逐条执行可读性/解码校验，并在报告就绪门禁中确认 HTML 引用数、预览文件数和 ZIP 内文件数一致；任一校验失败都不得进入 `complete`。该步骤由标准入口在 `prepare`/后处理与 `finalize` 链路中完成，不要求手工下载、转码或改写成品 HTML。
-
-### 3. 生成 AI 二次分析
-
-Chapter 01 若事实包存在 `portfolio.hotMaterialRule`，AI 只能基于其中的阈值、命中数量、素材名称、素材指标和 `evidenceRef` 输出结构化 `hotMaterialInsight`，不得重新计算、改写或虚构爆款事实。该字段在 AI JSON 中独立保留以便证据追溯，但 Presentation 与前端必须将其合并到既有 AI 二次分析区域，爆款面板只展示确定性详情，不重复渲染第二个 AI 卡片；历史事实包缺失该字段时允许省略，前端仍显示确定性面板或空状态。
+Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命中数量、素材指标和 `evidenceRef` 输出 `hotMaterialInsight`；Presentation 将其并入既有 AI 区域，不重复渲染爆款卡片。
 
 #### AI 交接前置检查
 
-先读取事实包和提示词：具体包括 manifest、五个章节事实包和唯一 Prompt；核对字节数、SHA-256、素材数、成功帧数与 `missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看每张 JPEG；每批不超过 6 帧。策略或 guardrail 拒绝时，立即按[运维手册](references/qianchuan-operations-runbook.md)冻结并恢复帧审阅，不得跳过任何帧或改用其他产物补充事实。
+先读取事实包和提示词（manifest、五个章节事实包和唯一 Prompt），核对字节数、SHA-256、素材数、成功帧数、`missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看 JPEG（每批不超过 6 帧）。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
 
-必须由当前对话模型在一次模型调用中统一读取五个章节事实包，并在同一运行目录一次写入完整的 `diagnostic-analysis/diagnostic-ai-analysis.json`，使用 `schemaVersion: 5`。不得拆成五次分析，不得通过外部模型服务、`codex exec` 或子进程替代当前对话模型。报告仍保留经营表现、人群、脚本、高光画面和互动时序的章节边界；其中第 01 部分只读取 `chapter01-portfolio-input.json` 的 `portfolio` 全量素材事实，覆盖近 7 天上新素材量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM；不得读取 Chapter 01 顶层 RPA 选中素材字段 `materials` 或 `materialIds`，不得读取 `topMaterialRoi`，不得使用 RPA 精选素材数量、消耗、候选补位结果或 Chapter 05 回退数据。第 01 部分事实包的 `summaryMetrics` 只保留当前 `roi` 及其他榜单指标，不包含 `netSettlementRoi`、`overallPaymentRoi`；当前 ROI 来源字段为 `total_prepay_and_pay_order_roi2`。`overallConclusion` 是第一部分唯一直接展示的段落，建议写满 180-260 个中文字符，除关键数据锚点外至少包含三项分析判断和分阶段验证动作；`commercial.conclusion` 不得重复其完整指标串，应补充业务含义和验证动作。第 `04｜高光画面洞察` 必须输出 `highlightDashboard`，将每个成功高光帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次。不得把帧秒数宣称为对应某句脚本话术。
+当前对话模型在**一次模型调用**中统一读取五个事实包，并一次写入 `diagnostic-analysis/diagnostic-ai-analysis.json`（`schemaVersion: 5`）；不得拆分调用、使用外部模型、`codex exec`、子进程或子代理。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 180-260 字，含至少三项判断和分阶段动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
 
-以该提示词为 AI JSON 输出契约：按其中的字段、证据、覆盖、枚举、长度与定向修正规则完成一次完整分析。第二部分的 `preferencesByMetric` 仅供报告偏好 drill-down 使用，AI 不读取，也不得将其中的 TOP3 素材字段写入人群洞察。结论仅分析业务事实；每个成功 JPEG 都要有高光帧分析，`missingFrames` 必须在 `frameCoverageNote` 说明影响，证据引用逐字复用事实包标识。v4 仅用于历史报告兼容。
-其中 `keywordCloudInsight.oneSentenceConclusion` 写 28-45 个中文字符的单一核心判断，可补充关键词所反映的业务含义或承接关系，但不得重复关键词频次、卖点卡片和验证动作；summary 控制在 60-110 个中文字符，适度补充关键词组合、品质/场景承接与验证方向；验证动作放入 summary 或 sellingPoints。
+以该提示词为 AI JSON 输出契约，按其字段、证据、覆盖、枚举和长度规则生成结果：每个成功 JPEG 都有分析，`missingFrames` 写入 `frameCoverageNote`；引用逐字复用事实包标识。`preferencesByMetric` 仅供 drill-down，AI 不读取其 TOP3 字段。v4 仅用于历史报告兼容。`keywordCloudInsight.oneSentenceConclusion` 为 28-45 个中文字符的单一核心判断；summary 控制在 60-110 个中文字符，验证动作放入 summary 或 sellingPoints；不得重复关键词频次、卖点卡片和验证动作。
 
-写入 AI JSON 后、调用 `finalize` 前，必须执行一次只读质量校验：
+写入后先只读校验，再收口：
 
 ```bash
 python scripts/run_standard_analysis.py validate-analysis \
@@ -101,9 +60,9 @@ python scripts/run_standard_analysis.py validate-analysis \
   --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-该命令复用报告渲染的 JSON、证据、帧覆盖、dashboard、枚举和内容长度门禁，不修改运行目录。校验失败时，当前主 Agent 仅修正报错字段后重新执行该命令；不得重新执行 `prepare`，不得调用子代理。校验通过后再进入 `finalize`；`finalize` 仍会重复执行同一质量门禁，防止跳过校验命令。
+失败只修正报错字段并重跑校验，不重跑 `prepare`；通过后执行 `finalize`。`finalize` 会再次执行同一门禁。
 
-### 4. 校验并交付报告
+### 4. 交付
 
 ```bash
 python scripts/run_standard_analysis.py finalize \
@@ -111,15 +70,8 @@ python scripts/run_standard_analysis.py finalize \
   --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-仅当 `run-summary.json` 状态为 `complete` 时交付，并**同时交付以下两个产物**：
-
-1. 独立报告：`final-report/final-report.html`（可直接打开的 HTML 报告）；
-2. 完整压缩包：`final-report.zip`（包含报告 HTML、数据文件、本地高光帧和报告预览 MP4）。
-
-最终回复必须分别提供这两个文件的路径或下载附件，**不得只交付压缩包**，也不得把压缩包当作独立报告的唯一入口。压缩包内图片不依赖三方链接，视频也使用本地资源；视频为由原始 MP4 生成的报告预览 MP4，原始 MP4 保留在运行目录但不进入 ZIP。报告使用 `assets/report/` 的视觉与交互资产，`finalize` 自动内联资源；不得交付草稿报告，也不得手工修改成品 HTML。
-
-若状态仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；其余故障按[运维手册](references/qianchuan-operations-runbook.md)恢复。
+仅当 `run-summary.json` 为 `complete` **同时交付以下两个产物**：独立报告 `final-report/final-report.html` 与完整压缩包 `final-report.zip`（HTML、数据、本地 JPEG 和预览 MP4）。图片和视频均为本地资源；不得交付草稿报告、不得只交付压缩包；报告使用 `assets/report/`，`finalize` 自动内联资源，不得手工修改或改写成品 HTML。若仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；其余故障按运维手册处理。
 
 ## 峰值帧口径
 
-每条素材保留第 0 秒封面帧 `zero_second`，并从 `CLICK_COUNT` 的全部局部峰值中按点击数降序、秒数升序取最多五帧。少于五个局部峰值是曲线特征，不伪造峰值；素材后处理成功要求第 0 秒帧成功，且存在局部峰值时至少一张峰值帧成功。
+每条素材保留第 0 秒封面帧 `zero_second`，从 `CLICK_COUNT` 的全部局部峰值按点击数降序、秒数升序取最多五帧；少于五个不伪造。后处理成功要求第 0 秒帧成功，且存在局部峰值时至少一张峰值帧成功。

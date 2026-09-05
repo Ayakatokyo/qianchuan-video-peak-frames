@@ -778,23 +778,11 @@ def _wave_entry(material, rank):
     return rpa_batch_runner.wave_entry(material, rank, _empty_material_timings)
 
 
-def _wave_public_entry(entry):
-    return rpa_batch_runner.public_entry(entry)
-
-
-def _wave_ordered(entries):
-    return rpa_batch_runner.ordered(entries, _wave_public_entry)
-
-
-def _wave_accounted_indices(*entry_maps):
-    return rpa_batch_runner.accounted_indices(*entry_maps)
-
-
 def _new_wave_batch_manifest(args, candidates, entries, submitted, selected, rejected, cancelled):
     return schemas.wave_manifest(
         args, candidates, entries, submitted, selected, rejected, cancelled,
-        public_entry=_wave_public_entry,
-        ordered=_wave_ordered,
+        public_entry=rpa_batch_runner.public_entry,
+        ordered=rpa_batch_runner.ordered,
         stage_counts=stage_counts,
     )
 
@@ -1366,8 +1354,8 @@ def _run_wave_rpa_batch(args, candidate_payload, *, is_interrupted=None):
         ready_path=_ready_top_materials_path(args),
         entry_result=_entry_result,
         elapsed=_elapsed_since,
-        accounted_indices=_wave_accounted_indices,
-        ordered=_wave_ordered,
+        accounted_indices=rpa_batch_runner.accounted_indices,
+        ordered=rpa_batch_runner.ordered,
         is_interrupted=is_interrupted,
     )
     return manifest_path, last_result, failures
