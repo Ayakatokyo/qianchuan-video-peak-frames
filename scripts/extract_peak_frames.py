@@ -248,14 +248,19 @@ def _list_shop_accounts():
 
 def _resolve_shop_id(args):
     explicit = str(args.shop_id or "").strip()
-    if explicit:
-        return explicit
-
     accounts = _normalize_account_rows(list_accounts())
     if not accounts:
         raise RpaAdapterError(
             "no authorized RPA accounts are available for the current credentials"
         )
+    if explicit:
+        authorized_shop_ids = {item["shop_id"] for item in accounts}
+        if explicit not in authorized_shop_ids:
+            raise RpaAdapterError(
+                "requested --shop-id is not authorized for RPA with the current "
+                "credentials:\n" + _format_account_table(accounts)
+            )
+        return explicit
     if len(accounts) > 1:
         raise RpaAdapterError(
             "multiple authorized RPA accounts were found; pass --shop-id explicitly:\n"

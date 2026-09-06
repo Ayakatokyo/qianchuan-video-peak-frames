@@ -28,6 +28,12 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 图片理解工具首次被策略拒绝时，将 AI 阶段记录为 `frame_review_pending`，保存已完成帧批次、未完成帧批次和事实包路径；不得继续拆分批次、逐帧重试或改用 bash/搜索/文件读取工具绕过策略。工具恢复后只从未完成批次续接，已完成批次不得重复查看；若恢复前无法核验，只能报告 AI 阶段待恢复，不得报告事实包或 prepare 失败。
 
+### 图片理解断点与吞吐
+
+首次打开 JPEG 前，在 `diagnostic-analysis/frame-review-progress.json` 建立断点账本。账本至少保存 `schemaVersion`、`status`、`analysisUnitManifestPath`、`promptPath`、`completedFrameRefs`、`pendingFrameRefs`、`currentMaterialId` 和 `currentBatchFrameRefs`；帧引用使用 `chapter04-highlight-input.json` 中的 `frameRef` 与 `framePath`，不得复制图片内容。按该文件的素材顺序执行，**一个素材只形成一个帧审阅批次**，且该批次最多 6 帧。
+
+每帧审阅只写 3-4 条简短且与其他帧可区分的视觉要点，覆盖主体、动作或使用状态、信息层及画面变化；详细商业解释、跨帧归纳和报告正文留给最终的单次 AI JSON 调用。每完成一个素材批次，先将该批次帧引用从 `pendingFrameRefs` 原子移动到 `completedFrameRefs`，再更新当前批次；恢复时只打开 `pendingFrameRefs`，不重看已完成素材。不得再经 Bash 二次摘录图片理解结果；该重复转写既不产生新视觉事实，也会阻塞后续帧审阅。图片策略拒绝仍按上一段冻结并等待恢复，不得以压缩、改读文本或跳帧绕过。
+
 只有后台明确终止且运行摘要或产物链路也显示未完成，才按本手册的“运行中断或陈旧批次”处理。策略服务未提供原始拒绝原因时，记录为 `tool_call_blocked` 与“待策略侧日志确认”；不要把业务任务、RPA 或 FFmpeg 归因为策略故障。
 
 ## 运行中断或陈旧批次
