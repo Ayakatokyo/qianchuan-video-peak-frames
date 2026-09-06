@@ -65,8 +65,13 @@ def _default_session():
 
 def runtime_config(environ=None):
     environment = os.environ if environ is None else environ
-    required = ("ENV_BACKEND_HOST", "YUCE_AUTHORIZATION", "YUCE_SESSION_ID")
+    required = ("ENV_BACKEND_HOST", "YUCE_AUTHORIZATION")
     missing = [name for name in required if not environment.get(name)]
+    session_id = str(
+        environment.get("YUCE_SESSION_ID") or environment.get("YCSESSIONID") or ""
+    ).strip()
+    if not session_id:
+        missing.append("YUCE_SESSION_ID (or YCSESSIONID)")
     if missing:
         raise RpaAdapterError(
             "missing RPA runtime environment variables: "
@@ -75,8 +80,8 @@ def runtime_config(environ=None):
 
     api_base = environment["ENV_BACKEND_HOST"].rstrip("/")
     authorization = environment["YUCE_AUTHORIZATION"]
-    session_id = environment["YUCE_SESSION_ID"]
-    cookies = {"YCSESSIONID": authorization}
+    cookie_session_id = str(environment.get("YCSESSIONID") or authorization).strip()
+    cookies = {"YCSESSIONID": cookie_session_id}
     return api_base, authorization, session_id, cookies
 
 
@@ -159,17 +164,12 @@ def _redact_gateway_summary(value):
     else:
         text = str(value or "")
     text = re.sub(
-        r"(?i)([?&](?:access_)?token|[?&]secret|[?&]authorization)=([^&\s]+)",
+        r"(?i)([?&](?:(?:access_)?token|secret|(?:yuce_)?authorization|(?:yc|yuce)_?session(?:_?id)?|session(?:_?id)?))=([^&\s]+)",
         r"\1=[redacted]",
         text,
     )
     text = re.sub(
-        r'(?i)("(?:access_)?token"\s*:\s*")[^"]*',
-        r'\1[redacted]',
-        text,
-    )
-    text = re.sub(
-        r'(?i)("(?:authorization|secret|session(?:_id)?)"\s*:\s*")[^"]*',
+        r'(?i)("(?:(?:access_)?token|(?:yuce_)?authorization|secret|(?:yc|yuce)_?session(?:_?id)?|session(?:_?id)?)"\s*:\s*")[^"]*',
         r'\1[redacted]',
         text,
     )
@@ -449,7 +449,35 @@ def fetch_material_diagnosis(
                 },
             ) from exc
         if not isinstance(submit_result, dict) or submit_result.get("success") is False:
-            raise RpaAdapterError("RPA task submission was not successful")
+            diagnostics = _gateway_response_diagnostics(response)
+            diagnostics["gatewayPhase"] = "submit"
+            gateway_code = (
+                submit_result.get("code") if isinstance(submit_result, dict) else None
+            )
+            if gateway_code is not None:
+                diagnostics["gatewayCode"] = str(gateway_code)
+                try:
+                    business_status = int(str(gateway_code))
+                except (TypeError, ValueError):
+                    business_status = None
+                if business_status is not None:
+                    if business_status == 429:
+                        diagnostics["rpaFailureClass"] = "gateway_rate_limited"
+                    elif 400 <= business_status <= 499:
+                        diagnostics["rpaFailureClass"] = "gateway_client_error"
+                    elif 500 <= business_status <= 599:
+                        diagnostics["rpaFailureClass"] = "gateway_server_error"
+            gateway_message = ""
+            if isinstance(submit_result, dict):
+                for field in ("msg", "message", "error"):
+                    value = submit_result.get(field)
+                    if isinstance(value, str) and value.strip():
+                        gateway_message = value.strip()
+                        break
+            message = "RPA task submission was not successful"
+            if gateway_message:
+                message += f": {gateway_message}"
+            raise RpaAdapterError(message, diagnostics)
         submit_data = submit_result.get("data")
         if isinstance(submit_data, dict):
             remote_task_group_id = submit_data.get("task_group_id")

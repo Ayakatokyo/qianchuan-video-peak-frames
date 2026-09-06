@@ -299,6 +299,15 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("RPA and postprocess terminality", contract)
         self.assertIn("before it opens the next RPA wave", contract)
 
+    def test_frame_review_has_compact_per_material_progress_contract(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("每个素材一批", skill)
+        self.assertIn("每帧 3-4 条独有要点", skill)
+        self.assertIn("frame-review-progress.json", runbook)
+        self.assertIn("不得再经 Bash 二次摘录", runbook)
+
     def test_runbook_owns_wave_recovery_commands(self):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 

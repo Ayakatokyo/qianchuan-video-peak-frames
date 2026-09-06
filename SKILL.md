@@ -46,7 +46,7 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 #### AI 交接前置检查
 
-先读取事实包和提示词（manifest、五个章节事实包和唯一 Prompt），核对字节数、SHA-256、素材数、成功帧数、`missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看 JPEG（每批不超过 6 帧）。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
+先读取事实包和提示词（manifest、五个章节事实包和唯一 Prompt），核对字节数、SHA-256、素材数、成功帧数、`missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看 JPEG。帧审阅按素材串行：**每个素材一批**、每批不超过 6 帧；每帧只记录 **每帧 3-4 条独有要点**（主体/动作/信息层/与相邻帧的变化），不在此阶段扩写经营结论。每批结束立即按运维手册更新 `frame-review-progress.json`，最终业务表述仅在后续唯一 AI JSON 调用中生成。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
 
 当前对话模型在**一次模型调用**中统一读取五个事实包，并一次写入 `diagnostic-analysis/diagnostic-ai-analysis.json`（`schemaVersion: 5`）；不得拆分调用、使用外部模型、`codex exec`、子进程或子代理。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 180-260 字，含至少三项判断和分阶段动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
 

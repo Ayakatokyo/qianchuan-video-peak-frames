@@ -746,6 +746,53 @@ class RpaAdapterTests(unittest.TestCase):
         )
         self.assertEqual(session.posts[0][1]["timeout"], 30)
 
+    def test_runtime_config_uses_ycsessionid_when_rpa_session_id_is_not_set(self):
+        api_base, authorization, session_id, cookies = rpa_adapter.runtime_config(
+            {
+                "ENV_BACKEND_HOST": "https://gateway.example/",
+                "YUCE_AUTHORIZATION": "auth-token",
+                "YCSESSIONID": "browser-session",
+            }
+        )
+
+        self.assertEqual(api_base, "https://gateway.example")
+        self.assertEqual(authorization, "auth-token")
+        self.assertEqual(session_id, "browser-session")
+        self.assertEqual(cookies, {"YCSESSIONID": "browser-session"})
+
+    def test_fetch_material_diagnosis_keeps_rejected_submit_diagnostics(self):
+        session = RecordingSession(
+            FakeResponse(
+                {
+                    "success": False,
+                    "code": "403",
+                    "msg": "店铺未绑定有效的底层授权",
+                    "authorization": "secret-token",
+                    "YCSESSIONID": "browser-secret",
+                }
+            )
+        )
+
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="764",
+                date_range_type="LAST_7_DAYS",
+                environ=self._env(),
+                session=session,
+            )
+
+        self.assertIn("店铺未绑定有效的底层授权", str(raised.exception))
+        self.assertEqual(raised.exception.diagnostics["gatewayPhase"], "submit")
+        self.assertEqual(raised.exception.diagnostics["gatewayCode"], "403")
+        self.assertEqual(
+            raised.exception.diagnostics["rpaFailureClass"],
+            "gateway_client_error",
+        )
+        self.assertIn("店铺未绑定有效的底层授权", raised.exception.diagnostics["responseSummary"])
+        self.assertNotIn("secret-token", raised.exception.diagnostics["responseSummary"])
+        self.assertNotIn("browser-secret", raised.exception.diagnostics["responseSummary"])
+
     def test_fetch_rejects_custom_range_without_both_dates(self):
         error_type = getattr(rpa_adapter, "RpaAdapterError", Exception)
         with self.assertRaisesRegex(error_type, "CUSTOM requires"):
@@ -2986,6 +3033,17 @@ class ProcessingPipelineTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
 
+    def setUp(self):
+        self._authorized_accounts = patch.object(
+            extract_peak_frames,
+            "list_accounts",
+            return_value={"data": [{"account": "bound@example.com", "shop_id": "shop-1"}]},
+        )
+        self._authorized_accounts.start()
+
+    def tearDown(self):
+        self._authorized_accounts.stop()
+
     def test_wave_postprocess_passes_timings_to_process_records_once(self):
         entry = {
             "materialId": "m-123",
@@ -4795,7 +4853,7 @@ class CliTests(unittest.TestCase):
                 extract_peak_frames,
                 "_fetch_material_preflight_for_cli",
                 side_effect=fetch,
-            ) as fetch:
+            ) as fetch, patch.object(extract_peak_frames.time, "sleep"):
                 result = extract_peak_frames._attempt_wave_rpa(args, entry)
 
         self.assertEqual(fetch.call_count, 2)
@@ -4886,7 +4944,7 @@ class CliTests(unittest.TestCase):
                 extract_peak_frames,
                 "_fetch_material_preflight_for_cli",
                 return_value=failure,
-            ) as fetch:
+            ) as fetch, patch.object(extract_peak_frames.time, "sleep"):
                 result = extract_peak_frames._attempt_wave_rpa(args, entry)
 
         self.assertEqual(fetch.call_count, 2)
@@ -5496,6 +5554,21 @@ class CliTests(unittest.TestCase):
             resolved = extract_peak_frames._resolve_shop_id(argparse.Namespace(shop_id=None))
 
         self.assertEqual(resolved, "408IGuUKaf")
+        list_mock.assert_called_once()
+
+    def test_rpa_batch_rejects_explicit_shop_without_rpa_authorization(self):
+        import argparse
+
+        with patch(
+            "extract_peak_frames.list_accounts",
+            return_value={"data": [{"account": "bound@example.com", "shop_id": "shop-1"}]},
+        ) as list_mock, self.assertRaisesRegex(
+            rpa_adapter.RpaAdapterError, "not authorized"
+        ):
+            extract_peak_frames._resolve_shop_id(
+                argparse.Namespace(shop_id="shop-2")
+            )
+
         list_mock.assert_called_once()
 
     def test_local_cli_rejects_malformed_json(self):
