@@ -19,6 +19,8 @@ from final_report_lib import (  # noqa: E402
     _validate_v2_analysis_quality,
     _duplicate_highlight_observations,
     _duplicate_highlight_interpretations,
+    _templated_highlight_copy_pairs,
+    _templated_classification_copy_pairs,
     _validate_custom_classification,
 )
 from final_report_lib import generate_final_report  # noqa: E402
@@ -2488,6 +2490,52 @@ class FinalReportQualityGateTests(unittest.TestCase):
         self.assertEqual(
             _duplicate_highlight_interpretations("m-1", highlights),
             [("highlight:m-1:peak_top_1", "highlight:m-1:peak_top_2")],
+        )
+
+    def test_template_gate_rejects_cross_material_copy_with_only_frame_labels_changed(self):
+        analyses = [
+            {
+                "materialId": "m-1",
+                "highlightAnalyses": [{
+                    "frameRef": "highlight:m-1:peak_top_1",
+                    "commercialInterpretation": "红色礼盒被举到人物胸前，适合把送礼场景与开箱动作连起来验证。结论仅作为待验证假设，需用该帧前后点击率、三秒完播率和转化率复核。",
+                }],
+            },
+            {
+                "materialId": "m-2",
+                "highlightAnalyses": [{
+                    "frameRef": "highlight:m-2:peak_top_4",
+                    "commercialInterpretation": "玻璃瓶被放在餐桌中央，适合把早餐场景与食用动作连起来验证。结论仅作为待验证假设，需用该帧前后点击率、三秒完播率和转化率复核。",
+                }],
+            },
+        ]
+
+        self.assertEqual(
+            _templated_highlight_copy_pairs(analyses, "commercialInterpretation"),
+            [("highlight:m-1:peak_top_1", "highlight:m-2:peak_top_4")],
+        )
+
+    def test_template_gate_rejects_reused_batch_classification_direction_body(self):
+        groups = [
+            {
+                "groupName": "身份叙事",
+                "derivativeDirections": [{
+                    "title": "保留人物关系",
+                    "body": "下一轮仅改变一个变量，保持本组画面机制不变；用首三秒完播率和点击率判断入口是否稳定。",
+                }],
+            },
+            {
+                "groupName": "包装价值",
+                "derivativeDirections": [{
+                    "title": "测试整箱露出",
+                    "body": "下一轮仅改变一个变量，保持本组画面机制不变；用首三秒完播率和点击率判断入口是否稳定。",
+                }],
+            },
+        ]
+
+        self.assertEqual(
+            _templated_classification_copy_pairs(groups, "derivativeDirections"),
+            [("身份叙事.derivativeDirections[0]", "包装价值.derivativeDirections[0]")],
         )
 
     def test_standard_quality_gate_accepts_v5_analysis_with_dashboard(self):

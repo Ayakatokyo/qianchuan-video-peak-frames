@@ -1,5 +1,6 @@
 import ast
 from copy import deepcopy
+from difflib import SequenceMatcher
 import json
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone
@@ -1626,6 +1627,67 @@ def _duplicate_highlight_interpretations(material_id, highlights):
     return duplicates
 
 
+def _normalize_copy_for_template_check(value):
+    """Remove labels that can disguise a copied AI sentence as a new one."""
+    text = " ".join(_text(value).split())
+    text = re.sub(r"highlight:[^\s，。；、]+", "<frame>", text)
+    text = re.sub(r"(?:zero_second|peak_top_[1-5]|first_peak)", "<frame>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?:第\s*)?\d+\s*(?:张|个)?(?:高光)?帧", "<frame>", text)
+    text = re.sub(r"\d+(?:\.\d+)?\s*(?:秒|%|次|元|瓶|箱|位|个)", "<number>", text)
+    text = re.sub(r"\b\d{6,}\b", "<id>", text)
+    return text
+
+
+def _is_templated_copy_pair(first, second):
+    """Detect copied long-form analysis even when labels or figures change."""
+    first = _normalize_copy_for_template_check(first)
+    second = _normalize_copy_for_template_check(second)
+    if not first or not second:
+        return False
+    if first == second:
+        return True
+    matcher = SequenceMatcher(None, first, second, autojunk=False)
+    longest_common = matcher.find_longest_match(0, len(first), 0, len(second)).size
+    return (
+        matcher.ratio() >= 0.72
+        or longest_common >= max(24, math.ceil(min(len(first), len(second)) * 0.38))
+    )
+
+
+def _templated_highlight_copy_pairs(analyses, field_name):
+    """Return cross-frame pairs that reuse a template after variable labels vanish."""
+    values = []
+    for analysis in analyses:
+        for highlight in analysis.get("highlightAnalyses", []):
+            frame_ref = _text(highlight.get("frameRef"))
+            value = _text(highlight.get(field_name))
+            if frame_ref and value:
+                values.append((frame_ref, value))
+    duplicates = []
+    for index, (first_ref, first_value) in enumerate(values):
+        for second_ref, second_value in values[index + 1:]:
+            if _is_templated_copy_pair(first_value, second_value):
+                duplicates.append((first_ref, second_ref))
+    return duplicates
+
+
+def _templated_classification_copy_pairs(groups, section):
+    """Return classification insight pairs with copied or near-copied bodies."""
+    values = []
+    for group in groups:
+        group_name = _text(group.get("groupName"))
+        for index, item in enumerate(group.get(section, [])):
+            value = _text(item.get("body")) if isinstance(item, dict) else ""
+            if group_name and value:
+                values.append((f"{group_name}.{section}[{index}]", value))
+    duplicates = []
+    for index, (first_label, first_value) in enumerate(values):
+        for second_label, second_value in values[index + 1:]:
+            if _is_templated_copy_pair(first_value, second_value):
+                duplicates.append((first_label, second_label))
+    return duplicates
+
+
 def _audience_insight_metrics(insight):
     metrics = set()
     for reference in insight.get("evidenceRefs", []):
@@ -1849,6 +1911,29 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
                 f"materialAnalyses.{field_name} has repeated values for "
                 + ", ".join("/".join(ids) for ids in repeated)
             )
+
+    for field_name in ("visualObservation", "commercialInterpretation"):
+        templated = _templated_highlight_copy_pairs(successful_analyses, field_name)
+        if templated:
+            failures.append(
+                "materialAnalyses.highlightAnalyses has templated "
+                + field_name
+                + " across frames "
+                + ", ".join(f"{first}/{second}" for first, second in templated)
+            )
+
+    custom_classification = conclusion.get("customClassification")
+    if isinstance(custom_classification, dict):
+        custom_groups = custom_classification.get("groups", [])
+        for section in ("commonConclusion", "derivativeDirections"):
+            templated = _templated_classification_copy_pairs(custom_groups, section)
+            if templated:
+                failures.append(
+                    "customClassification "
+                    + section
+                    + " has copied or overly similar bodies "
+                    + ", ".join(f"{first}/{second}" for first, second in templated)
+                )
 
     if failures:
         raise FinalReportError("AI quality gate: " + "; ".join(failures))

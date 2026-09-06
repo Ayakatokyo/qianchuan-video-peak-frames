@@ -52,6 +52,8 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 以该提示词为 AI JSON 输出契约，按其字段、证据、覆盖、枚举和长度规则生成结果：每个成功 JPEG 都有分析，`missingFrames` 写入 `frameCoverageNote`；引用逐字复用事实包标识。`preferencesByMetric` 仅供 drill-down，AI 不读取其 TOP3 字段。v4 仅用于历史报告兼容。`keywordCloudInsight.oneSentenceConclusion` 为 28-45 个中文字符的单一核心判断；summary 控制在 60-110 个中文字符，验证动作放入 summary 或 sellingPoints；不得重复关键词频次、卖点卡片和验证动作。
 
+逐帧分析必须由实际 JPEG 的独有内容写成：观察同时交代主体/位置、动作或使用状态、人物产品场景关系、信息层、叙事作用和相邻帧变化；商业解释对应本帧视觉机制及该素材的脚本或互动事实。删除素材 ID、帧类型、秒数、数值和分类名后，任意两条逐帧观察或商业解释仍须可区分。`customClassification` 的每组 3 条 `commonConclusion` 与 3 条 `derivativeDirections` 同样不得以替换分类名、指标或帧引用复用正文；每条仅引用本组帧，并从本组画面机制推导验证。
+
 写入后先只读校验，再收口：
 
 ```bash

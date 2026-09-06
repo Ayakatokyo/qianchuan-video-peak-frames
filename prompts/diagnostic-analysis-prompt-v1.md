@@ -43,7 +43,7 @@
 ### Chapter 04：高光画面洞察
 
 只以 `chapter04-highlight-input.json` 和实际查看的 JPEG 生成 `highlightDashboard`、`materialAnalyses[*].highlightAnalyses` 和 `frameCoverageNote`。图像结论不得由脚本文本、文件名或兼容快照代替。
-每个视觉分类的 `commonConclusion` 必须输出 3 个 `{title,body,evidenceRefs}` 分点，`derivativeDirections` 也必须输出 3 个同序 `{title,body,evidenceRefs}` 分点；两组按索引一一对应，分别覆盖主体、信息/动作、迁移验证三个角度，但 `title` 必须是基于该分类事实写成的简短总结性结论（建议 8-24 个中文字符，最多 32 个字符；不是“画面主体与构图”“信息层与动作机制”“可迁移机会”等固定标签），且不同分类不得复用相同标题。正文要给出可执行的验证动作和指标，不能只写短句。
+每个视觉分类的 `commonConclusion` 必须输出 3 个 `{title,body,evidenceRefs}` 分点，`derivativeDirections` 也必须输出 3 个同序 `{title,body,evidenceRefs}` 分点；两组按索引一一对应，分别覆盖主体、信息/动作、迁移验证三个角度，但 `title` 必须是基于该分类事实写成的简短总结性结论（建议 8-24 个中文字符，最多 32 个字符；不是“画面主体与构图”“信息层与动作机制”“可迁移机会”等固定标签），且不同分类不得复用相同标题。正文要给出可执行的验证动作和指标，不能只写短句；删除素材 ID、帧类型、秒数、数值或分类名称后，跨分类与同组分点的正文仍必须保留不同的画面机制、动作和验证设计，禁止在统一的“只改一个变量/控制人群预算/小预算观察指标”句式中仅替换名词。
 
 ### Chapter 05：单素材深度分析
 
@@ -74,7 +74,7 @@
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
 - 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指 `chapter04-highlight-input.json` 的 `materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 至 peak_top_5，也必须分别输出对应分析。
 - 若该素材在 `chapter04-highlight-input.json` 的 `materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 5 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
-- 高光帧的 `visualObservation` 必须来自实际查看 JPEG 的画面观察；`commercialInterpretation` 使用“与点击峰值同时出现”“待验证假设”等谨慎表述。
+- 高光帧的 `visualObservation` 必须来自实际查看 JPEG 的画面观察；每条至少具体说明主体及位置、动作或使用状态、产品/人物/场景关系、字幕或信息层、该帧的叙事作用，以及相对同素材相邻已查看帧的变化。`commercialInterpretation` 必须把该帧独有视觉机制与本素材可用的脚本或互动事实相连，给出谨慎且专属的验证设计；可使用“与点击峰值同时出现”“待验证假设”等措辞，但不得把它们扩展成跨帧复用的固定尾句。删除素材 ID、帧类型、秒数、分类名称和数值后，任意两帧的观察或商业解释仍须可区分，不得用替换变量伪造差异。
 - `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。当前事实包没有脚本分段时码，不得宣称帧对应具体话术，也不得根据整段脚本猜测画面所在秒的话术。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。
 
@@ -96,7 +96,7 @@
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
 - `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的标准分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用该分类 JPEG 的共同可见信号写 3 个分点式 `commonConclusion`，并按相同顺序给出 3 个正文不少于 20 个字符的可验证 `derivativeDirections`；小标题必须是 8-24 个中文字符的短句式总结结论（最多 32 个字符），而不是统一的栏目名；每个分类的标题、正文、验证动作和 evidenceRefs 必须基于本分类独有画面，不得与其他分类复用相同标题或完全相同正文；不得把峰值同时性写成因果。
-  同一次视觉分析还必须输出一个对外名为“本批次分类”的 `customClassification`。为提高本批次分类的细致程度，按成功高光帧总量选择目标粒度：不少于 12 张时优先拆分为 5～8 个类别；6～11 张时优先拆分为 4～6 个类别；少于 6 张时至少拆分为 2 个类别。类别必须由 JPEG 中可观察的主要内容/画面机制支撑，不能仅按颜色、远近、画质或偶然姿态拆分同一机制，也不能为了凑数量制造差异。可适用的机制方向包括人物表达/示范、产品或包装证据、开箱礼赠、使用过程、品质或成分证明、生活场景承接、利益点视觉化、步骤或对比展示，但不要求每个批次都出现全部方向。一个画面存在多个信号时，只归入最主要的主导机制。它只能依据本批次成功高光帧 JPEG 中可观察的内容/画面机制建立至少 2 个互斥业务语义分组；不得依据文件名、素材标题、脚本文本或标准分类猜测。每个分组必须包含 `groupId`、语义化 `groupName`、`description`、`frameRefs`，且不得使用“其他1”“其他2”等占位名称；`frameRefs` 只能引用成功高光帧，所有未归类成功帧必须显式写入 `unclassifiedFrameRefs`，同一帧不得跨组重复。每组必须输出恰好 3 条 `commonConclusion` 和 3 条 `derivativeDirections`，每条都包含标题、正文和属于本组的 `evidenceRefs`。同时填写 `ruleId`、`ruleName`、`ruleDescription`、`ruleVersion`、`inputFrameManifestHash` 和 `availability`。AI 不得输出或修正帧数、占比、覆盖率等统计数字；这些数字由 Presentation 根据成功帧 registry 确定性计算。
+  同一次视觉分析还必须输出一个对外名为“本批次分类”的 `customClassification`。为提高本批次分类的细致程度，按成功高光帧总量选择目标粒度：不少于 12 张时优先拆分为 5～8 个类别；6～11 张时优先拆分为 4～6 个类别；少于 6 张时至少拆分为 2 个类别。类别必须由 JPEG 中可观察的主要内容/画面机制支撑，不能仅按颜色、远近、画质或偶然姿态拆分同一机制，也不能为了凑数量制造差异。可适用的机制方向包括人物表达/示范、产品或包装证据、开箱礼赠、使用过程、品质或成分证明、生活场景承接、利益点视觉化、步骤或对比展示，但不要求每个批次都出现全部方向。一个画面存在多个信号时，只归入最主要的主导机制。它只能依据本批次成功高光帧 JPEG 中可观察的内容/画面机制建立至少 2 个互斥业务语义分组；不得依据文件名、素材标题、脚本文本或标准分类猜测。每个分组必须包含 `groupId`、语义化 `groupName`、`description`、`frameRefs`，且不得使用“其他1”“其他2”等占位名称；`frameRefs` 只能引用成功高光帧，所有未归类成功帧必须显式写入 `unclassifiedFrameRefs`，同一帧不得跨组重复。每组必须输出恰好 3 条 `commonConclusion` 和 3 条 `derivativeDirections`，每条都包含标题、正文和属于本组的 `evidenceRefs`；同组 6 条与跨组同栏 3 条必须围绕该组独有的视觉机制写成，删除分类名、帧标签和数字后仍不得复用正文或验证步骤。同时填写 `ruleId`、`ruleName`、`ruleDescription`、`ruleVersion`、`inputFrameManifestHash` 和 `availability`。AI 不得输出或修正帧数、占比、覆盖率等统计数字；这些数字由 Presentation 根据成功帧 registry 确定性计算。
 - `05｜单素材深度分析`：每个工作区先展示 `materialAnalyses` 中对应的 AI 二次分析，再展示确定性的真实事实数据（包括互动时序分析和脚本分析数据）；高光帧观察保留“视频/高光帧在上、文字分析在下”的事实优先排版。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧不得作为第 01 章证据。
