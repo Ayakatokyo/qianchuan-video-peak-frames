@@ -150,6 +150,17 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
         self.assertIn("验证动作放入 summary 或 sellingPoints", prompt)
         self.assertIn("summary 控制在 60-110 个中文字符", prompt)
 
+    def test_prompt_requires_frame_fact_table_and_template_self_check(self):
+        prompt = DEFAULT_PROMPT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("逐帧事实表", prompt)
+        self.assertIn("独有动作、使用状态或主体关系", prompt)
+        self.assertIn("独有空间、产品状态或构图变化", prompt)
+        self.assertIn("独有字幕/信息层", prompt)
+        self.assertIn("叙事中的新增、转折或收束作用", prompt)
+        self.assertIn("不得先按 zero_second、peak_top_n 或视觉分类套一个通用句式", prompt)
+        self.assertIn("不要为了通过检查添加随机标记、同义词替换或无证据形容词", prompt)
+
     def test_builds_preference_top_materials_above_batch_baseline_by_total_cost(self):
         top_payload = {
             "materials": [

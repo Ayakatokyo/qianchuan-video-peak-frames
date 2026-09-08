@@ -1688,6 +1688,23 @@ def _templated_classification_copy_pairs(groups, section):
     return duplicates
 
 
+def _templated_dashboard_copy_pairs(groups, section):
+    """Return standard-category insight pairs that reuse a prose template."""
+    values = []
+    for group in groups:
+        category = _text(group.get("category"))
+        for index, item in enumerate(group.get(section, [])):
+            value = _text(item.get("body")) if isinstance(item, dict) else ""
+            if category and value:
+                values.append((f"{category}.{section}[{index}]", value))
+    duplicates = []
+    for index, (first_label, first_value) in enumerate(values):
+        for second_label, second_value in values[index + 1:]:
+            if _is_templated_copy_pair(first_value, second_value):
+                duplicates.append((first_label, second_label))
+    return duplicates
+
+
 def _audience_insight_metrics(insight):
     metrics = set()
     for reference in insight.get("evidenceRefs", []):
@@ -1733,6 +1750,18 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
 
     failures = []
     minimums = AI_QUALITY_MINIMUMS
+    has_successful_highlight_frames = any(
+        card.get("extractionStatus") == "succeeded" and card.get("highlightFrames")
+        for card in material_cards
+    )
+    if (
+        conclusion.get("schemaVersion") == 5
+        and has_successful_highlight_frames
+        and not isinstance(
+        conclusion.get("customClassification"), dict
+        )
+    ):
+        failures.append("customClassification is required for schemaVersion 5")
     keyword_cloud_insight = conclusion.get("keywordCloudInsight")
     if isinstance(keyword_cloud_insight, dict):
         for failure in _validate_keyword_cloud_one_sentence(
@@ -1935,6 +1964,17 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
                     + ", ".join(f"{first}/{second}" for first, second in templated)
                 )
 
+    if conclusion.get("schemaVersion") == 5:
+        dashboard_groups = conclusion.get("highlightDashboard", {}).get("groups", [])
+        templated = _templated_dashboard_copy_pairs(
+            dashboard_groups, "derivativeDirections"
+        )
+        if templated:
+            failures.append(
+                "highlightDashboard derivativeDirections has copied or overly similar bodies "
+                + ", ".join(f"{first}/{second}" for first, second in templated)
+            )
+
     if failures:
         raise FinalReportError("AI quality gate: " + "; ".join(failures))
 
@@ -1943,6 +1983,17 @@ def _validate_standard_ai_quality(conclusion, material_cards):
     if not conclusion or conclusion.get("schemaVersion") not in {4, 5}:
         raise FinalReportError(
             "AI quality gate requires schemaVersion 4 or 5 with highlightDashboard"
+        )
+    has_successful_highlight_frames = any(
+        card.get("extractionStatus") == "succeeded" and card.get("highlightFrames")
+        for card in material_cards
+    )
+    if (
+        has_successful_highlight_frames
+        and not isinstance(conclusion.get("customClassification"), dict)
+    ):
+        raise FinalReportError(
+            "AI quality gate: customClassification is required for schemaVersion 5"
         )
     _validate_v2_analysis_quality(conclusion, material_cards)
 

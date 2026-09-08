@@ -21,6 +21,7 @@ from final_report_lib import (  # noqa: E402
     _duplicate_highlight_interpretations,
     _templated_highlight_copy_pairs,
     _templated_classification_copy_pairs,
+    _templated_dashboard_copy_pairs,
     _validate_custom_classification,
 )
 from final_report_lib import generate_final_report  # noqa: E402
@@ -2515,6 +2516,53 @@ class FinalReportQualityGateTests(unittest.TestCase):
             [("highlight:m-1:peak_top_1", "highlight:m-2:peak_top_4")],
         )
 
+    def test_template_gate_rejects_current_run_style_fact_label_substitution(self):
+        analyses = [
+            {
+                "materialId": "m-1",
+                "highlightAnalyses": [{
+                    "frameRef": "highlight:m-1:zero_second",
+                    "visualObservation": "厨房中女性转身与男性对话的生活场景：主体占据画面中心，空间边界和第一层字幕共同建立进入理由。同时可见暖灯与木门形成居家纵深，这一组合使本帧与其他镜头的观看入口有所区别。审阅标记 a1b2c3d4。",
+                    "commercialInterpretation": "厨房中女性转身与男性对话的生活场景可承担开场主体与空间先建立观看入口的理解任务，但不能把画面出现直接归因为成交原因。可作为生活入口测试，但需要和商品理由分开对照，避免把停留直接解释成成交。本帧应结合暖灯与木门形成居家纵深做单变量对照，复核点击后的成交质量。审阅标记 a1b2c3d4。",
+                }, {
+                    "frameRef": "highlight:m-1:peak_top_1",
+                    "visualObservation": "厨房中女性转身与男性对话的生活场景：手部或身体动作把观看焦点带向前景物件，背景信息退到辅助位置。同时可见暖灯与木门形成居家纵深，这一组合使本帧与其他镜头的观看入口有所区别。审阅标记 10293847。",
+                    "commercialInterpretation": "厨房中女性转身与男性对话的生活场景可承担手部动作把注意力落到可见对象的理解任务，但不能把画面出现直接归因为成交原因。动作与前景物件的连接值得保留，后续只改字幕或产品露出以观察转化承接。本帧应结合暖灯与木门形成居家纵深做单变量对照，复核点击后的成交质量。审阅标记 10293847。",
+                }],
+            },
+            {
+                "materialId": "m-2",
+                "highlightAnalyses": [{
+                    "frameRef": "highlight:m-2:zero_second",
+                    "visualObservation": "餐桌前男性坐姿和手边物件形成的日常场景：主体占据画面中心，空间边界和第一层字幕共同建立进入理由。同时可见灰衣与木桌强调近距离交流，这一组合使本帧与其他镜头的观看入口有所区别。审阅标记 e5f6a7b8。",
+                    "commercialInterpretation": "餐桌前男性坐姿和手边物件形成的日常场景可承担开场主体与空间先建立观看入口的理解任务，但不能把画面出现直接归因为成交原因。可作为生活入口测试，但需要和商品理由分开对照，避免把停留直接解释成成交。本帧应结合灰衣与木桌强调近距离交流做单变量对照，复核点击后的成交质量。审阅标记 e5f6a7b8。",
+                }],
+            },
+        ]
+
+        self.assertTrue(_templated_highlight_copy_pairs(analyses, "visualObservation"))
+        self.assertTrue(_templated_highlight_copy_pairs(analyses, "commercialInterpretation"))
+
+    def test_template_gate_accepts_frame_specific_observation_and_mechanism(self):
+        analyses = [{
+            "materialId": "m-1",
+            "highlightAnalyses": [
+                {
+                    "frameRef": "highlight:m-1:zero_second",
+                    "visualObservation": "左侧人物端着透明玻璃碗站在厨房操作台前，右下角小字只标注食用场景；背景的灶台和暖光把产品放进日常准备动作，作为从生活场景进入内容物展示的开场。",
+                    "commercialInterpretation": "这帧以人物端碗和厨房操作建立使用场景，适合与同素材的纯产品开场做场景代入假设对照；保持产品规格与字幕信息不变，仅切换开场关系，比较后续点击与成交是否同时改善，不能把开场出现直接认定为成交原因。",
+                },
+                {
+                    "frameRef": "highlight:m-1:peak_top_1",
+                    "visualObservation": "镜头收紧到桌面中央的红盖瓶和勺中拉起的内容物，人物退出画面；上方价格条覆盖部分背景，质地细节与单品包装同时成为焦点，叙事从场景说明转为可检查的产品证据。",
+                    "commercialInterpretation": "这帧的勺中质地和单瓶近景提供可检查的产品证据，可测试它是否比生活场景更有利于承接商品理解；保持时长和投放条件一致，只将近景证据替换为无勺的包装静物，观察点击后的成交质量差异。",
+                },
+            ],
+        }]
+
+        self.assertEqual(_templated_highlight_copy_pairs(analyses, "visualObservation"), [])
+        self.assertEqual(_templated_highlight_copy_pairs(analyses, "commercialInterpretation"), [])
+
     def test_template_gate_rejects_reused_batch_classification_direction_body(self):
         groups = [
             {
@@ -2537,6 +2585,60 @@ class FinalReportQualityGateTests(unittest.TestCase):
             _templated_classification_copy_pairs(groups, "derivativeDirections"),
             [("身份叙事.derivativeDirections[0]", "包装价值.derivativeDirections[0]")],
         )
+
+    def test_template_gate_rejects_reused_standard_category_direction_body(self):
+        groups = [
+            {"category": "portrait", "derivativeDirections": [{"body": "保留人物动作，下一轮只改变一个变量并比较点击率与成交金额。"}]},
+            {"category": "product", "derivativeDirections": [{"body": "保留人物动作，下一轮只改变一个变量并比较点击率与成交金额。"}]},
+        ]
+        self.assertEqual(
+            _templated_dashboard_copy_pairs(groups, "derivativeDirections"),
+            [("portrait.derivativeDirections[0]", "product.derivativeDirections[0]")],
+        )
+
+    def test_quality_gate_requires_custom_classification_for_successful_frames(self):
+        conclusion = self._keyword_cloud_quality_conclusion(
+            "福利机制与品质场景共同构成购买记忆入口。"
+        )
+        conclusion["schemaVersion"] = 5
+        conclusion.pop("customClassification", None)
+        cards = [{
+            "materialId": "m-1",
+            "extractionStatus": "succeeded",
+            "highlightFrames": [{"rankType": "zero_second"}],
+        }]
+        with self.assertRaisesRegex(FinalReportError, "customClassification is required"):
+            _validate_v2_analysis_quality(conclusion, cards)
+
+    def test_quality_gate_requires_custom_classification_to_cover_successful_frames(self):
+        conclusion = self._keyword_cloud_quality_conclusion(
+            "福利机制与品质场景共同构成购买记忆入口。"
+        )
+        conclusion["schemaVersion"] = 5
+        conclusion["customClassification"] = {
+            "ruleId": "batch_visual_mechanism_v1",
+            "ruleName": "本批次画面机制分类",
+            "ruleDescription": "按画面机制分组",
+            "ruleVersion": "v1",
+            "inputFrameManifestHash": "sha256:test",
+            "groups": [{
+                "groupId": "g1", "groupName": "人物表达", "description": "人物主导画面",
+                "frameRefs": [], "commonConclusion": [], "derivativeDirections": [],
+            }, {
+                "groupId": "g2", "groupName": "产品证据", "description": "产品主导画面",
+                "frameRefs": [], "commonConclusion": [], "derivativeDirections": [],
+            }],
+            "unclassifiedFrameRefs": [],
+        }
+        cards = [{
+            "materialId": "m-1",
+            "extractionStatus": "succeeded",
+            "highlightFrames": [{"rankType": "zero_second"}],
+        }]
+        with self.assertRaisesRegex(FinalReportError, "customClassification.*frame"):
+            _validate_custom_classification(
+                conclusion["customClassification"], {"highlight:m-1:zero_second"}
+            )
 
     def test_standard_quality_gate_accepts_v5_analysis_with_dashboard(self):
         concise_dimension = "该维度保留一个可核验事实，给出谨慎判断，并明确下一轮只改变一个创意变量进行验证。" * 2
