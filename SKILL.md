@@ -18,9 +18,15 @@ metadata:
 - **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
 - **长任务**：`prepare` 是单一长任务；无实时进度不要另起运行或手工干预。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复只查询已保存远端 ID，**不得重复提交**。
 
+## 已落盘数据接续
+
+用户要求“用已有数据继续分析/重做报告”时，先读指定 run 的摘要、事实包 manifest 和实际产物，按[运维手册的已落盘分析接续](references/qianchuan-operations-runbook.md#已落盘分析接续)选择起点；不要默认执行 `prepare`。用户未指定来源时核对店铺、周期、素材集合和 manifest，不能只按目录日期或修改时间认定“最新”。已有信息足够则直接接续，不重复索要授权参数。
+
+当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先完整分批读取事实、查看图片并保存观察要点，再生成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
+
 ## 标准流程
 
-### 1. 准备事实包
+### 1. 准备事实包（首次采集）
 
 每次使用同一个 `$PWD/runs/<run-id>`，不得写入技能安装目录：
 
@@ -46,13 +52,13 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 #### AI 交接前置检查
 
-先读取事实包和提示词（manifest、五个章节事实包和唯一 Prompt），核对字节数、SHA-256、素材数、成功帧数、`missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看 JPEG。帧审阅按素材串行：**每个素材一批**、每批不超过 6 帧；每帧只记录 **每帧 3-4 条独有要点**（主体/动作/信息层/与相邻帧的变化），不在此阶段扩写经营结论。每批结束立即按运维手册更新 `frame-review-progress.json`，最终业务表述仅在后续唯一 AI JSON 调用中生成。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
+先按 manifest 校验文件，再按章节、素材完整分批读取事实包和提示词（manifest、五个章节事实包和唯一 Prompt）；记录已读取的 JSON 路径，输出截断不算已读取，不用 head/抽样代替全量读取。核对字节数、SHA-256、素材数、成功帧数、`missingFrames`，再按 `chapter04-highlight-input.json` 的 `framePath` 实际查看 JPEG。帧审阅按素材串行：**每个素材一批**、每批不超过 6 帧；每帧只记录 **每帧 3-4 条独有要点**（主体/动作/信息层/与相邻帧的变化），不在此阶段扩写经营结论。每批结束立即按运维手册更新 `frame-review-progress.json`，最终业务表述仅在后续唯一 AI JSON 调用中生成。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
 
-当前对话模型在**一次模型调用**中统一读取五个事实包，并一次写入 `diagnostic-analysis/diagnostic-ai-analysis.json`（`schemaVersion: 5`）；不得拆分调用、使用外部模型、`codex exec`、子进程或子代理。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 180-260 字，含至少三项判断和分阶段动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
+“一次模型调用”指最终正式分析统一输出；此前允许当前模型多轮读取工具、查看图片和保存简短事实笔记，不要求把全部文件塞进一条工具响应。当前对话模型综合已完整读取的五个事实包，并一次写入 `diagnostic-analysis/diagnostic-ai-analysis.json`（`schemaVersion: 5`）；不得拆分调用、使用外部模型、`codex exec`、子进程或子代理。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 180-260 字，含至少三项判断和分阶段动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
 
 以该提示词为 AI JSON 输出契约，按其字段、证据、覆盖、枚举和长度规则生成结果：每个成功 JPEG 都有分析，`missingFrames` 写入 `frameCoverageNote`；引用逐字复用事实包标识。`preferencesByMetric` 仅供 drill-down，AI 不读取其 TOP3 字段。v4 仅用于历史报告兼容。`keywordCloudInsight.oneSentenceConclusion` 为 28-45 个中文字符的单一核心判断；summary 控制在 60-110 个中文字符，验证动作放入 summary 或 sellingPoints；不得重复关键词频次、卖点卡片和验证动作。
 
-逐帧分析必须由实际 JPEG 的独有内容写成：观察同时交代主体/位置、动作或使用状态、人物产品场景关系、信息层、叙事作用和相邻帧变化；商业解释对应本帧视觉机制及该素材的脚本或互动事实。删除素材 ID、帧类型、秒数、数值和分类名后，任意两条逐帧观察或商业解释仍须可区分。`customClassification` 的每组 3 条 `commonConclusion` 与 3 条 `derivativeDirections` 同样不得以替换分类名、指标或帧引用复用正文；每条仅引用本组帧，并从本组画面机制推导验证。
+逐帧分析必须由实际 JPEG 的独有内容写成：观察同时交代主体/位置、动作或使用状态、人物产品场景关系、信息层、叙事作用和相邻帧变化；商业解释对应本帧视觉机制及该素材的脚本或互动事实。对内容不同的 JPEG，删除素材 ID、帧类型、秒数、数值和分类名后，逐帧观察仍应体现实际差异。同一图片经本地文件 SHA-256 核验相同时允许相同视觉观察，逐个保留 frameRef；不得虚构独有动作或字幕。商业解释仍须依据本素材事实，图片相同不能豁免商业解释的模板校验。若没有可支持的差异或假设，记录证据限制并定位门禁冲突，不以改写词句凑过关。`customClassification` 的每组 3 条 `commonConclusion` 与 3 条 `derivativeDirections` 同样不得以替换分类名、指标或帧引用复用正文；每条仅引用本组帧，并从本组画面机制推导验证。
 
 写入后先只读校验，再收口：
 
@@ -62,7 +68,7 @@ python scripts/run_standard_analysis.py validate-analysis \
   --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-失败只修正报错字段并重跑校验，不重跑 `prepare`；通过后执行 `finalize`。`finalize` 会再次执行同一门禁。
+失败先按运维手册区分状态、证据引用、结构、内容和资源问题，再由当前模型修正有证据支持的报错字段；用户要求全新分析时，写新候选文件，不改旧 JSON。不得用临时脚本填长文、删必填分类或绕过质量门禁。没有新证据的同类错误不做机械循环，不重跑 `prepare`；通过后执行 `finalize`。`finalize` 会再次执行同一门禁。
 
 ### 4. 交付
 

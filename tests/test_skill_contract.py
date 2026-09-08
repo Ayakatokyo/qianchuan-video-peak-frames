@@ -158,7 +158,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
         self.assertIn("AI 交接前置检查", skill)
-        self.assertIn("先读取事实包和提示词", skill)
+        self.assertIn("按章节、素材完整分批读取事实包和提示词", skill)
         self.assertIn("素材数、成功帧数", skill)
         self.assertIn("missingFrames", skill)
 
@@ -303,7 +303,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
     def test_runbook_owns_wave_recovery_commands(self):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("仅在标准工作流失败且需要排障时使用", runbook)
+        self.assertIn("已落盘分析接续", runbook)
         self.assertIn("repair_manifest.py", runbook)
         self.assertIn("--resume", runbook)
         self.assertIn("不重新调用 RPA", runbook)

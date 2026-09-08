@@ -18,6 +18,7 @@ from final_report_lib import (  # noqa: E402
     _validate_standard_ai_quality,
     _validate_v2_analysis_quality,
     _duplicate_highlight_observations,
+    _local_frame_hashes,
     _duplicate_highlight_interpretations,
     _templated_highlight_copy_pairs,
     _templated_classification_copy_pairs,
@@ -2475,6 +2476,59 @@ class FinalReportQualityGateTests(unittest.TestCase):
             _duplicate_highlight_observations("m-1", highlights),
             [("highlight:m-1:peak_top_1", "highlight:m-1:peak_top_2")],
         )
+
+    def test_identical_local_images_allow_shared_observation_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "first.jpg"
+            second = Path(directory) / "second.jpg"
+            first.write_bytes(b"same local image bytes")
+            second.write_bytes(first.read_bytes())
+            cards = [{"materialId": "m-1", "extractionStatus": "succeeded", "highlightFrames": [
+                {"rankType": "peak_top_1", "framePath": str(first)},
+                {"rankType": "peak_top_2", "framePath": str(second)},
+            ]}]
+            refs = ["highlight:m-1:peak_top_1", "highlight:m-1:peak_top_2"]
+            highlights = [{"frameRef": ref, "visualObservation": "同一画面中人物举起礼盒。",
+                           "commercialInterpretation": "相同的商业解释。"} for ref in refs]
+            analyses = [{"materialId": "m-1", "highlightAnalyses": highlights}]
+            hashes = _local_frame_hashes(cards)
+            self.assertEqual(_duplicate_highlight_observations("m-1", highlights, hashes), [])
+            self.assertEqual(_templated_highlight_copy_pairs(analyses, "visualObservation", hashes), [])
+            self.assertTrue(_templated_highlight_copy_pairs(analyses, "commercialInterpretation", hashes))
+            conclusion = self._keyword_cloud_quality_conclusion("福利机制已成为脚本建立核心记忆并推动首次购买决策的主导驱动。")
+            analysis = analyses[0]
+            for field in ("audienceConclusion", "scriptConclusion", "interactionConclusion", "integratedConclusion", "nextAction"):
+                analysis[field] = "本素材证据支持的分析。" * 30
+            analysis["evidenceRefs"] = [refs[0]]
+            conclusion["materialAnalyses"] = analyses
+            with self.assertRaises(FinalReportError) as error:
+                _validate_v2_analysis_quality(conclusion, cards)
+            self.assertNotIn("repeated visualObservation", str(error.exception))
+            self.assertNotIn("templated visualObservation", str(error.exception))
+            self.assertIn("commercialInterpretation", str(error.exception))
+            second.write_bytes(b"a different local image")
+            hashes = _local_frame_hashes(cards)
+            self.assertTrue(_duplicate_highlight_observations("m-1", highlights, hashes))
+            self.assertTrue(_templated_highlight_copy_pairs(analyses, "visualObservation", hashes))
+            second.unlink()
+            self.assertTrue(_templated_highlight_copy_pairs(analyses, "visualObservation", _local_frame_hashes(cards)))
+
+    def test_frame_hash_exception_does_not_trust_declared_hashes_or_empty_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            empty = Path(directory) / "empty.jpg"
+            empty.touch()
+            link = Path(directory) / "link.jpg"
+            real = Path(directory) / "real.jpg"
+            real.write_bytes(b"nonempty")
+            link.symlink_to(real)
+            cards = [{"materialId": "m-1", "extractionStatus": "succeeded", "highlightFrames": [
+                {"rankType": "zero_second", "framePath": str(empty), "sha256": "fake"},
+                {"rankType": "peak_top_1", "framePath": str(link), "sha256": "fake"},
+                {"rankType": "peak_top_2", "framePath": str(real), "sha256": "fake"},
+            ]}]
+            hashes = _local_frame_hashes(cards)
+            self.assertEqual(set(hashes), {"highlight:m-1:peak_top_2"})
+            self.assertNotEqual(hashes["highlight:m-1:peak_top_2"], "fake")
 
     def test_duplicate_highlight_interpretations_are_detected_per_material(self):
         highlights = [

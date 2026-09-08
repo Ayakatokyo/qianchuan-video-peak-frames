@@ -1,4 +1,5 @@
 import ast
+import hashlib
 from copy import deepcopy
 from difflib import SequenceMatcher
 import json
@@ -1581,7 +1582,32 @@ def _repeated_values(items, field_name):
     return [material_ids for material_ids in values.values() if len(material_ids) > 1]
 
 
-def _duplicate_highlight_observations(material_id, highlights):
+def _local_frame_hashes(material_cards):
+    """Derive image identity from retained files, never from AI-supplied metadata."""
+    hashes = {}
+    for card in material_cards:
+        if card.get("extractionStatus") != "succeeded":
+            continue
+        for frame in card.get("highlightFrames", []):
+            path = Path(frame.get("framePath") or "")
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            if raw:
+                ref = f"highlight:{card['materialId']}:{frame['rankType']}"
+                hashes[ref] = hashlib.sha256(raw).hexdigest()
+    return hashes
+
+
+def _same_local_frame(first_ref, second_ref, frame_hashes):
+    first_hash = (frame_hashes or {}).get(first_ref)
+    return bool(first_hash and first_hash == (frame_hashes or {}).get(second_ref))
+
+
+def _duplicate_highlight_observations(material_id, highlights, frame_hashes=None):
     """Return frame-reference pairs whose observations only differ by frame labels."""
     by_observation = {}
     for highlight in highlights:
@@ -1599,7 +1625,8 @@ def _duplicate_highlight_observations(material_id, highlights):
     for frame_refs in by_observation.values():
         if len(frame_refs) > 1:
             first = frame_refs[0]
-            duplicates.extend((first, other) for other in frame_refs[1:])
+            duplicates.extend((first, other) for other in frame_refs[1:]
+                              if not _same_local_frame(first, other, frame_hashes))
     return duplicates
 
 
@@ -1654,7 +1681,7 @@ def _is_templated_copy_pair(first, second):
     )
 
 
-def _templated_highlight_copy_pairs(analyses, field_name):
+def _templated_highlight_copy_pairs(analyses, field_name, frame_hashes=None):
     """Return cross-frame pairs that reuse a template after variable labels vanish."""
     values = []
     for analysis in analyses:
@@ -1666,6 +1693,8 @@ def _templated_highlight_copy_pairs(analyses, field_name):
     duplicates = []
     for index, (first_ref, first_value) in enumerate(values):
         for second_ref, second_value in values[index + 1:]:
+            if field_name == "visualObservation" and _same_local_frame(first_ref, second_ref, frame_hashes):
+                continue
             if _is_templated_copy_pair(first_value, second_value):
                 duplicates.append((first_ref, second_ref))
     return duplicates
@@ -1750,6 +1779,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
 
     failures = []
     minimums = AI_QUALITY_MINIMUMS
+    frame_hashes = _local_frame_hashes(material_cards)
     has_successful_highlight_frames = any(
         card.get("extractionStatus") == "succeeded" and card.get("highlightFrames")
         for card in material_cards
@@ -1907,7 +1937,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
                     f"{minimums['commercialInterpretation']} characters"
                 )
         duplicate_frames = _duplicate_highlight_observations(
-            material_id, analysis["highlightAnalyses"]
+            material_id, analysis["highlightAnalyses"], frame_hashes
         )
         if duplicate_frames:
             failures.append(
@@ -1942,7 +1972,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
             )
 
     for field_name in ("visualObservation", "commercialInterpretation"):
-        templated = _templated_highlight_copy_pairs(successful_analyses, field_name)
+        templated = _templated_highlight_copy_pairs(successful_analyses, field_name, frame_hashes)
         if templated:
             failures.append(
                 "materialAnalyses.highlightAnalyses has templated "
