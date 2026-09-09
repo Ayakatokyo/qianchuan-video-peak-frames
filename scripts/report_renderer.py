@@ -700,6 +700,7 @@ def report_data_for_template(
     return {
         "schemaVersion": data.get("schemaVersion"),
         "presentation": template_data_presentation,
+        "analysisQuality": deepcopy(data.get("analysisQuality", {})),
         "generatedAt": data.get("generatedAt"),
         "runId": data.get("runId")
         or (data.get("pipelineSummary") or {}).get("runId"),

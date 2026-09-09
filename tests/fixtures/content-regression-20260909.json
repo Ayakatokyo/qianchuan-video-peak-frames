@@ -1,0 +1,96 @@
+{
+  "analysisProvenance": {"author": "current_model", "businessTextGeneration": "direct"},
+  "keywordCloudReview": [
+    {"keyword": "看看", "decision": "exclude"},
+    {"keyword": "关键", "decision": "exclude"},
+    {"keyword": "夜色", "decision": "exclude"}
+  ],
+  "keywordCloudInsight": {
+    "analysisStatus": "supported",
+    "limitation": "本样例分析脚本表达，不验证广告中的营养功效或实际到手价格。重复脚本的词频不能解释为独立消费者认同。",
+    "oneSentenceConclusion": "脚本用购买门槛吸引关注，再以配料透明和食用场景承接购买理由。",
+    "summary": "福利话术回答买得值不值，配料与溯源回答为何放心，早餐表达回答何时使用；三者承担不同说服任务。可分别检验福利是否被理解、配料是否被记住及场景是否引发代入，不能由词频判断转化因果。",
+    "sellingPoints": [
+      {"dimension": "购买价值", "title": "组合赠送将囤货理由具体化", "description": "脚本明确列出到手84瓶、燕窝粥和蛋白饮等赠品，将价格优惠转成可理解的组合内容。适合核对观众能否分清主品与赠品，不将宣传数量或价格当作当前成交承诺。", "keywordRefs": ["福利", "加送"], "evidenceRefs": ["script:7669725885080436779:text:福利", "script:7669725885080436779:text:加送"]},
+      {"dimension": "配料与信任", "title": "简单配料加溯源回应放心吃", "description": "一条脚本同时说明燕窝、冰糖、纯净水和每瓶溯源码，提供可核对的信任线索。下一版可将配料说明与溯源码展示分开检验信息记忆，不能据此推导安全性或营养优越性。", "keywordRefs": ["配料表", "溯源"], "evidenceRefs": ["script:7663436424943517723:text:配料表", "script:7663436424943517723:text:溯源"]},
+      {"dimension": "日常食用场景", "title": "早餐搭配让使用时机可想象", "description": "脚本直接说每天早餐搭配小仙瓶，给出日常使用时点。它与囤货优惠和配料解释不同，解决何时用的问题；可对照早餐桌场景与无场景介绍的理解差异，不能将季节宣传解释为已证实的健康效果。", "keywordRefs": ["早餐", "搭配"], "evidenceRefs": ["script:7679012713931423770:text:早餐", "script:7679012713931423770:text:搭配"]}
+    ]
+  },
+  "customClassification": {
+    "ruleId": "observed-mechanisms-20260909",
+    "ruleName": "画面信息传递机制",
+    "ruleDescription": "按当前帧主要信息机制互斥归类；相同JPEG保留全部引用。七组是本批图像审阅结果，不是通用数量要求。",
+    "ruleVersion": "1",
+    "inputFrameManifestHash": "85b0c0705b6fdf1dbed4a0bfff406299c5ce9c46576595139b6a4c3e0e82c63a",
+    "availability": "available",
+    "unclassifiedFrameRefs": [],
+    "groups": [
+      {
+        "groupId": "instruction", "groupName": "图文使用时机", "description": "产品瓶图与早晚编号、生活状态图标并置。",
+        "frameRefs": ["highlight:7663436424943517723:zero_second", "highlight:7663436424943517723:peak_top_4", "highlight:7675952204295880754:zero_second", "highlight:7675952204295880754:peak_top_4", "highlight:7595763034191314963:zero_second", "highlight:7595763034191314963:peak_top_4", "highlight:7664891260353691674:zero_second", "highlight:7664891260353691674:peak_top_4", "highlight:7668663443726172214:zero_second", "highlight:7668663443726172214:peak_top_4"],
+        "commonConclusion": [{"title": "编号和图标组织使用时机", "body": "早晚两行各配瓶图和生活状态图标，观众可按行扫描何时使用。相邻帧只是构图尺度变化，没有新信息；图中的代餐等文字只是广告表达，不能据此认可食用建议。", "evidenceRefs": ["highlight:7663436424943517723:zero_second", "highlight:7663436424943517723:peak_top_4"]}],
+        "derivativeDirections": [{"title": "减少单屏使用时机", "body": "保留瓶图和早餐时点，将原来早晚两行改为只显示早餐一行；对照两版首屏信息回忆与停留，检验信息密度，而非增加健康承诺。", "evidenceRefs": ["highlight:7663436424943517723:zero_second"]}]
+      },
+      {
+        "groupId": "endorsement", "groupName": "人物使用与品牌背书", "description": "人物食用拼贴、品牌页面及活动影像提供不同背书线索。",
+        "frameRefs": ["highlight:7663436424943517723:peak_top_2", "highlight:7663436424943517723:peak_top_3", "highlight:7675952204295880754:peak_top_2", "highlight:7675952204295880754:peak_top_3", "highlight:7595763034191314963:peak_top_2", "highlight:7595763034191314963:peak_top_3", "highlight:7664891260353691674:peak_top_2", "highlight:7664891260353691674:peak_top_3", "highlight:7668663443726172214:peak_top_2", "highlight:7668663443726172214:peak_top_3", "highlight:7576501115602812938:zero_second", "highlight:7576501115602812938:peak_top_1", "highlight:7576501115602812938:peak_top_2"],
+        "commonConclusion": [
+          {"title": "使用动作把人物与商品相连", "body": "人物举瓶或舀食时商品同时出现，拼贴将多段食用动作集中到一屏，品牌关联可见；这不能证明人物真实长期消费或任何使用效果。", "evidenceRefs": ["highlight:7663436424943517723:peak_top_2", "highlight:7576501115602812938:zero_second"]},
+          {"title": "页面与活动片段传递出处感", "body": "带页面控件的商品图与摄影现场分别提供页面来源和活动场景线索，其作用不同于直接食用示范。图上身份或代言文字只能作为广告所展示的信息，需另行核实授权。", "evidenceRefs": ["highlight:7663436424943517723:peak_top_3", "highlight:7576501115602812938:peak_top_2"]}
+        ],
+        "derivativeDirections": [
+          {"title": "检验拼贴的信息竞争", "body": "在已有授权素材内，保留同一食用动作和品牌露出，将三画面拼贴改为单画面；对照品牌回忆与首段留存，判断多人物是否分散注意。", "evidenceRefs": ["highlight:7663436424943517723:peak_top_2"]},
+          {"title": "让背书画面先展示关联物", "body": "活动片段先出现可辨识产品再切人物，与原先捧花和摄影师先入画对照；保持片段长度一致，检验观众能否识别背书指向的品牌。", "evidenceRefs": ["highlight:7576501115602812938:peak_top_2"]}
+        ]
+      },
+      {
+        "groupId": "bundle", "groupName": "数量与赠品可视化", "description": "开箱、叠瓶、递赠品和价签把组合规模具象化。",
+        "frameRefs": ["highlight:7663436424943517723:peak_top_1", "highlight:7675952204295880754:peak_top_1", "highlight:7595763034191314963:peak_top_1", "highlight:7664891260353691674:peak_top_1", "highlight:7668663443726172214:peak_top_1", "highlight:7679250070958784562:peak_top_2", "highlight:7679250070958784562:peak_top_3", "highlight:7679250070958784562:peak_top_5", "highlight:7576501115602812938:peak_top_4", "highlight:7576501115602812938:peak_top_5", "highlight:7673083026398953481:peak_top_1", "highlight:7673083026398953481:peak_top_2", "highlight:7673083026398953481:peak_top_3", "highlight:7679012713931423770:zero_second"],
+        "commonConclusion": [
+          {"title": "排布呈现可获得的规模", "body": "整盒瓶装和透明盒叠瓶用重复排列展示规模，字幕再补充月度价格或折扣。可见数量感不等于实际成交数量，不能从有限帧重新数出整单权益。", "evidenceRefs": ["highlight:7663436424943517723:peak_top_1", "highlight:7673083026398953481:peak_top_2"]},
+          {"title": "递入赠品建立增加感", "body": "一人递入蛋白饮与随后冰箱、加热器同屏，画面由主品扩展到多种赠品；与静态堆瓶相比，这种动作提示权益增加，也可能增加辨认负担。", "evidenceRefs": ["highlight:7679250070958784562:peak_top_5", "highlight:7679250070958784562:peak_top_3"]}
+        ],
+        "derivativeDirections": [
+          {"title": "比较排列方式的识别效率", "body": "维持同一实际主品数量，将多层叠放改为单层分区展示，折扣字幕位置保持一致；测主品数量理解与点击，避免把遮挡差异误认为价格差异。", "evidenceRefs": ["highlight:7673083026398953481:peak_top_2"]},
+          {"title": "逐项呈现赠品归属", "body": "保留递入蛋白饮的动作，给主品和赠品设置分开的落位区；对照全部堆在中央的版本，观察赠品记忆及主赠品混淆，优惠条件保持一致。", "evidenceRefs": ["highlight:7679250070958784562:peak_top_5"]}
+        ]
+      },
+      {
+        "groupId": "scene", "groupName": "关系互动带入生活情境", "description": "厨房、冰箱、街头提袋和庭院递瓶呈现使用或购买情境。",
+        "frameRefs": ["highlight:7669725885080436779:zero_second", "highlight:7669725885080436779:peak_top_4", "highlight:7669725885080436779:peak_top_3", "highlight:7669725885080436779:peak_top_5", "highlight:7679250070958784562:zero_second", "highlight:7679250070958784562:peak_top_1", "highlight:7673083026398953481:zero_second", "highlight:7673083026398953481:peak_top_5"],
+        "commonConclusion": [
+          {"title": "家务动作提供商品入场前提", "body": "厨房切菜或打开冰箱先给出生活动作，随后举出红色礼盒，让产品进入已有情境。场景本身不能证明冷链状态，也不能把人物外观当作产品效果。", "evidenceRefs": ["highlight:7669725885080436779:peak_top_4", "highlight:7679250070958784562:zero_second", "highlight:7679250070958784562:peak_top_1"]},
+          {"title": "递瓶与提袋表现人际交流", "body": "庭院人物向前递瓶，街头人物提着透明礼袋交流，使商品成为互动对象。前者聚焦单瓶交付，后者展示整套携带，不能直接推断真实赠礼关系或购买动机。", "evidenceRefs": ["highlight:7673083026398953481:peak_top_5", "highlight:7669725885080436779:peak_top_3"]}
+        ],
+        "derivativeDirections": [
+          {"title": "提前商品首次可见时点", "body": "厨房场景保持人物和切菜动作，将礼盒从后续举起改为开场已放在台面；比较首段品牌识别与留存，验证生活铺垫是否过长。", "evidenceRefs": ["highlight:7679250070958784562:zero_second", "highlight:7679250070958784562:peak_top_1"]},
+          {"title": "明确递瓶的接收动作", "body": "保留庭院递瓶近景，新增接收者手部进入画面，与只伸向镜头的版本对照；观察互动含义是否更清晰，不能借此增加未经证实的功效字幕。", "evidenceRefs": ["highlight:7673083026398953481:peak_top_5"]}
+        ]
+      },
+      {
+        "groupId": "purchase", "groupName": "手机页面指引购买", "description": "手机页面和手指位置建立操作指引。",
+        "frameRefs": ["highlight:7669725885080436779:peak_top_1", "highlight:7669725885080436779:peak_top_2"],
+        "commonConclusion": [{"title": "屏幕朝向决定路径可读性", "body": "桌上手机在一帧中较小，举向镜头后商品页和手指位置更清楚；人物表情不是机制核心，页面是否能读才决定指引是否成立。细小价格文字仍不可核实。", "evidenceRefs": ["highlight:7669725885080436779:peak_top_1", "highlight:7669725885080436779:peak_top_2"]}],
+        "derivativeDirections": [{"title": "放大手机里的操作区域", "body": "保留同一商品页和指向动作，将构图裁到屏幕及手指，和人物半身版本对照；测观众能否说出下一步点击区域，不改页面权益与价格。", "evidenceRefs": ["highlight:7669725885080436779:peak_top_1"]}]
+      },
+      {
+        "groupId": "texture", "groupName": "器皿与流动展示质地", "description": "透明碗、倒出、搅拌、提起等动作展示内容物外观。",
+        "frameRefs": ["highlight:7576501115602812938:peak_top_3", "highlight:7679012713931423770:peak_top_1", "highlight:7679012713931423770:peak_top_2", "highlight:7679012713931423770:peak_top_3", "highlight:7679012713931423770:peak_top_4", "highlight:7679012713931423770:peak_top_5"],
+        "commonConclusion": [
+          {"title": "透明器皿暴露内容物形态", "body": "双瓶倒入透明碗与叉子搅动让内容物从包装内转成可直接观察的形态，信息来自外观而非配料标签；不能仅凭透明度和稠度证明原料纯度。", "evidenceRefs": ["highlight:7679012713931423770:peak_top_1", "highlight:7576501115602812938:peak_top_3"]},
+          {"title": "提起形成延伸和回落线索", "body": "叉子抬起后可见透明内容物向碗内延伸，相比叉子仍在碗里的帧，运动状态更便于展示黏连外观。多帧为同一演示阶段，不能逐帧编出不同营养机制。", "evidenceRefs": ["highlight:7679012713931423770:peak_top_2", "highlight:7679012713931423770:peak_top_3", "highlight:7679012713931423770:peak_top_5"]}
+        ],
+        "derivativeDirections": [
+          {"title": "简化透明碗背后的背景", "body": "保持同一内容物和透明碗，将后方红瓶与装饰移出景深；比较观众对内容物形态的辨认，控制光线以免把照明差别误判为产品差别。", "evidenceRefs": ["highlight:7679012713931423770:peak_top_2"]},
+          {"title": "延长提起后的连续观察", "body": "同一次叉取保留完整提起和回落动作，与只截取抬起瞬间的剪辑对照；观察质地记忆与观看完成情况，不叠加营养倍数结论。", "evidenceRefs": ["highlight:7679012713931423770:peak_top_3", "highlight:7679012713931423770:peak_top_5"]}
+        ]
+      },
+      {
+        "groupId": "handling", "groupName": "手持与直接食用示范", "description": "面部、手部和单瓶共同构成近距离商品说明。",
+        "frameRefs": ["highlight:7663436424943517723:peak_top_5", "highlight:7675952204295880754:peak_top_5", "highlight:7595763034191314963:peak_top_5", "highlight:7664891260353691674:peak_top_5", "highlight:7668663443726172214:peak_top_5", "highlight:7679250070958784562:peak_top_4", "highlight:7673083026398953481:peak_top_4"],
+        "commonConclusion": [{"title": "瓶与面部同框说明使用方式", "body": "开盖后持瓶观察和瓶口靠近嘴部，把口述介绍接到可见的拿取或食用动作；这些动作可共享观察，但不同素材的商业解释仍需各自事实，不能由人物状态推出效果。", "evidenceRefs": ["highlight:7663436424943517723:peak_top_5", "highlight:7679250070958784562:peak_top_4", "highlight:7673083026398953481:peak_top_4"]}],
+        "derivativeDirections": [{"title": "转正瓶身再开始口述", "body": "保留人物和单瓶近景，在介绍前让瓶标稳定正对镜头，与边晃瓶边说的版本对照；检验品牌名称识别，保持同一话术和时长以隔离手持稳定性。", "evidenceRefs": ["highlight:7679250070958784562:peak_top_4"]}]
+      }
+    ]
+  }
+}

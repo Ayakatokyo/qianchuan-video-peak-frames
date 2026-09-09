@@ -40,6 +40,19 @@ def build_parser():
     prepare.add_argument("--shop-id", required=True)
     prepare.add_argument("--output-dir", required=True)
 
+    local = commands.add_parser("prepare-local", parents=[], help="Build missing facts from landed data only")
+    local.add_argument("--start-date", required=True)
+    local.add_argument("--end-date", required=True)
+    local.add_argument("--top-n", required=True, type=_positive_int)
+    local.add_argument("--advertiser-id", required=True)
+    local.add_argument("--shop-id", required=True)
+    local.add_argument("--output-dir", required=True)
+
+    assemble = commands.add_parser("assemble-analysis")
+    assemble.add_argument("--output-dir", required=True)
+    assemble.add_argument("--part", action="append", required=True)
+    assemble.add_argument("--analysis-json", required=True)
+
     metadata = commands.add_parser("fetch-metadata")
     metadata.add_argument("--start-date", required=True)
     metadata.add_argument("--end-date", required=True)
@@ -50,10 +63,12 @@ def build_parser():
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--output-dir", required=True)
     finalize.add_argument("--analysis-json", required=True)
+    finalize.add_argument("--quality-review")
 
     validate_analysis = commands.add_parser("validate-analysis")
     validate_analysis.add_argument("--output-dir", required=True)
     validate_analysis.add_argument("--analysis-json", required=True)
+    validate_analysis.add_argument("--quality-review")
 
     status = commands.add_parser("status")
     status.add_argument("--output-dir", required=True)
@@ -67,10 +82,14 @@ def main(argv=None):
         return exc.code
     workflow = None
     try:
-        ensure_prepare_dependencies()
+        if args.command in {"prepare-local", "assemble-analysis"}:
+            ensure_prepare_dependencies(allow_install=False)
+        else:
+            ensure_prepare_dependencies()
         workflow = _load_workflow()
-        if args.command == "prepare":
-            summary = workflow.prepare_standard_run(
+        if args.command in {"prepare", "prepare-local"}:
+            prepare_run = workflow.prepare_local_run if args.command == "prepare-local" else workflow.prepare_standard_run
+            summary = prepare_run(
                 workflow.WorkflowRequest(
                     start_date=args.start_date,
                     end_date=args.end_date,
@@ -98,7 +117,8 @@ def main(argv=None):
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
             print(f"gateway_response={Path(args.output_dir) / 'source-data' / 'gateway-response.json'}")
         elif args.command == "finalize":
-            summary = workflow.finalize_standard_run(args.output_dir, args.analysis_json)
+            options = {"quality_review": args.quality_review} if args.quality_review else {}
+            summary = workflow.finalize_standard_run(args.output_dir, args.analysis_json, **options)
             artifacts = summary["artifacts"]
             report_dir = Path(args.output_dir) / "final-report"
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
@@ -108,10 +128,16 @@ def main(argv=None):
                 print(f"highlight_export={Path(args.output_dir) / artifacts['highlightExport']}")
             print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
         elif args.command == "validate-analysis":
-            print(json.dumps(
-                workflow.validate_analysis(args.output_dir, args.analysis_json),
-                ensure_ascii=False,
-            ))
+            options = {"quality_review": args.quality_review} if args.quality_review else {}
+            result = workflow.validate_analysis(args.output_dir, args.analysis_json, **options)
+            # Keep console output bounded; the full result is a structured artifact.
+            print(json.dumps({k: v for k, v in result.items() if k != "findings"}, ensure_ascii=False))
+            print(f"validation_report={Path(args.analysis_json).with_suffix('.validation.json')}")
+            return {"valid": 0, "review_required": 3}.get(result["analysisStatus"], 2)
+        elif args.command == "assemble-analysis":
+            print(json.dumps(workflow.assemble_analysis(
+                Path(args.output_dir) / "diagnostic-analysis", args.part, args.analysis_json,
+            ), ensure_ascii=False))
         else:
             print(json.dumps(workflow.standard_run_status(args.output_dir), ensure_ascii=False))
     except DependencyBootstrapError as exc:

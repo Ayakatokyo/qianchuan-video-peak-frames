@@ -290,18 +290,21 @@ def _chapter03(data, material_ids):
     selling_points = []
     valid_keywords = {item["keyword"] for item in keywords}
     valid_refs = set(cloud_refs) | set(evidence_refs)
-    for raw in _list(ai_cloud.get("sellingPoints"))[:4]:
+    for raw in _list(ai_cloud.get("sellingPoints")):
         if not isinstance(raw, dict):
             continue
         keyword_refs = [ref for ref in _list(raw.get("keywordRefs")) if ref in valid_keywords]
         evidence = [ref for ref in _list(raw.get("evidenceRefs")) if ref in valid_refs]
         if _text(raw.get("title")) and _text(raw.get("description")) and keyword_refs and evidence:
-            selling_points.append({"title": _text(raw["title"]), "description": _text(raw["description"]), "keywordRefs": keyword_refs, "evidenceRefs": evidence})
+            selling_points.append({"dimension": _text(raw.get("dimension")), "title": _text(raw["title"]), "description": _text(raw["description"]), "keywordRefs": keyword_refs, "evidenceRefs": evidence})
     keyword_panel = {
         "oneSentenceConclusion": _text(ai_cloud.get("oneSentenceConclusion")),
         "summary": _text(ai_cloud.get("summary")),
         "keywords": keywords,
         "sellingPoints": selling_points,
+        "analysisStatus": ai_cloud.get("analysisStatus") or "missing",
+        "limitation": _text(ai_cloud.get("limitation")),
+        "warning": ("关键词事实存在，但 AI 未提炼卖点" if keywords else "关键词证据不足，暂无可展示卖点") if not selling_points else "",
         "source": "facts.scripts.keywordCloud + ai.keywordCloudInsight",
         "evidenceRefs": list(dict.fromkeys(cloud_refs + [ref for card in selling_points for ref in card["evidenceRefs"]])),
         "availability": _availability(bool(keywords), bool(keywords)),
@@ -570,6 +573,7 @@ def build_presentation_report(data):
     material_ids = {item["materialId"] for item in materials}
     report = {
         "presentationSchemaVersion": 1,
+        "analysisQuality": deepcopy(data.get("analysisQuality", {})),
         "report": {"title": "千川素材分析报告", "runId": data.get("runId"), "period": deepcopy(data.get("period", {})), "status": data.get("status"), "sections": list(CHAPTER_SECTIONS)},
         "materials": [{"materialId": item["materialId"], "materialName": item.get("materialName", ""), "rank": item.get("rank"), "source": "facts.materials"} for item in materials],
         "chapters": {

@@ -1049,9 +1049,16 @@ function renderKeywordCloudPanel() {
   const selling = element("article", "keyword-cloud-selling");
   selling.append(element("small", "keyword-cloud-kicker", "从关键词云提炼的卖点"));
   const cards = Array.isArray(panel.sellingPoints) ? panel.sellingPoints : [];
-  if (!cards.length) selling.append(element("p", "muted", "暂无分析"));
-  cards.slice(0, 4).forEach((card, index) => {
+  if (!cards.length) {
+    const warning = element("p", "analysis-warning", panel.warning || "AI 未提炼卖点");
+    warning.setAttribute("role", "alert");
+    selling.append(warning);
+  }
+  selling.append(element("p", "muted", `事实可用性：${panel.availability || "unavailable"} · 分析状态：${panel.analysisStatus || "missing"}`));
+  if (panel.limitation) selling.append(element("p", "analysis-warning", panel.limitation));
+  cards.forEach((card, index) => {
     const item = element("div", "keyword-selling-card");
+    item.dataset.evidenceRefs = JSON.stringify(card.evidenceRefs || []);
     item.append(element("b", "", `${index + 1}｜${card.title || "卖点"}`), element("p", "", card.description || ""));
     selling.append(item);
   });
@@ -1896,7 +1903,8 @@ function renderHighlightWorkspace(material) {
       Array.isArray(analysis.highlightAnalyses)
         ? analysis.highlightAnalyses.filter((item) => selectedRefs.has(text(item.frameRef)))
         : [],
-      framesByReference
+      framesByReference,
+      analysis.highlightAnalyses || []
     ));
   }
   function syncSelection() {
@@ -2075,7 +2083,7 @@ function renderFrameCoverageNote(note) {
   return card;
 }
 
-function renderHighlightFormula(highlights, framesByReference = new Map()) {
+function renderHighlightFormula(highlights, framesByReference = new Map(), allHighlights = highlights) {
   const card = element("div", "formula");
   card.append(element("b", "", "高光帧观察"));
   if (!Array.isArray(highlights) || highlights.length === 0) {
@@ -2086,11 +2094,17 @@ function renderHighlightFormula(highlights, framesByReference = new Map()) {
     const frame = framesByReference.get(text(item.frameRef)) || {};
     const timingLabel = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
     const paragraph = element("p", "highlight-note");
+    const shared = allHighlights.find((candidate) => candidate.frameRef === item.sharedInterpretationRef);
+    const interpretation = item.interpretationStatus === "insufficient_evidence"
+      ? `证据不足：${text(item.limitation)}`
+      : item.interpretationStatus === "shared"
+        ? `与本素材相同画面共用解释：${text(shared?.commercialInterpretation)}`
+        : text(item.commercialInterpretation);
     paragraph.append(
       element("b", "", `${timingLabel}：`),
       renderTextWithMaterialLinks(item.visualObservation),
       document.createElement("br"),
-      elementWithMaterialLinks("small", "", item.commercialInterpretation)
+      elementWithMaterialLinks("small", "", interpretation)
     );
     card.append(paragraph);
   });
@@ -2274,6 +2288,7 @@ function renderHighlightInsightColumns(group) {
   const commonItems = Array.isArray(group.commonConclusion) ? group.commonConclusion : [];
   commonItems.forEach((item) => {
     const insight = element("article", "highlight-insight");
+    insight.dataset.evidenceRefs = JSON.stringify(item.evidenceRefs || []);
     if (item.title && item.title !== "共性结论") {
       insight.append(elementWithMaterialLinks("h5", "", item.title));
     }
@@ -2284,6 +2299,7 @@ function renderHighlightInsightColumns(group) {
   const directionList = element("ul", "highlight-direction-list");
   (Array.isArray(group.derivativeDirections) ? group.derivativeDirections : []).forEach((direction) => {
     const item = element("li", "highlight-insight");
+    item.dataset.evidenceRefs = JSON.stringify(direction.evidenceRefs || []);
     item.append(elementWithMaterialLinks("h5", "", direction.title));
     item.append(elementWithMaterialLinks("p", "", direction.body));
     directionList.append(item);
@@ -2737,6 +2753,10 @@ document.addEventListener("keydown", (event) => {
 function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
+  const quality = reportData.analysisQuality || {};
+  const qualityNote = element("div", "muted", `结构校验：${quality.structurally_valid === true ? "通过" : "未核验"} · 内容复核：${quality.contentReviewStatus || "未核验"}`);
+  (quality.contentReviewLimitations || []).forEach((item) => qualityNote.append(element("p", "analysis-warning", `内容复核限制：${item.reason}`)));
+  document.getElementById("report-subtitle").after(qualityNote);
   const exportLink = document.querySelector("[data-highlight-export]");
   if (exportLink && text(reportData.highlightExportHref)) {
     exportLink.href = text(reportData.highlightExportHref);

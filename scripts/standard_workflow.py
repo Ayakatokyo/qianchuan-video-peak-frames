@@ -5,6 +5,10 @@ from datetime import date
 import hashlib
 import json
 from pathlib import Path
+import tempfile
+
+from analysis_handoff import assemble_analysis, file_hash, inspect_inputs, read_object
+from analysis_quality import finding
 
 import export_top_materials
 import extract_peak_frames
@@ -20,6 +24,7 @@ from batch_runtime import (
     write_json_atomically,
 )
 from top_material_roi_lib import write_top_material_roi_facts
+from top_material_roi_lib import build_top_material_roi_payload
 
 
 SUMMARY_NAME = "run-summary.json"
@@ -328,6 +333,8 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 top_material_roi_facts_path=paths["top_material_roi_facts"],
                 output_dir=paths["analysis"],
             )
+            if prepare_facts is prepare_diagnostic_analysis:
+                write_json_atomically(paths["analysis"] / "analysis-input-index.json", inspect_inputs(paths["analysis"]))
             summary = _summary(
                 request,
                 paths,
@@ -395,7 +402,76 @@ def _read_summary(path):
     return payload
 
 
-def validate_analysis(output_dir, analysis_json, *, validate=validate_standard_ai_analysis):
+def prepare_local_run(request, output_dir):
+    """Complete only missing local facts; never invoke collection or media tools."""
+    _validate_request(request)
+    paths = workflow_paths(output_dir)
+    with acquire_workflow_lock(request, output_dir):
+        old = read_object(paths["summary"]) if paths["summary"].exists() else {}
+        if old.get("status") in {"complete", "running"}:
+            raise StandardWorkflowError("facts", "preserve this run; use an isolated copy for local recovery")
+        if old.get("request") and old["request"] != _summary(request, paths, status="")['request']:
+            raise StandardWorkflowError("facts", "request does not match saved run")
+        ready = validate_ready_materials(paths, request.top_n)
+        manifest = read_object(paths["peak_frames"] / "batch-manifest.json")
+        selected = {m["materialId"]: m for m in manifest["selectedMaterials"]}
+        asset = read_object(paths["asset_facts"])
+        source = read_object(paths["top_materials"])
+        for payload in (ready, asset, source):
+            if (payload.get("actualStartDate") != request.start_date
+                    or payload.get("actualEndDate") != request.end_date
+                    or str(payload.get("filters", {}).get("advertiserId")) != request.advertiser_id):
+                raise StandardWorkflowError("facts", "local source period/advertiser does not match request")
+        if not isinstance(source.get("portfolioFacts"), dict) or source["portfolioFacts"] != ready.get("portfolioFacts"):
+            raise StandardWorkflowError("facts", "ready materials must retain the full source portfolioFacts")
+        for material in ready["materials"]:
+            mid = material["materialId"]
+            if not (paths["records"] / f"{mid}.json").is_file() or not (paths["peak_frames"] / mid / "summary.json").is_file():
+                raise StandardWorkflowError("facts", f"missing landed records/summary: {mid}")
+            video = Path(selected[mid].get("videoPath", ""))
+            if not video.is_file() or video.is_symlink():
+                raise StandardWorkflowError("facts", f"missing landed video: {mid}")
+            if selected[mid].get("videoSha256") and file_hash(video) != selected[mid]["videoSha256"]:
+                raise StandardWorkflowError("facts", f"landed video hash mismatch: {mid}")
+        roi = build_top_material_roi_payload(asset, ready)
+        if paths["top_material_roi_facts"].exists() and read_object(paths["top_material_roi_facts"]) != roi:
+            raise StandardWorkflowError("facts", "existing ROI facts disagree with immutable sources")
+        if paths["analysis"].exists():
+            inputs = inspect_inputs(paths["analysis"])
+        else:
+            # Build off to the side; a failure cannot publish half a fact package.
+            with tempfile.TemporaryDirectory(prefix=".local-facts-", dir=paths["root"]) as staging:
+                staging = Path(staging)
+                write_json_atomically(staging / "roi.json", roi)
+                prepare_diagnostic_analysis(
+                    top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
+                    diagnosis_records_dir=paths["records"], peak_output_dir=paths["peak_frames"],
+                    top_material_roi_facts_path=staging / "roi.json", output_dir=staging / "analysis",
+                )
+                inputs = inspect_inputs(staging / "analysis")
+                if inputs["materialIds"] != [m["materialId"] for m in ready["materials"]]:
+                    raise StandardWorkflowError("facts", "built facts do not match ready material order")
+                expected_covers = {f"highlight:{m['materialId']}:zero_second" for m in ready["materials"]}
+                if not expected_covers.issubset({frame["frameRef"] for frame in inputs["frames"]}):
+                    raise StandardWorkflowError("facts", "landed materials require zero_second JPEGs")
+                (staging / "analysis").rename(paths["analysis"])
+        if inputs["materialIds"] != [m["materialId"] for m in ready["materials"]]:
+            raise StandardWorkflowError("facts", "fact manifest does not match ready material order")
+        if inputs["period"].get("actualStartDate") != request.start_date or inputs["period"].get("actualEndDate") != request.end_date:
+            raise StandardWorkflowError("facts", "fact manifest period does not match request")
+        if not paths["top_material_roi_facts"].exists():
+            write_json_atomically(paths["top_material_roi_facts"], roi)
+        write_json_atomically(paths["analysis"] / "analysis-input-index.json", inputs)
+        summary = _summary(request, paths, status="analysis_pending",
+                           diagnostic_prompt=paths["analysis"] / "diagnostic-analysis-prompt.md",
+                           analysis_unit_manifest=paths["analysis"] / "analysis-units" / "analysis-unit-manifest.json")
+        summary["localSourceHashes"] = {str(p.relative_to(paths["root"])): file_hash(p)
+            for p in (paths["asset_facts"], paths["top_materials"], paths["peak_frames"] / READY_MATERIALS_NAME)}
+        write_run_summary(paths["summary"], summary)
+        return summary
+
+
+def validate_analysis(output_dir, analysis_json, *, quality_review=None, validate=validate_standard_ai_analysis):
     """Validate AI analysis without changing the run's retryable state."""
     paths = workflow_paths(output_dir)
     summary = _read_summary(paths["summary"])
@@ -414,20 +490,33 @@ def validate_analysis(output_dir, analysis_json, *, validate=validate_standard_a
         analysis_path = Path(analysis_json)
         if not analysis_path.is_file():
             raise StandardWorkflowError("analysis", "analysis JSON is missing")
+        if validate is validate_standard_ai_analysis:
+            if analysis_path.resolve().parent != paths["analysis"].resolve():
+                raise StandardWorkflowError("analysis", "candidate must be next to this run's analysis-units")
+            inspect_inputs(paths["analysis"])
+        options = {"quality_review": quality_review} if quality_review is not None else {}
         details = validate(
             top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
             peak_output_dir=paths["peak_frames"],
             diagnosis_records_dir=paths["records"],
             analysis_json=analysis_path,
+            **options,
         )
     except StandardWorkflowError:
         raise
     except Exception as exc:
+        if Path(analysis_json).is_file():
+            write_json_atomically(Path(analysis_json).with_suffix(".validation.json"), {
+                "analysisStatus": "invalid", "analysisSha256": file_hash(analysis_json),
+                "findings": getattr(exc, "findings", [finding("error", str(exc))]),
+            })
         raise StandardWorkflowError("analysis", str(exc)) from exc
-    return {"analysisStatus": "valid", **details}
+    result = {"analysisStatus": "valid", **details}
+    write_json_atomically(Path(analysis_json).with_suffix(".validation.json"), result)
+    return result
 
 
-def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_final_report,
+def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, render_report=generate_final_report,
                           mark_ready=mark_report_ready):
     paths = workflow_paths(output_dir)
     summary = _read_summary(paths["summary"])
@@ -447,8 +536,17 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
         if not analysis_path.is_file():
             raise StandardWorkflowError("report", "analysis JSON is missing")
         with acquire_workflow_lock(request, output_dir):
+            # The production path binds validation and rendering to the same bytes.
+            candidate_hash = file_hash(analysis_path)
+            if render_report is generate_final_report:
+                result = validate_analysis(output_dir, analysis_path, quality_review=quality_review)
+                if result["analysisStatus"] != "valid":
+                    raise StandardWorkflowError("report", "analysis has pending evidence review; see candidate .validation.json")
             _write_running(request, paths, "report")
             try:
+                if file_hash(analysis_path) != candidate_hash:
+                    raise StandardWorkflowError("report", "analysis changed after validation")
+                options = {"quality_review": quality_review} if quality_review is not None else {}
                 data_path, html_path, _data = render_report(
                     top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
                     peak_output_dir=paths["peak_frames"],
@@ -458,7 +556,10 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
                     copy_assets=True,
                     require_ai_quality=True,
                     require_local_video_assets=True,
+                    **options,
                 )
+                if file_hash(analysis_path) != candidate_hash:
+                    raise StandardWorkflowError("report", "analysis changed during rendering")
             except Exception as exc:
                 raise StandardWorkflowError("report", str(exc)) from exc
             if not mark_ready(paths["peak_frames"] / "batch-manifest.json", data_path, html_path):
@@ -481,13 +582,14 @@ def finalize_standard_run(output_dir, analysis_json, *, render_report=generate_f
                 report=html_path,
                 report_archive=archive_path,
             )
+            completed["analysisQuality"] = _data.get("analysisQuality", {})
             write_run_summary(paths["summary"], completed)
             return completed
     except WorkflowLockError:
         raise
     except StandardWorkflowError as exc:
         status = "analysis_pending" if (
-            summary.get("status") == "analysis_pending" and exc.stage == "report"
+            summary.get("status") == "analysis_pending" and exc.stage in {"analysis", "report"}
         ) else "failed"
         _write_failure(request, paths, exc.stage, str(exc), status=status)
         raise

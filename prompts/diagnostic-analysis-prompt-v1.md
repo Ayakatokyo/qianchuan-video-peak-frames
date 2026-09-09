@@ -1,6 +1,6 @@
 # diagnostic-analysis-prompt-v1
 
-当前执行技能的当前对话模型必须先读取 `analysis-units/analysis-unit-manifest.json`，校验其中五个章节事实包的路径、字节数、SHA-256、素材顺序和帧数量，再分批完整读取以下输入，最终在一次模型调用中统一输出正式 JSON：
+当前执行技能的当前对话模型必须先读取 `analysis-units/analysis-unit-manifest.json`，校验其中五个章节事实包的路径、字节数、SHA-256、素材顺序和帧数量，再分批完整读取以下输入，允许当前模型分批撰写，最终合并为唯一正式 JSON：
 
 `report-display-facts.json` 是前端展示快照，不属于模型输入；模型不得读取、引用或复述其中的 TOP3/图表展示字段。
 
@@ -10,7 +10,7 @@
 - `analysis-units/chapter04-highlight-input.json`
 - `analysis-units/chapter05-material-input.json`
 
-历史运行中的 `diagnostic-analysis-data.json` 仅作兼容留档；新运行不再生成，新分析不得读取它来补充或覆盖五个章节事实包。当前对话模型必须逐张实际查看 `chapter04-highlight-input.json` 中 `materials[*].frames[*].framePath` 指向的 JPEG，一次输出完整结果；最终业务分析不得拆成五套彼此独立的结果；此前允许当前对话模型分批读取、查看图片及记录事实要点，不得使用外部模型服务、`codex exec` 或子进程替代当前对话模型。
+历史运行中的 `diagnostic-analysis-data.json` 仅作兼容留档；新运行不再生成，新分析不得读取它来补充或覆盖五个章节事实包。当前对话模型必须逐张实际查看 `chapter04-highlight-input.json` 中 `materials[*].frames[*].framePath` 指向的 JPEG，完整覆盖最终结果；分析片段最终必须合并为同一完整结果；此前允许当前对话模型分批读取、查看图片及记录事实要点，不得使用外部模型服务、`codex exec` 或子进程替代当前对话模型。
 
 只分析五个章节事实包提供的业务事实。不得分析执行过程，不得把运行目录名、任务上下文、代码修复、`verify` 收口、`fresh rerun`、`rpa_request_failed`、候选失败、补位、取消、重跑或批次调度写入任何输出字段。素材 rank 只表示当前已提取素材在输入中的排序；rank 缺口不得被解释为补位或失败。
 
@@ -23,7 +23,7 @@
 - 当前模型直接完成分析，不需要额外的模型调用接口。按章节和素材读取完整输入；响应截断时沿 JSON 路径继续，记录已读范围，不能把截断输出当作完整事实。
 - 只用本次 manifest 对应的事实与 JPEG 生成新结果。历史 AI JSON 不是 schema 模板；如需结构参考，使用下文契约，示例文字也不得复制为本批次事实。序列化工具可以保存模型逐项撰写的内容，不能批量拼接分析正文或补字数。
 - “独有”“不同”均以图像实际信息为前提。真实相同的 JPEG 可有相同视觉观察；由本地文件计算 SHA-256 证明相同，不能用 AI 自报的哈希、路径或素材名代替。每个 frameRef 仍须单独覆盖。若相邻帧没有变化，明确没有可见变化；字幕不可辨或没有字幕时如实写出，不制造叙事转折。
-- 相同图片不能证明视频、人群、互动或商业效果相同。commercialInterpretation 仍须核对本素材事实；不要求凭空制造不同商业机制，没有关联证据时说明边界。若现有门禁仍拒绝真实但相同的解释，保留候选结果及冲突帧证据，由正式门禁排障解决，禁止随机标记、同义改写和关闭门禁。
+- 相同图片不能证明视频、人群、互动或商业效果相同。commercialInterpretation 仍须核对本素材事实；不要求凭空制造不同商业机制，没有关联证据时说明边界。若相似度检查命中真实但相同的解释，保留候选结果及冲突帧证据，由当前模型按质量复核契约记录证据与理由，禁止随机标记、同义改写和关闭门禁。
 - 字数和相似度是质量代理指标，不构成补造事实的授权。结构/引用错误按当前白名单修正；事实不足或疑似误判先定位具体输入和字段，不能反复用统一尾句填充。
 
 ## 五章分析边界
@@ -45,6 +45,12 @@
 
 ### Chapter 03：脚本洞察
 
+先审查 keywordCloud 候选词，保留有脚本证据的品类、品质/工艺、福利、场景、人群、产品状态或信任表达；排除口头填充词、纯动作词和不能独立支撑卖点的词。候选词频次不是卖点证据充分性的判断标准。
+
+`keywordCloudInsight.analysisStatus` 必填：`supported` 时 `sellingPoints` 至少 3 条、至少覆盖 2 个真实不同的 `dimension`；每条必填 dimension、title、description、keywordRefs、evidenceRefs。维度名称由实际脚本决定。keywordRefs 逐字引用未排除的原始关键词，每个词至少有一条自身的 script evidenceRef 被该卖点引用；核对原句是否支持描述，不能把功效宣传当作已证实功效。不得同义改写一条卖点凑数。
+
+不足以形成 3 条时，使用 `analysisStatus: "insufficient_evidence"`，填写 `limitation` 说明已读证据、可支持的维度及具体缺口；保留能成立的卖点，允许空数组但不得静默为空。程序不自动推断足够证据；该判断须由当前模型复核。
+
 只以 `chapter03-script-input.json` 的完整脚本、一二级标签、真实证据句、标签汇总和确定性 `keywordCloud` 生成 `batchInsights[topic=script]`、`keywordCloudReview` 及 `keywordCloudInsight`。`keywordCloudReview` 只能对 NLP 候选词做 `accept`、`exclude` 或 `merge` 审查，不得修改原始频次；后端会依据审查结果重新汇总。不要将脚本句子与高光帧秒点做无依据对齐；关键词原始频次不得由 AI 改写。
 `keywordCloudInsight.oneSentenceConclusion` 写约 28-45 个中文字符的单一核心判断，可补充关键词所反映的业务含义或承接关系；不得重复关键词频次、卖点卡片和验证动作，不要列举多个关键词或并列卖点。summary 控制在 60-110 个中文字符，适度补充关键词组合、品质/场景承接与验证方向；验证动作放入 summary 或 sellingPoints，不要塞进一句话结论。
 
@@ -52,14 +58,15 @@
 
 只以 `chapter04-highlight-input.json` 和实际查看的 JPEG 生成 `highlightDashboard`、`materialAnalyses[*].highlightAnalyses` 和 `frameCoverageNote`。图像结论不得由脚本文本、文件名或兼容快照代替。
 
-先为每张成功高光帧在内存中建立一行“逐帧事实表”，再写任何分析文字。每行必须只记录该 JPEG 实际可见、且相对同素材相邻已查看帧有区分度的事实：①主体及其画面位置；②独有动作、使用状态或主体关系；③独有空间、产品状态或构图变化；④独有字幕/信息层及其与主体的关系；⑤该帧在同素材叙事中的新增、转折或收束作用；⑥可与该帧绑定的本素材脚本或互动事实（没有可靠关联时明确留空，不得猜测）。`visualObservation` 必须由该行事实组织，`commercialInterpretation` 必须只把该行的独有画面机制与第⑥项中实际可用事实连接为待验证假设。不得先按 zero_second、peak_top_n 或视觉分类套一个通用句式，再批量替换素材 ID、秒点、场景名、分类名、数字、哈希或“审阅标记”。
+当前模型按素材查看图片，直接保存简短观察和分析 JSON 片段；固定合并程序只连接已经写好的数据。不得创建临时脚本或以内联代码循环、拼接、补长业务正文。每帧记录真实可见的主体、动作、产品/空间状态、信息层及相邻变化；无变化或字幕不可辨时如实说明，不强求六个角度全部有新信息。
 
-逐帧事实表完成后做去模板化自检：删除素材 ID、帧类型、秒点、分类名、数字和仅用于定位的标记后，不同 JPEG 的两行应保留确实可见的主体/动作、空间或产品状态、信息层或叙事差异；相同 JPEG 按前述重复画面规则处理；若只剩同一段尾句、同一验证步骤或同一因果免责语，回到 JPEG 重写。不要为了通过检查添加随机标记、同义词替换或无证据形容词；它们不构成事实差异。
-每个视觉分类的 `commonConclusion` 必须输出 3 个 `{title,body,evidenceRefs}` 分点，`derivativeDirections` 也必须输出 3 个同序 `{title,body,evidenceRefs}` 分点；两组按索引一一对应，分别覆盖主体、信息/动作、迁移验证三个角度，但 `title` 必须是基于该分类事实写成的简短总结性结论（建议 8-24 个中文字符，最多 32 个字符；不是“画面主体与构图”“信息层与动作机制”“可迁移机会”等固定标签），且不同分类不得复用相同标题。正文要给出可执行的验证动作和指标，不能只写短句；删除素材 ID、帧类型、秒数、数值或分类名称后，跨分类与同组分点的正文仍必须保留不同的画面机制、动作和验证设计，禁止在统一的“只改一个变量/控制人群预算/小预算观察指标”句式中仅替换名词。
+highlightDashboard 和 customClassification 每组 commonConclusion 至少一条有依据的结论或证据限制；这只是结构底线。多个独立机制确实存在时，提炼 2–3 条互不重复的洞察及 2–3 条对应裂变方向，不为凑数拆组。每条洞察写清画面如何传递信息及推断边界；每条方向写清源画面、保留项、具体改变的可测试变量、对照方式和观察结果。逐条绑定本组真实 evidenceRefs，独立机制引用对应帧。不能支持具体裂变变量时 derivativeDirections 可为空，并在该组 commonConclusion 明确缺口。禁止以“保持主体、替换一个变量、比较 ROI”等通用模板代替分析。文字相似是复核信号，不是要求制造差异。
+
+逐帧 commercialInterpretation 有三种形式：默认 supported 写简短解释；insufficient_evidence 留空解释并填写具体 limitation；shared 留空解释并填写 sharedInterpretationRef，只能引用同素材、相同本地 JPEG 哈希的直接 supported 解释。不得跨素材、链式或循环共享；图片相同不能证明商业效果相同。
 
 ### Chapter 05：单素材深度分析
 
-`chapter05-material-input.json` 是单素材完整事实的唯一主输入：每个 `materials[*]` 已按 `materialId` 汇总素材基础/榜单事实、视频元数据、人群、脚本、高光帧、互动时序和证据索引。优先只在该素材对象内完成事实核验与分析；Chapter 03/04 仅用于批量结论或视觉分类的交叉校验，不得重新拼接另一份单素材事实。输出每条素材的 `materialAnalyses`；不从兼容快照补充 `delivery`，不虚构事实包未提供的单素材秒级走势或经营指标。
+只依据 chapter05-material-input.json 的本素材人群、脚本、互动时序事实和已审 JPEG 生成 materialAnalyses；未知关联如实留空或说明不足。素材总结补充页面事实的业务含义，不重复整段事实列表。
 
 ## 生成前门禁自检
 
@@ -67,9 +74,12 @@
 
 在写入 JSON 前先完成一次契约自检，不要边生成边试错：
 
-- 读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS`、`AI_QUALITY_MINIMUMS` 和 `HIGHLIGHT_DASHBOARD_MINIMUMS`，先建立合法 `frameRef/evidenceRefs` 白名单及字段字符数预算，再严格按其中的枚举与字符数范围构造字段；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
+- 顶层填写 `analysisProvenance: {"author": "current_model", "businessTextGeneration": "direct"}`。这是可核查声明，不是来源的技术证明。临时脚本、循环、字符串模板改写过的正文不得仅补声明继续交付，须保留失败候选并重新审阅事实、撰写新候选。复核单只记录证据审阅，不能承载正文或替代缺失字段。
+- Chapter 03 卖点语义和 Chapter 04 每个机制组始终需内容复核，不能通过改写文字逃避。supported 复核说明逐条证据与机制/变量的对应关系；evidence_limited 指出具体限制，交付摘要和 HTML 保留该限制。
+
+- 读取 `scripts/final_report_lib.py` 中的 `ALLOWED_DECISIONS` 和 `AI_LENGTH_SUGGESTIONS`，先建立合法 frameRef/evidenceRefs 白名单。枚举和引用属于硬契约，字符数仅为表达建议，不能为凑字数生成正文；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
 - 从 manifest 和五个章节事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
-- 按素材分片查看画面，每片最多 6 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。写入后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/runs/<run-id>" --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"`，校验通过前不要调用 `finalize`；校验失败时只修正报错字段并重新校验。禁止先写简短草稿、再以多轮全文补丁补足字符数或修正证据。
+- 按素材分片查看画面，每片最多 6 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。写入后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/runs/<run-id>" --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"`，校验通过前不要调用 `finalize`；校验失败时只修正报错字段并重新校验。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
 
 ## 证据与归因规则
 
@@ -86,19 +96,17 @@
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
 - 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指 `chapter04-highlight-input.json` 的 `materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 至 peak_top_5，也必须分别输出对应分析。
 - 若该素材在 `chapter04-highlight-input.json` 的 `materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 5 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
-- 高光帧的 `visualObservation` 必须来自实际查看 JPEG 的画面观察；每条至少具体说明主体及位置、动作或使用状态、产品/人物/场景关系、字幕或信息层、该帧的叙事作用，以及相对同素材相邻已查看帧的变化。`commercialInterpretation` 必须把该帧独有视觉机制与本素材可用的脚本或互动事实相连，给出谨慎且专属的验证设计；可使用“与点击峰值同时出现”“待验证假设”等措辞，但不得把它们扩展成跨帧复用的固定尾句。删除素材 ID、帧类型、秒数、分类名称和数值后，不同 JPEG 的观察须有实际可见的区分；商业解释须有本素材证据支持，相同 JPEG 按前述重复画面规则处理，不得用替换变量伪造差异。
+- 高光帧的 `visualObservation` 必须来自实际 JPEG。商业解释仅依据可支持的画面机制与本素材事实，证据不足使用上述结构化状态。不同 JPEG 可能没有可见差异，不虚构独有动作、字幕和叙事作用。
 - `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。当前事实包没有脚本分段时码，不得宣称帧对应具体话术，也不得根据整段脚本猜测画面所在秒的话术。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。
 
-## 内容长度与信息密度（标准入口 finalize 的硬性门禁）
+## 信息密度与校验分层
 
-- `overallConclusion` 建议为 180-260 个中文字符，概括素材上新规模、榜单核心指标、指标关系、至少三项分析判断、分阶段动作和验证边界；若事实包指标齐全，必须覆盖上新量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM。`portfolioDimensionConclusions.commercial.conclusion` 必须为 100-180 个中文字符，至少覆盖上新量、消耗、ROI、点击率、转化率、3 秒完播率和 CPM 中可用的关键指标，并填写至少一个合法 `commercial:*` 证据引用；其文字不应重复 overallConclusion 的指标串。
-- 每条 `batchInsights.conclusion` 必须为 180-280 个中文字符，包含具体指标名称和至少 2 个可核验事实点；事实点之后必须给出分析含义、投放判断和可验证假设，并填写至少一个合法 `evidenceRefs`。
-- 每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion`、`interactionConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符；`interactionConclusion` 不得为空、不得使用固定模板或只复述峰值摘要；`nextAction` 至少 100 个中文字符，并填写至少一个合法 `evidenceRefs`。单素材 AI 二次总结应回答“这条素材为什么这样表现、应该保留什么、应该改写什么”，互动时序分析必须解释互动时序事实为什么影响素材放量、改写或保留判断，并结合峰值/走势给出验证建议；不要只复述页面已展示的秒级互动、脚本标签或证据句；不同素材不得复制相同结论或行动。
-- 每条 `highlightAnalyses[*].visualObservation` 必须包含至少 40 个中文字符的具体画面观察；`commercialInterpretation` 必须为 80-140 个中文字符，把画面观察转化为谨慎的商业解释，例如理解成本、信任感、产品利益点、场景代入或行动触发，而不是再次描述画面元素。
-- 必须输出至少 3 条 audience、2 条 script 洞察；`audience` 洞察需覆盖展现次数、点击次数、成交金额三个角度，事实不足时仍需给出下一步补充或验证方向。不得为了填充素材榜单数据洞察而输出 `batchInsights.topic=integrated`。
-- `keywordCloudInsight` 必须包含 `oneSentenceConclusion`、`summary` 和 `sellingPoints`；`oneSentenceConclusion` 控制在 28-45 个中文字符，可补充关键词所反映的业务含义或承接关系，但只保留一个核心判断，不重复关键词频次、卖点卡片和验证动作；summary 控制在 60-110 个中文字符，适度补充关键词组合、品质/场景承接与验证方向；验证动作放入 summary 或 sellingPoints。卖点最多 4 条。每条卖点必须引用 `keywordCloud.keywords[*].keyword` 和合法 `evidenceRefs`，不得引入关键词云与脚本文本之外的新事实；前端展示顺序固定为 AI 二次分析、关键词云模块、脚本汇总数据。
-- `script` 洞察固定输出 2 条且按以下顺序：第一条标题以“`一二级内容公式：`”开头，分析一级/二级标签的高频结构、组合方式和差异；第二条标题以“`脚本文案：`”开头，分析真实文案中的利益点、表达方式与证据句。两条都必须引用对应的 `script:*` 证据，且不能只复述标签或原句。
+正文只保留支持判断的事实、含义及必要的验证方向。长度与标题写法仅作表达建议，短而充分的文字可交付；不以最低字数要求扩写证据不足，也不强求每帧独立实验。
+
+人群仍按展现次数、点击次数、成交金额三种口径分别输出，不混用证据。脚本仍保留“一二级内容公式：”和“脚本文案：”两个分析角度；缺少对应事实时在字段内明确具体限制，不创造引用。keywordCloudInsight 包含 oneSentenceConclusion、summary、sellingPoints，简明表达核心判断，不改写关键词原始频次。
+
+validate-analysis 输出 error、review、advice 三层：error 必须修正；review 由当前模型回查对应全部事实/图片，支持合理重复或共同证据限制时写绑定候选与输入哈希的 quality-review.json；advice 不阻断交付。批量套话必须重写，不能通过复核记录放行。两个命令均传同一 --quality-review；候选或输入变化后旧复核失效。不得反复补长、换同义词、拆写素材 ID 或关闭门禁。
 
 ## 页面结构映射
 
@@ -107,8 +115,7 @@
 - `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。前端只直接展示 `overallConclusion` 单段文字；`portfolioDimensionConclusions.commercial` 仅作为结构化结论、证据和兼容字段，不另起可见段落。不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜高光画面洞察`：使用 `highlightDashboard`。按 `portrait`、`product`、`other` 的固定顺序输出实际存在的标准分类；每个成功帧只归入一个分类。`portrait` 是人物主视觉，`product` 是产品或包装主视觉，无法确定或两者都不是主视觉时归入 `other`。每组使用该分类 JPEG 的共同可见信号写 3 个分点式 `commonConclusion`，并按相同顺序给出 3 个正文不少于 20 个字符的可验证 `derivativeDirections`；小标题必须是 8-24 个中文字符的短句式总结结论（最多 32 个字符），而不是统一的栏目名；每个分类的标题、正文、验证动作和 evidenceRefs 必须基于本分类独有画面，不得与其他分类复用相同标题或完全相同正文；不得把峰值同时性写成因果。
-  同一次视觉分析还必须输出一个对外名为“本批次分类”的 `customClassification`。为提高本批次分类的细致程度，按成功高光帧总量选择目标粒度：不少于 12 张时优先拆分为 5～8 个类别；6～11 张时优先拆分为 4～6 个类别；少于 6 张时至少拆分为 2 个类别。类别必须由 JPEG 中可观察的主要内容/画面机制支撑，不能仅按颜色、远近、画质或偶然姿态拆分同一机制，也不能为了凑数量制造差异。可适用的机制方向包括人物表达/示范、产品或包装证据、开箱礼赠、使用过程、品质或成分证明、生活场景承接、利益点视觉化、步骤或对比展示，但不要求每个批次都出现全部方向。一个画面存在多个信号时，只归入最主要的主导机制。它只能依据本批次成功高光帧 JPEG 中可观察的内容/画面机制建立至少 2 个互斥业务语义分组；不得依据文件名、素材标题、脚本文本或标准分类猜测。每个分组必须包含 `groupId`、语义化 `groupName`、`description`、`frameRefs`，且不得使用“其他1”“其他2”等占位名称；`frameRefs` 只能引用成功高光帧，所有未归类成功帧必须显式写入 `unclassifiedFrameRefs`，同一帧不得跨组重复。每组必须输出恰好 3 条 `commonConclusion` 和 3 条 `derivativeDirections`，每条都包含标题、正文和属于本组的 `evidenceRefs`；同组 6 条与跨组同栏 3 条必须围绕该组独有的视觉机制写成。先列出每组独有的主体/动作、产品或空间状态、信息层和可迁移机制，再为该组写结论与验证；删除分类名、帧标签和数字后仍不得复用正文、验证步骤或统一尾句，不得把同一“只改一个变量”测试换名后分发给各组。同时填写 `ruleId`、`ruleName`、`ruleDescription`、`ruleVersion`、`inputFrameManifestHash` 和 `availability`。AI 不得输出或修正帧数、占比、覆盖率等统计数字；这些数字由 Presentation 根据成功帧 registry 确定性计算。
+- `04｜高光画面洞察`：highlightDashboard 按 portrait、product、other 固定顺序输出实际非空分类，每帧恰好归类一次。customClassification 按真实主导机制分组，允许只有一个类别，不按帧数强制拆类。每组包含 groupId、语义化 groupName、description、frameRefs、至少一条 commonConclusion 和可为空的 derivativeDirections；分点包含 title、body、属于本组的 evidenceRefs。不能强求不同分类使用不同验证方法。ruleId、ruleName、ruleDescription、ruleVersion、inputFrameManifestHash 仍必填；未归类成功帧进入 unclassifiedFrameRefs，不得跨组重复。AI 不得输出或修正帧数、占比、覆盖率；这些统计由 Presentation 确定性计算。
 - `05｜单素材深度分析`：每个工作区先展示 `materialAnalyses` 中对应的 AI 二次分析，再展示确定性的真实事实数据（包括互动时序分析和脚本分析数据）；高光帧观察保留“视频/高光帧在上、文字分析在下”的事实优先排版。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧不得作为第 01 章证据。
@@ -117,32 +124,46 @@
 
 ## 输出契约
 
-输出对象必须满足：
+以下仅演示字段形状，不是可直接提交的本批次内容；片段合并后仍须覆盖全部素材、成功帧和规定分析口径。输出对象必须满足：
 
 ```json
 {
   "schemaVersion": 5,
+  "analysisProvenance": {"author": "current_model", "businessTextGeneration": "direct"},
+  "overallConclusion": "基于本批次榜单事实的判断或具体证据限制",
   "portfolioDimensionConclusions": {
     "commercial": {
       "conclusion": "基于近 7 天上新量、榜单消耗、ROI、点击率、转化率、3 秒完播率和 CPM 的素材榜单判断",
-      "evidenceRefs": ["commercial:newMaterialCount7d", "commercial:ctr", "commercial:cpm"]
+      "evidenceRefs": [
+        "commercial:newMaterialCount7d",
+        "commercial:ctr",
+        "commercial:cpm"
+      ]
     }
   },
   "highlightDashboard": {
     "groups": [
       {
         "category": "portrait",
-        "frameRefs": ["highlight:事实包中的素材 ID:帧类型"],
+        "frameRefs": [
+          "highlight:事实包中的素材 ID:帧类型"
+        ],
         "commonConclusion": [
-          {"title": "人物正面表达让生活场景更易进入", "body": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "持物动作把产品信息落到可见对象", "body": "说明信息层、动作和视觉焦点如何降低理解成本，并给出待验证指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "保留主体距离即可迁移到新场景", "body": "说明下一轮可复用或改写的画面变量，以及对应的对照验证方式。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
+          {
+            "title": "人物正面表达让生活场景更易进入",
+            "body": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。",
+            "evidenceRefs": [
+              "highlight:事实包中的素材 ID:帧类型"
+            ]
+          }
         ],
         "derivativeDirections": [
           {
             "title": "待验证画面变量",
             "body": "说明保留或调整的画面变量以及下一轮如何验证。",
-            "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]
+            "evidenceRefs": [
+              "highlight:事实包中的素材 ID:帧类型"
+            ]
           }
         ]
       }
@@ -159,16 +180,26 @@
         "groupId": "可解释的稳定 ID",
         "groupName": "基于 JPEG 可观察机制的业务语义名称",
         "description": "该机制在本批次画面中的可观察定义",
-        "frameRefs": ["highlight:事实包中的素材 ID:帧类型"],
+        "frameRefs": [
+          "highlight:事实包中的素材 ID:帧类型"
+        ],
         "commonConclusion": [
-          {"title": "基于本组画面的结论", "body": "说明本组 JPEG 的共同可见信号及其业务含义。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "本组信息机制的结论", "body": "说明信息、动作或视觉焦点如何影响理解，并保持谨慎表述。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "本组机制的迁移结论", "body": "说明哪些画面变量值得在后续改写和对照测试中复用。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
+          {
+            "title": "基于本组画面的结论",
+            "body": "说明本组 JPEG 的共同可见信号及其业务含义。",
+            "evidenceRefs": [
+              "highlight:事实包中的素材 ID:帧类型"
+            ]
+          }
         ],
         "derivativeDirections": [
-          {"title": "验证画面变量", "body": "说明下一轮保留或调整的画面变量、对照方式和观察指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "验证信息承接", "body": "说明下一轮如何测试信息或动作顺序，并比较点击与观看指标。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]},
-          {"title": "验证迁移边界", "body": "说明将本组机制迁移到新场景时的变量、风险和成交验证方法。", "evidenceRefs": ["highlight:事实包中的素材 ID:帧类型"]}
+          {
+            "title": "验证画面变量",
+            "body": "说明下一轮保留或调整的画面变量、对照方式和观察指标。",
+            "evidenceRefs": [
+              "highlight:事实包中的素材 ID:帧类型"
+            ]
+          }
         ]
       }
     ],
@@ -180,18 +211,27 @@
       "topic": "audience",
       "title": "洞察标题",
       "conclusion": "基于证据的谨慎结论",
-      "evidenceRefs": ["事实包中已有的引用"]
+      "evidenceRefs": [
+        "事实包中已有的引用"
+      ]
     }
   ],
   "keywordCloudInsight": {
+    "analysisStatus": "supported",
+    "limitation": "",
     "oneSentenceConclusion": "脚本以大促福利制造购买冲动，再用鲜炖品质与日常场景承接信任。",
     "summary": "高频表达呈现“福利促转化、鲜炖品质稳信任、早餐与三伏天强化代入”的递进结构；下一轮可对照福利强弱与品质承接比例，观察点击和成交变化。",
     "sellingPoints": [
       {
         "title": "卖点标题",
+        "dimension": "实际脚本维度；此数组仅示范形状，supported 实际至少三条",
         "description": "仅基于脚本文本和关键词云提炼的卖点描述。",
-        "keywordRefs": ["关键词云中的真实词"],
-        "evidenceRefs": ["script:materialId:text:关键词"]
+        "keywordRefs": [
+          "关键词云中的真实词"
+        ],
+        "evidenceRefs": [
+          "script:materialId:text:关键词"
+        ]
       }
     ]
   },
@@ -212,7 +252,9 @@
       "integratedConclusion": "三类证据整合后的判断",
       "decision": "scale",
       "nextAction": "具体行动",
-      "evidenceRefs": ["事实包中已有的引用"]
+      "evidenceRefs": [
+        "事实包中已有的引用"
+      ]
     }
   ]
 }

@@ -9,6 +9,7 @@ import math
 import re
 from pathlib import Path
 from batch_runtime import stage_counts
+from analysis_quality import content_contract_findings, finding, review_result
 from asset_metrics_lib import (
     COST_METRIC,
     NET_SETTLEMENT_AMOUNT_METRIC,
@@ -37,16 +38,17 @@ _safe_component = safe_component
 FinalReportError = ReportRenderingError
 
 
+class AIQualityError(FinalReportError):
+    def __init__(self, messages):
+        self.findings = [finding("error", message) for message in messages]
+        super().__init__("AI quality gate: " + "; ".join(messages[:10]))
+
+
 ALLOWED_DECISIONS = {"scale", "remix", "hold", "stop", "unknown"}
 ALLOWED_INSIGHT_TOPICS = {"audience", "script"}
 PORTFOLIO_DIMENSION_TOPICS = ("commercial", "audience", "script", "highlight")
 PORTFOLIO_DIMENSION_TOPICS_WITH_INTERACTION = PORTFOLIO_DIMENSION_TOPICS + ("interaction",)
 HIGHLIGHT_DASHBOARD_CATEGORIES = ("portrait", "product", "other")
-HIGHLIGHT_DASHBOARD_MINIMUMS = {
-    "commonConclusion": 20,
-    "derivativeDirectionBody": 20,
-}
-HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH = 32
 COMMERCIAL_EVIDENCE_REFS = {
     "commercial:cost",
     "commercial:netSettlementAmount",
@@ -75,7 +77,7 @@ CHAPTER01_COMMERCIAL_EVIDENCE_KEYS = (
 )
 COMMERCIAL_SOURCE_TERMS = ("资产表", "数据来源")
 AUDIENCE_NONCANONICAL_TERMS = ("触达", "响应")
-AI_QUALITY_MINIMUMS = {
+AI_LENGTH_SUGGESTIONS = {
     "overallConclusion": 100,
     "combinationPoint": 60,
     "batchInsight": 180,
@@ -277,7 +279,18 @@ def _validate_v2_highlight_analysis(raw, material_index, index):
     frame_ref = _text(raw.get("frameRef"))
     visual_observation = _text(raw.get("visualObservation"))
     commercial_interpretation = _text(raw.get("commercialInterpretation"))
-    if not frame_ref or not visual_observation or not commercial_interpretation:
+    status = _text(raw.get("interpretationStatus")) or "supported"
+    limitation = _text(raw.get("limitation"))
+    shared_ref = _text(raw.get("sharedInterpretationRef"))
+    if status not in {"supported", "insufficient_evidence", "shared"}:
+        raise FinalReportError("unsupported interpretationStatus")
+    if status == "insufficient_evidence" and (not limitation or commercial_interpretation or shared_ref):
+        raise FinalReportError("insufficient_evidence requires limitation and no commercial claim")
+    if status == "shared" and (not shared_ref or commercial_interpretation or limitation):
+        raise FinalReportError("shared interpretation requires only sharedInterpretationRef")
+    if status == "supported" and (shared_ref or limitation):
+        raise FinalReportError("supported interpretation must not contain shared ref or limitation")
+    if not frame_ref or not visual_observation or (status == "supported" and not commercial_interpretation):
         raise FinalReportError(
             f"materialAnalyses[{material_index}].highlightAnalyses[{index}] "
             "requires frameRef, visualObservation, and commercialInterpretation"
@@ -286,6 +299,8 @@ def _validate_v2_highlight_analysis(raw, material_index, index):
         "frameRef": frame_ref,
         "visualObservation": visual_observation,
         "commercialInterpretation": commercial_interpretation,
+        **({"interpretationStatus": status, "limitation": limitation,
+            "sharedInterpretationRef": shared_ref} if status != "supported" else {}),
     }
 
 
@@ -449,11 +464,6 @@ def _validate_highlight_dashboard_group(raw, index):
         common_text = _text(raw_common)
         if not common_text:
             raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion is required")
-        if len(common_text) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
-            raise FinalReportError(
-                f"highlightDashboard.groups[{index}].commonConclusion must contain at least "
-                f"{HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters"
-            )
         normalized_common = [{"title": "共性结论", "body": common_text, "evidenceRefs": frame_refs}]
     elif isinstance(raw_common, list):
         if not raw_common:
@@ -467,10 +477,6 @@ def _validate_highlight_dashboard_group(raw, index):
             evidence_refs = _string_list(item.get("evidenceRefs"), f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].evidenceRefs")
             if not title or not body or not evidence_refs:
                 raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}] requires title, body, and evidenceRefs")
-            if len(title) > HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH:
-                raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].title must contain at most {HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH} characters")
-            if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
-                raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion[{item_index}].body must contain at least {HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters")
             normalized_common.append({"title": title, "body": body, "evidenceRefs": evidence_refs})
     else:
         raise FinalReportError(f"highlightDashboard.groups[{index}].commonConclusion must be a string or list")
@@ -478,10 +484,6 @@ def _validate_highlight_dashboard_group(raw, index):
     if not isinstance(directions, list):
         raise FinalReportError(
             f"highlightDashboard.groups[{index}].derivativeDirections must be a list"
-        )
-    if not directions:
-        raise FinalReportError(
-            f"highlightDashboard.groups[{index}].derivativeDirections must not be empty"
         )
     normalized_directions = []
     for direction_index, direction in enumerate(directions):
@@ -505,26 +507,8 @@ def _validate_highlight_dashboard_group(raw, index):
                     index, direction_index
                 )
             )
-        if len(title) > HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH:
-            raise FinalReportError(
-                "highlightDashboard.groups[{}].derivativeDirections[{}].title must contain at most {} characters".format(
-                    index, direction_index, HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH
-                )
-            )
-        if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["derivativeDirectionBody"]:
-            raise FinalReportError(
-                "highlightDashboard.groups[{}].derivativeDirections[{}].body must contain at least {} characters".format(
-                    index,
-                    direction_index,
-                    HIGHLIGHT_DASHBOARD_MINIMUMS["derivativeDirectionBody"],
-                )
-            )
         normalized_directions.append(
             {"title": title, "body": body, "evidenceRefs": evidence_refs}
-        )
-    if not legacy_common and len(normalized_common) != len(normalized_directions):
-        raise FinalReportError(
-            f"highlightDashboard.groups[{index}] commonConclusion and derivativeDirections must have equal length"
         )
     return {
         "category": category,
@@ -558,16 +542,16 @@ def _validate_custom_classification(raw, expected_frame_refs=None):
         metadata[field] = value
 
     raw_groups = raw.get("groups")
-    if not isinstance(raw_groups, list) or len(raw_groups) < 2:
-        raise FinalReportError("customClassification.groups must contain at least 2 groups")
+    if not isinstance(raw_groups, list) or len(raw_groups) < 1:
+        raise FinalReportError("customClassification.groups must contain at least 1 group")
     expected = None if expected_frame_refs is None else set(expected_frame_refs)
     classified_refs = []
     names = set()
     groups = []
 
     def normalize_insights(value, field_name, group_refs):
-        if not isinstance(value, list) or len(value) != 3:
-            raise FinalReportError(f"{field_name} must contain exactly 3 items")
+        if not isinstance(value, list):
+            raise FinalReportError(f"{field_name} must be a list")
         normalized = []
         for item_index, item in enumerate(value):
             if not isinstance(item, dict):
@@ -581,16 +565,6 @@ def _validate_custom_classification(raw, expected_frame_refs=None):
             if not title or not body or not evidence_refs:
                 raise FinalReportError(
                     f"{field_name}[{item_index}] requires title, body, and evidenceRefs"
-                )
-            if len(title) > HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH:
-                raise FinalReportError(
-                    f"{field_name}[{item_index}].title must contain at most "
-                    f"{HIGHLIGHT_DASHBOARD_TITLE_MAX_LENGTH} characters"
-                )
-            if len(body) < HIGHLIGHT_DASHBOARD_MINIMUMS["commonConclusion"]:
-                raise FinalReportError(
-                    f"{field_name}[{item_index}].body must contain at least "
-                    f"{HIGHLIGHT_DASHBOARD_MINIMUMS['commonConclusion']} characters"
                 )
             if any(reference not in group_refs for reference in evidence_refs):
                 raise FinalReportError(
@@ -642,6 +616,8 @@ def _validate_custom_classification(raw, expected_frame_refs=None):
                 )
         classified_refs.extend(frame_refs)
         group_refs = set(frame_refs)
+        if not raw_group.get("commonConclusion"):
+            raise FinalReportError("customClassification group requires a supported conclusion or evidence limitation")
         groups.append(
             {
                 "groupId": group_id,
@@ -654,7 +630,7 @@ def _validate_custom_classification(raw, expected_frame_refs=None):
                     group_refs,
                 ),
                 "derivativeDirections": normalize_insights(
-                    raw_group.get("derivativeDirections"),
+                    raw_group.get("derivativeDirections", []),
                     f"customClassification.groups[{index}].derivativeDirections",
                     group_refs,
                 ),
@@ -719,23 +695,6 @@ def _normalize_v4_conclusion(payload):
         raise FinalReportError(
             "highlightDashboard.groups must use the fixed category order: portrait, product, other"
         )
-    seen_copy_keys = set()
-    seen_titles = set()
-    for group in normalized_groups:
-        for section in ("commonConclusion", "derivativeDirections"):
-            for item in group[section]:
-                title_key = (section, item["title"].strip())
-                if title_key in seen_titles:
-                    raise FinalReportError(
-                        "highlightDashboard groups must not reuse identical title across categories; each frame must be classified exactly once"
-                    )
-                seen_titles.add(title_key)
-                copy_key = (section, item["title"].strip(), item["body"].strip())
-                if copy_key in seen_copy_keys:
-                    raise FinalReportError(
-                        "highlightDashboard groups must not reuse identical title/body across categories"
-                    )
-                seen_copy_keys.add(copy_key)
     return {
         **normalized,
         "schemaVersion": 4,
@@ -762,20 +721,27 @@ def _normalize_v5_conclusion(payload):
     keyword_cloud_insight = payload.get("keywordCloudInsight")
     normalized_keyword_cloud = None
     if isinstance(keyword_cloud_insight, dict):
+        if not isinstance(keyword_cloud_insight.get("sellingPoints", []), list):
+            raise FinalReportError("keywordCloudInsight.sellingPoints must be a list")
         normalized_keyword_cloud = {
+            "analysisStatus": keyword_cloud_insight.get("analysisStatus"),
+            "limitation": _text(keyword_cloud_insight.get("limitation")),
             "oneSentenceConclusion": _text(keyword_cloud_insight.get("oneSentenceConclusion")),
             "summary": _text(keyword_cloud_insight.get("summary")),
             "sellingPoints": [
                 {
+                    "dimension": _text(item.get("dimension")),
                     "title": _text(item.get("title")),
                     "description": _text(item.get("description")),
                     "keywordRefs": _string_list(item.get("keywordRefs", []), "keywordCloudInsight.sellingPoints.keywordRefs"),
                     "evidenceRefs": _string_list(item.get("evidenceRefs", []), "keywordCloudInsight.sellingPoints.evidenceRefs"),
                 }
-                for item in keyword_cloud_insight.get("sellingPoints", [])[:4]
+                for item in keyword_cloud_insight.get("sellingPoints", [])
                 if isinstance(item, dict)
             ],
         }
+        if len(normalized_keyword_cloud["sellingPoints"]) != len(keyword_cloud_insight.get("sellingPoints", [])):
+            raise FinalReportError("sellingPoints entries must be objects")
     normalized_custom = (
         _validate_custom_classification(payload.get("customClassification"))
         if "customClassification" in payload
@@ -784,6 +750,7 @@ def _normalize_v5_conclusion(payload):
     return {
         **normalized,
         "schemaVersion": 5,
+        "analysisProvenance": deepcopy(payload.get("analysisProvenance", {})),
         "overallConclusion": _text(payload.get("overallConclusion")),
         "portfolioDimensionConclusions": {
             topic: _validate_dimension_conclusion(dimensions[topic], topic)
@@ -1401,6 +1368,16 @@ def _validate_v2_evidence(
         if material["extractionStatus"] == "succeeded"
     }
     analysis_ids = set()
+    frame_hashes = _local_frame_hashes(material_cards)
+    for analysis in conclusion["materialAnalyses"]:
+        by_ref = {item["frameRef"]: item for item in analysis["highlightAnalyses"]}
+        for item in by_ref.values():
+            if item.get("interpretationStatus") != "shared":
+                continue
+            target = by_ref.get(item["sharedInterpretationRef"])
+            if (not target or target is item or target.get("interpretationStatus", "supported") != "supported"
+                    or not _same_local_frame(item["frameRef"], target["frameRef"], frame_hashes)):
+                raise FinalReportError("sharedInterpretationRef requires same material, identical local JPEG and direct supported target")
 
     def require_known(reference):
         if reference not in known_refs:
@@ -1445,8 +1422,12 @@ def _validate_v2_evidence(
         analysis_ids.add(material_id)
         for reference in material_analysis["evidenceRefs"]:
             require_known(reference)
+            if reference.startswith(("script:", "highlight:")) and reference.split(":")[1] != material_id:
+                raise FinalReportError("material evidence must reference its own material")
         for highlight in material_analysis["highlightAnalyses"]:
             require_known(highlight["frameRef"])
+            if not highlight["frameRef"].startswith(f"highlight:{material_id}:"):
+                raise FinalReportError("frameRef must reference its own material")
         material_card = next(
             item for item in material_cards if item["materialId"] == material_id
         )
@@ -1700,6 +1681,18 @@ def _templated_highlight_copy_pairs(analyses, field_name, frame_hashes=None):
     return duplicates
 
 
+def _frame_pair_examples(analyses, field_name, pairs):
+    values = {item["frameRef"]: item.get(field_name, "")
+              for analysis in analyses for item in analysis["highlightAnalyses"]}
+    result = []
+    for first, second in pairs[:3]:
+        a, b = values[first], values[second]
+        match = SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+        result.append({"frameRefs": [first, second], "texts": [a[:180], b[:180]],
+                       "sharedText": a[match.a:match.a + match.size][:120]})
+    return result
+
+
 def _templated_classification_copy_pairs(groups, section):
     """Return classification insight pairs with copied or near-copied bodies."""
     values = []
@@ -1778,7 +1771,9 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
         return
 
     failures = []
-    minimums = AI_QUALITY_MINIMUMS
+    advice = []
+    reviews = []
+    minimums = AI_LENGTH_SUGGESTIONS
     frame_hashes = _local_frame_hashes(material_cards)
     has_successful_highlight_frames = any(
         card.get("extractionStatus") == "succeeded" and card.get("highlightFrames")
@@ -1797,18 +1792,18 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
         for failure in _validate_keyword_cloud_one_sentence(
             keyword_cloud_insight.get("oneSentenceConclusion")
         ):
-            failures.append(
+            advice.append(
                 "keywordCloudInsight.oneSentenceConclusion " + failure
             )
         for failure in _validate_keyword_cloud_summary(
             keyword_cloud_insight.get("summary")
         ):
-            failures.append("keywordCloudInsight.summary " + failure)
+            advice.append("keywordCloudInsight.summary " + failure)
     if (
         conclusion.get("schemaVersion") in {2, 5}
         and len(conclusion["overallConclusion"]) < minimums["overallConclusion"]
     ):
-        failures.append(
+        advice.append(
             "overallConclusion must contain at least "
             f"{minimums['overallConclusion']} characters"
         )
@@ -1816,7 +1811,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
     if conclusion.get("schemaVersion") in {3, 4, 5}:
         for topic, dimension in conclusion["portfolioDimensionConclusions"].items():
             if len(dimension["conclusion"]) < minimums["combinationPoint"]:
-                failures.append(
+                advice.append(
                     f"portfolioDimensionConclusions.{topic}.conclusion must contain at least "
                     f"{minimums['combinationPoint']} characters"
                 )
@@ -1825,7 +1820,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
     for index, insight in enumerate(conclusion["batchInsights"]):
         insights_by_topic[insight["topic"]].append(insight)
         if len(insight["conclusion"]) < minimums["batchInsight"]:
-            failures.append(
+            advice.append(
                 f"batchInsights[{index}].conclusion must contain at least "
                 f"{minimums['batchInsight']} characters"
             )
@@ -1887,7 +1882,7 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
             "integratedConclusion",
         ):
             if len(analysis[field_name]) < minimums["materialConclusion"]:
-                failures.append(
+                advice.append(
                     f"materialAnalyses[{material_id}].{field_name} must contain at least "
                     f"{minimums['materialConclusion']} characters"
                 )
@@ -1896,12 +1891,12 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
                 f"materialAnalyses[{material_id}].interactionConclusion is required"
             )
         if analysis["interactionConclusion"] and len(analysis["interactionConclusion"]) < minimums["materialConclusion"]:
-            failures.append(
+            advice.append(
                 f"materialAnalyses[{material_id}].interactionConclusion must contain at least "
                 f"{minimums['materialConclusion']} characters"
             )
         if len(analysis["nextAction"]) < minimums["materialNextAction"]:
-            failures.append(
+            advice.append(
                 f"materialAnalyses[{material_id}].nextAction must contain at least "
                 f"{minimums['materialNextAction']} characters"
             )
@@ -1917,96 +1912,54 @@ def _validate_v2_analysis_quality(conclusion, material_cards):
         actual_frame_refs = {
             highlight["frameRef"] for highlight in analysis["highlightAnalyses"]
         }
-        if actual_frame_refs != expected_frame_refs:
+        if actual_frame_refs != expected_frame_refs or len(actual_frame_refs) != len(analysis["highlightAnalyses"]):
             failures.append(
                 f"materialAnalyses[{material_id}].highlightAnalyses must cover every "
                 "available highlight frame"
             )
         for index, highlight in enumerate(analysis["highlightAnalyses"]):
             if len(highlight["visualObservation"]) < minimums["visualObservation"]:
-                failures.append(
+                advice.append(
                     f"materialAnalyses[{material_id}].highlightAnalyses[{index}]."
                     "visualObservation must contain concrete visual detail"
                 )
-            if len(highlight["commercialInterpretation"]) < minimums[
+            if highlight.get("interpretationStatus", "supported") == "supported" and len(highlight["commercialInterpretation"]) < minimums[
                 "commercialInterpretation"
             ]:
-                failures.append(
+                advice.append(
                     f"materialAnalyses[{material_id}].highlightAnalyses[{index}]."
                     "commercialInterpretation must contain at least "
                     f"{minimums['commercialInterpretation']} characters"
                 )
-        duplicate_frames = _duplicate_highlight_observations(
-            material_id, analysis["highlightAnalyses"], frame_hashes
-        )
-        if duplicate_frames:
-            failures.append(
-                f"materialAnalyses[{material_id}].highlightAnalyses has repeated "
-                "visualObservation for frames "
-                + ", ".join(f"{first}/{second}" for first, second in duplicate_frames)
-            )
-        duplicate_interpretations = _duplicate_highlight_interpretations(
-            material_id, analysis["highlightAnalyses"]
-        )
-        if duplicate_interpretations:
-            failures.append(
-                f"materialAnalyses[{material_id}].highlightAnalyses has repeated "
-                "commercialInterpretation for frames "
-                + ", ".join(
-                    f"{first}/{second}"
-                    for first, second in duplicate_interpretations
-                )
-            )
-
-    for field_name in (
-        "audienceConclusion",
-        "scriptConclusion",
-        "integratedConclusion",
-        "nextAction",
-    ):
-        repeated = _repeated_values(successful_analyses, field_name)
-        if repeated:
-            failures.append(
-                f"materialAnalyses.{field_name} has repeated values for "
-                + ", ".join("/".join(ids) for ids in repeated)
-            )
+    for field_name in ("audienceConclusion", "scriptConclusion", "integratedConclusion", "nextAction"):
+        for ids in _repeated_values(successful_analyses, field_name):
+            refs = [ref for item in successful_analyses if item["materialId"] in ids
+                    for ref in item["evidenceRefs"]]
+            reviews.append(finding("review", "Repeated material text requires evidence review",
+                                   field="materialAnalyses." + field_name, evidence_refs=refs,
+                                   examples=[{"materialIds": ids}]))
 
     for field_name in ("visualObservation", "commercialInterpretation"):
-        templated = _templated_highlight_copy_pairs(successful_analyses, field_name, frame_hashes)
-        if templated:
-            failures.append(
-                "materialAnalyses.highlightAnalyses has templated "
-                + field_name
-                + " across frames "
-                + ", ".join(f"{first}/{second}" for first, second in templated)
-            )
-
-    custom_classification = conclusion.get("customClassification")
-    if isinstance(custom_classification, dict):
-        custom_groups = custom_classification.get("groups", [])
+        pairs = _templated_highlight_copy_pairs(successful_analyses, field_name, frame_hashes)
+        if pairs:
+            reviews.append(finding("review", "Similar frame text requires evidence review",
+                field="materialAnalyses.highlightAnalyses." + field_name,
+                evidence_refs=[ref for pair in pairs for ref in pair],
+                examples=_frame_pair_examples(successful_analyses, field_name, pairs), count=len(pairs)))
+    for key, groups, checker in (
+        ("customClassification", conclusion.get("customClassification", {}).get("groups", []), _templated_classification_copy_pairs),
+        ("highlightDashboard", conclusion.get("highlightDashboard", {}).get("groups", []), _templated_dashboard_copy_pairs),
+    ):
         for section in ("commonConclusion", "derivativeDirections"):
-            templated = _templated_classification_copy_pairs(custom_groups, section)
-            if templated:
-                failures.append(
-                    "customClassification "
-                    + section
-                    + " has copied or overly similar bodies "
-                    + ", ".join(f"{first}/{second}" for first, second in templated)
-                )
-
-    if conclusion.get("schemaVersion") == 5:
-        dashboard_groups = conclusion.get("highlightDashboard", {}).get("groups", [])
-        templated = _templated_dashboard_copy_pairs(
-            dashboard_groups, "derivativeDirections"
-        )
-        if templated:
-            failures.append(
-                "highlightDashboard derivativeDirections has copied or overly similar bodies "
-                + ", ".join(f"{first}/{second}" for first, second in templated)
-            )
+            pairs = checker(groups, section)
+            if pairs:
+                refs = [ref for group in groups for ref in group.get("frameRefs", [])]
+                reviews.append(finding("review", "Similar classification text requires evidence review",
+                    field=key + "." + section, evidence_refs=refs, examples=pairs[:3], count=len(pairs)))
 
     if failures:
-        raise FinalReportError("AI quality gate: " + "; ".join(failures))
+        raise AIQualityError(failures)
+    return [finding("advice", message.replace("must ", "suggested: ")) for message in advice] + reviews
 
 
 def _validate_standard_ai_quality(conclusion, material_cards):
@@ -2025,7 +1978,7 @@ def _validate_standard_ai_quality(conclusion, material_cards):
         raise FinalReportError(
             "AI quality gate: customClassification is required for schemaVersion 5"
         )
-    _validate_v2_analysis_quality(conclusion, material_cards)
+    return _validate_v2_analysis_quality(conclusion, material_cards)
 
 
 def _prepare_report_data(
@@ -2055,8 +2008,7 @@ def _prepare_report_data(
     batch_manifest = load_batch_manifest(peak_output_dir)
     top_material_roi = load_top_material_roi_facts(peak_output_dir)
     conclusion = load_conclusion_analysis(analysis_json) if analysis_json else None
-    return (
-        build_final_report_data(
+    data = build_final_report_data(
             top_payload,
             records_by_material,
             summaries_by_material,
@@ -2065,9 +2017,33 @@ def _prepare_report_data(
             batch_manifest=batch_manifest,
             input_warnings=record_warnings,
             top_material_roi=top_material_roi,
-        ),
-        conclusion,
     )
+    if analysis_json:
+        script_path = Path(analysis_json).parent / "analysis-units/chapter03-script-input.json"
+        if script_path.is_file():
+            script_input = _read_json(script_path, "Chapter 03 facts")
+            # Projection must use the exact keyword registry the model saw,
+            # even if a later tokenizer would produce different candidates.
+            for key in ("keywordCloud", "labelSummary"):
+                if key in script_input:
+                    data["scripts"][key] = deepcopy(script_input[key])
+                    data["displayFacts"]["scripts"][key] = deepcopy(script_input[key])
+    return data, conclusion
+
+
+def _review_analysis_quality(conclusion, data, analysis_json, quality_review=None):
+    findings = _validate_standard_ai_quality(conclusion, data["materials"])
+    from analysis_handoff import inspect_inputs, verify_assembly
+    analysis_root = Path(analysis_json).parent
+    inputs = inspect_inputs(analysis_root) if (analysis_root / "analysis-units").exists() else None
+    assembly_hash = verify_assembly(analysis_json, inputs)
+    if conclusion.get("schemaVersion") == 5:
+        script_path = analysis_root / "analysis-units/chapter03-script-input.json"
+        script_input = _read_json(script_path, "Chapter 03 facts") if script_path.is_file() else data.get("scripts", {})
+        findings += content_contract_findings(conclusion, script_input)
+    return review_result(findings, analysis_json, data["materials"], quality_review,
+                         input_context={"report": {k: v for k, v in data.items() if k != "generatedAt"},
+                                        "analysisInputs": inputs, "assemblySha256": assembly_hash})
 
 
 def validate_standard_ai_analysis(
@@ -2075,6 +2051,7 @@ def validate_standard_ai_analysis(
     peak_output_dir,
     diagnosis_records_dir,
     analysis_json,
+    quality_review=None,
 ):
     """Validate the AI analysis against the same inputs used for rendering."""
     data, conclusion = _prepare_report_data(
@@ -2083,9 +2060,10 @@ def validate_standard_ai_analysis(
         diagnosis_records_dir,
         analysis_json,
     )
-    _validate_standard_ai_quality(conclusion, data["materials"])
+    quality = _review_analysis_quality(conclusion, data, analysis_json, quality_review)
     overview = data["overview"]
     return {
+        **quality,
         "analysisSchemaVersion": conclusion["schemaVersion"],
         "materialCount": overview["materialCount"],
         "highlightFrameCount": overview["highlightFrameCount"],
@@ -2298,6 +2276,7 @@ def generate_final_report(
     copy_assets=False,
     require_ai_quality=False,
     require_local_video_assets=False,
+    quality_review=None,
 ):
     legacy_data, conclusion = _prepare_report_data(
         top_materials_json,
@@ -2306,7 +2285,10 @@ def generate_final_report(
         analysis_json,
     )
     if require_ai_quality:
-        _validate_standard_ai_quality(conclusion, legacy_data["materials"])
+        quality = _review_analysis_quality(conclusion, legacy_data, analysis_json, quality_review)
+        if quality["analysisStatus"] != "valid":
+            raise FinalReportError("AI quality review required; run validate-analysis and review its findings")
+        legacy_data["analysisQuality"] = quality
     output_root = Path(output_dir)
     data_path = output_root / "final-report-data.json"
     display_facts_path = output_root / "report-display-facts.json"

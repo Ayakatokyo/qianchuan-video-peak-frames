@@ -37,12 +37,12 @@ UNIT_CONTRACTS = {
     },
     "chapter03-script": {
         "chapterId": "03",
-        "outputFields": ["batchInsights:script"],
+        "outputFields": ["batchInsights:script", "keywordCloudReview", "keywordCloudInsight"],
         "allowedEvidencePrefixes": ["script:"],
     },
     "chapter04-highlight": {
         "chapterId": "04",
-        "outputFields": ["highlightDashboard", "materialAnalyses.highlightAnalyses"],
+        "outputFields": ["highlightDashboard", "customClassification", "materialAnalyses.highlightAnalyses"],
         "allowedEvidencePrefixes": ["highlight:"],
     },
     "chapter05-material": {
@@ -478,7 +478,7 @@ def publish_analysis_units(output_dir, analysis):
     }
     manifest = {
         "schemaVersion": 2,
-        "executionMode": "single_model_call",
+        "executionMode": "current_model_fragments",
         "analysisSchemaVersion": 5,
         "sourceFactsSchemaVersion": analysis["schemaVersion"],
         "period": deepcopy(analysis.get("period", {})),
