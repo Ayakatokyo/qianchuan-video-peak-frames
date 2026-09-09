@@ -326,7 +326,7 @@ class AnalysisUnitPublicationTests(unittest.TestCase):
             self.assertEqual(manifest["schemaVersion"], 2)
             self.assertEqual(manifest["sourceFactsSchemaVersion"], 1)
             self.assertNotIn("sourceSnapshotSchemaVersion", manifest)
-            self.assertEqual(manifest["executionMode"], "single_model_call")
+            self.assertEqual(manifest["executionMode"], "current_model_fragments")
             self.assertEqual(manifest["analysisSchemaVersion"], 5)
             self.assertEqual(manifest["materialIds"], ["m-1"])
             self.assertEqual(manifest["frames"]["successfulCount"], 1)

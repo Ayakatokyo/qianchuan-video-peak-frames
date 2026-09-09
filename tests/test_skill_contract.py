@@ -180,7 +180,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("验证动作放入 summary 或 sellingPoints", skill)
         self.assertIn("summary 控制在 60-110 个中文字符", skill)
 
-    def test_skill_and_prompt_use_five_units_in_one_current_model_call(self):
+    def test_skill_and_prompt_use_five_units_and_one_final_candidate(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         prompt = DIAGNOSTIC_PROMPT_PATH.read_text(encoding="utf-8")
 
@@ -195,7 +195,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         ):
             self.assertIn(filename, prompt)
         self.assertIn("当前对话模型", skill)
-        self.assertIn("一次模型调用", skill)
+        self.assertIn("唯一正式 JSON", skill)
         self.assertIn("新运行不再生成", skill)
         self.assertNotIn("作为唯一的结构化事实来源", prompt)
         self.assertNotIn("prompts/analysis-units", skill)
@@ -296,7 +296,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
         self.assertIn("每个素材一批", skill)
-        self.assertIn("每帧 3-4 条独有要点", skill)
+        self.assertIn("少量真实可见要点", skill)
         self.assertIn("frame-review-progress.json", runbook)
         self.assertIn("不得再经 Bash 二次摘录", runbook)
 

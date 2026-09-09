@@ -385,11 +385,11 @@ class FinalReportConclusionTests(unittest.TestCase):
         with self.assertRaisesRegex(FinalReportError, "groupName"):
             _validate_custom_classification(payload, {"highlight:m-1:first_peak", "highlight:m-1:product_peak"})
 
-    def test_custom_classification_requires_three_common_and_derivative_items(self):
+    def test_custom_classification_accepts_evidence_driven_item_counts(self):
         payload = self._custom_classification()
         payload["groups"][0]["commonConclusion"] = payload["groups"][0]["commonConclusion"][:2]
-        with self.assertRaisesRegex(FinalReportError, "exactly 3"):
-            _validate_custom_classification(payload, {"highlight:m-1:first_peak", "highlight:m-1:product_peak"})
+        result = _validate_custom_classification(payload, {"highlight:m-1:first_peak", "highlight:m-1:product_peak"})
+        self.assertEqual(len(result["groups"][0]["commonConclusion"]), 2)
 
     def test_v5_preserves_keyword_cloud_insight_for_presentation(self):
         payload = {
@@ -2256,25 +2256,22 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
         with self.assertRaisesRegex(FinalReportError, "must reference its group"):
             self._build_data(outside_group)
 
-    def test_rejects_v4_dashboard_without_ordered_substantive_directions(self):
+    def test_accepts_sparse_dashboard_but_rejects_invalid_category_order(self):
         no_direction = self._conclusion()
         no_direction["highlightDashboard"]["groups"][0]["derivativeDirections"] = []
-        with self.assertRaisesRegex(FinalReportError, "must not be empty"):
-            normalize_conclusion_analysis(no_direction)
+        self.assertEqual(normalize_conclusion_analysis(no_direction)["schemaVersion"], 4)
 
         short_common_conclusion = self._conclusion()
         short_common_conclusion["highlightDashboard"]["groups"][0][
             "commonConclusion"
         ] = "太短"
-        with self.assertRaisesRegex(FinalReportError, "commonConclusion must contain"):
-            normalize_conclusion_analysis(short_common_conclusion)
+        self.assertEqual(normalize_conclusion_analysis(short_common_conclusion)["schemaVersion"], 4)
 
         short_direction = self._conclusion()
         short_direction["highlightDashboard"]["groups"][0][
             "derivativeDirections"
         ][0]["body"] = "太短"
-        with self.assertRaisesRegex(FinalReportError, "body must contain"):
-            normalize_conclusion_analysis(short_direction)
+        self.assertEqual(normalize_conclusion_analysis(short_direction)["schemaVersion"], 4)
 
         unordered = self._conclusion()
         unordered["highlightDashboard"]["groups"] = [
@@ -2295,7 +2292,7 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
         with self.assertRaisesRegex(FinalReportError, "fixed category order"):
             normalize_conclusion_analysis(unordered)
 
-    def test_rejects_cross_category_reused_highlight_copy(self):
+    def test_defers_cross_category_reused_highlight_copy_to_quality_review(self):
         conclusion = self._conclusion()
         conclusion["highlightDashboard"]["groups"].append(
             {
@@ -2331,10 +2328,10 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
                 "evidenceRefs": ["highlight:m-1:first_peak"],
             }
         ]
-        with self.assertRaisesRegex(FinalReportError, "reuse"):
-            normalize_conclusion_analysis(conclusion)
+        normalized = normalize_conclusion_analysis(conclusion)
+        self.assertEqual(normalized["schemaVersion"], 4)
 
-    def test_rejects_cross_category_reused_highlight_title_even_with_different_body(self):
+    def test_allows_shared_titles_with_different_body(self):
         conclusion = self._conclusion()
         product = {
             "category": "product",
@@ -2345,10 +2342,10 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
         conclusion["highlightDashboard"]["groups"].append(product)
         conclusion["highlightDashboard"]["groups"][0]["commonConclusion"] = [{"title": "主体突出带来快速识别", "body": "人物口播与产品同框，生活化动作降低理解门槛并形成快速识别。", "evidenceRefs": ["highlight:m-1:first_peak"]}]
         conclusion["highlightDashboard"]["groups"][0]["derivativeDirections"] = [{"title": "人物开场承接生活场景", "body": "保留人物开场并提前露出产品，验证首屏理解成本和点击表现。", "evidenceRefs": ["highlight:m-1:first_peak"]}]
-        with self.assertRaisesRegex(FinalReportError, "title"):
-            normalize_conclusion_analysis(conclusion)
+        normalized = normalize_conclusion_analysis(conclusion)
+        self.assertEqual(normalized["schemaVersion"], 4)
 
-    def test_rejects_overlong_highlight_summary_title(self):
+    def test_allows_long_highlight_summary_title(self):
         conclusion = self._conclusion()
         conclusion["highlightDashboard"]["groups"][0]["commonConclusion"] = [
             {
@@ -2357,8 +2354,8 @@ class FinalReportV4HighlightDashboardTests(unittest.TestCase):
                 "evidenceRefs": ["highlight:m-1:first_peak"],
             }
         ]
-        with self.assertRaisesRegex(FinalReportError, "title.*characters"):
-            normalize_conclusion_analysis(conclusion)
+        normalized = normalize_conclusion_analysis(conclusion)
+        self.assertEqual(normalized["schemaVersion"], 4)
 
 
 class FinalReportQualityGateTests(unittest.TestCase):
@@ -2389,58 +2386,20 @@ class FinalReportQualityGateTests(unittest.TestCase):
             },
         }
 
-    def test_keyword_cloud_one_sentence_requires_28_to_45_characters(self):
-        for sentence in ("福利机制已成为脚本最突出的核心记忆与购买吸引力。", "福利机制已成为脚本建立记忆并推动购买决策的主导驱动。" * 2):
-            with self.subTest(sentence=sentence), self.assertRaisesRegex(
-                FinalReportError, "keywordCloudInsight.oneSentenceConclusion.*28.*45"
-            ):
-                _validate_standard_ai_quality(
-                    self._keyword_cloud_quality_conclusion(sentence), []
-                )
-
-    def test_keyword_cloud_one_sentence_is_one_judgement_without_repeated_details_or_actions(self):
-        for sentence in (
-            "关键词高频词出现67次，福利机制与品质工艺并列成为核心卖点。",
-            "福利机制已成为核心记忆点，下一轮建议拆分开场验证点击变化。",
-        ):
-            with self.subTest(sentence=sentence), self.assertRaisesRegex(
-                FinalReportError, "keywordCloudInsight.oneSentenceConclusion"
-            ):
-                _validate_standard_ai_quality(
-                    self._keyword_cloud_quality_conclusion(sentence), []
-                )
+    def test_keyword_cloud_length_and_style_are_advice(self):
+        for sentence, summary in [
+            ("福利形成记忆。", "简短摘要。"),
+            ("福利机制已成为脚本建立记忆并推动购买决策的主导驱动。" * 2, "摘要。" * 50),
+            ("关键词高频词出现67次，福利机制与品质工艺并列成为核心卖点。", "摘要。"),
+        ]:
+            findings = _validate_standard_ai_quality(self._keyword_cloud_quality_conclusion(sentence, summary), [])
+            self.assertTrue(findings)
+            self.assertTrue(all(item["level"] == "advice" for item in findings))
 
     def test_keyword_cloud_one_sentence_accepts_a_single_concise_judgement(self):
-        _validate_standard_ai_quality(
-            self._keyword_cloud_quality_conclusion(
-                "福利机制已成为脚本建立记忆并持续推动购买决策的核心驱动。"
-            ),
-            [],
-        )
-
-    def test_keyword_cloud_summary_rejects_overlong_below_conclusion_copy(self):
-        with self.assertRaisesRegex(
-            FinalReportError, "keywordCloudInsight.summary.*110"
-        ):
-            _validate_standard_ai_quality(
-                self._keyword_cloud_quality_conclusion(
-                    "福利机制已成为脚本建立记忆并持续推动购买决策的核心驱动。",
-                    "验证动作和关键词关系放在摘要与卖点中。" * 6,
-                ),
-                [],
-            )
-
-    def test_keyword_cloud_summary_requires_compact_context(self):
-        with self.assertRaisesRegex(
-            FinalReportError, "keywordCloudInsight.summary.*60.*110"
-        ):
-            _validate_standard_ai_quality(
-                self._keyword_cloud_quality_conclusion(
-                    "福利机制已成为脚本建立记忆并持续推动购买决策的核心驱动。",
-                    "摘要太短。",
-                ),
-                [],
-            )
+        findings = _validate_standard_ai_quality(self._keyword_cloud_quality_conclusion(
+            "福利机制已成为脚本建立记忆并持续推动购买决策的核心驱动。"), [])
+        self.assertFalse(any(item["level"] == "review" for item in findings))
 
     def test_schema5_quality_gate_requires_ai_interaction_conclusion(self):
         conclusion = {"schemaVersion": 5, "overallConclusion": "总体结论。" * 80,
@@ -2501,11 +2460,11 @@ class FinalReportQualityGateTests(unittest.TestCase):
                 analysis[field] = "本素材证据支持的分析。" * 30
             analysis["evidenceRefs"] = [refs[0]]
             conclusion["materialAnalyses"] = analyses
-            with self.assertRaises(FinalReportError) as error:
-                _validate_v2_analysis_quality(conclusion, cards)
-            self.assertNotIn("repeated visualObservation", str(error.exception))
-            self.assertNotIn("templated visualObservation", str(error.exception))
-            self.assertIn("commercialInterpretation", str(error.exception))
+            conclusion["customClassification"] = {"groups": []}
+            findings = _validate_v2_analysis_quality(conclusion, cards)
+            review_fields = [item["field"] for item in findings if item["level"] == "review"]
+            self.assertFalse(any("visualObservation" in field for field in review_fields))
+            self.assertTrue(any("commercialInterpretation" in field for field in review_fields))
             second.write_bytes(b"a different local image")
             hashes = _local_frame_hashes(cards)
             self.assertTrue(_duplicate_highlight_observations("m-1", highlights, hashes))
@@ -2867,7 +2826,7 @@ class FinalReportQualityGateTests(unittest.TestCase):
         self.assertIn("AI quality gate", message)
         self.assertIn("schemaVersion 4", message)
 
-    def test_standard_quality_gate_rejects_repeated_material_conclusions(self):
+    def test_standard_quality_gate_requires_review_of_repeated_material_conclusions(self):
         repeated_audience = "24-30 岁用户对产品利益点的关注更集中，下一轮应保留利益点前置并继续验证不同开场的点击差异。" * 3
         repeated_script = "脚本以日常滋补场景承接产品利益点，表达路径可保留，同时需要测试更直接的利益点呈现方式。" * 3
         repeated_integrated = "素材应继续保留产品近景与滋补场景的组合，并通过不同开场节奏验证其对点击与理解成本的影响。" * 3
@@ -3000,19 +2959,11 @@ class FinalReportQualityGateTests(unittest.TestCase):
                 output_dir,
                 analysis_json=analysis_path,
             )
-            with self.assertRaises(FinalReportError) as error:
-                _validate_v2_analysis_quality(data["conclusion"], data["materials"])
-
-        message = str(error.exception)
-        self.assertIn("AI quality gate", message)
-        self.assertIn("repeated", message)
-        for field_name in (
-            "audienceConclusion",
-            "scriptConclusion",
-            "integratedConclusion",
-            "nextAction",
-        ):
-            self.assertIn(field_name, message)
+            data["conclusion"]["batchInsights"] = self._keyword_cloud_quality_conclusion("摘要")["batchInsights"]
+            findings = _validate_v2_analysis_quality(data["conclusion"], data["materials"])
+        review_fields = [item["field"] for item in findings if item["level"] == "review"]
+        for field_name in ("audienceConclusion", "scriptConclusion", "integratedConclusion", "nextAction"):
+            self.assertIn("materialAnalyses." + field_name, review_fields)
 
 
 class FinalReportRenderTests(unittest.TestCase):
@@ -3884,15 +3835,10 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("近 7 天上新素材量", prompt_text)
         self.assertIn("`summaryMetrics.roi`", prompt_text)
         self.assertIn("total_prepay_and_pay_order_roi2", prompt_text)
-        self.assertIn("每条 `batchInsights.conclusion` 必须为 180-280 个中文字符", prompt_text)
-        self.assertIn(
-            "每条 `materialAnalyses[*].audienceConclusion`、`scriptConclusion`、`interactionConclusion` 和 `integratedConclusion` 必须为 120-220 个中文字符",
-            prompt_text,
-        )
-        self.assertIn("`interactionConclusion`", prompt_text)
-        self.assertIn("互动时序事实为什么影响素材放量、改写或保留判断", prompt_text)
+        self.assertIn("长度与标题写法仅作表达建议", prompt_text)
+        self.assertIn("insufficient_evidence", prompt_text)
         self.assertIn("不得输出 `batchInsights.topic=integrated`", prompt_text)
-        self.assertIn("必须输出至少 3 条 audience、2 条 script 洞察", prompt_text)
+        self.assertIn("三种口径分别输出", prompt_text)
         self.assertNotIn("portfolioDimensionConclusions.audience", prompt_text)
         self.assertIn("batchInsights[topic=audience]", prompt_text)
         self.assertIn("标题不是固定文案", prompt_text)
@@ -3900,11 +3846,11 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("一二级内容公式：", prompt_text)
         self.assertIn("脚本文案：", prompt_text)
         self.assertNotIn("必须输出至少 4 条 nextActions", prompt_text)
-        self.assertIn("不少于 12 张", prompt_text)
-        self.assertIn("5～8 个类别", prompt_text)
-        self.assertIn("6～11 张", prompt_text)
-        self.assertIn("4～6 个类别", prompt_text)
-        self.assertIn("少于 6 张", prompt_text)
+        self.assertNotIn("不少于 12 张", prompt_text)
+        self.assertNotIn("5～8 个类别", prompt_text)
+        self.assertNotIn("6～11 张", prompt_text)
+        self.assertNotIn("4～6 个类别", prompt_text)
+        self.assertNotIn("少于 6 张", prompt_text)
         self.assertIn("主导机制", prompt_text)
         self.assertIn("不得输出或修正帧数、占比、覆盖率", prompt_text)
 

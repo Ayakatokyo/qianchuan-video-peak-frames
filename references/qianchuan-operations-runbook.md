@@ -16,22 +16,22 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 ## 已落盘分析接续
 
-先确定当前代码版本、输入 run 与本轮输出位置，记录 manifest、五个章节事实包、提示词与 JPEG 的 SHA-256。不要用 mtime、目录名或旧报告的 `complete` 推断数据版本或本次分析成功。项目当前 CLI 没有 `recover-local`、`--csv`、`--source-file`，不要把设计文档里的命令当成已实现接口。
+先确定当前代码版本、输入 run 与本轮输出位置，记录 manifest、五个章节事实包、提示词与 JPEG 的 SHA-256。不要用 mtime、目录名或旧报告的 `complete` 推断数据版本或本次分析成功。正式本地入口是 `prepare-local`，参数与片段合并、分层复核见[分析交接契约](analysis-handoff.md)。CLI 没有 `recover-local`、`--csv`、`--source-file`，不要把设计文档里的命令当成已实现接口。
 
 | 实际产物与状态 | 接续动作 |
 | --- | --- |
 | 五章事实包、提示词、JPEG 齐全且 `analysis_pending` | 当前模型直接进行帧审阅与分析，不调用 API/RPA/下载/FFmpeg |
 | 数据齐全，但旧结果已 `complete` 或曾绕过门禁 | 先保留旧摘要、AI JSON、报告和 ZIP；核对 request、素材集合、manifest 和资源后，在隔离副本或已有备份的 run 中恢复 `analysis_pending`，生成新候选 JSON；不能把单改状态当成修复成功 |
-| RPA/视频/帧完整，但五章输入缺失或与状态不一致 | 使用当前 `prepare_diagnostic_analysis()` 的本地构建逻辑，显式传入本批次完整的源文件与输出位置；同时保留 Chapter 01 全量榜单来源，不能拿精选 TopN 代替全量榜单。无法确认输入来源时精确报告缺口，不重跑在线 prepare 来掩盖问题 |
+| RPA/视频/帧完整，但五章输入缺失或与状态不一致 | 使用正式 `prepare-local`，显式传入本批次已确认请求参数与运行目录；同时保留 Chapter 01 全量榜单来源，不能拿精选 TopN 代替全量榜单。无法确认输入来源时精确报告缺口，不重跑在线 prepare 来掩盖问题 |
 | 只有列表 CSV，没有诊断 records/JPEG | 尚不属于“RPA 已落盘”；说明缺少的阶段，不能把列表 CSV 当作完整诊断事实 |
 
-`prepare_diagnostic_analysis()` 是 `scripts/diagnostic_analysis_lib.py` 中现有 Python 函数，不是新增 CLI；它负责本地事实包构建，不自动修复 `run-summary.json`。恢复时必须逐项核对状态与产物再进入分析，保留恢复前后证据。`repair_manifest.py` 的 `rpaCalls=0` 仅证明不提交 RPA，仍可能触发下载/截帧；用户只授权分析、或图片视频已经齐全时不要调用它。
+`prepare-local` 封装本地事实构建与状态接续，拒绝覆盖现有事实包或 complete 运行。不再手工调用私有函数写摘要。`repair_manifest.py` 的 `rpaCalls=0` 仅证明不提交 RPA，仍可能触发下载/截帧；用户只授权分析、或图片视频已经齐全时不要调用它。
 
 用户要求使用新提示词时，核对仓库 `prompts/diagnostic-analysis-prompt-v1.md` 与 run 内提示词的哈希；二者不同不等于事实包坏了。在本轮隔离分析目录中保存选定提示词与版本信息，不能默默覆盖旧运行快照。候选 AI JSON 应放在与本轮 `analysis-units/` 同级的 `diagnostic-analysis/` 下（例如 `diagnostic-ai-analysis.retry-<id>.json`），因为正式校验从这个相对位置加载 Chapter 01；不要随意写到 `/tmp` 后直接 finalize。
 
 ### AI 交接与失败定位
 
-- 当前对话模型就是分析执行者，`analysis_pending` 不需要另一个模型 API。一次正式 JSON 输出之前，可以多轮读文件、看图、记录要点；不要以“没有模型调用接口”结束任务。
+- 当前对话模型就是分析执行者，`analysis_pending` 不需要另一个模型 API。正式 JSON 合并之前，可以多轮读文件、看图、记录要点并逐项撰写分析片段；不要以“没有模型调用接口”结束任务。
 - 分批完整读取五章输入：Chapter 01 的全量榜单保持全量口径；Chapter 05 按 materialId 逐个读取，不一次打印整个文件。记录已读 JSON 路径、剩余路径和字节/哈希校验结果；工具截断后继续读剩余范围，不反复打印同一大包，不擅自裁掉字段。
 - 帧账本中的实际标识来自 `frames[*].evidenceRef`，不是不存在的 `frameRef` 输入字段。逐帧记录 frameRef、framePath、图像 SHA-256、3–4 条实际观察和状态；仅有 completed ID、没有可恢复笔记不算可复用的审阅结果。
 - 原文件哈希一致且笔记完整时续接未完成部分；文件变化或笔记丢失则重新审阅受影响帧。同字节图像允许复用视觉要点，但保留所有素材/帧的覆盖记录，核对每条素材各自的上下文。相同图片的来源正确性仍需核对本地 summary、视频和抽帧记录，不能从重复图片推出素材业务一致。
@@ -42,8 +42,8 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 | `run is not awaiting AI analysis` | 检查摘要和实际产物，按上述恢复规则处理；不归因于事实内容 |
 | unknown/illegal evidence reference | 回到对应章节精确查找合法引用；禁止从旧 JSON 复制或仅字符串替换 ID |
 | 缺字段、枚举、覆盖错误 | 保持事实不动，由当前模型补齐本次输出结构与遗漏项 |
-| 模板化或长度不足 | 返回对应 JPEG/事实重新分析，删除无证据套话；不通过脚本补字数 |
-| 相同图片的重复观察 | 本地文件 SHA-256 一致时，仅视觉观察重复可以豁免；商业解释、分组、引用与覆盖照常检查 |
+| 文本相似或长度提示 | 相似度进入当前模型证据复核，字数仅作 advice；套话必须重写，不通过脚本补字数 |
+| 相同图片的重复观察 | 本地文件 SHA-256 一致时，仅视觉观察重复可以豁免；同素材同图可使用 sharedInterpretationRef；其他商业解释需证据复核，分组、引用与覆盖照常检查 |
 | 疑似相似度误判/事实无法支持额外解释 | 保存候选 JSON、冲突字段和真实证据，用最小样本定位；不降低阈值、不改图、不随机改写求通过 |
 | 工具策略拒绝/任务中断 | 单列工具状态，按断点恢复；不能冒充 RPA、事实包或质量门禁失败 |
 
@@ -67,7 +67,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 首次打开 JPEG 前，在 `diagnostic-analysis/frame-review-progress.json` 建立断点账本。账本至少保存 `schemaVersion`、`status`、`analysisUnitManifestPath`、`promptPath`、`completedFrameRefs`、`pendingFrameRefs`、`currentMaterialId` 和 `currentBatchFrameRefs`；帧引用使用 `chapter04-highlight-input.json` 中的 `frameRef` 与 `framePath`，不得复制图片内容。按该文件的素材顺序执行，**一个素材只形成一个帧审阅批次**，且该批次最多 6 帧。
 
-每帧审阅只写 3-4 条简短且与其他帧可区分的视觉要点，覆盖主体、动作或使用状态、信息层及画面变化；详细商业解释、跨帧归纳和报告正文留给最终的单次 AI JSON 调用。每完成一个素材批次，先将该批次帧引用从 `pendingFrameRefs` 原子移动到 `completedFrameRefs`，再更新当前批次；恢复时对已完成条目核对图像哈希与实际观察笔记；二者均可验证时只打开 `pendingFrameRefs`，否则重审受影响条目。不得再经 Bash 二次摘录图片理解结果；该重复转写既不产生新视觉事实，也会阻塞后续帧审阅。图片策略拒绝仍按上一段冻结并等待恢复，不得以压缩、改读文本或跳帧绕过。
+每帧审阅只写少量真实可见的视觉要点，不强求差异或数量，覆盖主体、动作或使用状态、信息层及画面变化；商业解释和报告正文由当前模型按素材逐项撰写，最终使用正式 assemble-analysis 合并。每完成一个素材批次，先将该批次帧引用从 `pendingFrameRefs` 原子移动到 `completedFrameRefs`，再更新当前批次；恢复时对已完成条目核对图像哈希与实际观察笔记；二者均可验证时只打开 `pendingFrameRefs`，否则重审受影响条目。不得再经 Bash 二次摘录图片理解结果；该重复转写既不产生新视觉事实，也会阻塞后续帧审阅。图片策略拒绝仍按上一段冻结并等待恢复，不得以压缩、改读文本或跳帧绕过。
 
 只有后台明确终止且运行摘要或产物链路也显示未完成，才按本手册的“运行中断或陈旧批次”处理。策略服务未提供原始拒绝原因时，记录为 `tool_call_blocked` 与“待策略侧日志确认”；不要把业务任务、RPA 或 FFmpeg 归因为策略故障。
 

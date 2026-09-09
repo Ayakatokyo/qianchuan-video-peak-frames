@@ -26,11 +26,13 @@ def _missing_prepare_dependencies():
     ]
 
 
-def ensure_prepare_dependencies():
+def ensure_prepare_dependencies(*, allow_install=True):
     """Install missing prepare dependencies into this process's Python environment."""
     missing = _missing_prepare_dependencies()
     if not missing:
         return
+    if not allow_install:
+        raise DependencyBootstrapError("local workflow requires installed dependencies: " + ", ".join(missing))
 
     uv = shutil.which("uv")
     if not uv:
