@@ -2285,6 +2285,7 @@ function activateHighlightModeTab(tab) {
 function renderHighlightInsightColumns(group) {
   const common = element("div", "highlight-analysis-copy highlight-insight-column");
   common.append(element("b", "", "共性结论"));
+  if (group.contentLimitation) common.append(element("p", "analysis-warning", `分析边界：${group.contentLimitation}`));
   const commonItems = Array.isArray(group.commonConclusion) ? group.commonConclusion : [];
   commonItems.forEach((item) => {
     const insight = element("article", "highlight-insight");
@@ -2353,6 +2354,7 @@ function renderBatchClassificationPanel(batchClassification, factsByReference) {
     return root;
   }
   root.append(element("p", "highlight-batch-rule", text(batchClassification.ruleDescription, "本批次成功高光帧的视觉机制分类")));
+  if (batchClassification.classificationLimitation) root.append(element("p", "analysis-warning", `分类边界：${batchClassification.classificationLimitation}`));
   const groups = Array.isArray(batchClassification.groups) ? batchClassification.groups : [];
   if (groups.length === 0) {
     root.append(element("p", "muted", "本批次未生成分类"));
@@ -2495,6 +2497,7 @@ function renderHighlightDashboard() {
     const grid = element("div", "highlight-frame-grid");
     const common = element("div", "highlight-analysis-copy highlight-insight-column");
     common.append(element("b", "", "共性结论"));
+    if (group.contentLimitation) common.append(element("p", "analysis-warning", `分析边界：${group.contentLimitation}`));
     const commonItems = Array.isArray(group.commonConclusion)
       ? group.commonConclusion
       : [{ title: "共性结论", body: group.commonConclusion }];
@@ -2753,10 +2756,7 @@ document.addEventListener("keydown", (event) => {
 function renderReport() {
   const period = reportData.period || {};
   document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
-  const quality = reportData.analysisQuality || {};
-  const qualityNote = element("div", "muted", `结构校验：${quality.structurally_valid === true ? "通过" : "未核验"} · 内容复核：${quality.contentReviewStatus || "未核验"}`);
-  (quality.contentReviewLimitations || []).forEach((item) => qualityNote.append(element("p", "analysis-warning", `内容复核限制：${item.reason}`)));
-  document.getElementById("report-subtitle").after(qualityNote);
+  // Quality evidence remains in JSON artifacts; the cover presents business content.
   const exportLink = document.querySelector("[data-highlight-export]");
   if (exportLink && text(reportData.highlightExportHref)) {
     exportLink.href = text(reportData.highlightExportHref);

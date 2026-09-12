@@ -515,6 +515,7 @@ def _validate_highlight_dashboard_group(raw, index):
         "frameRefs": frame_refs,
         "commonConclusion": normalized_common,
         "derivativeDirections": normalized_directions,
+        **({"contentLimitation": deepcopy(raw["contentLimitation"])} if "contentLimitation" in raw else {}),
     }
 
 
@@ -624,6 +625,7 @@ def _validate_custom_classification(raw, expected_frame_refs=None):
                 "groupName": group_name,
                 "description": description,
                 "frameRefs": frame_refs,
+                **({"contentLimitation": deepcopy(raw_group["contentLimitation"])} if "contentLimitation" in raw_group else {}),
                 "commonConclusion": normalize_insights(
                     raw_group.get("commonConclusion"),
                     f"customClassification.groups[{index}].commonConclusion",
@@ -667,6 +669,7 @@ def _validate_custom_classification(raw, expected_frame_refs=None):
             )
     return {
         **metadata,
+        **({"classificationLimitation": deepcopy(raw["classificationLimitation"])} if "classificationLimitation" in raw else {}),
         "groups": groups,
         "unclassifiedFrameRefs": unclassified,
         "availability": "partial" if unclassified else "available",
@@ -2036,14 +2039,26 @@ def _review_analysis_quality(conclusion, data, analysis_json, quality_review=Non
     from analysis_handoff import inspect_inputs, verify_assembly
     analysis_root = Path(analysis_json).parent
     inputs = inspect_inputs(analysis_root) if (analysis_root / "analysis-units").exists() else None
+    from frame_review import validate_frame_review
+    frame_review_hash = validate_frame_review(analysis_root)
+    index_path = analysis_root / 'analysis-input-index.json'
+    if inputs is not None and (not index_path.exists() or _read_json(index_path, 'input index').get('schemaVersion') != 2):
+        # Keep old quality-review hashes stable for historical, pre-ledger runs.
+        inputs = {k: v for k, v in inputs.items() if k != 'schemaVersion'}
+        inputs['frames'] = [{k: v for k, v in f.items() if k != 'materialId'} for f in inputs['frames']]
     assembly_hash = verify_assembly(analysis_json, inputs)
     if conclusion.get("schemaVersion") == 5:
         script_path = analysis_root / "analysis-units/chapter03-script-input.json"
         script_input = _read_json(script_path, "Chapter 03 facts") if script_path.is_file() else data.get("scripts", {})
         findings += content_contract_findings(conclusion, script_input)
+        from analysis_quality import HIGHLIGHT_DEPTH_POLICY_MARKER, highlight_depth_findings
+        prompt_path = analysis_root / 'diagnostic-analysis-prompt.md'
+        if prompt_path.is_file() and HIGHLIGHT_DEPTH_POLICY_MARKER in prompt_path.read_text(encoding='utf-8'):
+            findings += highlight_depth_findings(conclusion)
     return review_result(findings, analysis_json, data["materials"], quality_review,
                          input_context={"report": {k: v for k, v in data.items() if k != "generatedAt"},
-                                        "analysisInputs": inputs, "assemblySha256": assembly_hash})
+                                        "analysisInputs": inputs, "assemblySha256": assembly_hash,
+                                        **({"frameReviewSha256": frame_review_hash} if frame_review_hash else {})})
 
 
 def validate_standard_ai_analysis(

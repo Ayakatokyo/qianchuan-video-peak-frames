@@ -1,5 +1,7 @@
 # diagnostic-analysis-prompt-v1
 
+<!-- highlight-depth-policy: mechanism-depth-v1 -->
+
 当前执行技能的当前对话模型必须先读取 `analysis-units/analysis-unit-manifest.json`，校验其中五个章节事实包的路径、字节数、SHA-256、素材顺序和帧数量，再分批完整读取以下输入，允许当前模型分批撰写，最终合并为唯一正式 JSON：
 
 `report-display-facts.json` 是前端展示快照，不属于模型输入；模型不得读取、引用或复述其中的 TOP3/图表展示字段。
@@ -21,6 +23,9 @@
 ## 接续、读取与真实重复画面
 
 - 当前模型直接完成分析，不需要额外的模型调用接口。按章节和素材读取完整输入；响应截断时沿 JSON 路径继续，记录已读范围，不能把截断输出当作完整事实。
+- 首次看图前使用正式 `frame-review` 命令冻结 `diagnostic-analysis/analysis-input-index.json`，逐项锁定 `frameRef`、`materialId`、`framePath` 和实际 SHA-256。路径、文件哈希、事实或 Prompt 改变时停止当前批次，显式重建索引后恢复，不混用新旧输入。
+- 按素材处理，每批最多 6 个唯一 SHA；先完成命令返回的 `imagesToView` 扫描，再一次提交该批 checkpoint。相同 SHA 只实际查看一次，程序把模型提供的 `visualObservation` 缓存到 `visualObservationCache`，并维护全部 `frameRefsBySha256`；仍须覆盖每个 frameRef，不能跨素材复用商业解释。相邻画面变化依赖各自上下文，不作为共享缓存事实。操作结构见技能运维手册，不逐帧 patch、不借程序生成分析正文。
+- `frame-review-progress.json` 必须在全部引用覆盖后为 `status=complete`、`pendingFrameRefs=[]` 且有 `completedAt`，否则先续接帧审阅，不能 finalize。质量门禁元数据只保存在机器产物，业务分析正文不复述结构校验、内容复核状态或清理日志。
 - 只用本次 manifest 对应的事实与 JPEG 生成新结果。历史 AI JSON 不是 schema 模板；如需结构参考，使用下文契约，示例文字也不得复制为本批次事实。序列化工具可以保存模型逐项撰写的内容，不能批量拼接分析正文或补字数。
 - “独有”“不同”均以图像实际信息为前提。真实相同的 JPEG 可有相同视觉观察；由本地文件计算 SHA-256 证明相同，不能用 AI 自报的哈希、路径或素材名代替。每个 frameRef 仍须单独覆盖。若相邻帧没有变化，明确没有可见变化；字幕不可辨或没有字幕时如实写出，不制造叙事转折。
 - 相同图片不能证明视频、人群、互动或商业效果相同。commercialInterpretation 仍须核对本素材事实；不要求凭空制造不同商业机制，没有关联证据时说明边界。若相似度检查命中真实但相同的解释，保留候选结果及冲突帧证据，由当前模型按质量复核契约记录证据与理由，禁止随机标记、同义改写和关闭门禁。
@@ -60,7 +65,13 @@
 
 当前模型按素材查看图片，直接保存简短观察和分析 JSON 片段；固定合并程序只连接已经写好的数据。不得创建临时脚本或以内联代码循环、拼接、补长业务正文。每帧记录真实可见的主体、动作、产品/空间状态、信息层及相邻变化；无变化或字幕不可辨时如实说明，不强求六个角度全部有新信息。
 
-highlightDashboard 和 customClassification 每组 commonConclusion 至少一条有依据的结论或证据限制；这只是结构底线。多个独立机制确实存在时，提炼 2–3 条互不重复的洞察及 2–3 条对应裂变方向，不为凑数拆组。每条洞察写清画面如何传递信息及推断边界；每条方向写清源画面、保留项、具体改变的可测试变量、对照方式和观察结果。逐条绑定本组真实 evidenceRefs，独立机制引用对应帧。不能支持具体裂变变量时 derivativeDirections 可为空，并在该组 commonConclusion 明确缺口。禁止以“保持主体、替换一个变量、比较 ROI”等通用模板代替分析。文字相似是复核信号，不是要求制造差异。
+本批次分类默认输出 **3–5 个机制类别**：先逐帧判断主导信息任务，再按可解释、互有区别的纳入标准归组。同帧含多种元素时选择主导机制，次要元素写入分析；不能因为视频同时包含人物、产品和操作，就把全部画面放进一个“混合机制”总类。不得按素材 ID、人物身份或标准分类简单拆组；人物情境、商品识别、质地/工艺呈现、食用操作、权益信息等只是核对候选，不是预设必须出现的类别。逐组 description 写清纳入条件及与相邻类别的边界，每个成功 frameRef 仍恰好覆盖一次。
+
+highlightDashboard（标准分类）和 customClassification（本批次分类）的**每个非空类别**，commonConclusion 与 derivativeDirections **各输出 2–3 条**。这是正常交付要求，不再以各一条为默认合格结果。先找出本组 2–3 个可区分的信息作用、呈现方式或可测试问题，再逐条写清依据；一条里堆叠三个变量不能代替三条独立分析。同一帧可支持不同角度，但不能同义改写、重复正文或添加空泛尾句凑数。
+
+每条共性结论包含：本组真实可见的共同信号、信息传递作用、推断边界。每条裂变方向包含：源画面、保留项、一个明确改变的画面变量、对照方式和观察指标；方向之间应测试不同问题。全部逐条绑定本组真实 evidenceRefs；结论和方向数量不要求机械一一对应，但每个方向都须有组内画面依据。
+
+仅在实际证据不足时可少于上述数量：类别不足 3 个须填写 customClassification.classificationLimitation；某组的结论或方向不足 2 条须填写该组 contentLimitation，说明已核对的画面、能支持什么及无法继续细分/提出变量的具体缺口。程序会产生独立复核项，只有 evidence_limited 决定可放行，并在对应分类/分析区展示边界。缺少限制说明会硬失败；不能用“不能证明成交因果”替代对画面类别不足的说明，因为分类依据是可见机制而非因果证明。两类限制字段仅用于真实不足，不默认填写。共性结论仍至少保留一条有依据的观察或具体证据限制；无法支持任何裂变方向时可留空数组并说明原因。禁止以“保持主体、替换一个变量、比较 ROI”等通用模板代替分析。
 
 逐帧 commercialInterpretation 有三种形式：默认 supported 写简短解释；insufficient_evidence 留空解释并填写具体 limitation；shared 留空解释并填写 sharedInterpretationRef，只能引用同素材、相同本地 JPEG 哈希的直接 supported 解释。不得跨素材、链式或循环共享；图片相同不能证明商业效果相同。
 
@@ -115,7 +126,7 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
 - `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。前端只直接展示 `overallConclusion` 单段文字；`portfolioDimensionConclusions.commercial` 仅作为结构化结论、证据和兼容字段，不另起可见段落。不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜高光画面洞察`：highlightDashboard 按 portrait、product、other 固定顺序输出实际非空分类，每帧恰好归类一次。customClassification 按真实主导机制分组，允许只有一个类别，不按帧数强制拆类。每组包含 groupId、语义化 groupName、description、frameRefs、至少一条 commonConclusion 和可为空的 derivativeDirections；分点包含 title、body、属于本组的 evidenceRefs。不能强求不同分类使用不同验证方法。ruleId、ruleName、ruleDescription、ruleVersion、inputFrameManifestHash 仍必填；未归类成功帧进入 unclassifiedFrameRefs，不得跨组重复。AI 不得输出或修正帧数、占比、覆盖率；这些统计由 Presentation 确定性计算。
+- `04｜高光画面洞察`：highlightDashboard 按 portrait、product、other 固定顺序输出实际非空分类，每帧恰好归类一次。customClassification 按真实主导机制输出 3–5 类，每组包含 groupId、语义化 groupName、description、frameRefs、2–3 条 commonConclusion 和 2–3 条 derivativeDirections；真实不足须按 Chapter 04 的 classificationLimitation / contentLimitation 契约声明并复核；分点包含 title、body、属于本组的 evidenceRefs。不能强求不同分类使用不同验证方法。ruleId、ruleName、ruleDescription、ruleVersion、inputFrameManifestHash 仍必填；未归类成功帧进入 unclassifiedFrameRefs，不得跨组重复。AI 不得输出或修正帧数、占比、覆盖率；这些统计由 Presentation 确定性计算。
 - `05｜单素材深度分析`：每个工作区先展示 `materialAnalyses` 中对应的 AI 二次分析，再展示确定性的真实事实数据（包括互动时序分析和脚本分析数据）；高光帧观察保留“视频/高光帧在上、文字分析在下”的事实优先排版。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧不得作为第 01 章证据。
@@ -124,7 +135,7 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
 
 ## 输出契约
 
-以下仅演示字段形状，不是可直接提交的本批次内容；片段合并后仍须覆盖全部素材、成功帧和规定分析口径。输出对象必须满足：
+以下仅演示字段形状和正常数量，不是可直接提交的本批次内容；机制甲/乙/丙、素材引用和正文均为占位，不是固定分类或业务事实，必须按实际 JPEG 重新撰写。片段合并后仍须覆盖全部素材、成功帧和规定分析口径。输出对象必须满足：
 
 ```json
 {
@@ -145,26 +156,26 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
     "groups": [
       {
         "category": "portrait",
-        "frameRefs": [
-          "highlight:事实包中的素材 ID:帧类型"
-        ],
+        "frameRefs": ["highlight:素材甲:zero_second"],
         "commonConclusion": [
-          {
-            "title": "人物正面表达让生活场景更易进入",
-            "body": "基于已查看 JPEG 的共同画面观察，不宣称峰值因果。",
-            "evidenceRefs": [
-              "highlight:事实包中的素材 ID:帧类型"
-            ]
-          }
+          {"title": "可见信号角度一", "body": "本组共同信号及信息作用，附推断边界。", "evidenceRefs": ["highlight:素材甲:zero_second"]},
+          {"title": "可见信号角度二", "body": "另一项可区分的共同呈现方式及作用，不改写上一条。", "evidenceRefs": ["highlight:素材甲:zero_second"]}
         ],
         "derivativeDirections": [
-          {
-            "title": "待验证画面变量",
-            "body": "说明保留或调整的画面变量以及下一轮如何验证。",
-            "evidenceRefs": [
-              "highlight:事实包中的素材 ID:帧类型"
-            ]
-          }
+          {"title": "测试问题一", "body": "指明源画面、保留项、改变变量甲、对照方式及指标。", "evidenceRefs": ["highlight:素材甲:zero_second"]},
+          {"title": "测试问题二", "body": "指明源画面、保留项、改变变量乙、对照方式及指标。", "evidenceRefs": ["highlight:素材甲:zero_second"]}
+        ]
+      },
+      {
+        "category": "product",
+        "frameRefs": ["highlight:素材甲:peak_top_1", "highlight:素材乙:zero_second"],
+        "commonConclusion": [
+          {"title": "产品呈现角度一", "body": "本组产品焦点的共同可见信号及作用，不宣称成交因果。", "evidenceRefs": ["highlight:素材甲:peak_top_1", "highlight:素材乙:zero_second"]},
+          {"title": "产品呈现角度二", "body": "另一项可区分的信息组织方式及判断边界。", "evidenceRefs": ["highlight:素材甲:peak_top_1", "highlight:素材乙:zero_second"]}
+        ],
+        "derivativeDirections": [
+          {"title": "产品测试问题一", "body": "从源画面提取可保留项，改变变量丙并明确对照及指标。", "evidenceRefs": ["highlight:素材甲:peak_top_1"]},
+          {"title": "产品测试问题二", "body": "从另一源画面提取可保留项，改变变量丁并明确对照及指标。", "evidenceRefs": ["highlight:素材乙:zero_second"]}
         ]
       }
     ]
@@ -172,34 +183,50 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
   "customClassification": {
     "ruleId": "batch_visual_mechanism_v1",
     "ruleName": "本批次画面机制分类",
-    "ruleDescription": "按本批次成功高光帧中可观察的主要内容机制分组",
+    "ruleDescription": "按本批次成功高光帧中可观察的主导信息任务分组",
     "ruleVersion": "v1",
     "inputFrameManifestHash": "sha256:事实包 manifest 的哈希",
     "groups": [
       {
-        "groupId": "可解释的稳定 ID",
-        "groupName": "基于 JPEG 可观察机制的业务语义名称",
-        "description": "该机制在本批次画面中的可观察定义",
-        "frameRefs": [
-          "highlight:事实包中的素材 ID:帧类型"
-        ],
+        "groupId": "mechanism-a",
+        "groupName": "机制甲的业务语义名称",
+        "description": "机制甲的可见纳入条件，及不属于乙或丙的边界。",
+        "frameRefs": ["highlight:素材甲:zero_second"],
         "commonConclusion": [
-          {
-            "title": "基于本组画面的结论",
-            "body": "说明本组 JPEG 的共同可见信号及其业务含义。",
-            "evidenceRefs": [
-              "highlight:事实包中的素材 ID:帧类型"
-            ]
-          }
+          {"title": "机制甲结论一", "body": "甲组第一项共同信号、信息作用和边界。", "evidenceRefs": ["highlight:素材甲:zero_second"]},
+          {"title": "机制甲结论二", "body": "甲组第二项独立观察角度、信息作用和边界。", "evidenceRefs": ["highlight:素材甲:zero_second"]}
         ],
         "derivativeDirections": [
-          {
-            "title": "验证画面变量",
-            "body": "说明下一轮保留或调整的画面变量、对照方式和观察指标。",
-            "evidenceRefs": [
-              "highlight:事实包中的素材 ID:帧类型"
-            ]
-          }
+          {"title": "机制甲方向一", "body": "基于甲组源画面，保留关键元素，明确变量一、对照及指标。", "evidenceRefs": ["highlight:素材甲:zero_second"]},
+          {"title": "机制甲方向二", "body": "基于甲组源画面，测试不同问题，明确变量二、保留项、对照及指标。", "evidenceRefs": ["highlight:素材甲:zero_second"]}
+        ]
+      },
+      {
+        "groupId": "mechanism-b",
+        "groupName": "机制乙的业务语义名称",
+        "description": "机制乙的可见纳入条件，及不属于甲或丙的边界。",
+        "frameRefs": ["highlight:素材甲:peak_top_1"],
+        "commonConclusion": [
+          {"title": "机制乙结论一", "body": "乙组第一项共同信号、信息作用和边界。", "evidenceRefs": ["highlight:素材甲:peak_top_1"]},
+          {"title": "机制乙结论二", "body": "乙组第二项独立观察角度、信息作用和边界。", "evidenceRefs": ["highlight:素材甲:peak_top_1"]}
+        ],
+        "derivativeDirections": [
+          {"title": "机制乙方向一", "body": "基于乙组源画面，保留关键元素，明确变量三、对照及指标。", "evidenceRefs": ["highlight:素材甲:peak_top_1"]},
+          {"title": "机制乙方向二", "body": "基于乙组源画面，测试不同问题，明确变量四、保留项、对照及指标。", "evidenceRefs": ["highlight:素材甲:peak_top_1"]}
+        ]
+      },
+      {
+        "groupId": "mechanism-c",
+        "groupName": "机制丙的业务语义名称",
+        "description": "机制丙的可见纳入条件，及不属于甲或乙的边界。",
+        "frameRefs": ["highlight:素材乙:zero_second"],
+        "commonConclusion": [
+          {"title": "机制丙结论一", "body": "丙组第一项共同信号、信息作用和边界。", "evidenceRefs": ["highlight:素材乙:zero_second"]},
+          {"title": "机制丙结论二", "body": "丙组第二项独立观察角度、信息作用和边界。", "evidenceRefs": ["highlight:素材乙:zero_second"]}
+        ],
+        "derivativeDirections": [
+          {"title": "机制丙方向一", "body": "基于丙组源画面，保留关键元素，明确变量五、对照及指标。", "evidenceRefs": ["highlight:素材乙:zero_second"]},
+          {"title": "机制丙方向二", "body": "基于丙组源画面，测试不同问题，明确变量六、保留项、对照及指标。", "evidenceRefs": ["highlight:素材乙:zero_second"]}
         ]
       }
     ],

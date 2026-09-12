@@ -33,7 +33,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 - 当前对话模型就是分析执行者，`analysis_pending` 不需要另一个模型 API。正式 JSON 合并之前，可以多轮读文件、看图、记录要点并逐项撰写分析片段；不要以“没有模型调用接口”结束任务。
 - 分批完整读取五章输入：Chapter 01 的全量榜单保持全量口径；Chapter 05 按 materialId 逐个读取，不一次打印整个文件。记录已读 JSON 路径、剩余路径和字节/哈希校验结果；工具截断后继续读剩余范围，不反复打印同一大包，不擅自裁掉字段。
-- 帧账本中的实际标识来自 `frames[*].evidenceRef`，不是不存在的 `frameRef` 输入字段。逐帧记录 frameRef、framePath、图像 SHA-256、3–4 条实际观察和状态；仅有 completed ID、没有可恢复笔记不算可复用的审阅结果。
+- 帧账本中的实际标识来自 `frames[*].evidenceRef`，不是不存在的 `frameRef` 输入字段。逐帧记录 frameRef、framePath、图像 SHA-256、少量实际观察和状态；仅有 completed ID、没有可恢复笔记不算可复用的审阅结果。
 - 原文件哈希一致且笔记完整时续接未完成部分；文件变化或笔记丢失则重新审阅受影响帧。同字节图像允许复用视觉要点，但保留所有素材/帧的覆盖记录，核对每条素材各自的上下文。相同图片的来源正确性仍需核对本地 summary、视频和抽帧记录，不能从重复图片推出素材业务一致。
 - 新生成的 JSON 不继承旧运行的内容、引用或分类；机器只可序列化模型生成内容、合并已经逐项确认的字段及校验格式，不可循环拼经营结论、添加通用尾句或删除难通过的字段。
 
@@ -65,9 +65,39 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 ### 图片理解断点与吞吐
 
-首次打开 JPEG 前，在 `diagnostic-analysis/frame-review-progress.json` 建立断点账本。账本至少保存 `schemaVersion`、`status`、`analysisUnitManifestPath`、`promptPath`、`completedFrameRefs`、`pendingFrameRefs`、`currentMaterialId` 和 `currentBatchFrameRefs`；帧引用使用 `chapter04-highlight-input.json` 中的 `frameRef` 与 `framePath`，不得复制图片内容。按该文件的素材顺序执行，**一个素材只形成一个帧审阅批次**，且该批次最多 6 帧。
+首次打开 JPEG 前执行：
 
-每帧审阅只写少量真实可见的视觉要点，不强求差异或数量，覆盖主体、动作或使用状态、信息层及画面变化；商业解释和报告正文由当前模型按素材逐项撰写，最终使用正式 assemble-analysis 合并。每完成一个素材批次，先将该批次帧引用从 `pendingFrameRefs` 原子移动到 `completedFrameRefs`，再更新当前批次；恢复时对已完成条目核对图像哈希与实际观察笔记；二者均可验证时只打开 `pendingFrameRefs`，否则重审受影响条目。不得再经 Bash 二次摘录图片理解结果；该重复转写既不产生新视觉事实，也会阻塞后续帧审阅。图片策略拒绝仍按上一段冻结并等待恢复，不得以压缩、改读文本或跳帧绕过。
+```bash
+python scripts/run_standard_analysis.py frame-review --output-dir "$PWD/runs/<run-id>"
+```
+
+该命令冻结 `analysis-input-index.json`（schemaVersion=2），核对五章事实 manifest、Prompt、每个 `materialId`、`frameRef`、`framePath` 和实际 JPEG SHA-256；返回当前素材、整批 `frameRefs` 和去重后的 `imagesToView`。实际标识来自事实包 `frames[*].evidenceRef`，不是事实包中不存在的 `frameRef` 字段。按素材串行，每批最多 6 个唯一 SHA；同批先连续/并发打开全部待查看图片，不跨素材混合商业归因。返回的 `cachedObservations` 提供当前批次可复用的笔记。相同 SHA 只实际查看一次，后续引用复用纯视觉观察，不复用商业解释或相邻帧变化判断。
+
+当前模型用文件编辑工具写一个批次观察 JSON（以下为结构示例，不是业务事实）：
+
+```json
+{
+  "inputIndexSha256": "命令返回的索引哈希",
+  "frameRefs": ["命令返回的当前批次全部引用"],
+  "observations": [
+    {"sourceFrameRef": "imagesToView 中的 frameRef", "visualObservation": "当前模型实际看到的少量要点"}
+  ]
+}
+```
+
+只为 `imagesToView` 的唯一 SHA 提供观察；全部命中缓存时 `observations=[]`。观察只记录真实主体、动作/状态和信息层；相邻变化和商业解释在该素材的分析正文里逐项核对。然后提交一次 checkpoint：
+
+```bash
+python scripts/run_standard_analysis.py frame-review \
+  --output-dir "$PWD/runs/<run-id>" \
+  --batch-json "$PWD/runs/<run-id>/diagnostic-analysis/frame-batch-01.json"
+```
+
+程序核验全批观察后仅原子写一次 `frame-review-progress.json`，维护 `visualObservationCache`、`frameRefsBySha256`、`reviewBatchCount`、completed/pending 和 checkpoint 的 `viewedImageCount`/`cacheHitCount`。未完成批次不写完成态。全部引用完成自动写 `status=complete`、`completedAt`；validate-analysis 和 finalize 对新运行校验此状态。SHA/笔记只能支持复用，不能单独证明模型确实看过图，仍须保留实际工具日志。
+
+中断后重跑无 batch-json 的命令即可返回下一批，已完成批次不重复查看。输入变化时命令拒绝继续；显式 `--rebuild` 会备份旧索引/账本，重新冻结，仅保留源引用、路径和 SHA 都未变化的有效视觉观察，其余重审。历史旧账本不会被猜测为已完成，需要显式重建。不得再经 Bash 二次摘录图片理解结果，不逐帧 patch 账本。图片策略拒绝仍冻结并等待恢复，不得以压缩、改读文本或跳帧绕过。
+
+若进程被强制终止留下 stale `.frame-review.lock` 或 `.video-cleanup.lock`，先根据锁内 pid、hostname、processStart 确认原进程已结束，仅移除该锁后重试对应命令；active 锁不可移除。保留事实包、索引和账本原样，不能靠清空账本恢复。
 
 只有后台明确终止且运行摘要或产物链路也显示未完成，才按本手册的“运行中断或陈旧批次”处理。策略服务未提供原始拒绝原因时，记录为 `tool_call_blocked` 与“待策略侧日志确认”；不要把业务任务、RPA 或 FFmpeg 归因为策略故障。
 
@@ -113,3 +143,23 @@ python scripts/repair_manifest.py \
 该命令先执行 `records_persisted receipt -> records`，再执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。
 
 检查保留的 `diagnosis-records/`、`diagnosis-csv/`、素材 `summary.json` 与 JPEG，而不是仅凭文件名判断成功。RPA 输出字段、下载上限和波次状态的完整约束见 [RPA 输出契约](rpa-output-contract.md)。
+
+
+## 交付后源视频清理
+
+新冻结索引运行的 finalize 在报告和 ZIP 校验通过、摘要为 complete 后，默认按 `peak-frames/report-video-assets.json` 删除已验证的 `peak-frames/video-assets/<materialId>.mp4`。旧运行默认保留。可在 finalize 传 `--video-cleanup dry-run` 只生成计划，或 `--video-cleanup keep` 保留原文件。
+
+清理前核验每个原始/预览路径、大小、SHA，预览须 FFmpeg 解码通过、HTML 引用本地预览、ZIP 的必需条目完整且归档内容与磁盘字节一致；禁止符号链接和目录级删除。任一前置校验失败不删除，单文件删除失败记 partial。未列入 manifest 的文件保留。
+
+```bash
+python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/runs/<run-id>" --mode dry-run
+python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/runs/<run-id>" --mode delete
+```
+
+`final-report/video-resource-cleanup.json` 在删除前保存 planned 清单，逐个反读并记账，支持失败重试和中断恢复。清单绑定已验证 ZIP 哈希，因此是 ZIP 外的独立审计附件，不将它回打包进该 ZIP。`run-summary.json.videoResourceCleanup` 单列 status、releasedBytes 和 rerenderRequiresSourceRecovery；清理失败不回退 complete 报告到 analysis_pending，不得重跑分析或渲染来重试清理。重复清理不重复累计释放字节。已清理运行若需重新抽帧/渲染，应先恢复源视频；不能用预览冒充原始输入。
+
+## Chapter 04 分类过粗或条目过少
+
+先比对候选 AI JSON 与 presentation-report.json：若数量相同，修正模型分析，不改前端截取条数。新 Prompt（mechanism-depth-v1）要求本批次默认 3–5 个主导画面机制类别；标准分类/本批次分类每个非空组的共性结论、裂变方向各 2–3 条。54 帧归入一个混合总类，或两部分各一条且未声明真实证据不足，均不能作为默认合格输出。
+
+分类不足填写 classificationLimitation，组内结论/方向不足填写 contentLimitation；说明不足后仍需 evidence_limited 复核，不能以“缺少因果证明”为由忽略可见画面差异。数量门槛通过后继续检查语义边界和可测试变量，不用脚本拆类或复制条目凑数。新规则由冻结 Prompt 启用；重做历史输入时创建新候选并重新绑定索引和复核哈希，不覆盖历史成品。

@@ -6,6 +6,62 @@ from pathlib import Path
 
 
 POLICY_VERSION = "evidence-first-v2"
+HIGHLIGHT_DEPTH_POLICY_MARKER = "<!-- highlight-depth-policy: mechanism-depth-v1 -->"
+
+
+def highlight_depth_findings(conclusion):
+    """Check the new Prompt's depth contract; never split frames or write prose.
+
+    Called only for a frozen Prompt carrying the policy marker. Historical
+    candidates keep their original contract unless explicitly re-authored.
+    """
+    results = []
+
+    def check_limitation(container, key, field):
+        if key in container and not isinstance(container[key], str):
+            results.append(finding("error", "evidence limitation must be a string", field=field))
+
+    def require_count(items, minimum, maximum, field, limitation, refs):
+        if not isinstance(items, list):
+            results.append(finding("error", "structured insight/group list required", field=field))
+            return
+        if minimum <= len(items) <= maximum:
+            return
+        if len(items) < minimum and isinstance(limitation, str) and limitation.strip() and refs:
+            results.append(finding(
+                "review", f"Review evidence shortage: {field} has {len(items)}; expected {minimum}-{maximum}",
+                field=field, evidence_refs=refs, examples=[{"limitation": limitation}],
+                required_decision="evidence_limited"))
+        else:
+            results.append(finding("error", f"{field} requires {minimum}-{maximum} entries; fewer require an explicit evidence limitation",
+                                   field=field, evidence_refs=refs, count=len(items)))
+
+    custom = conclusion.get("customClassification", {})
+    check_limitation(custom, "classificationLimitation", "customClassification.classificationLimitation")
+    groups = custom.get("groups", [])
+    refs = [ref for group in groups for ref in group.get("frameRefs", [])]
+    require_count(groups, 3, 5, "customClassification.groups", custom.get("classificationLimitation"), refs)
+    if groups:
+        results.append(finding("review", "Confirm 3-5 dominant visual mechanisms have distinct inclusion boundaries; do not merge distinct mechanisms into a mixed catch-all or split by material ID",
+                               field="customClassification.boundaries", evidence_refs=refs,
+                               examples=[{"groupName": g.get("groupName"), "description": g.get("description"),
+                                          "frameRefs": g.get("frameRefs", [])} for g in groups]))
+    for name in ("highlightDashboard", "customClassification"):
+        for index, group in enumerate(conclusion.get(name, {}).get("groups", [])):
+            check_limitation(group, "contentLimitation", f"{name}.groups[{index}].contentLimitation")
+            if not group.get("frameRefs"):
+                continue
+            for section in ("commonConclusion", "derivativeDirections"):
+                items = group.get(section, [])
+                field = f"{name}.groups[{index}].{section}"
+                require_count(items, 2, 3, field, group.get("contentLimitation"), group["frameRefs"])
+                if isinstance(items, list):
+                    bodies = ["".join(str(item.get("body", "")).split()).casefold()
+                              for item in items if isinstance(item, dict)]
+                    if len(bodies) != len(set(bodies)):
+                        results.append(finding("error", "duplicate insight bodies do not count as independent analysis",
+                                               field=field, evidence_refs=group["frameRefs"]))
+    return results
 
 
 def content_contract_findings(conclusion, script_input):
@@ -68,12 +124,14 @@ def digest(value):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
-def finding(level, message, *, field=None, evidence_refs=(), examples=(), count=None):
+def finding(level, message, *, field=None, evidence_refs=(), examples=(), count=None, required_decision=None):
     item = {"level": level, "field": field or message.split(" ", 1)[0],
             "message": message, "evidenceRefs": sorted(set(evidence_refs)),
             "examples": list(examples)[:3]}
     if count is not None:
         item["count"] = count
+    if required_decision is not None:
+        item["requiredDecision"] = required_decision
     item["id"] = digest(item)[:20]
     return item
 
@@ -114,6 +172,9 @@ def review_result(findings, analysis_json, material_cards, quality_review=None, 
                     or not all(isinstance(ref, str) for ref in refs)
                     or set(refs) != set(known[entry["id"]]["evidenceRefs"])):
                 raise ValueError("quality review requires a reason and finding-local evidenceRefs")
+            required = known[entry["id"]].get("requiredDecision")
+            if required and entry["decision"] != required:
+                raise ValueError(f"quality review requires {required} for this evidence shortage")
             resolved.add(entry["id"])
             decisions.append(entry)
     pending = [item["id"] for item in reviews if item["id"] not in resolved]

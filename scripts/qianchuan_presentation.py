@@ -352,6 +352,7 @@ def _chapter04(data, materials):
             "id": f"chapter04-{category}",
             "category": category,
             "frameRefs": refs,
+            **({"contentLimitation": _text(raw["contentLimitation"])} if "contentLimitation" in raw else {}),
             "commonConclusion": (
                 deepcopy(raw.get("commonConclusion"))
                 if isinstance(raw.get("commonConclusion"), list)
@@ -390,6 +391,7 @@ def _chapter04(data, materials):
                 "groupId": _text(raw.get("groupId")),
                 "groupName": _text(raw.get("groupName")),
                 "description": _text(raw.get("description")),
+                **({"contentLimitation": _text(raw["contentLimitation"])} if "contentLimitation" in raw else {}),
                 "frameRefs": refs,
                 "frameCount": frame_count,
                 "percentage": round(frame_count / total_frame_count * 100, 2) if total_frame_count else 0,
@@ -433,6 +435,7 @@ def _chapter04(data, materials):
             "ruleId": _text(custom.get("ruleId")),
             "ruleName": _text(custom.get("ruleName")),
             "ruleDescription": _text(custom.get("ruleDescription")),
+            **({"classificationLimitation": _text(custom["classificationLimitation"])} if "classificationLimitation" in custom else {}),
             "ruleVersion": _text(custom.get("ruleVersion")),
             "inputFrameManifestHash": _text(custom.get("inputFrameManifestHash")),
             "inputFrameCount": total_frame_count,
