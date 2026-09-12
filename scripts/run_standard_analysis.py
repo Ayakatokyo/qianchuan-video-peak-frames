@@ -53,6 +53,15 @@ def build_parser():
     assemble.add_argument("--part", action="append", required=True)
     assemble.add_argument("--analysis-json", required=True)
 
+    review = commands.add_parser("frame-review", help="Freeze, resume or checkpoint actual JPEG observations")
+    review.add_argument("--output-dir", required=True)
+    review.add_argument("--batch-json")
+    review.add_argument("--rebuild", action="store_true")
+
+    cleanup = commands.add_parser("cleanup-videos", help="Verify delivery and plan/apply original MP4 cleanup")
+    cleanup.add_argument("--output-dir", required=True)
+    cleanup.add_argument("--mode", choices=("dry-run", "delete", "keep"), default="dry-run")
+
     metadata = commands.add_parser("fetch-metadata")
     metadata.add_argument("--start-date", required=True)
     metadata.add_argument("--end-date", required=True)
@@ -64,6 +73,7 @@ def build_parser():
     finalize.add_argument("--output-dir", required=True)
     finalize.add_argument("--analysis-json", required=True)
     finalize.add_argument("--quality-review")
+    finalize.add_argument("--video-cleanup", choices=("dry-run", "delete", "keep"))
 
     validate_analysis = commands.add_parser("validate-analysis")
     validate_analysis.add_argument("--output-dir", required=True)
@@ -82,6 +92,21 @@ def main(argv=None):
         return exc.code
     workflow = None
     try:
+        if args.command == "frame-review":
+            from frame_review import start_frame_review, checkpoint_frame_review
+            from analysis_handoff import read_object
+            root = Path(args.output_dir) / "diagnostic-analysis"
+            if args.batch_json and args.rebuild:
+                raise ValueError("rebuild and batch checkpoint must be separate commands")
+            result = (checkpoint_frame_review(root, read_object(args.batch_json)) if args.batch_json
+                      else start_frame_review(root, rebuild=args.rebuild))
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+        if args.command == "cleanup-videos":
+            from video_resource_cleanup import cleanup_original_videos
+            result = cleanup_original_videos(args.output_dir, mode=args.mode)
+            print(json.dumps(result, ensure_ascii=False))
+            return 2 if result['status'] == 'partial' else 0
         if args.command in {"prepare-local", "assemble-analysis"}:
             ensure_prepare_dependencies(allow_install=False)
         else:
@@ -118,6 +143,8 @@ def main(argv=None):
             print(f"gateway_response={Path(args.output_dir) / 'source-data' / 'gateway-response.json'}")
         elif args.command == "finalize":
             options = {"quality_review": args.quality_review} if args.quality_review else {}
+            if args.video_cleanup:
+                options["video_cleanup"] = args.video_cleanup
             summary = workflow.finalize_standard_run(args.output_dir, args.analysis_json, **options)
             artifacts = summary["artifacts"]
             report_dir = Path(args.output_dir) / "final-report"
@@ -127,6 +154,8 @@ def main(argv=None):
             if artifacts.get("highlightExport"):
                 print(f"highlight_export={Path(args.output_dir) / artifacts['highlightExport']}")
             print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
+            if summary.get("videoResourceCleanup"):
+                print(f"video_cleanup_status={summary['videoResourceCleanup']['status']}")
         elif args.command == "validate-analysis":
             options = {"quality_review": args.quality_review} if args.quality_review else {}
             result = workflow.validate_analysis(args.output_dir, args.analysis_json, **options)

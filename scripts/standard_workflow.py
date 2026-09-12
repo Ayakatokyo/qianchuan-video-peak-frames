@@ -9,6 +9,8 @@ import tempfile
 
 from analysis_handoff import assemble_analysis, file_hash, inspect_inputs, read_object
 from analysis_quality import finding
+from frame_review import start_frame_review, validate_frame_review
+from video_resource_cleanup import cleanup_original_videos
 
 import export_top_materials
 import extract_peak_frames
@@ -334,7 +336,7 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 output_dir=paths["analysis"],
             )
             if prepare_facts is prepare_diagnostic_analysis:
-                write_json_atomically(paths["analysis"] / "analysis-input-index.json", inspect_inputs(paths["analysis"]))
+                start_frame_review(paths["analysis"])
             summary = _summary(
                 request,
                 paths,
@@ -461,7 +463,7 @@ def prepare_local_run(request, output_dir):
             raise StandardWorkflowError("facts", "fact manifest period does not match request")
         if not paths["top_material_roi_facts"].exists():
             write_json_atomically(paths["top_material_roi_facts"], roi)
-        write_json_atomically(paths["analysis"] / "analysis-input-index.json", inputs)
+        start_frame_review(paths["analysis"])
         summary = _summary(request, paths, status="analysis_pending",
                            diagnostic_prompt=paths["analysis"] / "diagnostic-analysis-prompt.md",
                            analysis_unit_manifest=paths["analysis"] / "analysis-units" / "analysis-unit-manifest.json")
@@ -494,6 +496,7 @@ def validate_analysis(output_dir, analysis_json, *, quality_review=None, validat
             if analysis_path.resolve().parent != paths["analysis"].resolve():
                 raise StandardWorkflowError("analysis", "candidate must be next to this run's analysis-units")
             inspect_inputs(paths["analysis"])
+            validate_frame_review(paths["analysis"])
         options = {"quality_review": quality_review} if quality_review is not None else {}
         details = validate(
             top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
@@ -517,7 +520,7 @@ def validate_analysis(output_dir, analysis_json, *, quality_review=None, validat
 
 
 def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, render_report=generate_final_report,
-                          mark_ready=mark_report_ready):
+                          mark_ready=mark_report_ready, video_cleanup=None):
     paths = workflow_paths(output_dir)
     summary = _read_summary(paths["summary"])
     request_payload = summary.get("request")
@@ -538,8 +541,13 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
         with acquire_workflow_lock(request, output_dir):
             # The production path binds validation and rendering to the same bytes.
             candidate_hash = file_hash(analysis_path)
+            frozen_inputs = None
+            frozen_review_hash = None
+            review_hash = file_hash(quality_review) if quality_review else None
             if render_report is generate_final_report:
                 result = validate_analysis(output_dir, analysis_path, quality_review=quality_review)
+                frozen_inputs = inspect_inputs(paths["analysis"])
+                frozen_review_hash = validate_frame_review(paths["analysis"])
                 if result["analysisStatus"] != "valid":
                     raise StandardWorkflowError("report", "analysis has pending evidence review; see candidate .validation.json")
             _write_running(request, paths, "report")
@@ -560,6 +568,12 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
                 )
                 if file_hash(analysis_path) != candidate_hash:
                     raise StandardWorkflowError("report", "analysis changed during rendering")
+                if frozen_inputs is not None and inspect_inputs(paths["analysis"]) != frozen_inputs:
+                    raise StandardWorkflowError("report", "facts, prompt or JPEG changed during rendering")
+                if quality_review and file_hash(quality_review) != review_hash:
+                    raise StandardWorkflowError("report", "quality review changed during rendering")
+                if frozen_inputs is not None and validate_frame_review(paths["analysis"]) != frozen_review_hash:
+                    raise StandardWorkflowError("report", "frame review changed during rendering")
             except Exception as exc:
                 raise StandardWorkflowError("report", str(exc)) from exc
             if not mark_ready(paths["peak_frames"] / "batch-manifest.json", data_path, html_path):
@@ -584,7 +598,20 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
             )
             completed["analysisQuality"] = _data.get("analysisQuality", {})
             write_run_summary(paths["summary"], completed)
-            return completed
+            # New frozen-input runs use validated cleanup. Historical runs keep
+            # their sources unless the caller explicitly opts in.
+            index_path = paths["analysis"] / "analysis-input-index.json"
+            mode = video_cleanup or "keep"
+            try:
+                if video_cleanup is None and index_path.is_file() and read_object(index_path).get("schemaVersion") == 2:
+                    mode = "delete"
+                cleanup_original_videos(output_dir, mode=mode)
+            except Exception as exc:
+                # Delivery is already complete. A cleanup/receipt failure must
+                # never rewind the run into AI analysis or trigger rerendering.
+                completed['videoResourceCleanup'] = {'status': 'partial', 'mode': mode, 'error': str(exc)}
+                write_run_summary(paths['summary'], completed)
+            return _read_summary(paths["summary"])
     except WorkflowLockError:
         raise
     except StandardWorkflowError as exc:

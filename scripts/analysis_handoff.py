@@ -56,11 +56,11 @@ def inspect_inputs(analysis_dir):
             if path.is_symlink() or not path.is_file() or ref in seen:
                 raise ValueError(f"missing, symbolic or duplicate frame: {ref}")
             seen.add(ref)
-            frames.append({"frameRef": ref, "framePath": str(path.resolve()),
+            frames.append({"frameRef": ref, "materialId": material["materialId"], "framePath": str(path.resolve()),
                            "sha256": file_hash(path)})
     if manifest.get("frames") != {"successfulCount": len(frames), "missingCount": missing_count}:
         raise ValueError("frame counts do not match manifest")
-    return {"manifestSha256": file_hash(manifest_path), "promptSha256": file_hash(prompt),
+    return {"schemaVersion": 2, "manifestSha256": file_hash(manifest_path), "promptSha256": file_hash(prompt),
             "period": manifest.get("period", {}),
             "materialIds": manifest["materialIds"], "frames": frames,
             "uniqueImageCount": len({frame["sha256"] for frame in frames})}

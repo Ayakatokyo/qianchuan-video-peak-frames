@@ -92,7 +92,10 @@ def _report_image_references(report_dir, html_text):
             or any(part in {"", ".", ".."} for part in relative_path.parts)
         ):
             raise ReportRenderingError(f"unsafe report image reference: {reference}")
-        candidate = (root / relative_path).resolve()
+        unresolved = root / relative_path
+        if any(p.is_symlink() for p in (unresolved, *unresolved.parents) if p.is_relative_to(root)):
+            raise ReportRenderingError(f"symbolic report resource: {reference}")
+        candidate = unresolved.resolve()
         try:
             candidate.relative_to(root)
         except ValueError as exc:
@@ -115,7 +118,10 @@ def _report_video_references(report_dir, html_text):
             or any(part in {"", ".", ".."} for part in relative_path.parts)
         ):
             raise ReportRenderingError(f"unsafe report video reference: {reference}")
-        candidate = (root / relative_path).resolve()
+        unresolved = root / relative_path
+        if any(p.is_symlink() for p in (unresolved, *unresolved.parents) if p.is_relative_to(root)):
+            raise ReportRenderingError(f"symbolic report resource: {reference}")
+        candidate = unresolved.resolve()
         try:
             candidate.relative_to(root)
         except ValueError as exc:
@@ -147,6 +153,8 @@ def _validate_report_archive(
     try:
         with zipfile.ZipFile(archive_path) as archive:
             names = set(archive.namelist())
+            if len(names) != len(archive.namelist()) or archive.testzip() is not None:
+                raise ReportRenderingError("report archive is corrupt or contains duplicates")
     except (OSError, zipfile.BadZipFile) as exc:
         raise ReportRenderingError("report archive is unreadable") from exc
     if any(not name.startswith(prefix) for name in names) or not required.issubset(names):
@@ -190,7 +198,11 @@ def create_report_archive(report_dir, archive_path=None):
     try:
         with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for source in sorted(root.rglob("*")):
-                if source.is_file() and not source.is_symlink():
+                if source.name == "video-resource-cleanup.json":
+                    continue  # Receipt binds the immutable ZIP; it cannot be inside it.
+                if source.is_symlink():
+                    raise ReportRenderingError(f"symbolic report resource: {source}")
+                if source.is_file():
                     archive.write(source, source.relative_to(root.parent).as_posix())
         _validate_report_archive(
             staging,
@@ -265,6 +277,7 @@ def _ffmpeg_stderr_excerpt(stderr, limit=500):
 def _validate_decodable_preview(ffmpeg_bin, video_path, timeout_sec):
     command = [
         str(ffmpeg_bin),
+        "-xerror",
         "-hide_banner",
         "-loglevel",
         "error",
