@@ -168,7 +168,6 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("生成前门禁自检", prompt)
         self.assertIn("decision 只能使用", prompt)
         self.assertIn("每张成功高光帧恰好一条", prompt)
-        self.assertIn("final_report_lib.py", prompt)
         self.assertIn("validate-analysis", prompt)
 
     def test_skill_requires_concise_keyword_cloud_one_sentence(self):

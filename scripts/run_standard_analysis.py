@@ -53,6 +53,20 @@ def build_parser():
     assemble.add_argument("--part", action="append", required=True)
     assemble.add_argument("--analysis-json", required=True)
 
+    plan = commands.add_parser("analysis-plan", help="Inspect lossless model input tasks without changing facts")
+    plan.add_argument("--output-dir", required=True)
+    plan.add_argument("--verify", action="store_true", help="Verify exact round-trip equality for every task")
+
+    read = commands.add_parser("read-analysis", help="Read one bounded page of frozen model facts")
+    read.add_argument("--output-dir", required=True)
+    read.add_argument("--task", required=True)
+    read.add_argument("--page", type=int, default=0)
+    read.add_argument("--input-sha256", required=True)
+
+    check_part = commands.add_parser("check-analysis-part", help="Check a model-authored material part before assembly")
+    check_part.add_argument("--output-dir", required=True)
+    check_part.add_argument("--part", required=True)
+
     review = commands.add_parser("frame-review", help="Freeze, resume or checkpoint actual JPEG observations")
     review.add_argument("--output-dir", required=True)
     review.add_argument("--batch-json")
@@ -92,6 +106,17 @@ def main(argv=None):
         return exc.code
     workflow = None
     try:
+        if args.command == "check-analysis-part":
+            from analysis_handoff import check_material_part
+            print(json.dumps(check_material_part(Path(args.output_dir) / "diagnostic-analysis", args.part), ensure_ascii=False))
+            return 0
+        if args.command in {"analysis-plan", "read-analysis"}:
+            from analysis_reader import analysis_plan, read_analysis, json_text
+            root = Path(args.output_dir) / "diagnostic-analysis"
+            result = (analysis_plan(root, verify=args.verify) if args.command == "analysis-plan"
+                      else read_analysis(root, args.task, args.page, args.input_sha256))
+            print(json_text(result))
+            return 0
         if args.command == "frame-review":
             from frame_review import start_frame_review, checkpoint_frame_review
             from analysis_handoff import read_object
