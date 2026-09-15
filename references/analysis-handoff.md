@@ -8,7 +8,7 @@
 python scripts/run_standard_analysis.py prepare-local \
   --shop-id "<已确认店铺>" --advertiser-id "<广告主>" \
   --start-date 2026-08-30 --end-date 2026-09-06 --top-n 10 \
-  --output-dir "$PWD/runs/<run-id>"
+  --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
 入口只使用已安装的依赖，不自动联网安装。入口校验原始榜单与精选名单的完整 portfolioFacts、周期、广告主、TopN、records、summary 和实际 JPEG。新事实包先完整构建再发布；现有事实包只核验，不覆盖。首次 prepare 和 prepare-local 生成 schemaVersion=2 的 analysis-input-index.json 及 frame-review-progress.json，冻结实际 JPEG 路径、materialId、哈希、Prompt 和事实 manifest；不含业务结论。已有 `complete`、正在运行或部分损坏的事实包保留原状，在明确指定的隔离副本中恢复，禁止临时调用私有函数改状态。无核验收据时先完成原有批次核验，不重复提交 RPA。
@@ -21,7 +21,7 @@ python scripts/run_standard_analysis.py prepare-local \
 
 ```bash
 python scripts/run_standard_analysis.py analysis-plan \
-  --output-dir "$PWD/runs/<run-id>"
+  --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
 命令只读，校验原 manifest 和 JPEG，返回 inputSha256、原 manifestSha256、Prompt 哈希、素材/图片数量、chapter05Envelope 及任务顺序、页数、字节数。`--verify` 可额外逐任务还原并比较全部原值、类型、顺序，适合技能开发验收；日常执行不必重复。inputSha256 绑定本轮事实、Prompt、所有实际 JPEG 和读取器版本；customClassification.inputFrameManifestHash 仍填写 `sha256:<manifestSha256>`，不能误用 inputSha256。
@@ -40,7 +40,7 @@ python scripts/run_standard_analysis.py analysis-plan \
 
 ```bash
 python scripts/run_standard_analysis.py read-analysis \
-  --output-dir "$PWD/runs/<run-id>" \
+  --output-dir "$PWD/千川数据资源/<run-id>" \
   --task material-001 --page 0 --input-sha256 "<计划返回的 inputSha256>"
 ```
 
@@ -58,8 +58,8 @@ python scripts/run_standard_analysis.py read-analysis \
 
 ```bash
 python scripts/run_standard_analysis.py check-analysis-part \
-  --output-dir "$PWD/runs/<run-id>" \
-  --part "$PWD/runs/<run-id>/diagnostic-analysis/parts/material-001.json"
+  --output-dir "$PWD/千川数据资源/<run-id>" \
+  --part "$PWD/千川数据资源/<run-id>/diagnostic-analysis/parts/material-001.json"
 ```
 
 此命令只检查素材片段：必需字段、decision、已索引引用、素材归属、每个成功帧一次且仅一次、缺失帧说明和共享解释关系。只读，不修改片段、事实或运行状态。它不检查商业结论质量，也不证明实际看过图；返回 contentReviewed=false、finalValidationRequired=true。错误直接修正该片段。全部完成仍用 assemble-analysis → validate-analysis → 按 review 项审阅 → 带 quality-review 的 validate-analysis / finalize，原内容深度和资源门禁不降低。章节语义错误仍由完整校验处理。
@@ -80,10 +80,10 @@ analysis-plan 的 sourceBytes 为五章紧凑 JSON 原始字节；pagedBytes 为
 
 ```bash
 python scripts/run_standard_analysis.py assemble-analysis \
-  --output-dir "$PWD/runs/<run-id>" \
-  --part "$PWD/runs/<run-id>/diagnostic-analysis/parts/chapters.json" \
-  --part "$PWD/runs/<run-id>/diagnostic-analysis/parts/materials.json" \
-  --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
+  --output-dir "$PWD/千川数据资源/<run-id>" \
+  --part "$PWD/千川数据资源/<run-id>/diagnostic-analysis/parts/chapters.json" \
+  --part "$PWD/千川数据资源/<run-id>/diagnostic-analysis/parts/materials.json" \
+  --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
 必须显式列出片段，不使用 glob/latest。程序核验事实 manifest、完整素材集合和重复字段，保持模型原文，拒绝覆盖已有候选，保存 `.assembly.json` 来源哈希。允许直接写完整 JSON；两种方式都必须执行标准校验。

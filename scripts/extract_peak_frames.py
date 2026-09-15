@@ -23,13 +23,17 @@ from peak_frame_lib import (
     process_records,
 )
 from rpa_adapter import (
-    FUNCTION_CODE,
     RpaAdapterError,
     download_video,
     fetch_material_preflight,
     find_material_video_url,
     list_accounts,
     preflight_material_availability,
+)
+from rpa_dynamic_client import (
+    CONNECTOR_CODE,
+    ContractError as DynamicContractError,
+    load_params as load_dynamic_params,
 )
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from rpa_artifact_receipts import (
@@ -77,17 +81,6 @@ MATERIAL_TIMING_FIELDS = (
 )
 HANDLED_MATERIAL_ERRORS = (InputDataError, FfmpegError, RpaAdapterError, RpaCsvError)
 _MATERIAL_TIMING_STATE = threading.local()
-
-
-DATE_RANGE_TYPES = (
-    "YESTERDAY",
-    "LAST_7_DAYS",
-    "LAST_15_DAYS",
-    "LAST_WEEK",
-    "THIS_MONTH",
-    "LAST_MONTH",
-    "CUSTOM",
-)
 
 
 def _positive_timeout(value):
@@ -148,9 +141,9 @@ def build_parser():
     parser.set_defaults(
         rpa_wave_barrier=True,
     )
-    parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
-    parser.add_argument("--custom-start-date")
-    parser.add_argument("--custom-end-date")
+    params_group = parser.add_mutually_exclusive_group()
+    params_group.add_argument("--params-json")
+    params_group.add_argument("--params-file")
     parser.add_argument("--list-shop-accounts", action="store_true")
     return parser
 
@@ -187,7 +180,7 @@ def _format_account_table(accounts):
     )
 
 
-def _load_top_materials_payload(path, date_range_type, custom_start_date, custom_end_date):
+def _load_top_materials_payload(path, business_params):
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -198,8 +191,9 @@ def _load_top_materials_payload(path, date_range_type, custom_start_date, custom
     actual_end_date = payload.get("actualEndDate")
     if not isinstance(actual_start_date, str) or not isinstance(actual_end_date, str):
         raise RpaAdapterError("top materials JSON requires actualStartDate and actualEndDate")
-    if date_range_type == "CUSTOM" and (
-        actual_start_date != custom_start_date or actual_end_date != custom_end_date
+    if business_params.get("date_range_type") == "CUSTOM" and (
+        actual_start_date != business_params.get("custom_start_date")
+        or actual_end_date != business_params.get("custom_end_date")
     ):
         raise RpaAdapterError(
             "top materials JSON date range does not match the requested CUSTOM range"
@@ -598,9 +592,7 @@ def _fetch_material_preflight_for_cli(
     params = {
         "shop_id": args.shop_id,
         "material_id": material_id,
-        "date_range_type": args.date_range_type,
-        "custom_start_date": args.custom_start_date,
-        "custom_end_date": args.custom_end_date,
+        "business_params": {**args.rpa_business_params, "material_id": material_id},
         "diagnosis_csv_dir": _diagnosis_csv_dir(args),
         "diagnosis_records_dir": _diagnosis_records_dir(args),
         "rpa_receipts_dir": _rpa_receipts_dir(args),
@@ -1246,7 +1238,7 @@ def _attempt_wave_postprocess(args, entry):
             "frameExtractionSec",
             process_records,
             records,
-            f"rpa://{FUNCTION_CODE}/{material_id}",
+            f"rpa://{CONNECTOR_CODE}/{material_id}",
             video_path,
             args.output_dir,
             ffmpeg_bin=args.ffmpeg_bin,
@@ -1568,25 +1560,18 @@ def main(argv=None):
         if args.source == "rpa":
             if not args.output_dir:
                 parser.error("--output-dir is required")
-            if not args.date_range_type:
-                parser.error("--date-range-type is required for --source rpa")
             if not args.top_materials_json or not args.target_top_n:
                 parser.error(
                     "--source rpa requires --top-materials-json and --target-top-n"
                 )
-            if args.date_range_type == "CUSTOM" and not (
-                args.custom_start_date and args.custom_end_date
-            ):
-                parser.error(
-                    "CUSTOM requires --custom-start-date and "
-                    "--custom-end-date"
-                )
+            try:
+                args.rpa_business_params = load_dynamic_params(args)
+            except DynamicContractError as exc:
+                parser.error(str(exc))
             args.shop_id = _resolve_shop_id(args)
             top_materials_payload, material_ids = _load_top_materials_payload(
                 args.top_materials_json,
-                args.date_range_type,
-                args.custom_start_date,
-                args.custom_end_date,
+                args.rpa_business_params,
             )
             if args.verify:
                 wave_status, wave_error = _wave_batch_status(args)

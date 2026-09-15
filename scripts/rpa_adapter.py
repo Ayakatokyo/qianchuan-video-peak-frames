@@ -1,4 +1,3 @@
-from datetime import datetime
 from dataclasses import dataclass
 import json
 import os
@@ -9,20 +8,15 @@ import uuid
 
 from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
 from path_safety import artifact_path, validate_material_id
+from rpa_dynamic_client import (
+    CONNECTOR_CODE,
+    ContractError,
+    resolve_platform,
+    validate_business_params,
+)
 
 
-FUNCTION_CODE = "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis"
-PLATFORM = "RPA_JULIANG_QC_ACCOUNT_PASSWORD"
 DATA_SOURCE_TYPE = "rpa"
-DATE_RANGE_TYPES = {
-    "YESTERDAY",
-    "LAST_7_DAYS",
-    "LAST_15_DAYS",
-    "LAST_WEEK",
-    "THIS_MONTH",
-    "LAST_MONTH",
-    "CUSTOM",
-}
 HEADERS = {"Content-Type": "application/json"}
 
 
@@ -85,61 +79,62 @@ def runtime_config(environ=None):
     return api_base, authorization, session_id, cookies
 
 
-def _parse_date(value, field_name):
-    for pattern in ("%Y%m%d", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(value, pattern).date()
-        except (TypeError, ValueError):
-            continue
-    raise RpaAdapterError(
-        f"{field_name} must use YYYYMMDD or YYYY-MM-DD format"
+def fetch_connector_detail(environ=None, session=None):
+    session = _default_session() if session is None else session
+    api_base, _authorization, _session_id, cookies = runtime_config(environ)
+    response = session.post(
+        f"{api_base}/dcConnector/v3/listByConnectorCode",
+        json={"connectorCode": CONNECTOR_CODE},
+        headers=HEADERS,
+        cookies=cookies,
+        timeout=30,
     )
-
-
-def build_business_params(
-    material_id,
-    date_range_type,
-    custom_start_date=None,
-    custom_end_date=None,
-):
+    _raise_for_status(response, "read RPA connector detail")
     try:
-        material_id = validate_material_id(material_id)
-    except ValueError as exc:
-        raise RpaAdapterError(f"invalid material_id: {exc}") from exc
-    if date_range_type not in DATE_RANGE_TYPES:
+        body = response.json()
+    except (TypeError, ValueError) as exc:
+        raise RpaAdapterError("RPA connector detail returned non-JSON response") from exc
+    if not isinstance(body, dict) or body.get("success") is not True:
+        raise RpaAdapterError("RPA connector detail request was not successful")
+    data = body.get("data")
+    if not isinstance(data, list):
+        raise RpaAdapterError("RPA connector detail data must be a list")
+    matches = [
+        item
+        for item in data
+        if isinstance(item, dict) and item.get("connectorCode") == CONNECTOR_CODE
+    ]
+    if not matches:
         raise RpaAdapterError(
-            "date_range_type must be one of: "
-            + ", ".join(sorted(DATE_RANGE_TYPES))
+            f"连接器 {CONNECTOR_CODE} 无可用详情：可能无匹配、未上线或不支持 BIZ_EXPERT"
         )
-    if date_range_type == "CUSTOM":
-        if not custom_start_date or not custom_end_date:
-            raise RpaAdapterError(
-                "CUSTOM requires custom_start_date and custom_end_date"
-            )
-        start = _parse_date(custom_start_date, "custom_start_date")
-        end = _parse_date(custom_end_date, "custom_end_date")
-        if end < start:
-            raise RpaAdapterError(
-                "custom_end_date cannot be earlier than custom_start_date"
-            )
+    if len(matches) != 1:
+        raise RpaAdapterError(
+            f"连接器 {CONNECTOR_CODE} 返回 {len(matches)} 条详情，无法唯一选择"
+        )
+    return matches[0]
 
-    params = {
-        "material_id": str(material_id).strip(),
-        "date_range_type": date_range_type,
-    }
-    if custom_start_date:
-        params["custom_start_date"] = custom_start_date
-    if custom_end_date:
-        params["custom_end_date"] = custom_end_date
-    return params
+
+def _runtime_connector_contract(business_params=None, environ=None, session=None):
+    try:
+        detail = fetch_connector_detail(environ=environ, session=session)
+        platform = resolve_platform(detail)
+        if business_params is not None:
+            validate_business_params(detail, business_params)
+    except ContractError as exc:
+        raise RpaAdapterError(str(exc)) from exc
+    return detail, platform
 
 
 def list_accounts(environ=None, session=None):
     session = _default_session() if session is None else session
     api_base, authorization, _session_id, cookies = runtime_config(environ)
+    _detail, platform = _runtime_connector_contract(
+        environ=environ, session=session
+    )
     response = session.post(
         f"{api_base}/adg/v1/agent/rpa/authorizations/query",
-        json={"authorization": authorization, "platform": PLATFORM},
+        json={"authorization": authorization, "platform": platform},
         headers=HEADERS,
         cookies=cookies,
         timeout=30,
@@ -395,9 +390,7 @@ def fetch_material_diagnosis(
     *,
     shop_id,
     material_id,
-    date_range_type,
-    custom_start_date=None,
-    custom_end_date=None,
+    business_params,
     diagnosis_csv_dir=None,
     environ=None,
     session=None,
@@ -408,20 +401,28 @@ def fetch_material_diagnosis(
 ):
     if not str(shop_id or "").strip():
         raise RpaAdapterError("shop_id is required")
-    business_params = build_business_params(
-        material_id,
-        date_range_type,
-        custom_start_date=custom_start_date,
-        custom_end_date=custom_end_date,
-    )
+    if not isinstance(business_params, dict):
+        raise RpaAdapterError("business_params must be a JSON object")
+    try:
+        material_id = validate_material_id(material_id)
+    except ValueError as exc:
+        raise RpaAdapterError(f"invalid material_id: {exc}") from exc
+    business_params = dict(business_params)
+    supplied_material_id = str(business_params.get("material_id") or "").strip()
+    if supplied_material_id and supplied_material_id != material_id:
+        raise RpaAdapterError("business_params.material_id does not match material_id")
+    business_params["material_id"] = material_id
     session = _default_session() if session is None else session
     api_base, authorization, session_id, cookies = runtime_config(environ)
+    _detail, platform = _runtime_connector_contract(
+        business_params, environ=environ, session=session
+    )
     submit_payload = {
         "authorization": authorization,
         "agent_session_id": session_id,
         "data_source_type": DATA_SOURCE_TYPE,
-        "platform": PLATFORM,
-        "function_code": FUNCTION_CODE,
+        "platform": platform,
+        "function_code": CONNECTOR_CODE,
         "business_params": business_params,
         "shop_id": str(shop_id).strip(),
     }
@@ -682,9 +683,7 @@ def fetch_material_preflight(
     *,
     shop_id,
     material_id,
-    date_range_type,
-    custom_start_date=None,
-    custom_end_date=None,
+    business_params,
     diagnosis_csv_dir=None,
     environ=None,
     session=None,
@@ -696,9 +695,7 @@ def fetch_material_preflight(
         records, diagnosis_csv_path, metadata = fetch_material_diagnosis(
             shop_id=shop_id,
             material_id=material_id,
-            date_range_type=date_range_type,
-            custom_start_date=custom_start_date,
-            custom_end_date=custom_end_date,
+            business_params=business_params,
             diagnosis_csv_dir=diagnosis_csv_dir,
             environ=environ,
             session=session,

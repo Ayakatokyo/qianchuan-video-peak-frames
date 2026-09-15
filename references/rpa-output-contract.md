@@ -2,13 +2,14 @@
 
 ## Connector
 
-| Field | Value |
+| Field | Source |
 | --- | --- |
-| `function_code` | `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis` |
-| `platform` | `RPA_JULIANG_QC_ACCOUNT_PASSWORD` |
+| `connectorCode` / `function_code` | The only static identity: `rpa.conn.juliang.qc.material.analysis.video.live.diagnosis` |
+| `platform` | Runtime connector detail `platformCode`, forwarded unchanged |
+| input contract | Runtime `inParamJsonSchemaText`; use `inParamList` only when schema text is `null` |
 | `data_source_type` | `rpa` |
 
-The adapter calls the Yuce data gateway with fixed connector identity. Do not ask the user or an agent to handwrite `function_code` or `platform`.
+Before a new fetch, run `python scripts/rpa_dynamic_client.py detail`, `python scripts/rpa_dynamic_client.py schema`, and `python scripts/rpa_dynamic_client.py validate --params-json '<JSON object>'`. Use `--params-file` for long or nested JSON and `python scripts/rpa_dynamic_client.py list-accounts` when the RPA authorization ID is not yet confirmed. The adapter re-reads detail and validates again immediately before task submission. Do not handwrite `platform`, rewrite `platformCode`, or treat detail `id` as connector code.
 
 ## Runtime Environment
 
@@ -133,7 +134,9 @@ Counting terms are intentionally separate. `assetSelectedMaterialCount` is the l
 
 Selected and ready-list ordering always follows source candidate rank, even when lower-ranked RPA jobs finish first. Once the final-success condition is met the scheduler stops submitting new RPA work and unsubmitted candidates are cancelled. 后处理失败 remains selected with `postprocessStatus: failed`, does not become an RPA rejection, receives one local retry using retained records, and then triggers rank-ordered 补位 after its second failure. A batch is nonzero only when the candidate pool is exhausted before `postprocessSucceededCount >= targetTopN`.
 
-## Connector Inputs
+## Historical Business Semantics Reference
+
+The following names describe the current business intent only. They are not an authoritative runtime schema; always use `rpa_dynamic_client.py schema` and validate the complete JSON returned for the current connector deployment.
 
 Supported `date_range_type` values:
 

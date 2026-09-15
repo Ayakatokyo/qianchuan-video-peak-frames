@@ -4,7 +4,7 @@
 
 ## 运行目录
 
-标准运行目录固定为 `$PWD/runs/<run-id>`。平台的 `$PWD` 是当前对话工作空间根目录；本地从技能仓库执行时，`$PWD` 是仓库根目录。`prepare`、`status`、AI 产物、`finalize` 和所有恢复命令必须复用同一个运行目录。本手册中的 `/path/to/run` 均指已创建的 `$PWD/runs/<run-id>`，不得改为技能安装目录。
+标准运行目录固定为 `$PWD/千川数据资源/<run-id>`。平台的 `$PWD` 是当前对话工作空间根目录；本地从技能仓库执行时，`$PWD` 是仓库根目录。`prepare`、`status`、AI 产物、`finalize` 和所有恢复命令必须复用同一个运行目录。本手册中的 `/path/to/run` 均指已创建的 `$PWD/千川数据资源/<run-id>`，不得改为技能安装目录。
 
 在启动 AI 分析前，先运行：
 
@@ -68,7 +68,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 首次打开 JPEG 前执行：
 
 ```bash
-python scripts/run_standard_analysis.py frame-review --output-dir "$PWD/runs/<run-id>"
+python scripts/run_standard_analysis.py frame-review --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
 该命令冻结 `analysis-input-index.json`（schemaVersion=2），核对五章事实 manifest、Prompt、每个 `materialId`、`frameRef`、`framePath` 和实际 JPEG SHA-256；返回当前素材、整批 `frameRefs` 和去重后的 `imagesToView`。实际标识来自事实包 `frames[*].evidenceRef`，不是事实包中不存在的 `frameRef` 字段。按素材串行，每批最多 6 个唯一 SHA；同批先连续/并发打开全部待查看图片，不跨素材混合商业归因。返回的 `cachedObservations` 提供当前批次可复用的笔记。相同 SHA 只实际查看一次，后续引用复用纯视觉观察，不复用商业解释或相邻帧变化判断。
@@ -89,8 +89,8 @@ python scripts/run_standard_analysis.py frame-review --output-dir "$PWD/runs/<ru
 
 ```bash
 python scripts/run_standard_analysis.py frame-review \
-  --output-dir "$PWD/runs/<run-id>" \
-  --batch-json "$PWD/runs/<run-id>/diagnostic-analysis/frame-batch-01.json"
+  --output-dir "$PWD/千川数据资源/<run-id>" \
+  --batch-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/frame-batch-01.json"
 ```
 
 程序核验全批观察后仅原子写一次 `frame-review-progress.json`，维护 `visualObservationCache`、`frameRefsBySha256`、`reviewBatchCount`、completed/pending 和 checkpoint 的 `viewedImageCount`/`cacheHitCount`。未完成批次不写完成态。全部引用完成自动写 `status=complete`、`completedAt`；validate-analysis 和 finalize 对新运行校验此状态。SHA/笔记只能支持复用，不能单独证明模型确实看过图，仍须保留实际工具日志。
@@ -117,9 +117,7 @@ python scripts/extract_peak_frames.py \
   --top-materials-json "/path/to/run/top_materials.json" \
   --target-top-n 9 \
   --candidate-top-n 27 \
-  --date-range-type CUSTOM \
-  --custom-start-date 2026-07-19 \
-  --custom-end-date 2026-07-25 \
+  --params-json '{"date_range_type":"CUSTOM","custom_start_date":"2026-07-19","custom_end_date":"2026-07-25"}' \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
   --output-dir "/path/to/run/peak-frames" \
   --resume
@@ -152,8 +150,8 @@ python scripts/repair_manifest.py \
 清理前核验每个原始/预览路径、大小、SHA，预览须 FFmpeg 解码通过、HTML 引用本地预览、ZIP 的必需条目完整且归档内容与磁盘字节一致；禁止符号链接和目录级删除。任一前置校验失败不删除，单文件删除失败记 partial。未列入 manifest 的文件保留。
 
 ```bash
-python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/runs/<run-id>" --mode dry-run
-python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/runs/<run-id>" --mode delete
+python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/千川数据资源/<run-id>" --mode dry-run
+python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/千川数据资源/<run-id>" --mode delete
 ```
 
 `final-report/video-resource-cleanup.json` 在删除前保存 planned 清单，逐个反读并记账，支持失败重试和中断恢复。清单绑定已验证 ZIP 哈希，因此是 ZIP 外的独立审计附件，不将它回打包进该 ZIP。`run-summary.json.videoResourceCleanup` 单列 status、releasedBytes 和 rerenderRequiresSourceRecovery；清理失败不回退 complete 报告到 analysis_pending，不得重跑分析或渲染来重试清理。重复清理不重复累计释放字节。已清理运行若需重新抽帧/渲染，应先恢复源视频；不能用预览冒充原始输入。

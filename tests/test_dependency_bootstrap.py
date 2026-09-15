@@ -16,7 +16,9 @@ class DependencyBootstrapTests(unittest.TestCase):
         with patch.object(
             dependency_bootstrap.importlib.util,
             "find_spec",
-            side_effect=lambda name: object() if name in {"requests", "imageio_ffmpeg"} else None,
+            side_effect=lambda name: object()
+            if name in {"requests", "imageio_ffmpeg", "jsonschema"}
+            else None,
         ), patch.object(dependency_bootstrap.subprocess, "run") as run:
             dependency_bootstrap.ensure_prepare_dependencies()
 
@@ -27,7 +29,7 @@ class DependencyBootstrapTests(unittest.TestCase):
         with patch.object(
             dependency_bootstrap.importlib.util,
             "find_spec",
-            side_effect=[object(), None, object(), object()],
+            side_effect=[object(), None, object(), object(), object(), object()],
         ), patch.object(dependency_bootstrap.shutil, "which", return_value="/usr/local/bin/uv"), patch.object(
             dependency_bootstrap.subprocess, "run", return_value=completed
         ) as run:
@@ -54,7 +56,7 @@ class DependencyBootstrapTests(unittest.TestCase):
         ), self.assertRaises(dependency_bootstrap.DependencyBootstrapError) as error:
             dependency_bootstrap.ensure_prepare_dependencies()
 
-        self.assertIn("requests, imageio-ffmpeg", str(error.exception))
+        self.assertIn("requests, imageio-ffmpeg, jsonschema", str(error.exception))
         self.assertIn("uv", str(error.exception))
 
     def test_reports_uv_failure_without_hiding_its_output(self):

@@ -254,6 +254,17 @@ class StandardWorkflowTests(unittest.TestCase):
 
         self.assertEqual(selection_argv[selection_argv.index("--shop-id") + 1], "shop-1")
         self.assertNotIn("--shop-id", batch_argv)
+        self.assertNotIn("--date-range-type", batch_argv)
+        self.assertNotIn("--custom-start-date", batch_argv)
+        self.assertNotIn("--custom-end-date", batch_argv)
+        self.assertEqual(
+            json.loads(batch_argv[batch_argv.index("--params-json") + 1]),
+            {
+                "date_range_type": "CUSTOM",
+                "custom_start_date": "2026-07-19",
+                "custom_end_date": "2026-07-25",
+            },
+        )
         self.assertEqual(summary["request"]["shopId"], "shop-1")
         self.assertEqual(summary["artifacts"]["sourceData"], "source-data")
 

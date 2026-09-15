@@ -14,11 +14,17 @@ metadata:
 
 - **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向各 2–3 条。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不默认合成单一混合类或各写一条。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
 
-- **环境**：执行 `prepare`、`fetch-metadata`、`status` 或 `finalize` 前确认当前解释器有 `requests`、`imageio-ffmpeg`；缺失则安装，失败即停，不发起任何请求。`prepare` 也会再次执行该门禁。
+- **环境**：执行 `prepare`、`fetch-metadata`、`status` 或 `finalize` 前确认当前解释器有 `requests`、`imageio-ffmpeg`、`jsonschema`；缺失则安装，失败即停，不发起任何请求。`prepare` 也会再次执行该门禁。
 - **授权**：`--shop-id` 只用于报表连接器；RPA 使用授权账户中的唯一千川 ID。无授权或多账户先处理授权选择，不重复提交素材诊断。
 - **单 Agent 执行边界**：主 Agent 直接执行全流程，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。
 - **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
 - **长任务**：`prepare` 是单一长任务；无实时进度不要另起运行或手工干预。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复只查询已保存远端 ID，**不得重复提交**。
+
+## RPA 动态参数契约
+
+逐素材诊断只静态保留 connector code。每次新取数先运行 `python scripts/rpa_dynamic_client.py detail` 和 `python scripts/rpa_dynamic_client.py schema`，从实时详情读取 `platformCode`、`inParamJsonSchemaText` / `inParamList` 与输出字段；需要授权账号时再运行 `python scripts/rpa_dynamic_client.py list-accounts`。根据本次素材与周期生成完整业务 JSON 后，先用 `python scripts/rpa_dynamic_client.py validate --params-json '<JSON对象>'` 校验；参数较长时改用 `--params-file`。标准 `prepare` 内部也执行同一套实时详情反查和二次校验，再走异步 fetch、轮询、CSV 落盘与后处理，不把详情返回的 `id` 当 connector code，不拼接或改写 `platformCode`。
+
+只有需要单独取一条诊断数据时才直接运行 `python scripts/rpa_dynamic_client.py fetch --shop-id <RPA授权ID> --params-json '<JSON对象>' --output-dir '千川数据资源/<run-id>/diagnosis-source'`；执行工具显式设置 3600 秒超时。标准 `prepare` 已包含取数，不要在它之前额外执行一次 `fetch`，避免重复提交。
 
 ## 已落盘数据接续
 
@@ -32,14 +38,14 @@ metadata:
 
 ### 1. 准备事实包（首次采集）
 
-每次使用同一个 `$PWD/runs/<run-id>`，不得写入技能安装目录：
+每次使用同一个 `$PWD/千川数据资源/<run-id>`，不得写入技能安装目录：
 
 ```bash
 python scripts/run_standard_analysis.py prepare \
   --shop-id "<授权店铺 ID>" --start-date 2026-07-19 --end-date 2026-07-25 \
   --top-n 9 --advertiser-id "1770096415226951" \
-  --output-dir "$PWD/runs/<run-id>"
-python scripts/run_standard_analysis.py status --output-dir "$PWD/runs/<run-id>"
+  --output-dir "$PWD/千川数据资源/<run-id>"
+python scripts/run_standard_analysis.py status --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
 只验证报表授权、不进入 RPA 时改用 `fetch-metadata`（仍写入同一类目录；只产生 `source-data/gateway-response.json` 与 `run-summary.json`，状态 `metadata_ready`）。仅当状态为 `analysis_pending` 才继续 AI。
@@ -70,8 +76,8 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 ```bash
 python scripts/run_standard_analysis.py validate-analysis \
-  --output-dir "$PWD/runs/<run-id>" \
-  --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
+  --output-dir "$PWD/千川数据资源/<run-id>" \
+  --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
 失败先按运维手册区分状态、证据引用、结构、内容和资源问题，再由当前模型修正有证据支持的报错字段；用户要求全新分析时，写新候选文件，不改旧 JSON。不得用临时脚本填长文、删必填分类或绕过质量门禁。没有新证据的同类错误不做机械循环，不重跑 `prepare`；结构或引用错误必须修正；相似度命中由当前模型基于证据写复核记录；字数仅提示，不用补长。通过后执行 `finalize`，有复核记录时两个命令均传 `--quality-review`，它会再次执行同一门禁。
@@ -80,8 +86,8 @@ python scripts/run_standard_analysis.py validate-analysis \
 
 ```bash
 python scripts/run_standard_analysis.py finalize \
-  --output-dir "$PWD/runs/<run-id>" \
-  --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
+  --output-dir "$PWD/千川数据资源/<run-id>" \
+  --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
 仅当 `run-summary.json` 为 `complete` **同时交付以下两个产物**：独立报告 `final-report/final-report.html` 与完整压缩包 `final-report.zip`（HTML、数据、本地 JPEG 和预览 MP4）。图片和视频均为本地资源；不得交付草稿报告、不得只交付压缩包；封面只展示业务主体；结构校验和内容复核信息保留在机器 JSON 中，不插入封面。新运行 complete 后自动验证并清理源 MP4，`videoResourceCleanup.status=partial` 时按[运维手册](references/qianchuan-operations-runbook.md#交付后源视频清理)重试清理，不重跑分析或渲染。报告使用 `assets/report/`，`finalize` 自动内联资源，不得手工修改或改写成品 HTML。若仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；其余故障按运维手册处理。

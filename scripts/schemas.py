@@ -269,6 +269,20 @@ def validate_report_data(payload, *, run_id=None):
     return payload
 
 
+def _dynamic_date_range(args):
+    params = getattr(args, "rpa_business_params", None)
+    params = params if isinstance(params, dict) else {}
+    return {
+        "type": params.get("date_range_type", getattr(args, "date_range_type", None)),
+        "customStartDate": params.get(
+            "custom_start_date", getattr(args, "custom_start_date", None)
+        ),
+        "customEndDate": params.get(
+            "custom_end_date", getattr(args, "custom_end_date", None)
+        ),
+    }
+
+
 def wave_manifest(
     args,
     candidates,
@@ -297,11 +311,7 @@ def wave_manifest(
         "rpaConcurrency": args.rpa_concurrency,
         "postprocessConcurrency": args.postprocess_concurrency,
         "waveBarrier": getattr(args, "rpa_wave_barrier", True),
-        "dateRange": {
-            "type": args.date_range_type,
-            "customStartDate": args.custom_start_date,
-            "customEndDate": args.custom_end_date,
-        },
+        "dateRange": _dynamic_date_range(args),
         "materialIds": [entry["materialId"] for entry in ordered_materials],
         "materials": ordered_materials,
         "submittedMaterials": ordered(submitted),
@@ -332,11 +342,7 @@ def load_wave_resume(path, args, candidates, error_type):
         "source": "rpa",
         "shopId": args.shop_id,
         "targetTopN": args.target_top_n,
-        "dateRange": {
-            "type": args.date_range_type,
-            "customStartDate": args.custom_start_date,
-            "customEndDate": args.custom_end_date,
-        },
+        "dateRange": _dynamic_date_range(args),
         "materialIds": [
             str(item.get("materialId") or "").strip() for item in candidates
         ],

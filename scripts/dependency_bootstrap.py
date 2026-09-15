@@ -10,6 +10,7 @@ import sys
 PREPARE_DEPENDENCIES = {
     "requests": "requests",
     "imageio_ffmpeg": "imageio-ffmpeg",
+    "jsonschema": "jsonschema",
 }
 REQUIREMENTS_PATH = Path(__file__).resolve().parents[1] / "requirements.txt"
 

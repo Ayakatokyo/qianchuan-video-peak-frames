@@ -164,10 +164,27 @@ class RpaAdapterTests(unittest.TestCase):
     def setUp(self):
         self._sleep_patch = patch("rpa_adapter.time.sleep")
         self._sleep_patch.start()
+        self._connector_detail_patch = patch(
+            "rpa_adapter.fetch_connector_detail",
+            return_value={
+                "connectorCode": "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
+                "platformCode": "RPA_QIANCHUAN_RUNTIME",
+                "inParamJsonSchemaText": None,
+                "inParamList": [
+                    {"param": "material_id", "isRequired": True, "dataTypeEnum": "STRING"},
+                    {"param": "date_range_type", "isRequired": True, "dataTypeEnum": "STRING"},
+                    {"param": "custom_start_date", "isRequired": False, "dataTypeEnum": "STRING"},
+                    {"param": "custom_end_date", "isRequired": False, "dataTypeEnum": "STRING"},
+                ],
+                "outParamList": [],
+            },
+        )
+        self._connector_detail_patch.start()
         self._rpa_temp_dir = tempfile.TemporaryDirectory()
         self.csv_dir = Path(self._rpa_temp_dir.name) / "diagnosis-csv"
 
     def tearDown(self):
+        self._connector_detail_patch.stop()
         self._sleep_patch.stop()
         self._rpa_temp_dir.cleanup()
 
@@ -374,7 +391,7 @@ class RpaAdapterTests(unittest.TestCase):
             records = rpa_adapter.fetch_material_diagnosis(
                 shop_id="shop-1",
                 material_id="m-files",
-                date_range_type="LAST_7_DAYS",
+                business_params={"date_range_type": "LAST_7_DAYS"},
                 diagnosis_csv_dir=csv_dir,
                 environ=self._env(),
                 session=session,
@@ -430,7 +447,7 @@ class RpaAdapterTests(unittest.TestCase):
             records = rpa_adapter.fetch_material_diagnosis(
                 shop_id="shop-1",
                 material_id="m-direct",
-                date_range_type="LAST_7_DAYS",
+                business_params={"date_range_type": "LAST_7_DAYS"},
                 diagnosis_csv_dir=csv_dir,
                 environ=self._env(),
                 session=session,
@@ -486,7 +503,7 @@ class RpaAdapterTests(unittest.TestCase):
         session = AsyncSession()
         with tempfile.TemporaryDirectory() as temp_dir, patch("rpa_adapter.time.sleep"):
             records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
-                shop_id="shop-1", material_id="m-1", date_range_type="LAST_7_DAYS",
+                shop_id="shop-1", material_id="m-1", business_params={"date_range_type": "LAST_7_DAYS"},
                 diagnosis_csv_dir=Path(temp_dir), session=session,
                 environ=self._env(), timeout_sec=30, on_task_submitted=submitted.append,
                 return_metadata=True,
@@ -520,7 +537,7 @@ class RpaAdapterTests(unittest.TestCase):
         rpa_adapter.fetch_material_diagnosis(
             shop_id="shop-1",
             material_id="m-context",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             diagnosis_csv_dir=self.csv_dir,
             environ=self._env(),
             session=session,
@@ -533,8 +550,8 @@ class RpaAdapterTests(unittest.TestCase):
                 "authorization": "auth-token",
                 "agent_session_id": "session-123",
                 "data_source_type": "rpa",
-                "platform": rpa_adapter.PLATFORM,
-                "function_code": rpa_adapter.FUNCTION_CODE,
+                "platform": "RPA_QIANCHUAN_RUNTIME",
+                "function_code": "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
                 "business_params": {
                     "material_id": "m-context",
                     "date_range_type": "LAST_7_DAYS",
@@ -569,7 +586,7 @@ class RpaAdapterTests(unittest.TestCase):
         records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
             shop_id="shop-1",
             material_id="m-completed",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             diagnosis_csv_dir=self.csv_dir,
             environ=self._env(),
             session=session,
@@ -606,7 +623,7 @@ class RpaAdapterTests(unittest.TestCase):
         records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
             shop_id="shop-1",
             material_id="m-partial",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             diagnosis_csv_dir=self.csv_dir,
             environ=self._env(),
             session=session,
@@ -639,7 +656,7 @@ class RpaAdapterTests(unittest.TestCase):
         return rpa_adapter.fetch_material_diagnosis(
             shop_id="shop-1",
             material_id="m-1",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             diagnosis_csv_dir=self.csv_dir,
             environ=self._env(),
             session=session,
@@ -690,7 +707,7 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
         self.assertEqual(records[0]["materialId"], "m-1")
 
-    def test_fetch_material_diagnosis_uses_fixed_connector_payload(self):
+    def test_fetch_material_diagnosis_uses_runtime_connector_platform(self):
         records = [
             click_record(0, 0, material_id="764"),
             click_record(1, 5, material_id="764"),
@@ -702,9 +719,7 @@ class RpaAdapterTests(unittest.TestCase):
             result = rpa_adapter.fetch_material_diagnosis(
                 shop_id="shop-1",
                 material_id="764",
-                date_range_type="LAST_7_DAYS",
-                custom_start_date=None,
-                custom_end_date=None,
+                business_params={"date_range_type": "LAST_7_DAYS"},
                 environ=self._env(),
                 session=session,
             )
@@ -719,8 +734,11 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertEqual(payload["authorization"], "auth-token")
         self.assertEqual(payload["agent_session_id"], "session-123")
         self.assertEqual(payload["data_source_type"], "rpa")
-        self.assertEqual(payload["platform"], rpa_adapter.PLATFORM)
-        self.assertEqual(payload["function_code"], rpa_adapter.FUNCTION_CODE)
+        self.assertEqual(payload["platform"], "RPA_QIANCHUAN_RUNTIME")
+        self.assertEqual(
+            payload["function_code"],
+            "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
+        )
         self.assertEqual(payload["shop_id"], "shop-1")
         self.assertEqual(
             payload["business_params"],
@@ -728,7 +746,7 @@ class RpaAdapterTests(unittest.TestCase):
         )
         self.assertEqual(session.posts[0][1]["timeout"], 3600)
 
-    def test_list_accounts_uses_qianchuan_platform(self):
+    def test_list_accounts_uses_runtime_connector_platform(self):
         payload = {"data": [{"shop_id": "shop-1"}]}
         session = RecordingSession(FakeResponse(payload))
 
@@ -742,9 +760,40 @@ class RpaAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             session.posts[0][1]["json"],
-            {"authorization": "auth-token", "platform": rpa_adapter.PLATFORM},
+            {"authorization": "auth-token", "platform": "RPA_QIANCHUAN_RUNTIME"},
         )
         self.assertEqual(session.posts[0][1]["timeout"], 30)
+
+    def test_dynamic_validation_blocks_task_submission(self):
+        self._connector_detail_patch.stop()
+        invalid_detail = {
+            "connectorCode": "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
+            "platformCode": "RPA_QIANCHUAN_RUNTIME",
+            "inParamJsonSchemaText": None,
+            "inParamList": [
+                {
+                    "param": "required_runtime_field",
+                    "isRequired": True,
+                    "dataTypeEnum": "STRING",
+                }
+            ],
+        }
+        session = RecordingSession(FakeResponse({"success": True}))
+
+        try:
+            with patch("rpa_adapter.fetch_connector_detail", return_value=invalid_detail):
+                with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "业务入参"):
+                    rpa_adapter.fetch_material_diagnosis(
+                        shop_id="shop-1",
+                        material_id="m-1",
+                        business_params={"date_range_type": "LAST_7_DAYS"},
+                        environ=self._env(),
+                        session=session,
+                    )
+        finally:
+            self._connector_detail_patch.start()
+
+        self.assertEqual(session.posts, [])
 
     def test_runtime_config_uses_ycsessionid_when_rpa_session_id_is_not_set(self):
         api_base, authorization, session_id, cookies = rpa_adapter.runtime_config(
@@ -777,7 +826,7 @@ class RpaAdapterTests(unittest.TestCase):
             rpa_adapter.fetch_material_diagnosis(
                 shop_id="shop-1",
                 material_id="764",
-                date_range_type="LAST_7_DAYS",
+                business_params={"date_range_type": "LAST_7_DAYS"},
                 environ=self._env(),
                 session=session,
             )
@@ -793,19 +842,6 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertNotIn("secret-token", raised.exception.diagnostics["responseSummary"])
         self.assertNotIn("browser-secret", raised.exception.diagnostics["responseSummary"])
 
-    def test_fetch_rejects_custom_range_without_both_dates(self):
-        error_type = getattr(rpa_adapter, "RpaAdapterError", Exception)
-        with self.assertRaisesRegex(error_type, "CUSTOM requires"):
-            rpa_adapter.fetch_material_diagnosis(
-                shop_id="shop-1",
-                material_id="764",
-                date_range_type="CUSTOM",
-                custom_start_date="2026-07-01",
-                custom_end_date=None,
-                environ=self._env(),
-                session=RecordingSession(FakeResponse([])),
-            )
-
     def test_fetch_wraps_gateway_http_errors(self):
         session = RecordingSession(
             FakeResponse([], status_error=RuntimeError("gateway down"))
@@ -815,7 +851,7 @@ class RpaAdapterTests(unittest.TestCase):
             rpa_adapter.fetch_material_diagnosis(
                 shop_id="shop-1",
                 material_id="764",
-                date_range_type="LAST_7_DAYS",
+                business_params={"date_range_type": "LAST_7_DAYS"},
                 environ=self._env(),
                 session=session,
             )
@@ -901,7 +937,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-invalid",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=session,
         )
@@ -924,7 +960,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-timeout",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=session,
             timeout_sec=45,
@@ -946,7 +982,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-records",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=session,
         )
@@ -968,7 +1004,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-empty-records",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=session,
         )
@@ -991,7 +1027,7 @@ class RpaAdapterTests(unittest.TestCase):
             result = rpa_adapter.fetch_material_preflight(
                 shop_id="shop-1",
                 material_id="m-files-preflight",
-                date_range_type="LAST_7_DAYS",
+                business_params={"date_range_type": "LAST_7_DAYS"},
                 diagnosis_csv_dir=csv_dir,
                 environ=self._env(),
                 session=session,
@@ -1021,7 +1057,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-timeout",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=session,
             timeout_sec=1,
@@ -1036,7 +1072,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-timeout-details",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=session,
             timeout_sec=1,
@@ -1062,7 +1098,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-http-diagnostics",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=RecordingSession(response),
         )
@@ -1079,7 +1115,7 @@ class RpaAdapterTests(unittest.TestCase):
         result = rpa_adapter.fetch_material_preflight(
             shop_id="shop-1",
             material_id="m-invalid-final",
-            date_range_type="LAST_7_DAYS",
+            business_params={"date_range_type": "LAST_7_DAYS"},
             environ=self._env(),
             session=session,
         )
@@ -1108,7 +1144,7 @@ class RpaAdapterTests(unittest.TestCase):
                         rpa_adapter.fetch_material_diagnosis(
                             shop_id="shop-1",
                             material_id="m-files",
-                            date_range_type="LAST_7_DAYS",
+                            business_params={"date_range_type": "LAST_7_DAYS"},
                             diagnosis_csv_dir=Path(temp_dir),
                             environ=self._env(),
                             session=session,
@@ -1132,7 +1168,7 @@ class RpaAdapterTests(unittest.TestCase):
                 rpa_adapter.fetch_material_diagnosis(
                     shop_id="shop-1",
                     material_id="m-files",
-                    date_range_type="LAST_7_DAYS",
+                    business_params={"date_range_type": "LAST_7_DAYS"},
                     diagnosis_csv_dir=Path(temp_dir),
                     environ=self._env(),
                     session=session,
@@ -1152,7 +1188,7 @@ class RpaAdapterTests(unittest.TestCase):
                 rpa_adapter.fetch_material_diagnosis(
                     shop_id="shop-1",
                     material_id="m-files",
-                    date_range_type="LAST_7_DAYS",
+                    business_params={"date_range_type": "LAST_7_DAYS"},
                     diagnosis_csv_dir=csv_dir,
                     environ=self._env(),
                     session=session,
@@ -3101,6 +3137,20 @@ class CliTests(unittest.TestCase):
             parser.parse_args(["--material-id", "m-1"])
         self.assertEqual(raised.exception.code, 2)
 
+    def test_rpa_cli_uses_one_dynamic_json_instead_of_date_field_flags(self):
+        parser = extract_peak_frames.build_parser()
+        args = parser.parse_args(
+            [
+                "--params-json",
+                '{"date_range_type":"CUSTOM","custom_start_date":"2026-06-01","custom_end_date":"2026-06-02"}',
+            ]
+        )
+
+        self.assertFalse(hasattr(args, "date_range_type"))
+        self.assertFalse(hasattr(args, "custom_start_date"))
+        self.assertFalse(hasattr(args, "custom_end_date"))
+        self.assertTrue(hasattr(args, "params_file"))
+
     def test_wave_barrier_is_enabled_by_default(self):
         parser = extract_peak_frames.build_parser()
 
@@ -3246,12 +3296,14 @@ class CliTests(unittest.TestCase):
             "shop-1",
             "--top-materials-json",
             str(top_materials),
-            "--date-range-type",
-            "CUSTOM",
-            "--custom-start-date",
-            "2026-06-01",
-            "--custom-end-date",
-            "2026-06-02",
+            "--params-json",
+            json.dumps(
+                {
+                    "date_range_type": "CUSTOM",
+                    "custom_start_date": "2026-06-01",
+                    "custom_end_date": "2026-06-02",
+                }
+            ),
             "--output-dir",
             str(output),
             *extra,
@@ -4762,9 +4814,11 @@ class CliTests(unittest.TestCase):
                 side_effect=isolated_failure,
             ):
                 args.shop_id = "shop"
-                args.date_range_type = "CUSTOM"
-                args.custom_start_date = "2026-07-25"
-                args.custom_end_date = "2026-07-31"
+                args.rpa_business_params = {
+                    "date_range_type": "CUSTOM",
+                    "custom_start_date": "2026-07-25",
+                    "custom_end_date": "2026-07-31",
+                }
                 args.rpa_preflight_timeout_sec = 1
                 recovered = extract_peak_frames._fetch_material_preflight_for_cli(
                     args, material_id

@@ -98,7 +98,7 @@ highlightDashboard（标准分类）和 customClassification（本批次分类�
 
 - 按事实包的 evidenceIndex/evidenceRef 建立合法 frameRef/evidenceRefs 白名单，不为抄枚举或字数建议读取实现源码。枚举和引用属于硬契约，字符数仅为表达建议，不能为凑字数生成正文；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
 - 从 manifest 和五个章节事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
-- 按素材分片查看画面，每片最多 6 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。写入后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/runs/<run-id>" --analysis-json "$PWD/runs/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"`，校验通过前不要调用 `finalize`；校验失败时只修正报错字段并重新校验。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
+- 按素材分片查看画面，每片最多 6 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。写入后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/千川数据资源/<run-id>" --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"`，校验通过前不要调用 `finalize`；校验失败时只修正报错字段并重新校验。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
 
 ## 证据与归因规则
 

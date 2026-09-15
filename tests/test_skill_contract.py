@@ -62,19 +62,56 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertNotIn("--rpa-concurrency", skill)
         self.assertNotIn("--resume", skill)
 
-    def test_skill_uses_runs_directory_for_new_standard_runs(self):
+    def test_skill_uses_qianchuan_resource_directory_for_new_standard_runs(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("runs/<run-id>", skill)
+        self.assertIn("千川数据资源/<run-id>", skill)
+        self.assertNotIn("$PWD/runs/<run-id>", skill)
 
-    def test_skill_scopes_runs_to_the_caller_working_directory(self):
+    def test_skill_scopes_resources_to_the_caller_working_directory(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+        analysis_prompt = (
+            ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("$PWD/runs/<run-id>", skill)
-        self.assertIn("$PWD/runs/<run-id>", runbook)
+        self.assertIn("$PWD/千川数据资源/<run-id>", skill)
+        self.assertIn("$PWD/千川数据资源/<run-id>", runbook)
+        self.assertIn("$PWD/千川数据资源/<run-id>", analysis_prompt)
+        for document in (skill, runbook, analysis_prompt):
+            self.assertNotIn("$PWD/runs/<run-id>", document)
         self.assertNotIn("<skill-root>/runs", skill)
         self.assertNotIn(".system/skills", skill)
+
+    def test_skill_documents_runtime_connector_contract_before_rpa_fetch(self):
+        skill = SKILL_PATH.read_text(encoding="utf-8")
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+        adapter = (ROOT / "scripts" / "rpa_adapter.py").read_text(encoding="utf-8")
+
+        for document in (skill, contract):
+            self.assertIn("rpa_dynamic_client.py detail", document)
+            self.assertIn("rpa_dynamic_client.py schema", document)
+            self.assertIn("rpa_dynamic_client.py validate", document)
+            self.assertIn("platformCode", document)
+        self.assertIn("--params-json", contract)
+        self.assertIn("--params-file", contract)
+        for removed_flag in (
+            "--date-range-type",
+            "--custom-start-date",
+            "--custom-end-date",
+        ):
+            self.assertNotIn(removed_flag, skill)
+            self.assertNotIn(removed_flag, contract)
+            self.assertNotIn(removed_flag, runbook)
+        for removed_adapter_contract in (
+            "DATE_RANGE_TYPES",
+            "build_business_params",
+            "date_range_type=None",
+            "custom_start_date=None",
+            "custom_end_date=None",
+        ):
+            self.assertNotIn(removed_adapter_contract, adapter)
 
     def test_skill_keeps_t_plus_two_date_conversion(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
