@@ -6,9 +6,8 @@ import json
 import zipfile
 
 from batch_runtime import acquire_run_lock, write_json_atomically
-from peak_frame_lib import resolve_ffmpeg
 from report_renderer import (
-    ReportRenderingError, _sha256_file, _validate_decodable_preview,
+    ReportRenderingError, _sha256_file,
     _report_image_references, _report_video_references, safe_component,
 )
 
@@ -77,7 +76,6 @@ def _verify_delivery(root, ffmpeg_bin, timeout_sec):
     if not isinstance(entries, list) or not entries:
         raise ValueError('explicit report video manifest is required')
     seen, items = set(), []
-    ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
     for entry in entries:
         if not isinstance(entry.get('sourceBytes'), int) or entry['sourceBytes'] <= 0:
             raise ValueError('original byte size must be positive')
@@ -94,7 +92,10 @@ def _verify_delivery(root, ffmpeg_bin, timeout_sec):
         if (_sha256_file(preview) != entry.get('previewSha256')
                 or preview.stat().st_size != entry.get('previewBytes')):
             raise ValueError('preview video hash/size mismatch')
-        _validate_decodable_preview(ffmpeg, preview, timeout_sec)
+        if entry.get('deliveryStrategy') == 'original-copy' and (
+                entry.get('sourceSha256') != entry.get('previewSha256')
+                or entry.get('sourceBytes') != entry.get('previewBytes')):
+            raise ValueError('original-copy video hash/size mismatch')
         items.append({'materialId': mid, 'originalPath': source_rel,
                       'originalBytes': entry['sourceBytes'], 'originalSha256': entry['sourceSha256'],
                       'previewPath': preview_rel, 'previewSha256': entry['previewSha256'],

@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,8 +9,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 import video_resource_cleanup as cleanup
-from report_renderer import create_report_archive, transcode_report_video, render_html_report
-from peak_frame_lib import resolve_ffmpeg
+from report_renderer import create_report_archive, render_html_report
 from analysis_handoff import file_hash, read_object
 
 
@@ -20,20 +18,16 @@ def write(path, obj):
     path.write_text(json.dumps(obj), encoding='utf-8')
 
 
-def delivery(root, *, real=False):
+def delivery(root):
     source = root / 'peak-frames/video-assets/m-1.mp4'
     source.parent.mkdir(parents=True, exist_ok=True)
     preview = root / 'final-report/assets/videos/m-1.mp4'
     preview.parent.mkdir(parents=True, exist_ok=True)
-    if real:
-        subprocess.run([str(resolve_ffmpeg()), '-v', 'error', '-f', 'lavfi', '-i',
-                        'color=c=blue:s=160x120:r=10', '-t', '0.5', '-c:v', 'libx264', '-y', str(source)], check=True)
-        details = transcode_report_video(source, preview)
-    else:
-        source.write_bytes(b'original video bytes')
-        preview.write_bytes(b'preview video bytes')
-        details = {'sourceBytes': source.stat().st_size, 'sourceSha256': file_hash(source),
-                   'previewBytes': preview.stat().st_size, 'previewSha256': file_hash(preview)}
+    source.write_bytes(b'original video bytes')
+    preview.write_bytes(source.read_bytes())
+    details = {'sourceBytes': source.stat().st_size, 'sourceSha256': file_hash(source),
+               'previewBytes': preview.stat().st_size, 'previewSha256': file_hash(preview),
+               'deliveryStrategy': 'original-copy'}
     data = {'period': {'actualStartDate': '2026-09-01', 'actualEndDate': '2026-09-09'},
             'materials': [{'materialId': 'm-1', 'video': {'src': 'assets/videos/m-1.mp4'}}],
             'analysisQuality': {'structurally_valid': True, 'contentReviewStatus': 'reviewed_with_limits',
@@ -49,10 +43,20 @@ def delivery(root, *, real=False):
 
 
 class CleanupTests(unittest.TestCase):
-    def test_real_transcode_archive_dry_run_delete_and_idempotent_retry(self):
+    def test_original_copy_cleanup_needs_no_ffmpeg(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source, preview = delivery(root, real=True)
+            source, preview = delivery(root)
+            result = cleanup.cleanup_original_videos(
+                root, ffmpeg_bin=root / 'ffmpeg-does-not-exist'
+            )
+            self.assertEqual(result['status'], 'planned', result)
+            self.assertEqual(file_hash(source), file_hash(preview))
+
+    def test_original_copy_archive_dry_run_delete_and_idempotent_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, preview = delivery(root)
             original_size = source.stat().st_size
             archive_hash = file_hash(root / 'final-report.zip')
             report_hash = file_hash(root / 'final-report/final-report.html')
@@ -72,7 +76,7 @@ class CleanupTests(unittest.TestCase):
             self.assertEqual(read_object(root / 'run-summary.json')['status'], 'complete')
 
     def test_failure_gates_retain_originals(self):
-        for failure in ('status', 'preview_hash', 'archive_content', 'html_source', 'source_hash', 'decode', 'missing_archive', 'symlink_parent'):
+        for failure in ('status', 'preview_hash', 'archive_content', 'html_source', 'source_hash', 'missing_archive', 'symlink_parent'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 source, preview = delivery(root)
@@ -93,9 +97,7 @@ class CleanupTests(unittest.TestCase):
                 elif failure == 'symlink_parent':
                     source.parent.rename(source.parent.with_name('retained'))
                     source.parent.symlink_to(source.parent.with_name('retained'), target_is_directory=True)
-                effect = cleanup.ReportRenderingError('decode failed') if failure == 'decode' else None
-                with patch.object(cleanup, '_validate_decodable_preview', side_effect=effect):
-                    result = cleanup.cleanup_original_videos(root, mode='delete')
+                result = cleanup.cleanup_original_videos(root, mode='delete')
                 self.assertEqual(result['status'], 'partial', result)
                 self.assertTrue(source.exists())
                 self.assertEqual(result['releasedBytes'], 0)
@@ -109,12 +111,11 @@ class CleanupTests(unittest.TestCase):
                 if path.resolve() == source.resolve():
                     raise PermissionError('test source cannot be deleted')
                 return unlink(path, *args, **kwargs)
-            with patch.object(cleanup, '_validate_decodable_preview'), patch.object(Path, 'unlink', fail):
+            with patch.object(Path, 'unlink', fail):
                 result = cleanup.cleanup_original_videos(root, mode='delete')
             self.assertEqual(result['status'], 'partial')
             self.assertTrue(source.exists())
-            with patch.object(cleanup, '_validate_decodable_preview'):
-                result = cleanup.cleanup_original_videos(root, mode='delete')
+            result = cleanup.cleanup_original_videos(root, mode='delete')
             self.assertEqual(result['status'], 'complete')
 
     def test_unmanifested_video_is_never_deleted(self):
@@ -123,8 +124,7 @@ class CleanupTests(unittest.TestCase):
             source, _ = delivery(root)
             extra = source.with_name('unrelated.mp4')
             extra.write_bytes(b'retain me')
-            with patch.object(cleanup, '_validate_decodable_preview'):
-                result = cleanup.cleanup_original_videos(root, mode='delete')
+            result = cleanup.cleanup_original_videos(root, mode='delete')
             self.assertEqual(result['status'], 'complete')
             self.assertTrue(extra.exists())
 
@@ -144,12 +144,11 @@ class CleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, _ = delivery(root)
-            with patch.object(cleanup, '_validate_decodable_preview'):
-                deleted = cleanup.cleanup_original_videos(root, mode='delete')
-                plan = cleanup.cleanup_original_videos(root, mode='dry-run')
-                self.assertEqual(plan['status'], 'complete')
-                again = cleanup.cleanup_original_videos(root, mode='delete')
-                self.assertEqual(again['status'], 'complete')
+            deleted = cleanup.cleanup_original_videos(root, mode='delete')
+            plan = cleanup.cleanup_original_videos(root, mode='dry-run')
+            self.assertEqual(plan['status'], 'complete')
+            again = cleanup.cleanup_original_videos(root, mode='delete')
+            self.assertEqual(again['status'], 'complete')
             archive = root / 'final-report.zip'
             archive.write_bytes(b'corrupt')
             result = cleanup.cleanup_original_videos(root, mode='delete')
@@ -162,12 +161,11 @@ class CleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, _ = delivery(root)
-            with patch.object(cleanup, '_validate_decodable_preview'):
-                plan = cleanup.cleanup_original_videos(root)
-                plan['mode'] = 'delete'
-                write(root / 'final-report/video-resource-cleanup.json', plan)
-                source.unlink()  # Simulated crash between unlink and receipt publication.
-                recovered = cleanup.cleanup_original_videos(root, mode='delete')
+            plan = cleanup.cleanup_original_videos(root)
+            plan['mode'] = 'delete'
+            write(root / 'final-report/video-resource-cleanup.json', plan)
+            source.unlink()  # Simulated crash between unlink and receipt publication.
+            recovered = cleanup.cleanup_original_videos(root, mode='delete')
             self.assertEqual(recovered['status'], 'complete')
             self.assertEqual(recovered['releasedBytes'], plan['plannedBytes'])
 
@@ -183,7 +181,7 @@ class CleanupTests(unittest.TestCase):
                 if calls == 2:
                     raise OSError('transient receipt failure after unlink')
                 return original_writer(path, value)
-            with patch.object(cleanup, '_validate_decodable_preview'), patch.object(cleanup, 'write_json_atomically', interrupted_write):
+            with patch.object(cleanup, 'write_json_atomically', interrupted_write):
                 result = cleanup.cleanup_original_videos(root, mode='delete')
             self.assertEqual(result['status'], 'partial')
             self.assertFalse(source.exists())

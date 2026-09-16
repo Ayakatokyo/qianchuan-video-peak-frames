@@ -9,11 +9,9 @@ import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import uuid
 import zipfile
 
-from peak_frame_lib import resolve_ffmpeg
 from portfolio_projection import project_portfolio_summary
 
 
@@ -34,10 +32,6 @@ REPORT_ARCHIVE_IMAGE_PATTERN = re.compile(
 REPORT_ARCHIVE_VIDEO_PATTERN = re.compile(
     r"assets/videos/[^\"'\s<>]+"
 )
-DEFAULT_PREVIEW_VIDEO_CRF = 28
-DEFAULT_PREVIEW_VIDEO_WIDTH = 720
-DEFAULT_PREVIEW_VIDEO_AUDIO_BITRATE = "96k"
-DEFAULT_PREVIEW_VIDEO_TIMEOUT_SEC = 600.0
 
 
 def _text(value):
@@ -267,163 +261,14 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
-def _ffmpeg_stderr_excerpt(stderr, limit=500):
-    excerpt = str(stderr or "").strip()
-    if len(excerpt) > limit:
-        return f"{excerpt[:limit]}..."
-    return excerpt
-
-
-def _validate_decodable_preview(ffmpeg_bin, video_path, timeout_sec):
-    command = [
-        str(ffmpeg_bin),
-        "-xerror",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(video_path),
-        "-map",
-        "0:v:0",
-        "-f",
-        "null",
-        "-",
-    ]
-    try:
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout_sec,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ReportRenderingError(
-            f"preview video decode validation failed for {video_path}: {exc}"
-        ) from exc
-    if process.returncode != 0:
-        raise ReportRenderingError(
-            f"preview video decode validation failed for {video_path}; "
-            f"return code {process.returncode}; stderr excerpt: "
-            f"{_ffmpeg_stderr_excerpt(process.stderr)}"
-        )
-
-
-def transcode_report_video(
-    source_path,
-    target_path,
-    *,
-    ffmpeg_bin=None,
-    timeout_sec=DEFAULT_PREVIEW_VIDEO_TIMEOUT_SEC,
-):
-    """Transcode one retained MP4 into a portable, validated report preview."""
-    source = Path(source_path)
-    target = Path(target_path)
-    if not source.is_file() or source.is_symlink():
-        raise ReportRenderingError(f"original video is missing: {source}")
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        resolved_ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
-    except Exception as exc:
-        raise ReportRenderingError(
-            f"unable to prepare preview video transcode for {source}: {exc}"
-        ) from exc
-
-    staging = target.with_name(f".{target.stem}.{uuid.uuid4().hex}.stage.mp4")
-    command = [
-        str(resolved_ffmpeg),
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(source),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-vf",
-        (
-            f"scale=w='min({DEFAULT_PREVIEW_VIDEO_WIDTH},iw)':h=-2:"
-            "force_original_aspect_ratio=decrease"
-        ),
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        str(DEFAULT_PREVIEW_VIDEO_CRF),
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        DEFAULT_PREVIEW_VIDEO_AUDIO_BITRATE,
-        "-movflags",
-        "+faststart",
-        "-y",
-        str(staging),
-    ]
-    try:
-        try:
-            process = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout_sec,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ReportRenderingError(
-                f"preview video transcode failed for {source}: {exc}"
-            ) from exc
-        if process.returncode != 0:
-            raise ReportRenderingError(
-                f"preview video transcode failed for {source}; return code "
-                f"{process.returncode}; stderr excerpt: "
-                f"{_ffmpeg_stderr_excerpt(process.stderr)}"
-            )
-        if not staging.is_file() or staging.is_symlink() or staging.stat().st_size == 0:
-            raise ReportRenderingError(
-                f"preview video transcode produced no usable file for {source}"
-            )
-        _validate_decodable_preview(resolved_ffmpeg, staging, timeout_sec)
-        os.replace(staging, target)
-        if not target.is_file() or target.is_symlink() or target.stat().st_size == 0:
-            raise ReportRenderingError(
-                f"preview video was not published for {source}: {target}"
-            )
-        source_stat = source.stat()
-        target_stat = target.stat()
-        return {
-            "sourceBytes": source_stat.st_size,
-            "previewBytes": target_stat.st_size,
-            "sourceSha256": _sha256_file(source),
-            "previewSha256": _sha256_file(target),
-            "encoding": {
-                "videoCodec": "libx264",
-                "crf": DEFAULT_PREVIEW_VIDEO_CRF,
-                "preset": "medium",
-                "maxWidth": DEFAULT_PREVIEW_VIDEO_WIDTH,
-                "audioCodec": "aac",
-                "audioBitrate": DEFAULT_PREVIEW_VIDEO_AUDIO_BITRATE,
-                "movflags": "+faststart",
-                "pixelFormat": "yuv420p",
-            },
-        }
-    finally:
-        staging.unlink(missing_ok=True)
-
-
 def materialize_report_video_assets(
     data,
     peak_output_dir,
     report_dir,
     *,
-    ffmpeg_bin=None,
-    ffmpeg_timeout_sec=DEFAULT_PREVIEW_VIDEO_TIMEOUT_SEC,
     require_local_video_assets=False,
 ):
-    """Generate portable preview MP4s and rewrite report video sources."""
+    """Copy retained original MP4s into the portable report and rewrite sources."""
     result = deepcopy(data)
     peak_root = Path(peak_output_dir)
     report_root = Path(report_dir)
@@ -446,26 +291,19 @@ def materialize_report_video_assets(
                 source = source_root / f"{safe_component(material_id)}.mp4"
                 if source.is_file() and not source.is_symlink():
                     if material_id not in published:
-                        target = (
-                            report_root
-                            / "assets"
-                            / "videos"
-                            / f"{safe_component(material_id)}.mp4"
-                        )
-                        details = transcode_report_video(
-                            source,
-                            target,
-                            ffmpeg_bin=ffmpeg_bin,
-                            timeout_sec=ffmpeg_timeout_sec,
-                        )
-                        published[material_id] = (
-                            Path("assets/videos") / target.name
+                        published[material_id] = copy_video_asset(
+                            source, report_root, material_id
                         ).as_posix()
+                        target = report_root / published[material_id]
                         manifest_entries[material_id] = {
                             "materialId": material_id,
                             "sourcePath": run_relative(source),
                             "previewPath": run_relative(target),
-                            **details,
+                            "sourceBytes": source.stat().st_size,
+                            "previewBytes": target.stat().st_size,
+                            "sourceSha256": _sha256_file(source),
+                            "previewSha256": _sha256_file(target),
+                            "deliveryStrategy": "original-copy",
                         }
                     video["src"] = published[material_id]
                 elif require_local_video_assets:
@@ -482,7 +320,7 @@ def materialize_report_video_assets(
     atomic_write_text(
         peak_root / "report-video-assets.json",
         json.dumps(
-            {"schemaVersion": 1, "materials": list(manifest_entries.values())},
+            {"schemaVersion": 2, "materials": list(manifest_entries.values())},
             ensure_ascii=False,
             indent=2,
         )

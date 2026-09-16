@@ -112,7 +112,7 @@ class FinalReportArchiveTests(unittest.TestCase):
                 b"preview-mp4",
             )
 
-    def test_report_transcodes_video_and_records_portable_asset_manifest(self):
+    def test_report_copies_original_video_and_records_portable_asset_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             peak_output_dir = root / "peak-frames"
@@ -142,22 +142,19 @@ class FinalReportArchiveTests(unittest.TestCase):
                     report_dir,
                 )
 
-            preview = report_dir / "assets" / "videos" / "m-1.mp4"
+            published = report_dir / "assets" / "videos" / "m-1.mp4"
             self.assertEqual(rendered["materials"][0]["video"]["src"], "assets/videos/m-1.mp4")
             self.assertEqual(source.read_bytes(), b"original-mp4")
-            self.assertEqual(preview.read_bytes(), b"preview-mp4")
+            self.assertEqual(published.read_bytes(), b"original-mp4")
             manifest = json.loads(
                 (peak_output_dir / "report-video-assets.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(manifest["schemaVersion"], 1)
+            self.assertEqual(manifest["schemaVersion"], 2)
+            self.assertEqual(manifest["materials"][0]["deliveryStrategy"], "original-copy")
             self.assertEqual(manifest["materials"][0]["materialId"], "m-1")
             self.assertEqual(manifest["materials"][0]["sourceBytes"], len(b"original-mp4"))
-            self.assertEqual(manifest["materials"][0]["previewBytes"], len(b"preview-mp4"))
-            self.assertEqual(subprocess_module.run.call_count, 2)
-            encode_command = subprocess_module.run.call_args_list[0].args[0]
-            self.assertIn("libx264", encode_command)
-            self.assertIn("-crf", encode_command)
-            self.assertIn("28", encode_command)
+            self.assertEqual(manifest["materials"][0]["previewBytes"], len(b"original-mp4"))
+            self.assertEqual(subprocess_module.run.call_count, 0)
             (report_dir / "final-report.html").write_text(
                 '<video src="assets/videos/m-1.mp4"></video>', encoding="utf-8"
             )
