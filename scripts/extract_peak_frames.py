@@ -191,7 +191,8 @@ def _load_top_materials_payload(path, business_params):
     actual_end_date = payload.get("actualEndDate")
     if not isinstance(actual_start_date, str) or not isinstance(actual_end_date, str):
         raise RpaAdapterError("top materials JSON requires actualStartDate and actualEndDate")
-    if business_params.get("date_range_type") == "CUSTOM" and (
+    period_type = business_params.get("date_type", business_params.get("date_range_type"))
+    if period_type == "CUSTOM" and (
         actual_start_date != business_params.get("custom_start_date")
         or actual_end_date != business_params.get("custom_end_date")
     ):

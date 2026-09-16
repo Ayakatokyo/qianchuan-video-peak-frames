@@ -117,7 +117,7 @@ python scripts/extract_peak_frames.py \
   --top-materials-json "/path/to/run/top_materials.json" \
   --target-top-n 9 \
   --candidate-top-n 27 \
-  --params-json '{"date_range_type":"CUSTOM","custom_start_date":"2026-07-19","custom_end_date":"2026-07-25"}' \
+  --params-json '{"date_type":"CUSTOM","custom_start_date":"2026-07-19","custom_end_date":"2026-07-25"}' \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
   --output-dir "/path/to/run/peak-frames" \
   --resume

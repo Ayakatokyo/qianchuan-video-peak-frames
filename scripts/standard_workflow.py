@@ -312,7 +312,7 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 "--target-top-n", str(request.top_n),
                 "--candidate-top-n", str(candidate_top_n),
                 "--params-json", json.dumps({
-                    "date_range_type": "CUSTOM",
+                    "date_type": "CUSTOM",
                     "custom_start_date": request.start_date,
                     "custom_end_date": request.end_date,
                 }, ensure_ascii=False, separators=(",", ":")),

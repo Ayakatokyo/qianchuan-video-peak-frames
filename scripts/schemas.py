@@ -273,7 +273,10 @@ def _dynamic_date_range(args):
     params = getattr(args, "rpa_business_params", None)
     params = params if isinstance(params, dict) else {}
     return {
-        "type": params.get("date_range_type", getattr(args, "date_range_type", None)),
+        "type": params.get(
+            "date_type",
+            params.get("date_range_type", getattr(args, "date_range_type", None)),
+        ),
         "customStartDate": params.get(
             "custom_start_date", getattr(args, "custom_start_date", None)
         ),

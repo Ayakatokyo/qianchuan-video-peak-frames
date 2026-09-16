@@ -260,7 +260,7 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(
             json.loads(batch_argv[batch_argv.index("--params-json") + 1]),
             {
-                "date_range_type": "CUSTOM",
+                "date_type": "CUSTOM",
                 "custom_start_date": "2026-07-19",
                 "custom_end_date": "2026-07-25",
             },

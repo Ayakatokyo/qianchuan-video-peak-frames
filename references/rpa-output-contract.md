@@ -138,7 +138,7 @@ Selected and ready-list ordering always follows source candidate rank, even when
 
 The following names describe the current business intent only. They are not an authoritative runtime schema; always use `rpa_dynamic_client.py schema` and validate the complete JSON returned for the current connector deployment.
 
-Supported `date_range_type` values:
+Supported `date_type` values for new requests:
 
 - `YESTERDAY`
 - `LAST_7_DAYS`
