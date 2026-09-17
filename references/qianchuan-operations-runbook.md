@@ -107,11 +107,11 @@ python scripts/run_standard_analysis.py frame-review \
 
 ## 运行中断或陈旧批次
 
-先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。恢复已有批次时，默认先做不触发 RPA 的本地修复；只有用户明确授权重发 RPA 时才使用 `--resume`：
+先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。恢复已有批次时，默认先做不触发 RPA 的本地修复；`--resume` 只轮询已保存的远程任务，不会重新提交 RPA：
 
 `status` 会核对工作流锁和批次锁的 pid、hostname 与 processStart。持久摘要仍为 `running`、但两把锁都不是 active 时，对外返回 `workflowStatus=interrupted`、`persistedWorkflowStatus=running` 和 `recoveryRequired=true`；`status` 本身保持只读。不得使用 `pgrep -af` 或其他会输出完整命令行与环境变量的命令查进程；需要复核时只按锁内 pid 查存活性，不输出 args/env。
 
-用户已授权继续补齐时，运行标准恢复入口：
+需要继续核对已提交任务时，运行标准恢复入口：
 
 ```bash
 python scripts/run_standard_analysis.py resume \
@@ -144,7 +144,7 @@ python scripts/extract_peak_frames.py \
 
 `--resume` 只可用于同一日期、同一候选池和同一店铺的既有批次；它会复用有效 summary 与已落盘 records。
 
-`--resume` 对没有本地 CSV/records 的 `submitted` 素材可能重新提交 RPA。因而只有用户明确授权“恢复并允许重发 RPA”时才可使用；用户要求停止 RPA、或悬空请求尚未完成远端对账时，禁止使用 `--resume`，改用上面的本地 repair 并把悬空素材保留为待对账。
+`--resume` 只对带已保存 `task_group_id` 的 `submitted` 素材继续轮询同一远程任务。没有本地 CSV/records 且没有可复用远程任务 ID 的素材直接标记失败，不会重新提交 RPA。用户要求停止 RPA 时只使用上面的本地 repair，并把悬空素材保留为待对账。
 
 ## 修复保留产物
 

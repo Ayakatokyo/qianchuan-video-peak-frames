@@ -662,15 +662,11 @@ def _preflight_failure_reason(error):
 def _preflight_failure_result(material_id, reason, error=None):
     result = _preflight_result(material_id, False, reason)
     diagnostics = getattr(error, "diagnostics", {}) if error is not None else {}
-    retryable = reason == "rpa_request_failed" and diagnostics.get(
-        "rpaFailureClass"
-    ) != "gateway_client_error"
     result.update(
         {
             "rpaResultStatus": (
                 "pending" if reason == "rpa_request_failed" else "final_failed"
             ),
-            "retryable": retryable,
             "errorType": type(error).__name__ if error is not None else None,
             "errorMessage": str(error) if error is not None else None,
         }

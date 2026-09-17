@@ -1066,7 +1066,7 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertFalse(result["rpaAvailable"])
         self.assertEqual(result["failureReason"], "rpa_request_failed")
 
-    def test_fetch_material_preflight_preserves_retryable_gateway_failure_details(self):
+    def test_fetch_material_preflight_preserves_gateway_failure_details(self):
         session = RaisingPostSession(TimeoutError("timed out"))
 
         result = rpa_adapter.fetch_material_preflight(
@@ -1080,7 +1080,7 @@ class RpaAdapterTests(unittest.TestCase):
 
         self.assertFalse(result["rpaAvailable"])
         self.assertEqual(result.get("rpaResultStatus"), "pending")
-        self.assertTrue(result.get("retryable"))
+        self.assertNotIn("retryable", result)
         self.assertEqual(result.get("errorType"), "RpaAdapterError")
         self.assertIn("timed out", result.get("errorMessage") or "")
 
@@ -1123,7 +1123,7 @@ class RpaAdapterTests(unittest.TestCase):
         self.assertFalse(result["rpaAvailable"])
         self.assertEqual(result["failureReason"], "rpa_payload_invalid")
         self.assertEqual(result.get("rpaResultStatus"), "final_failed")
-        self.assertFalse(result.get("retryable"))
+        self.assertNotIn("retryable", result)
         self.assertEqual(result.get("errorType"), "RpaAdapterError")
 
     def test_fetch_rejects_invalid_files_envelopes_without_url_leakage(self):
@@ -3583,7 +3583,7 @@ class CliTests(unittest.TestCase):
             material_ids[:9],
         )
 
-    def test_wave_top9_retries_missing_video_url_before_using_rank10_and_rank11(self):
+    def test_wave_top9_does_not_retry_missing_video_url_before_using_rank10_and_rank11(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -3628,10 +3628,10 @@ class CliTests(unittest.TestCase):
                 )
 
         self.assertEqual(result, 0)
-        self.assertEqual(len(submitted), 13)
+        self.assertEqual(len(submitted), 11)
         self.assertEqual(set(submitted), set(material_ids[:11]))
-        self.assertEqual(submitted.count("m-8"), 2)
-        self.assertEqual(submitted.count("m-9"), 2)
+        self.assertEqual(submitted.count("m-8"), 1)
+        self.assertEqual(submitted.count("m-9"), 1)
         self.assertNotIn(material_ids[11], submitted)
 
     def test_wave_rpa_channel_never_exceeds_three_in_flight(self):
@@ -4254,7 +4254,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(selected_entry["records"], receipt["records"])
         self.assertEqual(selected_entry["rpaClientAttemptId"], "attempt-csv-resume")
 
-    def test_wave_resume_requeues_submitted_without_local_artifact(self):
+    def test_wave_resume_finalizes_submitted_without_task_id_or_local_artifact(self):
         material_id = "m-requeue-resume"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4294,12 +4294,13 @@ class CliTests(unittest.TestCase):
                 )
             )
 
-        self.assertEqual(submitted, {})
+        self.assertEqual(set(submitted), {0})
         self.assertEqual(selected, {})
-        self.assertEqual(rejected, {})
+        self.assertEqual(set(rejected), {0})
         self.assertEqual(cancelled, {})
         self.assertEqual(postprocess_queue, [])
-        self.assertEqual(entries[0]["rpaStatus"], "pending")
+        self.assertEqual(entries[0]["rpaStatus"], "rejected")
+        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
         self.assertEqual(
             entries[0]["resumeRecovery"],
             {
@@ -4310,7 +4311,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(retained["clientAttemptId"], "old-attempt")
 
-    def test_wave_resume_requeues_submitted_material_with_malformed_receipt(self):
+    def test_wave_resume_finalizes_submitted_material_with_malformed_receipt(self):
         material_id = "m-malformed-receipt"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4338,12 +4339,13 @@ class CliTests(unittest.TestCase):
                     extract_peak_frames._resume_wave_state(args, candidates, entries)
                 )
 
-        self.assertEqual(submitted, {})
+        self.assertEqual(set(submitted), {0})
         self.assertEqual(selected, {})
-        self.assertEqual(rejected, {})
+        self.assertEqual(set(rejected), {0})
         self.assertEqual(cancelled, {})
         self.assertEqual(postprocess_queue, [])
-        self.assertEqual(entries[0]["rpaStatus"], "pending")
+        self.assertEqual(entries[0]["rpaStatus"], "rejected")
+        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
         self.assertEqual(
             entries[0]["resumeRecovery"]["reason"], "local_artifact_unavailable"
         )
@@ -4705,14 +4707,12 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 1,
             })()
             failure = {
                 "materialId": material_id,
                 "rpaAvailable": False,
                 "failureReason": "rpa_request_failed",
                 "rpaResultStatus": "pending",
-                "retryable": True,
             }
             with patch.object(
                 extract_peak_frames,
@@ -4743,7 +4743,6 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 1,
             })()
             outcome = {
                 "materialId": material_id,
@@ -4849,267 +4848,6 @@ class CliTests(unittest.TestCase):
         self.assertFalse(recovered["rpaAvailable"])
         self.assertEqual(recovered["failureReason"], "rpa_request_failed")
 
-    def test_wave_attempt_recovers_pending_result_with_one_retry(self):
-        material_id = "m-retryable"
-        records = [
-            {
-                "recordType": "material_info",
-                "materialId": material_id,
-                "videoUrl": f"https://video.example/{material_id}.mp4",
-            }
-        ]
-        first_attempt = {
-            "materialId": material_id,
-            "rpaAvailable": False,
-            "failureReason": "rpa_request_failed",
-            "videoUrl": None,
-            "rpaResultStatus": "pending",
-            "retryable": True,
-            "errorType": "RpaAdapterError",
-            "errorMessage": "gateway timed out",
-        }
-        second_attempt = {
-            "materialId": material_id,
-            "rpaAvailable": True,
-            "failureReason": None,
-            "videoUrl": f"https://video.example/{material_id}.mp4",
-            "records": records,
-            "diagnosisCsvPath": None,
-        }
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            args = type("Args", (), {
-                "output_dir": str(root / "peak-frames"),
-                "diagnosis_records_dir": str(root / "diagnosis-records"),
-                "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 2,
-            })()
-            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
-
-            fetch_attempts = 0
-
-            def fetch(*_args, **_kwargs):
-                nonlocal fetch_attempts
-                fetch_attempts += 1
-                if fetch_attempts == 2:
-                    csv_dir = root / "diagnosis-csv"
-                    csv_dir.mkdir(parents=True, exist_ok=True)
-                    (csv_dir / f"{material_id}.csv").write_text(
-                        "recordType\x01materialId\x01videoUrl\n"
-                        f"material_info\x01{material_id}\x01"
-                        f"https://video.example/{material_id}.mp4\n",
-                        encoding="utf-8",
-                    )
-                return [first_attempt, second_attempt][fetch_attempts - 1]
-
-            with patch.object(
-                extract_peak_frames,
-                "_fetch_material_preflight_for_cli",
-                side_effect=fetch,
-            ) as fetch, patch.object(extract_peak_frames.time, "sleep"):
-                result = extract_peak_frames._attempt_wave_rpa(args, entry)
-
-        self.assertEqual(fetch.call_count, 2)
-        self.assertEqual(result.get("rpaStatus"), "selected")
-        self.assertEqual(result.get("rpaResultStatus"), "available")
-        self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
-        self.assertTrue(result["recordsPersisted"])
-
-    def test_wave_attempt_retries_missing_video_url_before_rejecting(self):
-        material_id = "m-video-url-eventual"
-        first_attempt = {
-            "materialId": material_id,
-            "rpaAvailable": False,
-            "failureReason": "missing_video_url",
-            "videoUrl": None,
-            "rpaResultStatus": "available",
-            "retryable": True,
-        }
-        second_attempt = {
-            "materialId": material_id,
-            "rpaAvailable": True,
-            "failureReason": None,
-            "videoUrl": f"https://video.example/{material_id}.mp4",
-            "records": [{
-                "recordType": "material_info",
-                "materialId": material_id,
-                "videoUrl": f"https://video.example/{material_id}.mp4",
-            }],
-            "diagnosisCsvPath": None,
-        }
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            args = type("Args", (), {
-                "output_dir": str(root / "peak-frames"),
-                "diagnosis_records_dir": str(root / "diagnosis-records"),
-                "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 2,
-            })()
-            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
-            def fetch_once(*_args, **_kwargs):
-                if fetch.call_count == 2:
-                    csv_dir = root / "diagnosis-csv"
-                    csv_dir.mkdir(parents=True, exist_ok=True)
-                    (csv_dir / f"{material_id}.csv").write_text(
-                        "recordType\x01materialId\x01videoUrl\n"
-                        f"material_info\x01{material_id}\x01"
-                        f"https://video.example/{material_id}.mp4\n",
-                        encoding="utf-8",
-                    )
-                    return second_attempt
-                return first_attempt
-
-            with patch.object(
-                extract_peak_frames,
-                "_fetch_material_preflight_for_cli",
-                side_effect=fetch_once,
-            ) as fetch:
-                result = extract_peak_frames._attempt_wave_rpa(args, entry)
-
-        self.assertEqual(fetch.call_count, 2)
-        self.assertEqual(result.get("rpaStatus"), "selected")
-        self.assertTrue(result["rpaCsvVerified"])
-        self.assertEqual(result["records"][0]["videoUrl"], second_attempt["videoUrl"])
-
-    def test_wave_attempt_finalizes_pending_failure_with_diagnostics(self):
-        material_id = "m-retry-exhausted"
-        failure = {
-            "materialId": material_id,
-            "rpaAvailable": False,
-            "failureReason": "rpa_request_failed",
-            "videoUrl": None,
-            "rpaResultStatus": "pending",
-            "retryable": True,
-            "errorType": "RpaAdapterError",
-            "errorMessage": "gateway timed out",
-        }
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            args = type("Args", (), {
-                "output_dir": str(root / "peak-frames"),
-                "diagnosis_records_dir": str(root / "diagnosis-records"),
-                "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 2,
-            })()
-            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
-            with patch.object(
-                extract_peak_frames,
-                "_fetch_material_preflight_for_cli",
-                return_value=failure,
-            ) as fetch, patch.object(extract_peak_frames.time, "sleep"):
-                result = extract_peak_frames._attempt_wave_rpa(args, entry)
-
-        self.assertEqual(fetch.call_count, 2)
-        self.assertEqual(result.get("rpaStatus"), "rejected")
-        self.assertEqual(result.get("rpaResultStatus"), "final_failed")
-        self.assertEqual(result.get("errorType"), "RpaAdapterError")
-        self.assertEqual(result.get("errorMessage"), "gateway timed out")
-        self.assertEqual(len(result.get("rpaRecoveryAttempts") or []), 2)
-
-    def test_wave_attempt_timeout_is_terminal_without_retry(self):
-        material_id = "m-timeout"
-        timeout = {
-            "materialId": material_id,
-            "rpaAvailable": False,
-            "failureReason": "rpa_request_timeout",
-            "rpaResultStatus": "pending",
-            "retryable": True,
-            "timeoutExceeded": True,
-            "timeoutSec": 480,
-            "workerStage": "timeout",
-        }
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            args = type("Args", (), {
-                "output_dir": str(root / "peak-frames"),
-                "diagnosis_records_dir": str(root / "diagnosis-records"),
-                "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 2,
-            })()
-            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
-            with patch.object(
-                extract_peak_frames,
-                "_fetch_material_preflight_for_cli",
-                return_value=timeout,
-            ) as fetch:
-                result = extract_peak_frames._attempt_wave_rpa(args, entry)
-
-        fetch.assert_called_once()
-        self.assertEqual(result["rpaStatus"], "rejected")
-        self.assertEqual(result["rpaResultStatus"], "final_failed")
-        self.assertEqual(result["failureReason"], "rpa_request_timeout")
-        self.assertTrue(result["rpaTimeoutExceeded"])
-        self.assertEqual(result["rpaTimeoutSec"], 480)
-
-    def test_wave_attempt_backs_off_between_fast_retryable_failures(self):
-        material_id = "m-fast-retry"
-        failure = {
-            "materialId": material_id,
-            "rpaAvailable": False,
-            "failureReason": "rpa_request_failed",
-            "rpaResultStatus": "pending",
-            "retryable": True,
-            "errorType": "RpaAdapterError",
-            "errorMessage": "gateway unavailable",
-            "rpaFetchSec": 5.0,
-        }
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            args = type("Args", (), {
-                "output_dir": str(root / "peak-frames"),
-                "diagnosis_records_dir": str(root / "diagnosis-records"),
-                "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 2,
-                "rpa_fast_failure_threshold_sec": 60,
-                "rpa_recovery_backoff_sec": 45,
-            })()
-            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
-            with patch.object(
-                extract_peak_frames,
-                "_fetch_material_preflight_for_cli",
-                return_value=failure,
-            ) as fetch, patch.object(extract_peak_frames.time, "sleep") as sleep:
-                result = extract_peak_frames._attempt_wave_rpa(args, entry)
-
-        self.assertEqual(fetch.call_count, 2)
-        sleep.assert_called_once_with(45)
-        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
-
-    def test_wave_attempt_does_not_retry_gateway_client_error(self):
-        material_id = "m-client-error"
-        failure = {
-            "materialId": material_id,
-            "rpaAvailable": False,
-            "failureReason": "rpa_request_failed",
-            "rpaResultStatus": "pending",
-            "retryable": False,
-            "rpaFailureClass": "gateway_client_error",
-            "httpStatus": 401,
-            "errorType": "RpaAdapterError",
-            "errorMessage": "unauthorized",
-        }
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            args = type("Args", (), {
-                "output_dir": str(root / "peak-frames"),
-                "diagnosis_records_dir": str(root / "diagnosis-records"),
-                "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 3,
-            })()
-            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
-            with patch.object(
-                extract_peak_frames,
-                "_fetch_material_preflight_for_cli",
-                return_value=failure,
-            ) as fetch:
-                result = extract_peak_frames._attempt_wave_rpa(args, entry)
-
-        fetch.assert_called_once()
-        self.assertEqual(result["rpaResultStatus"], "final_failed")
-        self.assertEqual(result["rpaRecoveryAttempts"][0]["httpStatus"], 401)
-
     def test_wave_attempt_selects_only_after_fresh_expected_csv_is_verified(self):
         material_id = "m-csv-fresh"
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -5119,7 +4857,6 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 1,
             })()
             entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
 
@@ -5157,8 +4894,8 @@ class CliTests(unittest.TestCase):
         self.assertTrue(result.get("rpaCsvVerified"))
         preflight.assert_called_once()
 
-    def test_wave_attempt_retries_missing_csv_until_current_csv_is_verified(self):
-        material_id = "m-csv-retry"
+    def test_wave_attempt_does_not_resubmit_when_csv_is_missing(self):
+        material_id = "m-csv-missing"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             csv_dir = root / "diagnosis-csv"
@@ -5166,7 +4903,6 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 2,
             })()
             entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
             outcome = {
@@ -5175,19 +4911,7 @@ class CliTests(unittest.TestCase):
                 "failureReason": None,
                 "videoUrl": f"https://video.example/{material_id}.mp4",
             }
-            fetch_attempts = 0
-
             def fetch(_args, requested_material_id, **_kwargs):
-                nonlocal fetch_attempts
-                fetch_attempts += 1
-                if fetch_attempts == 2:
-                    csv_dir.mkdir(parents=True, exist_ok=True)
-                    (csv_dir / f"{requested_material_id}.csv").write_text(
-                        "recordType\x01materialId\x01videoUrl\n"
-                        f"material_info\x01{requested_material_id}\x01"
-                        f"https://video.example/{requested_material_id}.mp4\n",
-                        encoding="utf-8",
-                    )
                 return outcome
 
             with patch.object(
@@ -5197,11 +4921,10 @@ class CliTests(unittest.TestCase):
             ) as fetch_mock:
                 result = extract_peak_frames._attempt_wave_rpa(args, entry)
 
-        self.assertEqual(fetch_mock.call_count, 2)
-        self.assertEqual(result["rpaStatus"], "selected")
-        self.assertEqual(result["rpaResultStatus"], "available")
-        self.assertTrue(result["rpaCsvVerified"])
-        self.assertEqual(len(result["rpaRecoveryAttempts"]), 2)
+        self.assertEqual(fetch_mock.call_count, 1)
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
 
     def test_wave_attempt_waits_for_delayed_csv_within_grace_period(self):
         material_id = "m-csv-grace"
@@ -5212,7 +4935,6 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 1,
-                "rpa_result_recovery_attempts": 2,
             })()
             entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
 
@@ -5255,7 +4977,6 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 1,
             })()
             entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
 
@@ -5309,7 +5030,6 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 1,
             })()
             entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
             outcome = {
@@ -5344,7 +5064,6 @@ class CliTests(unittest.TestCase):
                 "output_dir": str(root / "peak-frames"),
                 "diagnosis_records_dir": str(root / "diagnosis-records"),
                 "rpa_late_artifact_grace_sec": 0,
-                "rpa_result_recovery_attempts": 1,
             })()
             entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
 

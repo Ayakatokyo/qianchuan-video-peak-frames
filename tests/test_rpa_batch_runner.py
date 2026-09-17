@@ -551,7 +551,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
             <= {"m-1", "m-2", "m-3"}
         )
 
-    def test_rpa_future_exception_records_final_recovery_diagnostics(self):
+    def test_rpa_future_exception_records_final_diagnostics(self):
         def attempt_rpa(_args, _entry):
             raise RuntimeError("worker process exited")
 
@@ -563,7 +563,6 @@ class WaveBatchRunnerTests(unittest.TestCase):
         self.assertTrue(failures)
         self.assertEqual(rejected["rpaStatus"], "rejected")
         self.assertEqual(rejected.get("rpaResultStatus"), "final_failed")
-        self.assertEqual(rejected.get("rpaRecoveryAttempts"), [])
         self.assertEqual(rejected["errorType"], "RuntimeError")
         self.assertEqual(rejected["errorMessage"], "worker process exited")
 

@@ -130,9 +130,6 @@ def build_parser():
     parser.add_argument("--candidate-top-n", type=_positive_int)
     parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=4260)
     parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
-    parser.add_argument("--rpa-result-recovery-attempts", type=_positive_int, default=2)
-    parser.add_argument("--rpa-fast-failure-threshold-sec", type=_positive_timeout, default=60)
-    parser.add_argument("--rpa-recovery-backoff-sec", type=_positive_timeout, default=45)
     parser.add_argument("--rpa-ready-top-materials-json")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--verify", action="store_true")
@@ -382,15 +379,11 @@ def _preflight_failure(material_id, reason, error=None):
         "videoUrl": None,
     }
     diagnostics = getattr(error, "diagnostics", {}) if error is not None else {}
-    retryable = reason == "rpa_request_failed" and diagnostics.get(
-        "rpaFailureClass"
-    ) != "gateway_client_error"
     result.update(
         {
             "rpaResultStatus": (
                 "pending" if reason == "rpa_request_failed" else "final_failed"
             ),
-            "retryable": retryable,
             "errorType": type(error).__name__ if error is not None else None,
             "errorMessage": str(error) if error is not None else None,
         }
@@ -623,147 +616,67 @@ def _fetch_material_preflight_for_cli(
     return outcome
 
 
-def _rpa_recovery_attempt(number, outcome, source="request"):
-    return {
-        "attempt": number,
-        "source": source,
-        "rpaResultStatus": outcome.get("rpaResultStatus") or (
-            "available" if outcome.get("rpaAvailable") else None
-        ),
-        "failureReason": outcome.get("failureReason"),
-        "errorType": outcome.get("errorType"),
-        "errorMessage": outcome.get("errorMessage"),
-        "errorTraceback": outcome.get("errorTraceback"),
-        "workerStage": outcome.get("workerStage"),
-        "childExitCode": outcome.get("childExitCode"),
-        "childSignal": outcome.get("childSignal"),
-        "resultQueueEmpty": outcome.get("resultQueueEmpty"),
-        "requestDurationSec": outcome.get("rpaFetchSec"),
-        "rpaFailureClass": outcome.get("rpaFailureClass"),
-        "httpStatus": outcome.get("httpStatus"),
-        "requestId": outcome.get("requestId"),
-        "responseSummary": outcome.get("responseSummary"),
-    }
-
-
-def _resolved_rpa_outcome(outcome, attempts):
+def _resolved_rpa_outcome(outcome):
     result = dict(outcome)
     result.update(
         {
             "rpaResultStatus": "available",
-            "retryable": False,
             "errorType": None,
             "errorMessage": None,
-            "rpaRecoveryAttempts": attempts,
         }
     )
     return result
 
 
-def _recover_wave_rpa_result(
-    args, material_id, outcome, *, started_at_epoch, fetch_once
-):
-    """Resolve a pending request using one artifact grace budget and bounded retries."""
-    try:
-        max_attempts = max(1, int(getattr(args, "rpa_result_recovery_attempts", 2)))
-    except (TypeError, ValueError):
-        max_attempts = 2
+def _recover_wave_rpa_result(args, material_id, outcome, *, started_at_epoch):
+    """Resolve one submitted request without submitting the RPA again."""
     deadline = time.monotonic() + max(
         0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5))
     )
-    attempts = []
+    outcome = dict(outcome)
 
     if outcome.get("timeoutExceeded"):
-        outcome = dict(outcome)
-        attempts.append(_rpa_recovery_attempt(1, outcome))
         outcome.update(
             {
                 "rpaResultStatus": "final_failed",
-                "retryable": False,
-                "rpaRecoveryAttempts": attempts,
             }
         )
         return outcome
 
-    for attempt_number in range(1, max_attempts + 1):
-        outcome = dict(outcome)
-        if outcome.get("rpaAvailable"):
-            verified_csv = _verify_current_rpa_csv_artifact(
-                args, material_id, started_at_epoch
-            )
-            if verified_csv is not None:
-                outcome.update(verified_csv)
-                attempts.append(_rpa_recovery_attempt(attempt_number, outcome))
-                return _resolved_rpa_outcome(outcome, attempts)
-            outcome.update(
-                {
-                    "rpaAvailable": False,
-                    "failureReason": "rpa_csv_artifact_unavailable",
-                    "rpaResultStatus": "pending",
-                    "retryable": True,
-                    "errorType": "RpaCsvArtifactUnavailable",
-                    "errorMessage": (
-                        "RPA response did not produce a verified current CSV artifact"
-                    ),
-                }
-            )
+    if outcome.get("rpaAvailable"):
+        verified_csv = _verify_current_rpa_csv_artifact(
+            args, material_id, started_at_epoch
+        )
+        if verified_csv is not None:
+            outcome.update(verified_csv)
+            return _resolved_rpa_outcome(outcome)
+        outcome.update(
+            {
+                "rpaAvailable": False,
+                "failureReason": "rpa_csv_artifact_unavailable",
+                "errorType": "RpaCsvArtifactUnavailable",
+                "errorMessage": (
+                    "RPA response did not produce a verified current CSV artifact"
+                ),
+            }
+        )
 
-        outcome.setdefault(
-            "rpaResultStatus",
-            "pending"
-            if outcome.get("failureReason") in (
-                "rpa_request_failed",
-                "missing_video_url",
-            )
-            else "final_failed",
-        )
-        outcome.setdefault(
-            "retryable",
-            outcome.get("failureReason") in (
-                "rpa_request_failed",
-                "missing_video_url",
-            ),
-        )
-        attempts.append(_rpa_recovery_attempt(attempt_number, outcome))
-        recovered = _recover_late_rpa_artifacts(
-            args,
-            material_id,
-            outcome,
-            started_at_epoch=started_at_epoch,
-            deadline=deadline,
-        )
-        if recovered.get("rpaAvailable"):
-            attempts.append(
-                _rpa_recovery_attempt(attempt_number, recovered, "late_artifact")
-            )
-            return _resolved_rpa_outcome(recovered, attempts)
-        if not outcome["retryable"] or attempt_number == max_attempts:
-            break
-        try:
-            fast_threshold = float(getattr(args, "rpa_fast_failure_threshold_sec", 60))
-            request_duration = float(outcome.get("rpaFetchSec") or 0)
-            backoff = float(getattr(args, "rpa_recovery_backoff_sec", 45))
-        except (TypeError, ValueError):
-            fast_threshold, request_duration, backoff = 60.0, 0.0, 45.0
-        if (
-            outcome.get("failureReason") == "rpa_request_failed"
-            and request_duration > 0
-            and request_duration < fast_threshold
-            and backoff > 0
-        ):
-            time.sleep(backoff * (2 ** (attempt_number - 1)))
-        outcome = fetch_once()
+    recovered = _recover_late_rpa_artifacts(
+        args,
+        material_id,
+        outcome,
+        started_at_epoch=started_at_epoch,
+        deadline=deadline,
+    )
+    if recovered.get("rpaAvailable"):
+        return _resolved_rpa_outcome(recovered)
 
-    outcome = dict(outcome)
+    outcome = dict(recovered)
     outcome.update(
         {
             "rpaResultStatus": "final_failed",
-            "retryable": False,
-            "rpaRecoveryAttempts": attempts,
         }
     )
-    if outcome.get("failureReason") == "rpa_request_failed":
-        outcome["failureReason"] = "rpa_csv_artifact_unavailable"
     return outcome
 
 
@@ -1031,6 +944,22 @@ def _resume_wave_state(args, candidates, entries):
                         "remoteTaskGroupId": receipt["remoteTaskGroupId"],
                     }
                 )
+            else:
+                restored.update(
+                    {
+                        "rpaStatus": "rejected",
+                        "rpaResultStatus": "final_failed",
+                        "postprocessStatus": "not_started",
+                        "status": "failed",
+                        "failureReason": "rpa_artifact_unavailable",
+                        "errorType": "RpaArtifactUnavailable",
+                        "errorMessage": (
+                            "submitted RPA has no reusable task ID or local artifact"
+                        ),
+                    }
+                )
+                submitted[index] = restored
+                rejected[index] = restored
             restored["resumeRecovery"] = {
                 "reason": (
                     "remote_task_pending"
@@ -1090,7 +1019,6 @@ def _attempt_wave_rpa(args, entry):
         material_id,
         fetch_once(),
         started_at_epoch=started_at_epoch,
-        fetch_once=fetch_once,
     )
 
     updated = dict(entry)
@@ -1114,7 +1042,6 @@ def _attempt_wave_rpa(args, entry):
                 "status": "failed",
                 "failureReason": outcome.get("failureReason"),
                 "rpaResultStatus": outcome.get("rpaResultStatus"),
-                "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
                 "errorType": outcome.get("errorType"),
                 "errorMessage": outcome.get("errorMessage"),
                 "errorTraceback": outcome.get("errorTraceback"),
@@ -1160,7 +1087,6 @@ def _attempt_wave_rpa(args, entry):
                 "status": "failed",
                 "failureReason": "rpa_payload_invalid",
                 "rpaResultStatus": "final_failed",
-                "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
                 "errorType": type(exc).__name__,
                 "errorMessage": str(exc),
             }
@@ -1202,7 +1128,6 @@ def _attempt_wave_rpa(args, entry):
             "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
             "rpaResultStatus": outcome.get("rpaResultStatus"),
             "remoteTaskGroupId": outcome.get("remoteTaskGroupId") or remote_task_group_id,
-            "rpaRecoveryAttempts": outcome.get("rpaRecoveryAttempts", []),
             "errorType": outcome.get("errorType"),
             "errorMessage": outcome.get("errorMessage"),
         }

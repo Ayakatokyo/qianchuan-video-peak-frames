@@ -251,7 +251,6 @@ def run_wave_batch(
                     "status": "failed",
                     "failureReason": "rpa_request_failed",
                     "rpaResultStatus": "final_failed",
-                    "rpaRecoveryAttempts": [],
                     "errorType": type(exc).__name__,
                     "errorMessage": str(exc),
                 }
