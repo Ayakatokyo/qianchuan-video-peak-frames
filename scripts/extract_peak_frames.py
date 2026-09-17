@@ -61,6 +61,7 @@ _material_output_issues = material_output_issues
 
 
 BATCH_MANIFEST_NAME = "batch-manifest.json"
+BATCH_PROGRESS_NAME = "batch-progress.jsonl"
 BATCH_MANIFEST_VERSION = 2
 WAVE_BATCH_MANIFEST_VERSION = 2
 BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
@@ -1348,6 +1349,9 @@ def _run_wave_rpa_batch(args, candidate_payload, *, is_interrupted=None):
         elapsed=_elapsed_since,
         accounted_indices=rpa_batch_runner.accounted_indices,
         ordered=rpa_batch_runner.ordered,
+        write_progress=lambda manifest: _append_batch_progress(
+            manifest_path, manifest
+        ),
         is_interrupted=is_interrupted,
     )
     return manifest_path, last_result, failures
@@ -1383,6 +1387,25 @@ def _wave_lock_path(args):
     return Path(args.output_dir) / ".batch-run.lock"
 
 
+def _append_batch_progress(manifest_path, manifest):
+    """Append a compact durable checkpoint for operators and lost sessions."""
+    progress_path = Path(manifest_path).with_name(BATCH_PROGRESS_NAME)
+    event = {
+        "schemaVersion": 1,
+        "observedAtEpoch": time.time(),
+        "runId": manifest.get("runId"),
+        "rpaCollection": manifest.get("rpaCollection"),
+        "stageCounts": manifest.get("stageCounts", {}),
+        "interruption": manifest.get("interruption"),
+    }
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    with progress_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return progress_path
+
+
 def _manifest_has_unfinished_wave_work(manifest):
     if not isinstance(manifest, dict):
         return False
@@ -1405,24 +1428,19 @@ def _acquire_wave_lock(args):
     manifest_path = _batch_manifest_path(args)
     existing = read_json(manifest_path)
     requested_run_id = existing.get("runId") if args.resume and isinstance(existing, dict) else None
+    if _manifest_has_unfinished_wave_work(existing) and not args.resume:
+        raise RpaAdapterError(
+            "stale wave batch requires --resume or repair-manifest before retry"
+        )
     try:
         lock = acquire_run_lock(
-            _wave_lock_path(args), manifest_path, run_id=requested_run_id
+            _wave_lock_path(args),
+            manifest_path,
+            run_id=requested_run_id,
+            reclaim_stale=args.resume,
         )
     except BatchLockError as exc:
-        if not exc.stale:
-            raise RpaAdapterError(str(exc)) from exc
-        if _manifest_has_unfinished_wave_work(existing) and not args.resume:
-            raise RpaAdapterError(
-                "stale wave batch requires --resume or repair-manifest before retry"
-            ) from exc
-        try:
-            _wave_lock_path(args).unlink()
-        except FileNotFoundError:
-            pass
-        lock = acquire_run_lock(
-            _wave_lock_path(args), manifest_path, run_id=requested_run_id
-        )
+        raise RpaAdapterError(str(exc)) from exc
     args.run_id = lock.payload["runId"]
     return lock
 

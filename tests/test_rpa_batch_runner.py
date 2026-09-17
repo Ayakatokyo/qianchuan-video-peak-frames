@@ -355,6 +355,22 @@ class WaveBatchRunnerTests(unittest.TestCase):
 
         self.assertTrue(persisted_success.is_set())
 
+    def test_each_manifest_checkpoint_emits_compact_progress(self):
+        progress = []
+
+        self.run_batch(
+            ["m-1"],
+            lambda _args, entry: self._verified_rpa_success(entry),
+            self._success_postprocess,
+            args={"target_top_n": 1},
+            write_progress=lambda manifest: progress.append(
+                dict(manifest["stageCounts"])
+            ),
+        )
+
+        self.assertGreaterEqual(len(progress), 2)
+        self.assertEqual(progress[-1]["postprocessSucceededCount"], 1)
+
     def test_wave_does_not_submit_next_candidate_until_current_wave_finishes(self):
         rpa_starts = []
         postprocess_started = threading.Event()

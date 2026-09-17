@@ -23,7 +23,7 @@ metadata:
 - **授权**：`--shop-id` 只用于报表连接器；RPA 使用授权账户中的唯一千川 ID。无授权或多账户先处理授权选择，不重复提交素材诊断。
 - **单 Agent 执行边界**：主 Agent 直接执行全流程，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。
 - **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
-- **长任务**：`prepare` 是单一长任务；无实时进度不要另起运行或手工干预。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复只查询已保存远端 ID，**不得重复提交**。
+- **长任务**：`prepare` 是单一长任务；无实时进度不要另起运行或手工干预。进度同时写入 `peak-frames/batch-manifest.json` 与紧凑的 `peak-frames/batch-progress.jsonl`。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复先查询已保存远端 ID，**不得重复提交**。
 
 ## RPA 动态参数契约
 
@@ -52,6 +52,17 @@ python scripts/run_standard_analysis.py prepare \
   --output-dir "$PWD/千川数据资源/<run-id>"
 python scripts/run_standard_analysis.py status --output-dir "$PWD/千川数据资源/<run-id>"
 ```
+
+`status` 返回 `workflowStatus=interrupted` 且已确认恢复未完成采集时，使用标准恢复入口；它会自动接管陈旧锁，先修复已落盘 CSV/records/截帧，再续接已保存的远程任务并只补齐缺口，不重跑报表选品：
+
+```bash
+python scripts/run_standard_analysis.py resume \
+  --shop-id "<授权店铺 ID>" --start-date 2026-07-19 --end-date 2026-07-25 \
+  --top-n 9 --advertiser-id "1770096415226951" \
+  --output-dir "$PWD/千川数据资源/<run-id>"
+```
+
+用户明确要求“继续/恢复并补齐剩余素材”时可执行 `resume`。若用户要求停止 RPA，或尚未确认原进程终止，只运行 `status` 与无 RPA 的本地修复，不执行 `resume`。
 
 只验证报表授权、不进入 RPA 时改用 `fetch-metadata`（仍写入同一类目录；只产生 `source-data/gateway-response.json` 与 `run-summary.json`，状态 `metadata_ready`）。仅当状态为 `analysis_pending` 才继续 AI。
 

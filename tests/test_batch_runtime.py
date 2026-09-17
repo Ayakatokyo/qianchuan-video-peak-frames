@@ -135,6 +135,39 @@ class BatchLockTests(unittest.TestCase):
 
         self.assertTrue(raised.exception.stale)
 
+    def test_reclaim_stale_lock_replaces_dead_owner(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lock_path = root / ".batch-run.lock"
+            manifest_path = root / "batch-manifest.json"
+            lock_path.write_text(
+                json.dumps(
+                    {
+                        "runId": "old-run",
+                        "pid": 99999999,
+                        "hostname": socket.gethostname(),
+                        "processStart": "old-start",
+                        "manifestPath": str(manifest_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            lock = acquire_run_lock(
+                lock_path,
+                manifest_path,
+                run_id="recovered-run",
+                reclaim_stale=True,
+            )
+            try:
+                current = json.loads(lock_path.read_text(encoding="utf-8"))
+                self.assertEqual(current["runId"], "recovered-run")
+                self.assertEqual(current["pid"], os.getpid())
+            finally:
+                lock.release()
+
+        self.assertFalse(lock_path.exists())
+
 
 class ReportReadyTests(unittest.TestCase):
     def _write_report(self, root, *, run_id="run-1", html=None, data=None):

@@ -23,8 +23,10 @@ from batch_runtime import (
     acquire_run_lock,
     mark_report_ready,
     read_json,
+    run_lock_state,
     write_json_atomically,
 )
+from repair_manifest import repair_batch as repair_retained_batch
 from top_material_roi_lib import write_top_material_roi_facts
 from top_material_roi_lib import build_top_material_roi_payload
 
@@ -85,13 +87,16 @@ def workflow_lock_path(request, output_dir, shop_id):
     )
 
 
-def acquire_workflow_lock(request, output_dir, shop_id=None):
+def acquire_workflow_lock(
+    request, output_dir, shop_id=None, *, reclaim_stale=False
+):
     resolved_shop_id = request.shop_id if shop_id is None else shop_id
     paths = workflow_paths(output_dir)
     try:
         return acquire_run_lock(
             workflow_lock_path(request, output_dir, resolved_shop_id),
             paths["summary"],
+            reclaim_stale=reclaim_stale,
         )
     except BatchLockError as exc:
         raise WorkflowLockError("workflow", f"workflow already running: {exc}") from exc
@@ -209,6 +214,7 @@ def standard_run_status(output_dir):
         stage_counts = {}
 
     lock = None
+    workflow_lock_state = "missing"
     summary_path = str(paths["summary"].resolve())
     lock_root = paths["root"].parent / ".qianchuan-workflow-locks"
     if lock_root.is_dir():
@@ -219,12 +225,45 @@ def standard_run_status(output_dir):
             manifest_path = payload.get("manifestPath")
             if manifest_path and str(Path(manifest_path).resolve()) == summary_path:
                 lock = payload
+                workflow_lock_state, _payload = run_lock_state(lock_path)
                 break
 
+    batch_lock_path = paths["peak_frames"] / ".batch-run.lock"
+    batch_lock_state, batch_lock = run_lock_state(batch_lock_path)
+    observed_lock_state = (
+        "active"
+        if "active" in {workflow_lock_state, batch_lock_state}
+        else workflow_lock_state
+        if workflow_lock_state != "missing"
+        else batch_lock_state
+    )
+    persisted_status = summary.get("status", "not_started")
+    workflow_status = (
+        "interrupted"
+        if persisted_status == "running" and observed_lock_state != "active"
+        else persisted_status
+    )
+    progress_path = paths["peak_frames"] / "batch-progress.jsonl"
+    last_progress = None
+    if progress_path.is_file():
+        try:
+            lines = [line for line in progress_path.read_text(encoding="utf-8").splitlines() if line]
+            if lines:
+                last_progress = json.loads(lines[-1])
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            last_progress = None
+
     return {
-        "workflowStatus": summary.get("status", "not_started"),
+        "workflowStatus": workflow_status,
+        "persistedWorkflowStatus": persisted_status,
         "activeStage": summary.get("activeStage"),
-        "lock": lock,
+        "lock": lock or batch_lock,
+        "lockState": observed_lock_state,
+        "workflowLockState": workflow_lock_state,
+        "batchLockState": batch_lock_state,
+        "recoveryRequired": workflow_status == "interrupted",
+        "progressLog": str(progress_path) if progress_path.is_file() else None,
+        "lastProgress": last_progress,
         "rpaRequestCount": stage_counts.get("rpaRequestCount", 0),
         "rpaAcceptedCount": stage_counts.get("rpaAcceptedCount", 0),
         "rpaSelectedCount": stage_counts.get("rpaSelectedCount", 0),
@@ -360,6 +399,107 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
     except Exception as exc:
         _write_failure(request, paths, "facts", str(exc))
         raise StandardWorkflowError("facts", str(exc)) from exc
+
+
+def resume_standard_run(
+    request,
+    output_dir,
+    *,
+    extract_main=extract_peak_frames.main,
+    repair_batch=repair_retained_batch,
+    prepare_facts=prepare_diagnostic_analysis,
+):
+    """Resume an interrupted standard run without repeating report selection."""
+    paths = workflow_paths(output_dir)
+    recovery_started = False
+    try:
+        _validate_request(request)
+        expected_request = _summary(request, paths, status="")["request"]
+        old = read_json(paths["summary"])
+        if not isinstance(old, dict) or old.get("request") != expected_request:
+            raise StandardWorkflowError(
+                "recovery", "saved run request does not match resume parameters"
+            )
+        if old.get("status") in {"analysis_pending", "complete"}:
+            raise StandardWorkflowError(
+                "recovery", f"run is already {old.get('status')}; collection resume is not needed"
+            )
+        if not paths["top_materials"].is_file():
+            raise StandardWorkflowError(
+                "recovery", "top_materials.json is missing; interrupted selection cannot be resumed"
+            )
+        batch_state, _batch_lock = run_lock_state(
+            paths["peak_frames"] / ".batch-run.lock"
+        )
+        if batch_state == "active":
+            raise StandardWorkflowError(
+                "recovery", "diagnosis batch is still active; do not start another resume"
+            )
+
+        candidate_top_n = request.top_n * 3
+        with acquire_workflow_lock(request, output_dir, reclaim_stale=True):
+            recovery_started = True
+            _write_running(request, paths, "recovery")
+            repair_batch(
+                paths["peak_frames"],
+                diagnosis_records_dir=paths["records"],
+                diagnosis_csv_dir=paths["root"] / "diagnosis-csv",
+                top_materials_json=paths["top_materials"],
+            )
+            batch_arguments = [
+                "--source", "rpa",
+                "--top-materials-json", str(paths["top_materials"]),
+                "--target-top-n", str(request.top_n),
+                "--candidate-top-n", str(candidate_top_n),
+                "--params-json", json.dumps({
+                    "date_type": "CUSTOM",
+                    "custom_start_date": request.start_date,
+                    "custom_end_date": request.end_date,
+                }, ensure_ascii=False, separators=(",", ":")),
+                "--diagnosis-records-dir", str(paths["records"]),
+                "--output-dir", str(paths["peak_frames"]),
+            ]
+            _write_running(request, paths, "diagnosis_batch")
+            _run_stage("diagnosis_batch", extract_main, [*batch_arguments, "--resume"])
+            _write_running(request, paths, "verification")
+            _run_stage("verification", extract_main, [*batch_arguments, "--verify"])
+            _write_running(request, paths, "facts")
+            validate_ready_materials(paths, request.top_n)
+            write_top_material_roi_facts(
+                paths["asset_facts"],
+                paths["peak_frames"] / READY_MATERIALS_NAME,
+                paths["top_material_roi_facts"],
+            )
+            prompt_path, _analysis = prepare_facts(
+                top_materials_json=paths["peak_frames"] / READY_MATERIALS_NAME,
+                diagnosis_records_dir=paths["records"],
+                peak_output_dir=paths["peak_frames"],
+                top_material_roi_facts_path=paths["top_material_roi_facts"],
+                output_dir=paths["analysis"],
+            )
+            if prepare_facts is prepare_diagnostic_analysis:
+                start_frame_review(paths["analysis"])
+            summary = _summary(
+                request,
+                paths,
+                status="analysis_pending",
+                diagnostic_prompt=prompt_path,
+                analysis_unit_manifest=(
+                    paths["analysis"] / "analysis-units" / "analysis-unit-manifest.json"
+                ),
+            )
+            write_run_summary(paths["summary"], summary)
+            return summary
+    except WorkflowLockError:
+        raise
+    except StandardWorkflowError as exc:
+        if recovery_started:
+            _write_failure(request, paths, exc.stage, str(exc), status="interrupted")
+        raise
+    except Exception as exc:
+        if recovery_started:
+            _write_failure(request, paths, "recovery", str(exc), status="interrupted")
+        raise StandardWorkflowError("recovery", str(exc)) from exc
 
 
 def fetch_report_metadata(

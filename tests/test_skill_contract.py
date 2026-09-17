@@ -51,17 +51,25 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
             self.assertIn(f"__field:{field}__", skill)
             self.assertIn(f"- key: {field}", metadata)
 
-    def test_skill_documents_only_the_standard_prepare_and_finalize_commands(self):
+    def test_skill_documents_standard_prepare_resume_and_finalize_commands(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
         self.assertIn("run_standard_analysis.py prepare", skill)
+        self.assertIn("run_standard_analysis.py resume", skill)
         self.assertIn("run_standard_analysis.py validate-analysis", skill)
         self.assertIn("run_standard_analysis.py finalize", skill)
         self.assertNotIn("python scripts/export_top_materials.py", skill)
         self.assertNotIn("python scripts/extract_peak_frames.py", skill)
         self.assertNotIn("repair_manifest.py", skill)
         self.assertNotIn("--rpa-concurrency", skill)
-        self.assertNotIn("--resume", skill)
+        self.assertIn("batch-progress.jsonl", skill)
+
+    def test_runbook_bounds_polling_and_avoids_command_line_secret_echo(self):
+        runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("workflowStatus=interrupted", runbook)
+        self.assertIn("不超过 60 秒", runbook)
+        self.assertIn("不得使用 `pgrep -af`", runbook)
 
     def test_skill_uses_qianchuan_resource_directory_for_new_standard_runs(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")

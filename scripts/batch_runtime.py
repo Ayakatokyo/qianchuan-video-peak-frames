@@ -350,6 +350,22 @@ def _pid_is_alive(pid, hostname, process_start=None):
     return True
 
 
+def run_lock_state(path):
+    """Return the persisted lock payload and its observed owner state."""
+    lock_path = Path(path)
+    if not lock_path.exists():
+        return "missing", None
+    payload = read_json(lock_path)
+    if not isinstance(payload, dict):
+        return "invalid", None
+    alive = _pid_is_alive(
+        payload.get("pid"),
+        payload.get("hostname"),
+        payload.get("processStart"),
+    )
+    return ("active" if alive else "stale"), payload
+
+
 class BatchRunLock:
     def __init__(self, path, payload):
         self.path = Path(path)
@@ -374,30 +390,41 @@ class BatchRunLock:
         self.release()
 
 
-def acquire_run_lock(path, manifest_path, run_id=None):
+def acquire_run_lock(path, manifest_path, run_id=None, *, reclaim_stale=False):
     lock_path = Path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     payload = lock_payload(run_id or new_run_id(), manifest_path)
     encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-    try:
-        descriptor = os.open(
-            lock_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            0o644,
-        )
-    except FileExistsError as exc:
-        existing = read_json(lock_path) or {}
-        stale = not _pid_is_alive(
-            existing.get("pid"),
-            existing.get("hostname"),
-            existing.get("processStart"),
-        )
-        state = "stale" if stale else "active"
+    descriptor = None
+    for _attempt in range(2):
+        try:
+            descriptor = os.open(
+                lock_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o644,
+            )
+            break
+        except FileExistsError as exc:
+            state, existing = run_lock_state(lock_path)
+            stale = state in {"stale", "invalid"}
+            if stale and reclaim_stale:
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            raise BatchLockError(
+                f"batch run lock is {state}: {lock_path}",
+                stale=stale,
+                payload=existing or {},
+            ) from exc
+    if descriptor is None:
+        state, existing = run_lock_state(lock_path)
         raise BatchLockError(
             f"batch run lock is {state}: {lock_path}",
-            stale=stale,
-            payload=existing,
-        ) from exc
+            stale=state in {"stale", "invalid"},
+            payload=existing or {},
+        )
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(encoded)

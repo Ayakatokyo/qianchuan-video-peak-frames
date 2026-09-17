@@ -40,6 +40,14 @@ def build_parser():
     prepare.add_argument("--shop-id", required=True)
     prepare.add_argument("--output-dir", required=True)
 
+    resume = commands.add_parser("resume", help="Resume an interrupted standard run")
+    resume.add_argument("--start-date", required=True)
+    resume.add_argument("--end-date", required=True)
+    resume.add_argument("--top-n", required=True, type=_positive_int)
+    resume.add_argument("--advertiser-id", required=True)
+    resume.add_argument("--shop-id", required=True)
+    resume.add_argument("--output-dir", required=True)
+
     local = commands.add_parser("prepare-local", parents=[], help="Build missing facts from landed data only")
     local.add_argument("--start-date", required=True)
     local.add_argument("--end-date", required=True)
@@ -137,8 +145,13 @@ def main(argv=None):
         else:
             ensure_prepare_dependencies()
         workflow = _load_workflow()
-        if args.command in {"prepare", "prepare-local"}:
-            prepare_run = workflow.prepare_local_run if args.command == "prepare-local" else workflow.prepare_standard_run
+        if args.command in {"prepare", "prepare-local", "resume"}:
+            if args.command == "prepare":
+                prepare_run = workflow.prepare_standard_run
+            elif args.command == "prepare-local":
+                prepare_run = workflow.prepare_local_run
+            else:
+                prepare_run = workflow.resume_standard_run
             summary = prepare_run(
                 workflow.WorkflowRequest(
                     start_date=args.start_date,

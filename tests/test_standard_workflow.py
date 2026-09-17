@@ -415,13 +415,95 @@ class StandardWorkflowTests(unittest.TestCase):
 
             status = standard_workflow.standard_run_status(root)
 
-            self.assertEqual(status["workflowStatus"], "running")
+            self.assertEqual(status["workflowStatus"], "interrupted")
+            self.assertEqual(status["persistedWorkflowStatus"], "running")
+            self.assertEqual(status["lockState"], "missing")
+            self.assertTrue(status["recoveryRequired"])
             self.assertEqual(status["activeStage"], "diagnosis_batch")
             self.assertEqual(status["rpaAcceptedCount"], 2)
             self.assertEqual(status["postprocessSucceededCount"], 1)
             self.assertEqual(status["reportReadyCount"], 0)
             self.assertIsNone(status["lock"])
             self.assertEqual(before, (summary_path.read_bytes(), manifest_path.read_bytes()))
+
+    def test_resume_repairs_retained_data_and_skips_report_selection(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.write_asset_facts(root)
+            (root / "top_materials.json").write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}, {"materialId": "m-2"}]}),
+                encoding="utf-8",
+            )
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "running",
+                    "activeStage": "diagnosis_batch",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            def repair_batch(peak_dir, **kwargs):
+                calls.append(("repair", peak_dir, kwargs))
+                return {"valid": True, "rpaCalls": 0}
+
+            def extract_main(argv):
+                calls.append(("verification" if "--verify" in argv else "resume", argv))
+                if "--verify" in argv:
+                    self.write_complete_ready_data(root)
+                return 0
+
+            def prepare_facts(**kwargs):
+                calls.append(("facts", kwargs))
+                return root / "diagnostic-analysis" / "diagnostic-analysis-prompt.md", {}
+
+            summary = standard_workflow.resume_standard_run(
+                self.request(),
+                root,
+                extract_main=extract_main,
+                repair_batch=repair_batch,
+                prepare_facts=prepare_facts,
+            )
+
+        self.assertEqual(summary["status"], "analysis_pending")
+        self.assertEqual([item[0] for item in calls], ["repair", "resume", "verification", "facts"])
+        self.assertIn("--resume", calls[1][1])
+        self.assertNotIn("--resume", calls[2][1])
+        self.assertEqual(calls[0][2]["diagnosis_records_dir"], root / "diagnosis-records")
+
+    def test_resume_request_mismatch_preserves_existing_run_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            summary_path = root / "run-summary.json"
+            original = {
+                "schemaVersion": 2,
+                "status": "running",
+                "activeStage": "diagnosis_batch",
+                "request": self.request_payload(),
+                "artifacts": {"topMaterials": "top_materials.json"},
+                "failure": None,
+            }
+            standard_workflow.write_run_summary(summary_path, original)
+            mismatched = standard_workflow.WorkflowRequest(
+                start_date="2026-07-19",
+                end_date="2026-07-25",
+                top_n=2,
+                advertiser_id="1770096415226951",
+                shop_id="different-shop",
+            )
+
+            with self.assertRaisesRegex(
+                standard_workflow.StandardWorkflowError, "does not match"
+            ):
+                standard_workflow.resume_standard_run(mismatched, root)
+
+            persisted = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(persisted, original)
 
     def test_prepare_records_request_failure_for_non_request_input(self):
         export_calls = []
@@ -816,6 +898,21 @@ class StandardWorkflowCliTests(unittest.TestCase):
         self.assertEqual(args.command, "prepare")
         self.assertFalse(hasattr(args, "rpa_concurrency"))
         self.assertFalse(hasattr(args, "resume"))
+
+    def test_resume_parser_accepts_business_inputs_as_a_distinct_command(self):
+        parser = run_standard_analysis.build_parser()
+        args = parser.parse_args([
+            "resume",
+            "--start-date", "2026-07-19",
+            "--end-date", "2026-07-25",
+            "--top-n", "9",
+            "--advertiser-id", "1770096415226951",
+            "--shop-id", "shop-1",
+            "--output-dir", "run",
+        ])
+
+        self.assertEqual(args.command, "resume")
+        self.assertFalse(hasattr(args, "rpa_concurrency"))
 
     def test_prepare_reports_dependency_bootstrap_failures(self):
         stderr = io.StringIO()

@@ -125,6 +125,7 @@ def run_wave_batch(
     elapsed,
     accounted_indices,
     ordered,
+    write_progress=None,
     clock=time.perf_counter,
     poll_interval_sec=0.1,
     is_interrupted=None,
@@ -183,6 +184,8 @@ def run_wave_batch(
         if interruption is not None:
             manifest["interruption"] = interruption
         write_json(manifest_path, manifest)
+        if callable(write_progress):
+            write_progress(manifest)
         return manifest
 
     def checkpoint_interruption():
