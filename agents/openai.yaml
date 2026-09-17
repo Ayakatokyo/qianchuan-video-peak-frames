@@ -1,4 +1,4 @@
 interface:
-  display_name: "千川短视频素材分析"
+  display_name: "千川投放素材诊断"
   short_description: "生成千川短视频投放复盘与素材洞察报告"
-  default_prompt: "使用 $千川短视频素材分析，授权店铺 ID 是 ____，分析周期是 ____，Top素材数量是 ____，广告主id是 ____。"
+  default_prompt: "使用 $千川投放素材诊断，授权店铺 ID 是 ____，广告主 ID 是 ____，时间范围是 ____，详情素材数是 ____。"

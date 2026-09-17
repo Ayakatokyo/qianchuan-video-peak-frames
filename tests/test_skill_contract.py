@@ -8,6 +8,7 @@ RUNBOOK_PATH = ROOT / "references" / "qianchuan-operations-runbook.md"
 RPA_CONTRACT_PATH = ROOT / "references" / "rpa-output-contract.md"
 DIAGNOSTIC_PROMPT_PATH = ROOT / "prompts" / "diagnostic-analysis-prompt-v1.md"
 OPENAI_CONFIG_PATH = ROOT / "agents" / "openai.yaml"
+METADATA_PATH = ROOT / "metadata.yaml"
 
 
 class StandardWorkflowSkillContractTests(unittest.TestCase):
@@ -41,14 +42,14 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
 
     def test_entry_prompt_requests_the_three_business_conditions(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
+        metadata = METADATA_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("name: 千川短视频素材分析", skill)
-        self.assertIn("分析周期", skill)
-        self.assertIn("Top素材数量", skill)
-        self.assertIn("广告主id", skill)
-        self.assertIn("分析周期是 ____", skill)
-        self.assertIn("Top素材数量是 ____", skill)
-        self.assertIn("广告主id是 ____", skill)
+        self.assertIn("name: 千川投放素材诊断", skill)
+        self.assertIn("时间范围", skill)
+        self.assertIn("详情素材数", skill)
+        for field in ("shop_id", "advertiser_id", "date_range", "top_n"):
+            self.assertIn(f"__field:{field}__", skill)
+            self.assertIn(f"- key: {field}", metadata)
 
     def test_skill_documents_only_the_standard_prepare_and_finalize_commands(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -406,9 +407,9 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
     def test_entry_prompt_matches_report_workflow(self):
         prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('display_name: "千川短视频素材分析"', prompt)
-        self.assertIn("$千川短视频素材分析", prompt)
-        self.assertIn("分析周期是 ____", prompt)
+        self.assertIn('display_name: "千川投放素材诊断"', prompt)
+        self.assertIn("$千川投放素材诊断", prompt)
+        self.assertIn("时间范围是 ____", prompt)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,68 @@
+short-description: "采集千川短视频投放素材并生成包含高光帧、脚本与人群事实的分析报告"
+tags:
+  - 千川
+  - 短视频素材
+  - 素材分析
+  - 高光帧
+compatibility:
+  - data-analysis
+  - python
+  - html-report
+requires:
+  env:
+    - ENV_BACKEND_HOST
+    - YUCE_AUTHORIZATION
+    - YUCE_SESSION_ID
+    - YCSESSIONID
+market:
+  title: "千川投放素材诊断"
+  summary: "按授权店铺、广告主和日期范围采集千川短视频素材，完成秒级诊断、高光帧与可审计的素材分析报告。"
+  category:
+    key: short_video_content
+    label: 短视频内容
+  badges:
+    - label: 千川
+      tone: blue
+    - label: 素材分析
+      tone: green
+    - label: 高光帧
+      tone: orange
+  examples:
+    - title: 千川素材分析
+      prompt: "按授权店铺、广告主和日期范围分析 Top 千川短视频素材"
+    - title: 高光帧复盘
+      prompt: "采集千川素材详情并生成带高光帧的投放复盘报告"
+skill_form:
+  - key: shop_id
+    type: input
+    label: 授权店铺 ID
+    description: 魔方授权店铺 ID；用于关联千川投放数据与素材诊断结果
+    placeholder: "请输入魔方授权店铺 ID"
+    required: true
+  - key: advertiser_id
+    type: input
+    label: 广告主 ID
+    description: 用于千川报表业务筛选的广告主 ID，仅填写数字
+    placeholder: "请输入数字广告主 ID"
+    pattern: '^\d+$'
+    pattern_message: 广告主 ID 只能包含数字
+    required: true
+  - key: date_range
+    type: daterange
+    label: 时间范围
+    description: 对应起止日期，日期格式为 YYYY-MM-DD；不含执行日和前一日
+    placeholder: "开始日期,结束日期"
+    format: YYYY-MM-DD
+    value_format: YYYY-MM-DD
+    max_policy: t_plus_2
+    required: true
+  - key: top_n
+    type: number
+    label: 详情素材数
+    description: 需要获取互动时序、人群、脚本和可选高光帧详情的素材数量
+    required: true
+    default: 10
+    min: 1
+    step: 1
+    precision: 0
+    addon_after: 条
