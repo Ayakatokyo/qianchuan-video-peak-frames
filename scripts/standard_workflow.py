@@ -42,6 +42,7 @@ class WorkflowRequest:
     top_n: int | None
     advertiser_id: str
     shop_id: str
+    rpa_shop_id: str | None = None
 
 
 class StandardWorkflowError(RuntimeError):
@@ -77,6 +78,7 @@ def _workflow_request_key(request, shop_id):
         "endDate": request.end_date,
         "topN": request.top_n,
         "shopId": shop_id,
+        "rpaShopId": request.rpa_shop_id,
     }, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -142,6 +144,8 @@ def _summary(request, paths, *, status, diagnostic_prompt=None,
         "advertiserId": request.advertiser_id,
         "shopId": request.shop_id,
     } if isinstance(request, WorkflowRequest) else None
+    if request_summary is not None and request.rpa_shop_id:
+        request_summary["rpaShopId"] = request.rpa_shop_id
     return {
         "schemaVersion": 2,
         "status": status,
@@ -358,6 +362,8 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 "--diagnosis-records-dir", str(paths["records"]),
                 "--output-dir", str(paths["peak_frames"]),
             ]
+            if request.rpa_shop_id:
+                batch_arguments.extend(["--shop-id", request.rpa_shop_id])
             _write_running(request, paths, "diagnosis_batch")
             _run_stage("diagnosis_batch", extract_main, batch_arguments)
             _write_running(request, paths, "verification")
@@ -459,6 +465,8 @@ def resume_standard_run(
                 "--diagnosis-records-dir", str(paths["records"]),
                 "--output-dir", str(paths["peak_frames"]),
             ]
+            if request.rpa_shop_id:
+                batch_arguments.extend(["--shop-id", request.rpa_shop_id])
             _write_running(request, paths, "diagnosis_batch")
             _run_stage("diagnosis_batch", extract_main, [*batch_arguments, "--resume"])
             _write_running(request, paths, "verification")

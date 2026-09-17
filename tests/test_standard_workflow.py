@@ -296,6 +296,41 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertEqual(selection_argv[selection_argv.index("--shop-id") + 1], "shop-1")
         self.assertNotIn("--shop-id", batch_argv)
 
+    def test_prepare_passes_selected_rpa_shop_id_without_comparing_id_domains(self):
+        selection_argv = []
+        batch_argv = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.write_complete_ready_data(root)
+
+            def export_main(argv):
+                selection_argv.extend(argv)
+                return 0
+
+            def extract_main(argv):
+                if "--verify" not in argv:
+                    batch_argv.extend(argv)
+                return 0
+
+            request = standard_workflow.WorkflowRequest(
+                start_date="2026-07-19",
+                end_date="2026-07-25",
+                top_n=2,
+                advertiser_id="1770096415226951",
+                shop_id="4456758065503561",
+                rpa_shop_id="408IGuUKaf",
+            )
+            summary = standard_workflow.prepare_standard_run(
+                request, root,
+                export_main=export_main,
+                extract_main=extract_main,
+                prepare_facts=lambda **_kwargs: (root / "prompt.md", {}),
+            )
+
+        self.assertEqual(selection_argv[selection_argv.index("--shop-id") + 1], "4456758065503561")
+        self.assertEqual(batch_argv[batch_argv.index("--shop-id") + 1], "408IGuUKaf")
+        self.assertEqual(summary["request"]["rpaShopId"], "408IGuUKaf")
+
     def test_fetch_metadata_writes_metadata_ready_summary_without_rpa(self):
         calls = []
         with tempfile.TemporaryDirectory() as temp_dir:

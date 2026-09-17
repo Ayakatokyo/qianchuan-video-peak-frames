@@ -37,7 +37,8 @@ def build_parser():
     prepare.add_argument("--end-date", required=True)
     prepare.add_argument("--top-n", required=True, type=_positive_int)
     prepare.add_argument("--advertiser-id", required=True)
-    prepare.add_argument("--shop-id", required=True)
+    prepare.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
+    prepare.add_argument("--rpa-shop-id", help="rpa_shop 的素材诊断授权账号 ID")
     prepare.add_argument("--output-dir", required=True)
 
     resume = commands.add_parser("resume", help="Resume an interrupted standard run")
@@ -45,7 +46,8 @@ def build_parser():
     resume.add_argument("--end-date", required=True)
     resume.add_argument("--top-n", required=True, type=_positive_int)
     resume.add_argument("--advertiser-id", required=True)
-    resume.add_argument("--shop-id", required=True)
+    resume.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
+    resume.add_argument("--rpa-shop-id", help="rpa_shop 的素材诊断授权账号 ID")
     resume.add_argument("--output-dir", required=True)
 
     local = commands.add_parser("prepare-local", parents=[], help="Build missing facts from landed data only")
@@ -53,7 +55,8 @@ def build_parser():
     local.add_argument("--end-date", required=True)
     local.add_argument("--top-n", required=True, type=_positive_int)
     local.add_argument("--advertiser-id", required=True)
-    local.add_argument("--shop-id", required=True)
+    local.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
+    local.add_argument("--rpa-shop-id", help="rpa_shop 的素材诊断授权账号 ID")
     local.add_argument("--output-dir", required=True)
 
     assemble = commands.add_parser("assemble-analysis")
@@ -88,7 +91,7 @@ def build_parser():
     metadata.add_argument("--start-date", required=True)
     metadata.add_argument("--end-date", required=True)
     metadata.add_argument("--advertiser-id", required=True)
-    metadata.add_argument("--shop-id", required=True)
+    metadata.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
     metadata.add_argument("--output-dir", required=True)
 
     finalize = commands.add_parser("finalize")
@@ -159,6 +162,7 @@ def main(argv=None):
                     top_n=args.top_n,
                     advertiser_id=args.advertiser_id,
                     shop_id=args.shop_id,
+                    rpa_shop_id=args.rpa_shop_id,
                 ),
                 args.output_dir,
             )

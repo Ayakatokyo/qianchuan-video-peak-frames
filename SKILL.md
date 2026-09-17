@@ -2,25 +2,28 @@
 name: 千川投放素材诊断
 description: 面向千川短视频投放复盘，识别高消耗素材的表现亮点、内容结构、转化触发点和可复用创意模式。
 metadata:
-  argument_hint: 输入授权店铺 ID、广告主 ID、时间范围和详情素材数，生成千川投放素材诊断报告。
+  argument_hint: 依次选择报表授权店铺、该店铺下的投放广告主及同一投放主体的素材诊断授权账号，输入时间范围和详情素材数，生成千川投放素材诊断报告。
   pre_input: |
     请采集千川素材及相关诊断数据
-    授权店铺 ID：__field:shop_id__（必填，魔方授权店铺）
-    广告主 ID：__field:advertiser_id__（必填，店铺下的子账号）
+    千川授权店铺：__field:api_shop__（必填）
+    千川广告主（数字）：__field:advertiser_id__（必填，店铺下广告主ID）
+    千川广告主（邮箱）：__field:rpa_shop__（必填；请确认该邮箱账号与广告主ID为同一账号）
     时间范围：__field:date_range__
     详情素材数：__field:top_n__（包含互动时序、人群、脚本和高光帧数据，默认10）
 ---
 
 # 千川投放素材诊断
 
-收集店铺 ID、分析周期、Top 素材数量和广告主 ID。标准入口用店铺授权查询素材视频报表，再将 `materialId` 交给同店铺 RPA；候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成。每个素材的 RPA 只提交一次。
+收集报表授权店铺、该店铺下的广告主、同一投放主体的 RPA 授权账号、分析周期和 Top 素材数量。标准入口先用 API 授权店铺及广告主查询素材视频报表，再将 `materialId` 交给用户选定的 RPA 授权账号；候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成。每个素材的 RPA 只提交一次。
+
+`api_advertiser` 会按 `api_shop` 过滤广告主，二者构成同一投放主体。`api_shop.extra.shop_id`、`advertiser_id` 与 `rpa_shop.extra.shop_id` 属于不同 ID 域，格式可以不同，**不得比较是否相等**；客户须选择与该广告主同一投放主体的 RPA 授权账号。执行前仅校验所选 RPA ID 仍出现在当前 `RPA_JULIANG_QC` 授权列表中；不在列表则停止，不提交后续 RPA 任务。
 
 ## 约束
 
 - **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向各 2–3 条。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不默认合成单一混合类或各写一条。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
 
 - **环境**：执行 `prepare`、`fetch-metadata`、`status` 或 `finalize` 前确认当前解释器有 `requests`、`imageio-ffmpeg`、`jsonschema`；缺失则安装，失败即停，不发起任何请求。`prepare` 也会再次执行该门禁。
-- **授权**：`--shop-id` 只用于报表连接器；RPA 使用授权账户中的唯一千川 ID。无授权或多账户先处理授权选择，不重复提交素材诊断。
+- **授权**：`--shop-id` 只用于报表连接器；`--rpa-shop-id` 只使用表单 `rpa_shop` 所选的千川 RPA ID。运行时必须在当前授权列表中验证该 ID；无授权或所选 ID 不在列表时停止，不重复提交素材诊断。
 - **单 Agent 执行边界**：主 Agent 直接执行全流程，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。
 - **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
 - **长任务**：`prepare` 是单一长任务；无实时进度不要另起运行或手工干预。进度同时写入 `peak-frames/batch-manifest.json` 与紧凑的 `peak-frames/batch-progress.jsonl`。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复先查询已保存远端 ID，**不得重复提交**。
@@ -47,7 +50,8 @@ metadata:
 
 ```bash
 python scripts/run_standard_analysis.py prepare \
-  --shop-id "<授权店铺 ID>" --start-date 2026-07-19 --end-date 2026-07-25 \
+  --shop-id "<api_shop.extra.shop_id>" --rpa-shop-id "<rpa_shop.extra.shop_id>" \
+  --start-date 2026-07-19 --end-date 2026-07-25 \
   --top-n 9 --advertiser-id "1770096415226951" \
   --output-dir "$PWD/千川数据资源/<run-id>"
 python scripts/run_standard_analysis.py status --output-dir "$PWD/千川数据资源/<run-id>"
@@ -57,7 +61,8 @@ python scripts/run_standard_analysis.py status --output-dir "$PWD/千川数据�
 
 ```bash
 python scripts/run_standard_analysis.py resume \
-  --shop-id "<授权店铺 ID>" --start-date 2026-07-19 --end-date 2026-07-25 \
+  --shop-id "<api_shop.extra.shop_id>" --rpa-shop-id "<rpa_shop.extra.shop_id>" \
+  --start-date 2026-07-19 --end-date 2026-07-25 \
   --top-n 9 --advertiser-id "1770096415226951" \
   --output-dir "$PWD/千川数据资源/<run-id>"
 ```

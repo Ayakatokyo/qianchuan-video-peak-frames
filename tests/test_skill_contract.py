@@ -47,9 +47,16 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("name: 千川投放素材诊断", skill)
         self.assertIn("时间范围", skill)
         self.assertIn("详情素材数", skill)
-        for field in ("shop_id", "advertiser_id", "date_range", "top_n"):
+        for field in ("api_shop", "advertiser_id", "rpa_shop", "date_range", "top_n"):
             self.assertIn(f"__field:{field}__", skill)
             self.assertIn(f"- key: {field}", metadata)
+
+    def test_advertiser_selector_follows_the_api_shop(self):
+        metadata = METADATA_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("- key: advertiser_id\n    type: api_advertiser", metadata)
+        self.assertIn("shop_field: api_shop", metadata)
+        self.assertIn("同一投放主体", metadata)
 
     def test_skill_documents_standard_prepare_resume_and_finalize_commands(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
