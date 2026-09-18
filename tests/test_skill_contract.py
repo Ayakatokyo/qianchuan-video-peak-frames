@@ -44,9 +44,11 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         metadata = METADATA_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("name: 千川投放素材诊断", skill)
+        self.assertIn("name: 千川投放素材全景分析", skill)
         self.assertIn("时间范围", skill)
         self.assertIn("详情素材数", skill)
+        self.assertIn("千川广告主（ID）", skill)
+        self.assertNotIn("千川广告主（数字）", skill)
         for field in ("api_shop", "advertiser_id", "rpa_shop", "date_range", "top_n"):
             self.assertIn(f"__field:{field}__", skill)
             self.assertIn(f"- key: {field}", metadata)
@@ -55,6 +57,14 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         metadata = METADATA_PATH.read_text(encoding="utf-8")
 
         self.assertIn("- key: advertiser_id\n    type: api_advertiser", metadata)
+        self.assertIn(
+            "- key: advertiser_id\n"
+            "    type: api_advertiser\n"
+            "    label: 千川广告主（ID）\n"
+            "    description: 先选择报表授权店铺，再从该店铺的已授权广告主中选择；用于第一步素材报表查询\n"
+            "    application_id: OCEANENGINE",
+            metadata,
+        )
         self.assertIn("shop_field: api_shop", metadata)
         self.assertIn("同一投放主体", metadata)
 
@@ -422,8 +432,8 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
     def test_entry_prompt_matches_report_workflow(self):
         prompt = OPENAI_CONFIG_PATH.read_text(encoding="utf-8")
 
-        self.assertIn('display_name: "千川投放素材诊断"', prompt)
-        self.assertIn("$千川投放素材诊断", prompt)
+        self.assertIn('display_name: "千川投放素材全景分析"', prompt)
+        self.assertIn("$千川投放素材全景分析", prompt)
         self.assertIn("时间范围是 ____", prompt)
 
 

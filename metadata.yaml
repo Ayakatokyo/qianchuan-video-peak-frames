@@ -15,8 +15,8 @@ requires:
     - YUCE_SESSION_ID
     - YCSESSIONID
 market:
-  title: "千川投放素材诊断"
-  summary: "按授权店铺、广告主和日期范围采集千川短视频素材，完成秒级诊断、高光帧与可审计的素材分析报告。"
+  title: "千川投放素材全景分析"
+  summary: "按授权店铺、广告主和日期范围采集千川短视频素材，完成秒级拆解、高光帧提取与可审计的全景分析报告。"
   category:
     key: short_video_content
     label: 短视频内容
@@ -42,8 +42,9 @@ skill_form:
     required: true
   - key: advertiser_id
     type: api_advertiser
-    label: 千川广告主
+    label: 千川广告主（ID）
     description: 先选择报表授权店铺，再从该店铺的已授权广告主中选择；用于第一步素材报表查询
+    application_id: OCEANENGINE
     shop_field: api_shop
     required: true
   - key: rpa_shop
