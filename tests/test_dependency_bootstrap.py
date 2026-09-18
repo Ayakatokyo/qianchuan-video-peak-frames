@@ -16,22 +16,31 @@ class DependencyBootstrapTests(unittest.TestCase):
         with patch.object(
             dependency_bootstrap.importlib.util,
             "find_spec",
-            side_effect=lambda name: object()
-            if name in {"requests", "imageio_ffmpeg", "jsonschema"}
-            else None,
+            side_effect=lambda _name: object(),
         ), patch.object(dependency_bootstrap.subprocess, "run") as run:
             dependency_bootstrap.ensure_prepare_dependencies()
 
         run.assert_not_called()
 
     def test_installs_requirements_with_current_python_when_dependency_is_missing(self):
-        completed = dependency_bootstrap.subprocess.CompletedProcess([], 0, "", "")
+        installed = False
+
+        def find_spec(name):
+            if name == "imageio_ffmpeg" and not installed:
+                return None
+            return object()
+
+        def install(*_args, **_kwargs):
+            nonlocal installed
+            installed = True
+            return dependency_bootstrap.subprocess.CompletedProcess([], 0, "", "")
+
         with patch.object(
             dependency_bootstrap.importlib.util,
             "find_spec",
-            side_effect=[object(), None, object(), object(), object(), object()],
+            side_effect=find_spec,
         ), patch.object(dependency_bootstrap.shutil, "which", return_value="/usr/local/bin/uv"), patch.object(
-            dependency_bootstrap.subprocess, "run", return_value=completed
+            dependency_bootstrap.subprocess, "run", side_effect=install
         ) as run:
             dependency_bootstrap.ensure_prepare_dependencies()
 
@@ -50,13 +59,40 @@ class DependencyBootstrapTests(unittest.TestCase):
             text=True,
         )
 
+    def test_installs_requirements_when_jieba_is_missing(self):
+        installed = False
+
+        def find_spec(name):
+            if name == "jieba" and not installed:
+                return None
+            return object()
+
+        def install(*_args, **_kwargs):
+            nonlocal installed
+            installed = True
+            return dependency_bootstrap.subprocess.CompletedProcess([], 0, "", "")
+
+        with patch.object(
+            dependency_bootstrap.importlib.util, "find_spec", side_effect=find_spec
+        ), patch.object(
+            dependency_bootstrap.shutil, "which", return_value="/usr/local/bin/uv"
+        ), patch.object(
+            dependency_bootstrap.subprocess, "run", side_effect=install
+        ) as run:
+            dependency_bootstrap.ensure_prepare_dependencies()
+
+        run.assert_called_once()
+
     def test_reports_missing_modules_when_uv_is_unavailable(self):
         with patch.object(dependency_bootstrap.importlib.util, "find_spec", return_value=None), patch.object(
             dependency_bootstrap.shutil, "which", return_value=None
         ), self.assertRaises(dependency_bootstrap.DependencyBootstrapError) as error:
             dependency_bootstrap.ensure_prepare_dependencies()
 
-        self.assertIn("requests, imageio-ffmpeg, jsonschema", str(error.exception))
+        self.assertIn(
+            "requests, imageio-ffmpeg, jsonschema, jieba, openpyxl, Pillow",
+            str(error.exception),
+        )
         self.assertIn("uv", str(error.exception))
 
     def test_reports_uv_failure_without_hiding_its_output(self):

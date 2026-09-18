@@ -179,6 +179,30 @@ def _summary(request, paths, *, status, diagnostic_prompt=None,
     }
 
 
+def _request_mismatch_message(saved_request, current_request, prefix):
+    if not isinstance(saved_request, dict):
+        return f"{prefix}: saved request is missing or invalid"
+    if not isinstance(current_request, dict):
+        return f"{prefix}: current request is missing or invalid"
+
+    missing = object()
+
+    def display(value):
+        if value is missing:
+            return "<missing>"
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    differences = []
+    for field in sorted(set(saved_request) | set(current_request)):
+        saved_value = saved_request.get(field, missing)
+        current_value = current_request.get(field, missing)
+        if saved_value != current_value:
+            differences.append(
+                f"{field}: saved={display(saved_value)}, current={display(current_value)}"
+            )
+    return f"{prefix}: " + "; ".join(differences)
+
+
 def _run_stage(stage, entrypoint, arguments):
     try:
         status = entrypoint(arguments)
@@ -422,9 +446,15 @@ def resume_standard_run(
         _validate_request(request)
         expected_request = _summary(request, paths, status="")["request"]
         old = read_json(paths["summary"])
-        if not isinstance(old, dict) or old.get("request") != expected_request:
+        saved_request = old.get("request") if isinstance(old, dict) else None
+        if saved_request != expected_request:
             raise StandardWorkflowError(
-                "recovery", "saved run request does not match resume parameters"
+                "recovery",
+                _request_mismatch_message(
+                    saved_request,
+                    expected_request,
+                    "saved run request does not match resume parameters",
+                ),
             )
         if old.get("status") in {"analysis_pending", "complete"}:
             raise StandardWorkflowError(
@@ -562,8 +592,14 @@ def prepare_local_run(request, output_dir):
         old = read_object(paths["summary"]) if paths["summary"].exists() else {}
         if old.get("status") in {"complete", "running"}:
             raise StandardWorkflowError("facts", "preserve this run; use an isolated copy for local recovery")
-        if old.get("request") and old["request"] != _summary(request, paths, status="")['request']:
-            raise StandardWorkflowError("facts", "request does not match saved run")
+        current_request = _summary(request, paths, status="")["request"]
+        if old.get("request") and old["request"] != current_request:
+            raise StandardWorkflowError(
+                "facts",
+                _request_mismatch_message(
+                    old["request"], current_request, "request does not match saved run"
+                ),
+            )
         ready = validate_ready_materials(paths, request.top_n)
         manifest = read_object(paths["peak_frames"] / "batch-manifest.json")
         selected = {m["materialId"]: m for m in manifest["selectedMaterials"]}

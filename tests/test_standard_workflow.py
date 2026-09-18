@@ -532,13 +532,33 @@ class StandardWorkflowTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                standard_workflow.StandardWorkflowError, "does not match"
+                standard_workflow.StandardWorkflowError,
+                'shopId: saved="shop-1", current="different-shop"',
             ):
                 standard_workflow.resume_standard_run(mismatched, root)
 
             persisted = json.loads(summary_path.read_text(encoding="utf-8"))
 
         self.assertEqual(persisted, original)
+
+    def test_prepare_local_request_mismatch_reports_missing_rpa_shop_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            original = {
+                "schemaVersion": 2,
+                "status": "failed",
+                "activeStage": "facts",
+                "request": {**self.request_payload(), "rpaShopId": "Krgt45EZVS"},
+                "artifacts": {},
+                "failure": {"stage": "facts", "message": "missing dependency"},
+            }
+            standard_workflow.write_run_summary(root / "run-summary.json", original)
+
+            with self.assertRaisesRegex(
+                standard_workflow.StandardWorkflowError,
+                'rpaShopId: saved="Krgt45EZVS", current=<missing>',
+            ):
+                standard_workflow.prepare_local_run(self.request(), root)
 
     def test_prepare_records_request_failure_for_non_request_input(self):
         export_calls = []

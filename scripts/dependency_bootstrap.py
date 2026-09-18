@@ -11,6 +11,9 @@ PREPARE_DEPENDENCIES = {
     "requests": "requests",
     "imageio_ffmpeg": "imageio-ffmpeg",
     "jsonschema": "jsonschema",
+    "jieba": "jieba",
+    "openpyxl": "openpyxl",
+    "PIL": "Pillow",
 }
 REQUIREMENTS_PATH = Path(__file__).resolve().parents[1] / "requirements.txt"
 
