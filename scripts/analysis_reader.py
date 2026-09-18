@@ -179,18 +179,13 @@ def restore_pages(pages):
 
 def _snapshot(root):
     root = Path(root)
-    inputs = inspect_inputs(root)
+    units = {}
+    inputs = inspect_inputs(root, loaded_units=units)
     reader_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     binding = hashlib.sha256(json_text({"readerSha256": reader_hash, "inputs": inputs}).encode()).hexdigest()
     manifest = read_object(root / "analysis-units/analysis-unit-manifest.json")
     if hashlib.sha256((root / "analysis-units/analysis-unit-manifest.json").read_bytes()).hexdigest() != inputs["manifestSha256"]:
         raise ValueError("analysis inputs changed while reading")
-    units = {}
-    for entry in manifest["units"]:
-        raw = (root / "analysis-units" / entry["path"]).read_bytes()
-        if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
-            raise ValueError("analysis inputs changed while reading")
-        units[entry["unitId"]] = json.loads(raw)
     return inputs, binding, units
 
 

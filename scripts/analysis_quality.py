@@ -54,7 +54,7 @@ def highlight_depth_findings(conclusion):
             for section in ("commonConclusion", "derivativeDirections"):
                 items = group.get(section, [])
                 field = f"{name}.groups[{index}].{section}"
-                require_count(items, 2, 3, field, group.get("contentLimitation"), group["frameRefs"])
+                require_count(items, 1, 3, field, group.get("contentLimitation"), group["frameRefs"])
                 if isinstance(items, list):
                     bodies = ["".join(str(item.get("body", "")).split()).casefold()
                               for item in items if isinstance(item, dict)]

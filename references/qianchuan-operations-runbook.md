@@ -32,7 +32,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 ### AI 交接与失败定位
 
 - 当前对话模型就是分析执行者，`analysis_pending` 不需要另一个模型 API。正式 JSON 合并之前，可以多轮读文件、看图、记录要点并逐项撰写分析片段；不要以“没有模型调用接口”结束任务。
-- 分批完整读取五章输入：Chapter 01 的全量榜单保持全量口径；Chapter 05 按 materialId 逐个读取，不一次打印整个文件。记录已读 JSON 路径、剩余路径和字节/哈希校验结果；工具截断后继续读剩余范围，不反复打印同一大包，不擅自裁掉字段。
+- 通过 analysis-task 读取正式精简任务：Chapter 01 的聚合保留全量口径；Chapter 05 按素材保留脚本、帧和峰值，曲线points仍完整用于报告。记录已读页、剩余页和哈希；不反复打印同一大包，不自行截取事实。
 - 帧账本中的实际标识来自 `frames[*].evidenceRef`，不是不存在的 `frameRef` 输入字段。逐帧记录 frameRef、framePath、图像 SHA-256、少量实际观察和状态；仅有 completed ID、没有可恢复笔记不算可复用的审阅结果。
 - 原文件哈希一致且笔记完整时续接未完成部分；文件变化或笔记丢失则重新审阅受影响帧。同字节图像允许复用视觉要点，但保留所有素材/帧的覆盖记录，核对每条素材各自的上下文。相同图片的来源正确性仍需核对本地 summary、视频和抽帧记录，不能从重复图片推出素材业务一致。
 - 新生成的 JSON 不继承旧运行的内容、引用或分类；机器只可序列化模型生成内容、合并已经逐项确认的字段及校验格式，不可循环拼经营结论、添加通用尾句或删除难通过的字段。
@@ -177,6 +177,6 @@ python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/千川
 
 ## Chapter 04 分类过粗或条目过少
 
-先比对候选 AI JSON 与 presentation-report.json：若数量相同，修正模型分析，不改前端截取条数。新 Prompt（mechanism-depth-v1）要求本批次默认 3–5 个主导画面机制类别；标准分类/本批次分类每个非空组的共性结论、裂变方向各 2–3 条。54 帧归入一个混合总类，或两部分各一条且未声明真实证据不足，均不能作为默认合格输出。
+先比对候选 AI JSON 与 presentation-report.json：若数量相同，修正模型分析，不改前端截取条数。新 Prompt（mechanism-depth-v1）要求本批次默认 3–5 个主导画面机制类别；标准分类/本批次分类每个非空组默认一条共性结论和一个裂变方向，结构接受 1–3 条。54 帧归入一个混合总类仍须审查真实机制边界；每部分各一条无需虚构证据不足。
 
 分类不足填写 classificationLimitation，组内结论/方向不足填写 contentLimitation；说明不足后仍需 evidence_limited 复核，不能以“缺少因果证明”为由忽略可见画面差异。数量门槛通过后继续检查语义边界和可测试变量，不用脚本拆类或复制条目凑数。新规则由冻结 Prompt 启用；重做历史输入时创建新候选并重新绑定索引和复核哈希，不覆盖历史成品。

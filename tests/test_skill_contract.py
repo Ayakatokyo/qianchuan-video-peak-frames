@@ -221,7 +221,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
         self.assertIn("AI 交接前置检查", skill)
-        self.assertIn("按章节、素材完整分批读取事实包和提示词", skill)
+        self.assertIn("analysis-task", skill)
         self.assertIn("素材数、成功帧数", skill)
         self.assertIn("missingFrames", skill)
 

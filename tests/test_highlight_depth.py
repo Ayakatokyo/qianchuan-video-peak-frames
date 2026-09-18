@@ -44,7 +44,7 @@ def errors(value):
 
 
 @pytest.mark.parametrize("groups", [3, 4, 5])
-@pytest.mark.parametrize("points", [2, 3])
+@pytest.mark.parametrize("points", [1, 2, 3])
 def test_normal_counts_still_require_boundary_review(groups, points):
     value = candidate(groups, points)
     assert errors(value) == []
@@ -52,12 +52,9 @@ def test_normal_counts_still_require_boundary_review(groups, points):
                for f in quality.highlight_depth_findings(value))
 
 
-def test_single_mixed_bucket_and_single_points_are_rejected():
+def test_single_mixed_bucket_is_rejected_without_requiring_extra_prose():
     fields = {f["field"] for f in errors(candidate(1, 1))}
-    assert fields == {"customClassification.groups", *[
-        f"{mode}.groups[0].{section}" for mode in ("highlightDashboard", "customClassification")
-        for section in ("commonConclusion", "derivativeDirections")
-    ]}
+    assert fields == {"customClassification.groups"}
 
 
 @pytest.mark.parametrize("mode", ["highlightDashboard", "customClassification"])
@@ -65,9 +62,10 @@ def test_single_mixed_bucket_and_single_points_are_rejected():
 def test_shortage_and_duplicates_fail_in_both_modes(mode, section):
     value = candidate()
     items = value[mode]["groups"][0][section]
-    items.pop()
+    saved = copy.deepcopy(items[0])
+    items.clear()
     assert errors(value)
-    items.append({**items[0], "body": " \n" + items[0]["body"].upper() + " "})
+    items.extend([saved, {**saved, "body": " \n" + saved["body"].upper() + " "}])
     assert any("duplicate" in f["message"] for f in errors(value))
 
 
@@ -123,7 +121,7 @@ def test_shortage_requires_bound_evidence_limited_receipt(tmp_path):
     accepted = quality.review_result(findings, path, [], receipt_path)
     assert accepted["analysisStatus"] == "valid"
     assert accepted["contentReviewStatus"] == "reviewed_with_limits"
-    assert len(accepted["contentReviewLimitations"]) == 5
+    assert len(accepted["contentReviewLimitations"]) == 1
     decisions[0]["decision"] = "supported"
     receipt_path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError, match="requires evidence_limited"):
@@ -150,7 +148,7 @@ def test_frozen_prompt_enables_production_gate_without_changing_old_policy(tmp_p
         (tmp_path / "diagnostic-analysis-prompt.md").write_text(quality.HIGHLIGHT_DEPTH_POLICY_MARKER)
         new = report._review_analysis_quality(value, {"materials": []}, path)
         assert new["analysisStatus"] == "invalid"
-        assert len([f for f in new["findings"] if f["level"] == "error"]) == 5
+        assert len([f for f in new["findings"] if f["level"] == "error"]) == 1
 
 
 def projected(value):

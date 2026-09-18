@@ -74,7 +74,13 @@ def build_parser():
     read.add_argument("--page", type=int, default=0)
     read.add_argument("--input-sha256", required=True)
 
-    check_part = commands.add_parser("check-analysis-part", help="Check a model-authored material part before assembly")
+    task = commands.add_parser("analysis-task", help="Read concise facts, output skeleton and evidence references")
+    task.add_argument("--output-dir", required=True)
+    task.add_argument("--task")
+    task.add_argument("--page", type=int, default=0)
+    task.add_argument("--input-sha256")
+
+    check_part = commands.add_parser("check-analysis-part", help="Check a model-authored chapter or material part before assembly")
     check_part.add_argument("--output-dir", required=True)
     check_part.add_argument("--part", required=True)
 
@@ -117,9 +123,16 @@ def main(argv=None):
         return exc.code
     workflow = None
     try:
+        if args.command == 'analysis-task':
+            from analysis_tasks import task_plan, read_task
+            from analysis_task_io import pretty_json
+            root = Path(args.output_dir) / 'diagnostic-analysis'
+            result = read_task(root, args.task, args.page, args.input_sha256) if args.task else task_plan(root)
+            print(pretty_json(result))
+            return 0
         if args.command == "check-analysis-part":
-            from analysis_handoff import check_material_part
-            print(json.dumps(check_material_part(Path(args.output_dir) / "diagnostic-analysis", args.part), ensure_ascii=False))
+            from analysis_handoff import check_analysis_part
+            print(json.dumps(check_analysis_part(Path(args.output_dir) / "diagnostic-analysis", args.part), ensure_ascii=False))
             return 0
         if args.command in {"analysis-plan", "read-analysis"}:
             from analysis_reader import analysis_plan, read_analysis, json_text

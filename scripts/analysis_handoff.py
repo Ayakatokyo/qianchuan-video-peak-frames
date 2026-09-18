@@ -19,7 +19,7 @@ def read_object(path):
     return value
 
 
-def inspect_inputs(analysis_dir):
+def inspect_inputs(analysis_dir, *, loaded_units=None):
     """Check the manifest and actual images, without rewriting existing facts."""
     root = Path(analysis_dir).resolve()
     manifest_path = root / "analysis-units" / "analysis-unit-manifest.json"
@@ -31,9 +31,14 @@ def inspect_inputs(analysis_dir):
         if unit_id not in expected or unit_id in units or entry.get("path") != expected[unit_id]:
             raise ValueError("unexpected or duplicate analysis unit")
         path = manifest_path.parent / entry["path"]
-        if path.is_symlink() or path.stat().st_size != entry["byteSize"] or file_hash(path) != entry["sha256"]:
+        if path.is_symlink():
             raise ValueError(f"analysis unit hash/size mismatch: {unit_id}")
-        units[unit_id] = read_object(path)
+        raw = path.read_bytes()
+        if len(raw) != entry["byteSize"] or hashlib.sha256(raw).hexdigest() != entry["sha256"]:
+            raise ValueError(f"analysis unit hash/size mismatch: {unit_id}")
+        units[unit_id] = json.loads(raw)
+        if not isinstance(units[unit_id], dict):
+            raise ValueError(f"JSON object required: {path}")
     if set(units) != set(expected):
         raise ValueError("five complete analysis units are required")
     prompt = (manifest_path.parent / manifest["promptPath"]).resolve()
@@ -60,6 +65,8 @@ def inspect_inputs(analysis_dir):
                            "sha256": file_hash(path)})
     if manifest.get("frames") != {"successfulCount": len(frames), "missingCount": missing_count}:
         raise ValueError("frame counts do not match manifest")
+    if loaded_units is not None:
+        loaded_units.update(units)
     return {"schemaVersion": 2, "manifestSha256": file_hash(manifest_path), "promptSha256": file_hash(prompt),
             "period": manifest.get("period", {}),
             "materialIds": manifest["materialIds"], "frames": frames,
@@ -136,6 +143,65 @@ def check_material_part(analysis_dir, part_path):
                     raise ValueError("shared interpretation requires same-material same-image direct target")
     return {"status": "material_structure_checked", "materialIds": ids,
             "partSha256": file_hash(path), "contentReviewed": False, "finalValidationRequired": True}
+
+
+def check_analysis_part(analysis_dir, part_path):
+    """Preflight chapter slots and references; final validation still required."""
+    root, path = Path(analysis_dir).resolve(), Path(part_path)
+    if path.is_symlink() or not path.resolve().is_relative_to(root) or path.suffix != '.json':
+        raise ValueError('part must be a JSON file within the analysis directory')
+    part = read_object(path)
+    if 'materialAnalyses' in part:
+        return check_material_part(root, path)
+    allowed = {'schemaVersion', 'analysisProvenance', 'overallConclusion', 'portfolioDimensionConclusions',
+               'hotMaterialInsight', 'batchInsights', 'keywordCloudReview', 'keywordCloudInsight',
+               'highlightDashboard', 'customClassification'}
+    if not part or set(part) - allowed or set(part) <= {'schemaVersion', 'analysisProvenance'}:
+        raise ValueError('unrecognized or empty chapter part')
+    def contains_null(value):
+        if isinstance(value, dict):
+            return any(contains_null(item) for item in value.values())
+        if isinstance(value, list):
+            return any(contains_null(item) for item in value)
+        return value is None
+    if contains_null(part):
+        raise ValueError('unfinished model text in chapter skeleton')
+    if part.get('schemaVersion', 5) != 5:
+        raise ValueError('chapter parts require schemaVersion 5')
+    if 'overallConclusion' in part and (
+            not isinstance(part['overallConclusion'], str) or not part['overallConclusion'].strip()):
+        raise ValueError('overallConclusion must be nonempty text')
+    if 'batchInsights' in part:
+        insights = part['batchInsights']
+        if not isinstance(insights, list) or not insights or any(
+                not isinstance(item, dict) or item.get('topic') not in {'script', 'audience'}
+                for item in insights):
+            raise ValueError('batchInsights requires nonempty script or audience objects')
+    units = {}
+    inspect_inputs(root, loaded_units=units)
+    from analysis_tasks import evidence_refs
+    from final_report_lib import _validate_v2_insight
+    for topic, count, unit in [('script', 2, 'chapter03-script'), ('audience', 3, 'chapter02-audience')]:
+        items = [x for x in part.get('batchInsights', []) if x.get('topic') == topic]
+        if not items:
+            continue
+        if len(items) != count:
+            raise ValueError(f'chapter part requires {count} {topic} insights')
+        known = evidence_refs(units[unit])
+        metrics = set()
+        for i, item in enumerate(items):
+            _validate_v2_insight(item, i)
+            if not item.get('evidenceRefs') or any(ref not in known for ref in item['evidenceRefs']):
+                raise ValueError('unknown or empty chapter evidence reference')
+            if topic == 'audience':
+                values = {ref.split(':')[1] for ref in item['evidenceRefs']}
+                if len(values) != 1:
+                    raise ValueError('audience insight must use exactly one metric')
+                metrics.update(values)
+        if topic == 'audience' and metrics != {'SHOW_COUNT', 'CLICK_COUNT', 'TRANSACTION_AMOUNT'}:
+            raise ValueError('audience insights must cover all three metrics')
+    return {'status': 'chapter_structure_checked', 'partSha256': file_hash(path),
+            'contentReviewed': False, 'finalValidationRequired': True}
 
 
 def assemble_analysis(analysis_dir, part_paths, output_path):

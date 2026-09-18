@@ -20,7 +20,7 @@ metadata:
 
 ## 约束
 
-- **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向各 2–3 条。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不默认合成单一混合类或各写一条。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
+- **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向默认各一条（结构兼容 1–3 条）。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不把不同机制合成单一混合类。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
 
 - **环境**：执行 `prepare`、`fetch-metadata`、`status` 或 `finalize` 前确认当前解释器有 `requests`、`imageio-ffmpeg`、`jsonschema`、`jieba`、`openpyxl`、`Pillow`；缺失则安装，失败即停，不发起任何请求。`prepare` 也会再次执行该门禁。
 - **授权**：`--shop-id` 只用于报表连接器；`--rpa-shop-id` 只使用表单 `rpa_shop` 所选的千川 RPA ID。运行时必须在当前授权列表中验证该 ID；无授权或所选 ID 不在列表时停止，不重复提交素材诊断。
@@ -38,9 +38,13 @@ metadata:
 
 用户要求“用已有数据继续分析/重做报告”时，先读指定 run 的摘要、事实包 manifest 和实际产物，缺少事实包时使用正式 `prepare-local`（参数见[分析交接契约](references/analysis-handoff.md)）；按[运维手册的已落盘分析接续](references/qianchuan-operations-runbook.md#已落盘分析接续)选择起点；不要默认执行 `prepare`。用户未指定来源时核对店铺、周期、素材集合和 manifest，不能只按目录日期或修改时间认定“最新”。已有信息足够则直接接续，不重复索要授权参数。
 
-当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先完整分批读取事实、查看图片并保存观察要点，由当前模型逐项写分析片段，最后合并成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
+当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先读取正式任务的精简事实视图、查看图片并保存观察要点，由当前模型逐项写分析片段，最后合并成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
 
-**默认提速路径**：使用正式 `analysis-plan` / `read-analysis` 无损分页读取，按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。每条素材看图后直接写正式片段，执行 `check-analysis-part` 提前检查，再处理下一条；不重复抄写长篇观察报告。事实包、每个成功帧和分析深度均完整保留，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
+**默认分析路径**：使用正式 `analysis-task` 读取带输出骨架和合法引用的精简任务，按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。每条素材看图后直接写正式片段，执行 `check-analysis-part` 提前检查，再处理下一条；不重复抄写长篇观察报告。事实包和每个成功帧完整保留，正文统一精简，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
+
+## 统一分析要求
+
+统一精简分析，不设详细档位或切换参数。建议总览100–150字、经营/人群维度40–70字、两类脚本洞察每条50–80字、每张唯一画面观察25–60字、单素材核心结论80–120字；每个分类组默认一条共性判断和一个可测试方向。字数是表达预算，不是必须达到的门槛；保留事实、范围、引用及必要字段，不补字、不重复解释。
 
 ## 标准流程
 
@@ -83,13 +87,13 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 #### AI 交接前置检查
 
-先按 manifest 校验文件，再按章节、素材完整分批读取事实包和提示词（manifest、五个章节事实包和唯一 Prompt）；记录已读取的 JSON 路径，输出截断不算已读取，不用 head/抽样代替全量读取。核对字节数、SHA-256、素材数、成功帧数、`missingFrames`。首次实际查看 JPEG 前执行正式 `frame-review` 命令，冻结 `analysis-input-index.json` 的素材、路径和 SHA；按素材串行，每批不超过 6 帧（按唯一 SHA 计）。相同 SHA 只实际查看一次，只复用视觉观察，保留全部 frameRef，商业解释按素材分别核对。每帧只记录 **少量真实可见要点**，每批结束只写一次 `frame-review-progress.json` checkpoint；全部完成须为 `status=complete`。索引变化先冻结并显式重建，不混用新旧路径；命令和观察文件结构见[运维手册](references/qianchuan-operations-runbook.md#图片理解断点与吞吐)。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
+先由 analysis-task 按 manifest 校验五包与 JPEG，再读提示词一次并完整读取各任务页；无需重复读取完整榜单和曲线。任务明确省略范围，原五包继续用于报告与验证；输出截断不算已读取，不自行 head 截取事实。核对字节数、SHA-256、素材数、成功帧数、`missingFrames`。首次实际查看 JPEG 前执行正式 `frame-review` 命令，冻结 `analysis-input-index.json` 的素材、路径和 SHA；按素材串行，每批不超过 6 帧（按唯一 SHA 计）。相同 SHA 只实际查看一次，只复用视觉观察，保留全部 frameRef，商业解释按素材分别核对。每帧只记录 **少量真实可见要点**，每批结束只写一次 `frame-review-progress.json` checkpoint；全部完成须为 `status=complete`。索引变化先冻结并显式重建，不混用新旧路径；命令和观察文件结构见[运维手册](references/qianchuan-operations-runbook.md#图片理解断点与吞吐)。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
 
-“唯一正式 JSON”约束交付一致性，不限制当前模型分批撰写。可直接写完整 JSON，或使用正式 `assemble-analysis` 合并模型已写出的片段；不得使用外部模型、`codex exec`、子进程或子代理替代当前模型分析。最终使用 `schemaVersion: 5`。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 180-260 字，含至少三项判断和分阶段动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
+“唯一正式 JSON”约束交付一致性，不限制当前模型分批撰写。可直接写完整 JSON，或使用正式 `assemble-analysis` 合并模型已写出的片段；不得使用外部模型、`codex exec`、子进程或子代理替代当前模型分析。最终使用 `schemaVersion: 5`。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读由 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实投影的正式任务，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 100–150 字，突出核心判断和优先动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
 
 以该提示词为 AI JSON 输出契约，按其字段、证据、覆盖和枚举规则生成结果：每个成功 JPEG 都有分析，`missingFrames` 写入 `frameCoverageNote`；引用逐字复用事实包标识。`preferencesByMetric` 仅供 drill-down，AI 不读取其 TOP3 字段。v4 仅用于历史报告兼容。`keywordCloudInsight.oneSentenceConclusion` 建议为 28-45 个中文字符的单一核心判断；summary 控制在 60-110 个中文字符作为表达建议，证据不足可更短，验证动作放入 summary 或 sellingPoints；不得重复关键词频次、卖点卡片和验证动作。
 
-逐帧分析必须来自实际 JPEG；只描述真实主体、动作、关系与信息层，不强求独有变化、叙事作用或每帧商业假设。同图允许相同观察，保留所有 frameRef。商业解释允许证据不足状态和同素材同图的共享引用，详见[分析交接契约](references/analysis-handoff.md)。正文长度随证据丰富程度变化；分类和分点数量遵循 Chapter 04 的 3–5 类、各 2–3 条及真实不足复核契约，不能凑数。
+逐帧分析必须来自实际 JPEG；只描述真实主体、动作、关系与信息层，不强求独有变化、叙事作用或每帧商业假设。同图允许相同观察，保留所有 frameRef。商业解释允许证据不足状态和同素材同图的共享引用，详见[分析交接契约](references/analysis-handoff.md)。正文长度随证据丰富程度变化；分类和分点数量遵循 Chapter 04 的 3–5 类、默认各一条（结构兼容 1–3 条）及真实不足复核契约，不能凑数。
 
 报告执行不得新增临时脚本，也不得以内联代码批量生产正文。需要修改技能程序时须有明确技能开发授权；当前报告流程只使用维护中的正式命令。具体写入边界、复核记录和重试规则见[分析交接契约](references/analysis-handoff.md)。
 

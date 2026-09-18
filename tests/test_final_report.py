@@ -3828,7 +3828,7 @@ class FinalReportRenderTests(unittest.TestCase):
         self.assertIn("仅供报告偏好 drill-down 使用，AI 不读取", prompt_text)
         self.assertIn("事实锚点 → 榜单判断 → 下一步验证", prompt_text)
         self.assertIn("不得只写抽象结论", prompt_text)
-        self.assertIn("180-260 个中文字符", prompt_text)
+        self.assertIn("80–120字", prompt_text)
         self.assertIn("近 7 天上新素材量", prompt_text)
         self.assertIn("`summaryMetrics.roi`", prompt_text)
         self.assertIn("total_prepay_and_pay_order_roi2", prompt_text)

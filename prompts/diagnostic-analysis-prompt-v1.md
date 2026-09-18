@@ -2,7 +2,9 @@
 
 <!-- highlight-depth-policy: mechanism-depth-v1 -->
 
-当前执行技能的当前对话模型必须先读取 `analysis-units/analysis-unit-manifest.json`，校验其中五个章节事实包的路径、字节数、SHA-256、素材顺序和帧数量，再分批完整读取以下输入，允许当前模型分批撰写，最终合并为唯一正式 JSON：
+统一精简分析，不设详细档位或切换参数。建议总览100–150字、经营/人群维度40–70字、两类脚本洞察每条50–80字、每张唯一画面观察25–60字、单素材核心结论80–120字；每个分类组默认一条共性判断和一个可测试方向。字数是表达预算，不是必须达到的门槛；保留事实、范围、引用及必要字段，不补字、不重复解释。
+
+先由正式 analysis-task 校验 manifest、五包、素材和 JPEG，再读本提示词一次及各任务的 scopedFacts、outputSkeleton、allowedEvidenceRefs。原始五包是事实权威；默认不重复全文读取完整榜单和曲线。以下为必要时定向溯源的路径，模型分片撰写后组装唯一 JSON：
 
 `report-display-facts.json` 是前端展示快照，不属于模型输入；模型不得读取、引用或复述其中的 TOP3/图表展示字段。
 
@@ -22,7 +24,7 @@
 
 ## 高效执行顺序
 
-默认使用正式 `analysis-plan` / `read-analysis` 无损分页命令读取五章事实（命令与表格编码见 `references/analysis-handoff.md` 的“无损读取与执行顺序”）。每页包含 path 和值；表格 columns 是字段路径，common 为所有行共用的列值，rows 依次填入其余列。这是完整事实的另一种表示，不是抽样或 AI 摘要。按同一个 inputSha256、从第 0 页到 nextPage=null 完整读取；plan 中的 chapter05Envelope 也必须读取。工具返回不等于模型已读，截断页须重读。
+默认使用 `analysis-task --output-dir <run>` 获取任务与 inputSha256，再以 `analysis-task --output-dir <run> --task <taskId> --page 0 --input-sha256 <sha>` 读取。有界多行 JSON 的 records 使用 path/value 或 container/start/text；按 nextPage 读到 null。完整事实保留在 sourceFile/sourcePath；不把省略的展示明细当缺失，不从截断输出得出结论。旧 analysis-plan/read-analysis 仅用于定向核验，不作为默认重复读取步骤。
 
 执行顺序：Chapter 01 → Chapter 02 → Chapter 03 → 逐素材的 Chapter 05（含 Chapter 04 逐帧分析）→ Chapter 04 跨素材分类汇总。当前任务只写它负责的字段；每个任务完整读取后直接写片段，不在每条素材前重读全部 Prompt 和其他章节。看完本素材 JPEG 后立即写 highlightAnalyses 和本素材结论，再进入下一条；不先写一份长篇观察报告再重复改写成 JSON。片段写完用 `check-analysis-part` 提前检查素材结构、引用和帧覆盖；该检查不代替最终 validate-analysis 和内容复核。
 
@@ -30,7 +32,7 @@
 
 ## 接续、读取与真实重复画面
 
-- 当前模型直接完成分析，不需要额外的模型调用接口。按章节和素材读取完整输入；响应截断时沿 JSON 路径继续，记录已读范围，不能把截断输出当作完整事实。
+- 当前模型直接完成分析，不需要额外的模型调用接口。按章节和素材读取正式 analysis-task 的全部分页；完整原包仅在定向溯源时读取。响应截断时继续当前页，记录已读范围，不能把截断输出当作完整事实。
 - 首次看图前使用正式 `frame-review` 命令冻结 `diagnostic-analysis/analysis-input-index.json`，逐项锁定 `frameRef`、`materialId`、`framePath` 和实际 SHA-256。路径、文件哈希、事实或 Prompt 改变时停止当前批次，显式重建索引后恢复，不混用新旧输入。
 - 按素材处理，每批最多 6 个唯一 SHA；先完成命令返回的 `imagesToView` 扫描，再一次提交该批 checkpoint。相同 SHA 只实际查看一次，程序把模型提供的 `visualObservation` 缓存到 `visualObservationCache`，并维护全部 `frameRefsBySha256`；仍须覆盖每个 frameRef，不能跨素材复用商业解释。相邻画面变化依赖各自上下文，不作为共享缓存事实。操作结构见技能运维手册，不逐帧 patch、不借程序生成分析正文。
 - `frame-review-progress.json` 必须在全部引用覆盖后为 `status=complete`、`pendingFrameRefs=[]` 且有 `completedAt`，否则先续接帧审阅，不能 finalize。质量门禁元数据只保存在机器产物，业务分析正文不复述结构校验、内容复核状态或清理日志。
@@ -48,7 +50,7 @@
 <!-- 历史契约短语保留：本轮不新增经营指标；当前版本已将新增指标限定在素材榜单事实包内。 -->
 <!-- 历史兼容措辞：不得复用第 01 章人群组合结论；不得为了填充 TOP 组合结论而输出 integrated。 -->
 
-只读取 `chapter01-portfolio-input.json` 的 `portfolio`，以其中的全量素材列表、近 7 天上新数量和榜单指标为事实，输出 `overallConclusion` 与唯一的 `portfolioDimensionConclusions.commercial`。`portfolio.materials` 是事实包提供的全量素材数据，用于事实核验，不是 RPA 选中素材清单；不得读取 Chapter 01 顶层 `materials` 或 `materialIds`，不得读取 `topMaterialRoi`，不得使用 RPA 精选素材数量、消耗，不得使用候选补位结果，不得从 Chapter 05 回退，也不得从其他章节补充素材。近 7 天遵循 T+1 口径：以技能执行日 T 为基准，统计 `T-7` 至 `T-1`（含首尾）且 `material_create_time_v2` 落在该区间的素材。`summaryMetrics` 只保留当前 ROI 字段 `roi` 及消耗、点击率、转化率、3 秒完播率和 CPM；`summaryMetrics.roi` 来源字段为 `total_prepay_and_pay_order_roi2`，Chapter 01 事实包不包含 `netSettlementRoi` 或 `overallPaymentRoi`。禁止引用 Chapter 02～05 的人群、脚本、高光画面或互动时序事实，也不得从素材名称反推业务结论。`overallConclusion` 是第一部分唯一直接展示的叙事段落：建议控制在 180-260 个中文字符，在关键数据锚点之外至少包含三项分析判断（例如指标组合反映的效率关系、上新节奏风险、存量分层机会、归因边界或验证优先级），并明确分阶段动作，不能只是指标清单。`commercial.conclusion` 作为结构化备用结论，commercial.conclusion 不得重复 overallConclusion 中相同的指标串，应补充互不重复的业务含义和验证动作。
+只读取 `chapter01-portfolio-input.json` 的 `portfolio`，以正式任务保留的全量聚合、costDistribution、近 7 天上新数量和完整爆款事实为依据，输出 `overallConclusion` 与唯一的 `portfolioDimensionConclusions.commercial`。`portfolio.materials` 是事实包提供的全量素材数据，用于确定性统计及必要时定向核验，默认不全文读入模型，不是 RPA 选中素材清单；不得读取 Chapter 01 顶层 `materials` 或 `materialIds`，不得读取 `topMaterialRoi`，不得使用 RPA 精选素材数量、消耗，不得使用候选补位结果，不得从 Chapter 05 回退，也不得从其他章节补充素材。近 7 天遵循 T+1 口径：以技能执行日 T 为基准，统计 `T-7` 至 `T-1`（含首尾）且 `material_create_time_v2` 落在该区间的素材。`summaryMetrics` 只保留当前 ROI 字段 `roi` 及消耗、点击率、转化率、3 秒完播率和 CPM；`summaryMetrics.roi` 来源字段为 `total_prepay_and_pay_order_roi2`，Chapter 01 事实包不包含 `netSettlementRoi` 或 `overallPaymentRoi`。禁止引用 Chapter 02～05 的人群、脚本、高光画面或互动时序事实，也不得从素材名称反推业务结论。`overallConclusion` 是第一部分唯一直接展示的叙事段落：建议控制在 100–150 个中文字符，围绕关键数据锚点写出一个核心判断和一个优先验证动作，保留必要的归因边界，不能只是指标清单。`commercial.conclusion` 作为结构化备用结论，commercial.conclusion 不得重复 overallConclusion 中相同的指标串，应补充互不重复的业务含义和验证动作。
 
 若 `portfolio.hotMaterialRule` 存在，必须把 `thresholdCost`、`comparison`、`qualifyingCount` 和 `qualifyingMaterials[*]` 当作只读确定性事实；命中数量使用实际 `qualifyingCount`，素材名称、素材 ID、消耗、辅助指标和 `evidenceRef` 必须逐字引用，不得由 AI 重新计算、排序、改写、补充或删除。基于这些事实新增结构化 `hotMaterialInsight`：结论只解释爆款数量、消耗与效率是否匹配、保留/复刻与小预算对照验证建议，不把相关性写成因果关系；`evidenceRefs` 只能引用 `commercial:hotMaterialCount` 和事实包中实际存在的 `commercial:hotMaterial:<materialId>`。`hotMaterialInsight` 在 JSON 中保持独立，便于证据追溯；Presentation 会把它与 `overallConclusion` 合并为第一部分唯一的 AI 展示内容，爆款素材面板只展示确定性详情，不再重复展示 AI 卡片。若历史事实包没有 `hotMaterialRule`，不要猜测爆款，可以省略该字段；前端仍显示确定性面板或空状态。
 
@@ -75,11 +77,11 @@
 
 本批次分类默认输出 **3–5 个机制类别**：先逐帧判断主导信息任务，再按可解释、互有区别的纳入标准归组。同帧含多种元素时选择主导机制，次要元素写入分析；不能因为视频同时包含人物、产品和操作，就把全部画面放进一个“混合机制”总类。不得按素材 ID、人物身份或标准分类简单拆组；人物情境、商品识别、质地/工艺呈现、食用操作、权益信息等只是核对候选，不是预设必须出现的类别。逐组 description 写清纳入条件及与相邻类别的边界，每个成功 frameRef 仍恰好覆盖一次。
 
-highlightDashboard（标准分类）和 customClassification（本批次分类）的**每个非空类别**，commonConclusion 与 derivativeDirections **各输出 2–3 条**。这是正常交付要求，不再以各一条为默认合格结果。先找出本组 2–3 个可区分的信息作用、呈现方式或可测试问题，再逐条写清依据；一条里堆叠三个变量不能代替三条独立分析。同一帧可支持不同角度，但不能同义改写、重复正文或添加空泛尾句凑数。
+highlightDashboard 与 customClassification 每个非空组默认一条 commonConclusion 和一条 derivativeDirections，结构允许 1–3 条以兼容已生成产物。每条绑定组内真实帧，写清一个可见特征及一个可测试动作；不为制造多条洞察而拆句、同义改写或重复尾句。
 
 每条共性结论包含：本组真实可见的共同信号、信息传递作用、推断边界。每条裂变方向包含：源画面、保留项、一个明确改变的画面变量、对照方式和观察指标；方向之间应测试不同问题。全部逐条绑定本组真实 evidenceRefs；结论和方向数量不要求机械一一对应，但每个方向都须有组内画面依据。
 
-仅在实际证据不足时可少于上述数量：类别不足 3 个须填写 customClassification.classificationLimitation；某组的结论或方向不足 2 条须填写该组 contentLimitation，说明已核对的画面、能支持什么及无法继续细分/提出变量的具体缺口。程序会产生独立复核项，只有 evidence_limited 决定可放行，并在对应分类/分析区展示边界。缺少限制说明会硬失败；不能用“不能证明成交因果”替代对画面类别不足的说明，因为分类依据是可见机制而非因果证明。两类限制字段仅用于真实不足，不默认填写。共性结论仍至少保留一条有依据的观察或具体证据限制；无法支持任何裂变方向时可留空数组并说明原因。禁止以“保持主体、替换一个变量、比较 ROI”等通用模板代替分析。
+仅在实际证据不足时可少于上述数量：类别不足 3 个须填写 customClassification.classificationLimitation；某组无法支持一条结论或一个方向时须填写该组 contentLimitation，说明已核对的画面、能支持什么及无法继续细分/提出变量的具体缺口。程序会产生独立复核项，只有 evidence_limited 决定可放行，并在对应分类/分析区展示边界。缺少限制说明会硬失败；不能用“不能证明成交因果”替代对画面类别不足的说明，因为分类依据是可见机制而非因果证明。两类限制字段仅用于真实不足，不默认填写。共性结论仍至少保留一条有依据的观察或具体证据限制；无法支持任何裂变方向时可留空数组并说明原因。禁止以“保持主体、替换一个变量、比较 ROI”等通用模板代替分析。
 
 逐帧 commercialInterpretation 有三种形式：默认 supported 写简短解释；insufficient_evidence 留空解释并填写具体 limitation；shared 留空解释并填写 sharedInterpretationRef，只能引用同素材、相同本地 JPEG 哈希的直接 supported 解释。不得跨素材、链式或循环共享；图片相同不能证明商业效果相同。
 
@@ -134,7 +136,7 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
 - `01｜素材榜单数据洞察`：标题为“素材榜单数据洞察”。前端只直接展示 `overallConclusion` 单段文字；`portfolioDimensionConclusions.commercial` 仅作为结构化结论、证据和兼容字段，不另起可见段落。不添加“从素材列表数据来看：”或其他编号式引导，不展示人群、脚本、高光画面、互动时序 point。
 - `02｜人群洞察`：使用 `batchInsights` 中 `topic` 为 `audience` 的洞察。
 - `03｜脚本洞察`：使用 `batchInsights` 中 `topic` 为 `script` 的洞察。
-- `04｜高光画面洞察`：highlightDashboard 按 portrait、product、other 固定顺序输出实际非空分类，每帧恰好归类一次。customClassification 按真实主导机制输出 3–5 类，每组包含 groupId、语义化 groupName、description、frameRefs、2–3 条 commonConclusion 和 2–3 条 derivativeDirections；真实不足须按 Chapter 04 的 classificationLimitation / contentLimitation 契约声明并复核；分点包含 title、body、属于本组的 evidenceRefs。不能强求不同分类使用不同验证方法。ruleId、ruleName、ruleDescription、ruleVersion、inputFrameManifestHash 仍必填；未归类成功帧进入 unclassifiedFrameRefs，不得跨组重复。AI 不得输出或修正帧数、占比、覆盖率；这些统计由 Presentation 确定性计算。
+- `04｜高光画面洞察`：highlightDashboard 按 portrait、product、other 固定顺序输出实际非空分类，每帧恰好归类一次。customClassification 按真实主导机制输出 3–5 类，每组包含 groupId、语义化 groupName、description、frameRefs、一条 commonConclusion 和一条 derivativeDirections；真实不足须按 Chapter 04 的 classificationLimitation / contentLimitation 契约声明并复核；分点包含 title、body、属于本组的 evidenceRefs。不能强求不同分类使用不同验证方法。ruleId、ruleName、ruleDescription、ruleVersion、inputFrameManifestHash 仍必填；未归类成功帧进入 unclassifiedFrameRefs，不得跨组重复。AI 不得输出或修正帧数、占比、覆盖率；这些统计由 Presentation 确定性计算。
 - `05｜单素材深度分析`：每个工作区先展示 `materialAnalyses` 中对应的 AI 二次分析，再展示确定性的真实事实数据（包括互动时序分析和脚本分析数据）；高光帧观察保留“视频/高光帧在上、文字分析在下”的事实优先排版。AI 二次总结不要逐项复述页面已经展示的秒级互动数据、脚本标签和证据句，而要解释这些事实为什么影响素材放量、改写或保留判断。
 
 不得输出 `batchInsights.topic=highlight`；不得输出 `batchInsights.topic=integrated`；高光帧不得作为第 01 章证据。
@@ -143,50 +145,219 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
 
 ## 输出契约
 
-以下为字段形状，尖括号是占位符，不能提交。为减少重复示例，每种对象只展示一次；实际数组覆盖数量按上述章节规则，不能据示例减为一条。标准分类每个非空组、机制分类每组的 commonConclusion / derivativeDirections 各 2–3 条；机制分类通常 3–5 组；supported 卖点至少 3 条、2 个维度。
+以下为字段形状，尖括号是占位符，不能提交。示例仅说明结构，实际分类及数组覆盖依据当前证据和上述规则。标准分类每个非空组、机制分类每组的 commonConclusion / derivativeDirections 默认各一条（结构兼容 1–3 条）；机制分类通常 3–5 组；supported 卖点至少 3 条、2 个维度。
 
 ```json
 {
   "schemaVersion": 5,
-  "analysisProvenance": {"author": "current_model", "businessTextGeneration": "direct"},
+  "analysisProvenance": {
+    "author": "current_model",
+    "businessTextGeneration": "direct"
+  },
   "overallConclusion": "<榜单事实支持的经营判断和分阶段动作>",
   "portfolioDimensionConclusions": {
-    "commercial": {"conclusion": "<补充业务含义>", "evidenceRefs": ["<commercial 引用>"]}
+    "commercial": {
+      "conclusion": "<补充业务含义>",
+      "evidenceRefs": [
+        "<commercial 引用>"
+      ]
+    }
   },
-  "hotMaterialInsight": {"conclusion": "<有 hotMaterialRule 时填写>", "evidenceRefs": ["<命中事实引用>"]},
+  "hotMaterialInsight": {
+    "conclusion": "<有 hotMaterialRule 时填写>",
+    "evidenceRefs": [
+      "<命中事实引用>"
+    ]
+  },
   "batchInsights": [
-    {"topic": "audience", "title": "<本口径标题>", "conclusion": "<本口径判断>", "evidenceRefs": ["<该口径引用>"]},
-    {"topic": "script", "title": "<脚本标题>", "conclusion": "<脚本判断>", "evidenceRefs": ["<script 引用>"]}
+    {
+      "topic": "audience",
+      "title": "<本口径标题>",
+      "conclusion": "<本口径判断>",
+      "evidenceRefs": [
+        "<该口径引用>"
+      ]
+    },
+    {
+      "topic": "script",
+      "title": "<脚本标题>",
+      "conclusion": "<脚本判断>",
+      "evidenceRefs": [
+        "<script 引用>"
+      ]
+    }
   ],
-  "keywordCloudReview": [{"keyword": "<候选词>", "decision": "accept", "target": ""}],
+  "keywordCloudReview": [
+    {
+      "keyword": "<候选词>",
+      "decision": "accept",
+      "target": ""
+    }
+  ],
   "keywordCloudInsight": {
-    "analysisStatus": "supported", "limitation": "",
-    "oneSentenceConclusion": "<单一核心判断>", "summary": "<承接关系和验证方向>",
-    "sellingPoints": [{"dimension": "<实际维度>", "title": "<卖点>", "description": "<脚本支持的含义>",
-                       "keywordRefs": ["<原词>"], "evidenceRefs": ["<该词自身 script 引用>"]}]
+    "analysisStatus": "supported",
+    "limitation": "",
+    "oneSentenceConclusion": "<单一核心判断>",
+    "summary": "<承接关系和验证方向>",
+    "sellingPoints": [
+      {
+        "dimension": "<实际维度>",
+        "title": "<卖点>",
+        "description": "<脚本支持的含义>",
+        "keywordRefs": [
+          "<原词>"
+        ],
+        "evidenceRefs": [
+          "<该词自身 script 引用>"
+        ]
+      }
+    ]
   },
   "highlightDashboard": {
-    "groups": [{"category": "portrait", "frameRefs": ["<本组全部 frameRef>"],
-                "commonConclusion": [{"title": "<角度>", "body": "<共同信号、作用、边界>", "evidenceRefs": ["<组内引用>"]}],
-                "derivativeDirections": [{"title": "<测试问题>", "body": "<源画面、保留项、变量、对照、指标>", "evidenceRefs": ["<组内引用>"]}]}]
+    "groups": [
+      {
+        "category": "portrait",
+        "frameRefs": [
+          "<机制1真实frameRef>",
+          "<机制2真实frameRef>",
+          "<机制3真实frameRef>"
+        ],
+        "commonConclusion": [
+          {
+            "title": "<角度>",
+            "body": "<共同信号、作用、边界>",
+            "evidenceRefs": [
+              "<机制1真实frameRef>",
+              "<机制2真实frameRef>",
+              "<机制3真实frameRef>"
+            ]
+          }
+        ],
+        "derivativeDirections": [
+          {
+            "title": "<测试问题>",
+            "body": "<源画面、保留项、变量、对照、指标>",
+            "evidenceRefs": [
+              "<机制1真实frameRef>",
+              "<机制2真实frameRef>",
+              "<机制3真实frameRef>"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "customClassification": {
-    "ruleId": "batch_visual_mechanism_v1", "ruleName": "<本批次规则名称>",
-    "ruleDescription": "<实际可见机制的分组规则>", "ruleVersion": "v1",
+    "ruleId": "batch_visual_mechanism_v1",
+    "ruleName": "<本批次规则名称>",
+    "ruleDescription": "<实际可见机制的分组规则>",
+    "ruleVersion": "v1",
     "inputFrameManifestHash": "sha256:<本轮 analysis-unit-manifest.json 的 SHA-256>",
-    "groups": [{"groupId": "<稳定组标识>", "groupName": "<实际机制名称>",
-                "description": "<纳入条件及与相邻组的边界>", "frameRefs": ["<本组全部 frameRef>"],
-                "commonConclusion": [{"title": "<角度>", "body": "<共同信号、作用、边界>", "evidenceRefs": ["<组内引用>"]}],
-                "derivativeDirections": [{"title": "<测试问题>", "body": "<源画面、保留项、变量、对照、指标>", "evidenceRefs": ["<组内引用>"]}]}],
-    "unclassifiedFrameRefs": [], "availability": "available"
+    "groups": [
+      {
+        "groupId": "<机制1标识>",
+        "groupName": "<机制1名称>",
+        "description": "<机制1的可见边界>",
+        "frameRefs": [
+          "<机制1真实frameRef>"
+        ],
+        "commonConclusion": [
+          {
+            "title": "<角度>",
+            "body": "<共同信号、作用、边界>",
+            "evidenceRefs": [
+              "<机制1真实frameRef>"
+            ]
+          }
+        ],
+        "derivativeDirections": [
+          {
+            "title": "<测试问题>",
+            "body": "<源画面、保留项、变量、对照、指标>",
+            "evidenceRefs": [
+              "<机制1真实frameRef>"
+            ]
+          }
+        ]
+      },
+      {
+        "groupId": "<机制2标识>",
+        "groupName": "<机制2名称>",
+        "description": "<机制2的可见边界>",
+        "frameRefs": [
+          "<机制2真实frameRef>"
+        ],
+        "commonConclusion": [
+          {
+            "title": "<角度>",
+            "body": "<共同信号、作用、边界>",
+            "evidenceRefs": [
+              "<机制2真实frameRef>"
+            ]
+          }
+        ],
+        "derivativeDirections": [
+          {
+            "title": "<测试问题>",
+            "body": "<源画面、保留项、变量、对照、指标>",
+            "evidenceRefs": [
+              "<机制2真实frameRef>"
+            ]
+          }
+        ]
+      },
+      {
+        "groupId": "<机制3标识>",
+        "groupName": "<机制3名称>",
+        "description": "<机制3的可见边界>",
+        "frameRefs": [
+          "<机制3真实frameRef>"
+        ],
+        "commonConclusion": [
+          {
+            "title": "<角度>",
+            "body": "<共同信号、作用、边界>",
+            "evidenceRefs": [
+              "<机制3真实frameRef>"
+            ]
+          }
+        ],
+        "derivativeDirections": [
+          {
+            "title": "<测试问题>",
+            "body": "<源画面、保留项、变量、对照、指标>",
+            "evidenceRefs": [
+              "<机制3真实frameRef>"
+            ]
+          }
+        ]
+      }
+    ],
+    "unclassifiedFrameRefs": [],
+    "availability": "available"
   },
-  "materialAnalyses": [{
-    "materialId": "<本素材 ID>", "audienceConclusion": "<人群判断>", "scriptConclusion": "<脚本判断>",
-    "interactionConclusion": "<互动时序判断>", "integratedConclusion": "<本素材综合判断>",
-    "highlightAnalyses": [{"frameRef": "<逐字复制成功帧引用>", "visualObservation": "<真实 JPEG 观察>",
-                           "commercialInterpretation": "<谨慎解释>"}],
-    "frameCoverageNote": "", "decision": "hold", "nextAction": "<具体行动>", "evidenceRefs": ["<实际引用>"]
-  }]
+  "materialAnalyses": [
+    {
+      "materialId": "<本素材 ID>",
+      "audienceConclusion": "<人群判断>",
+      "scriptConclusion": "<脚本判断>",
+      "interactionConclusion": "<互动时序判断>",
+      "integratedConclusion": "<本素材综合判断>",
+      "highlightAnalyses": [
+        {
+          "frameRef": "<逐字复制成功帧引用>",
+          "visualObservation": "<真实 JPEG 观察>",
+          "commercialInterpretation": "<谨慎解释>"
+        }
+      ],
+      "frameCoverageNote": "",
+      "decision": "hold",
+      "nextAction": "<具体行动>",
+      "evidenceRefs": [
+        "<实际引用>"
+      ]
+    }
+  ]
 }
 ```
 
