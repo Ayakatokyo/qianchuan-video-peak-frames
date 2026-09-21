@@ -159,7 +159,7 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("schemaVersion: 5", skill)
         self.assertIn("highlightDashboard", skill)
         self.assertIn("v4 仅用于历史报告兼容", skill)
-        self.assertIn("不超过 6 帧", skill)
+        self.assertIn("不超过 4 帧", skill)
         self.assertIn("不得跳过任何帧", skill)
         self.assertIn("经营表现、人群、脚本、高光画面和互动时序", skill)
         self.assertIn("图片理解工具首次被策略拒绝", runbook)

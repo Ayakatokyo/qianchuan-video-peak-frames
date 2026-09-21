@@ -55,7 +55,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 长任务每次 manifest checkpoint 还会追加一条 `peak-frames/batch-progress.jsonl`，只保留时间、runId、`rpaCollection`、`stageCounts` 和中断信息。运行面会话失联时可直接读末行，无需回显进程命令行或猜测目录数。
 
-观测轮询每次等待不超过 60 秒，每次都使用新的有界 `status` 调用，使用者的停止指令可以在下一个轮询周期被处理。一旦运行面会话为 `lost` 或控制通道丢失，立即向用户说明“控制面异常，后台存活待核对”，同时反读状态，不等待数分钟后再告知。
+观测轮询每次等待不超过 60 秒，每次都使用新的有界 `status` 调用，使用者的停止指令可以在下一个轮询周期被处理。`status` 是轻量只读入口，不加载报告、Jieba、OpenPyXL 或 Pillow。一旦运行面会话为 `lost` 或控制通道丢失，立即向用户说明“控制面异常，后台状态待核对”，并只执行一次 `status`：锁为 active 时才说明后台仍在运行并反读 `lastProgress`；锁为 stale/missing 且 `workflowStatus=interrupted` 时直接进入标准恢复。不得在核验前固定声称后台仍在运行。
 
 ## 策略拒绝但后台仍在运行
 
@@ -75,7 +75,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 python scripts/run_standard_analysis.py frame-review --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
-该命令冻结 `analysis-input-index.json`（schemaVersion=2），核对五章事实 manifest、Prompt、每个 `materialId`、`frameRef`、`framePath` 和实际 JPEG SHA-256；返回当前素材、整批 `frameRefs` 和去重后的 `imagesToView`。实际标识来自事实包 `frames[*].evidenceRef`，不是事实包中不存在的 `frameRef` 字段。按素材串行，每批最多 6 个唯一 SHA；同批先连续/并发打开全部待查看图片，不跨素材混合商业归因。返回的 `cachedObservations` 提供当前批次可复用的笔记。相同 SHA 只实际查看一次，后续引用复用纯视觉观察，不复用商业解释或相邻帧变化判断。
+该命令冻结 `analysis-input-index.json`（schemaVersion=2），核对五章事实 manifest、Prompt、每个 `materialId`、`frameRef`、`framePath` 和实际 JPEG SHA-256；返回当前素材、整批 `frameRefs` 和去重后的 `imagesToView`。实际标识来自事实包 `frames[*].evidenceRef`，不是事实包中不存在的 `frameRef` 字段。按素材串行，每批最多 4 个唯一 SHA；同批先连续/并发打开全部待查看图片，不跨素材混合商业归因。返回的 `cachedObservations` 提供当前批次可复用的笔记。相同 SHA 只实际查看一次，后续引用复用纯视觉观察，不复用商业解释或相邻帧变化判断。
 
 当前模型用文件编辑工具写一个批次观察 JSON（以下为结构示例，不是业务事实）：
 
@@ -120,11 +120,11 @@ python scripts/run_standard_analysis.py resume \
   --output-dir "/path/to/run"
 ```
 
-`resume` 校验请求参数与旧摘要一致，拒绝 active 批次，自动接管陈旧工作流/批次锁，先执行 `rpaCalls=0` 的本地修复，然后用已保存收据查询原远程任务并补齐缺口；它不重跑报表选品。
+`resume` 校验请求参数与旧摘要一致，拒绝 active 批次，自动接管陈旧工作流/批次锁，先执行 `rpaCalls=0` 的本地修复；本地阶段在同一次 `resume` 内按每批 2 条自动循环，直到全部排空或某批失败/无进展，再用已保存收据查询原远程任务并补齐缺口。它不重跑报表选品，也不需要人工重复调用 5 轮。
 
 先运行 `run_standard_analysis.py status`，按五层产物分别盘点并记录数量：`rpaRequestCount`（提交数）→ `rpaAcceptedCount`（有效诊断结果数）→ `rpaSelectedCount`（含可用 videoUrl 的选中数）→ `recordsPersistedCount`/CSV 数（诊断结果已落盘数）→ `postprocessSucceededCount`（截帧与 `summary.json`、`summary.md` 均完整数）。提交数、平台/UI 的“成功”数字、素材目录数均不等于本地落盘或完整后处理数；没有本地 CSV/records 时不得声称平台已成功或失败。
 
-调度使用分阶段屏障：先按 RPA 并发 3 个逐波收集，当前波次的 RPA 和 CSV/records 落盘全部终态后即可进入下一波；达到目标 records 数前不启动视频下载或 FFmpeg。本地后处理默认视频下载并发 2、FFmpeg 并发 1。后处理终态失败时，才对下一顺位候选素材执行独立的 RPA 补位阶段。
+调度使用分阶段屏障：先按 RPA 并发 3 个逐波收集，当前波次的 RPA 和 CSV/records 落盘全部终态后即可进入下一波；达到目标 records 数前不启动视频下载或 FFmpeg。本地后处理默认视频下载并发 2、FFmpeg 并发 2；下载与截帧使用独立信号量。后处理终态失败时，才对下一顺位候选素材执行独立的 RPA 补位阶段。
 
 若用户未明确授权再次调用 RPA，先运行“修复保留产物”章节的 `repair_manifest.py`。该修复优先核验 `rpa-receipts/<materialId>.json` 的 `records_persisted` 收据；收据中的 records 已包含目标素材的平铺 `recordType=material_info` 与非空 `videoUrl` 时，即使 manifest 仍为 submitted/pending，也直接进入本地后处理，不会发起 RPA。即使 manifest 的 `postprocessStatus` 已写成 `succeeded`，也会以实际 `summary.json`、`summary.md` 和 JPEG 是否完整为准，补跑缺失的截帧。检查 `repair-manifest.json` 的 `rpaCalls` 必须为 `0`，并核对修复后的三层数量。
 
@@ -156,17 +156,24 @@ python scripts/repair_manifest.py \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
   --diagnosis-csv-dir "/path/to/run/diagnosis-csv" \
   --download-concurrency 2 \
-  --postprocess-concurrency 1
+  --postprocess-concurrency 2 \
+  --max-materials-per-run 2
 ```
 
-该命令先执行 `records_persisted receipt -> records`，再执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。下载与 FFmpeg 分别受独立并发上限控制，每个素材完成后立即 checkpoint manifest。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。
+该命令先执行 `records_persisted receipt -> records`，再执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。下载与 FFmpeg 分别受独立并发上限控制；独立 `repair_manifest.py` 默认每次只启动 2 条素材，视频下载并完成大小/SHA-256 后立即 checkpoint，整条素材完成后再次 checkpoint。读取 `repair-manifest.json.postprocessRemainingCount`，大于 0 时可继续执行同一底层命令；标准 `resume` 已内置该有界循环。不要再用外部 `timeout` 在任意时刻杀进程。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。`postprocessAttemptCount` 是公平调度计数，`postprocessAttempts` 始终是尝试记录列表；旧错误版本留下的整数会自动迁移到计数字段。
+
+## 报告生成中断与续跑
+
+`finalize` 按 `reportData → workbook → html → archive` 写入 `final-report/report-build-receipt.json`。收据绑定候选分析、质量复核、冻结输入索引、records/summary 和渲染代码哈希；输入未变化且阶段产物存在时，重跑只续接未完成阶段。不要删除已经完成的 1.2GB 视频资产或手工把摘要改回 `analysis_pending`。
+
+高光帧 XLSX 使用最长边 112px、JPEG quality 72 的临时缩略图；资产表和图片墙分别锚定缩略图，不把完整 JPEG 重复嵌入工作簿。完整 JPEG 仍复制到 HTML 报告资产，不降低网页证据质量。若 workbook 阶段被 SIGKILL，确认旧进程结束后直接重跑同一 `finalize`；已写好的 report data、presentation 和视频资产会复用。
 
 检查保留的 `diagnosis-records/`、`diagnosis-csv/`、素材 `summary.json` 与 JPEG，而不是仅凭文件名判断成功。RPA 输出字段、下载上限和波次状态的完整约束见 [RPA 输出契约](rpa-output-contract.md)。
 
 
 ## 交付后源视频清理
 
-新冻结索引运行的 finalize 在报告和 ZIP 校验通过、摘要为 complete 后，默认按 `peak-frames/report-video-assets.json` 删除已验证的 `peak-frames/video-assets/<materialId>.mp4`。旧运行默认保留。可在 finalize 传 `--video-cleanup dry-run` 只生成计划，或 `--video-cleanup keep` 保留原文件。
+finalize 在报告和 ZIP 校验通过、摘要为 complete 后默认保留 `peak-frames/video-assets/<materialId>.mp4`，避免把大文件清理校验并入交付关键路径。需要回收空间时，在交付完成后独立执行下方 `cleanup-videos --mode dry-run/delete`；也可在 finalize 显式传 `--video-cleanup delete`，但长任务环境不推荐把清理与交付绑在同一进程。
 
 清理前核验每个原始/预览路径、大小、SHA，预览须 FFmpeg 解码通过、HTML 引用本地预览、ZIP 的必需条目完整且归档内容与磁盘字节一致；禁止符号链接和目录级删除。任一前置校验失败不删除，单文件删除失败记 partial。未列入 manifest 的文件保留。
 

@@ -45,7 +45,8 @@ class RepairManifestTests(unittest.TestCase):
         args = repair_manifest.build_parser().parse_args(["--output-dir", "/tmp/run"])
 
         self.assertEqual(args.download_concurrency, 2)
-        self.assertEqual(args.postprocess_concurrency, 1)
+        self.assertEqual(args.postprocess_concurrency, 2)
+        self.assertEqual(args.max_materials_per_run, 2)
 
     def test_recovers_stale_manifest_from_records_persisted_receipt_without_rpa(self):
         """A durable RPA receipt must outrank an interrupted manifest checkpoint."""
@@ -338,11 +339,299 @@ class RepairManifestTests(unittest.TestCase):
                 "_attempt_wave_postprocess",
                 side_effect=local_attempt,
             ):
-                result = repair_manifest.repair_batch(peak)
+                result = repair_manifest.repair_batch(
+                    peak, max_materials_per_run=4
+                )
 
         self.assertTrue(result["valid"])
         self.assertGreater(max_active, 1)
         self.assertEqual(result["stageCounts"]["postprocessSucceededCount"], 4)
+
+    def test_default_repair_processes_a_bounded_chunk_and_reports_remaining_work(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            peak = root / "peak-frames"
+            peak.mkdir()
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            entries = []
+            for index in range(4):
+                material_id = f"m-{index}"
+                entry = {
+                    "materialId": material_id,
+                    "rank": index + 1,
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "queued",
+                    "status": "running",
+                    "diagnosisRecordsPath": f"diagnosis-records/{material_id}.json",
+                    "summaryJson": None,
+                    "summaryMd": None,
+                    "timingsSec": {},
+                }
+                entries.append(entry)
+                (records_dir / f"{material_id}.json").write_text(
+                    json.dumps([{
+                        "recordType": "material_info",
+                        "materialId": material_id,
+                        "videoUrl": f"https://video.example/{material_id}.mp4",
+                    }]),
+                    encoding="utf-8",
+                )
+            (peak / "batch-manifest.json").write_text(
+                json.dumps({
+                    "schemaVersion": 2,
+                    "source": "rpa",
+                    "runId": "run-1",
+                    "targetTopN": 4,
+                    "candidateCount": 4,
+                    "candidateLimit": 4,
+                    "materialIds": [entry["materialId"] for entry in entries],
+                    "materials": entries,
+                    "submittedMaterials": entries,
+                    "selectedMaterials": entries,
+                    "rejectedMaterials": [],
+                    "cancelledMaterials": [],
+                }),
+                encoding="utf-8",
+            )
+
+            def local_attempt(_args, entry):
+                material_id = entry["materialId"]
+                output = peak / material_id
+                output.mkdir()
+                summary_json = output / "summary.json"
+                summary_md = output / "summary.md"
+                summary_json.write_text(json.dumps({
+                    "materialId": material_id,
+                    "frames": [{"framePath": "peak.jpg"}],
+                    "warnings": [],
+                }), encoding="utf-8")
+                summary_md.write_text("summary\n", encoding="utf-8")
+                (output / "peak.jpg").write_bytes(b"\xff\xd8frame\xff\xd9")
+                return {
+                    "result": (output, summary_json, summary_md),
+                    "error": None,
+                    "timingsSec": {"totalSec": 1.5},
+                    "videoPath": str(peak / "video-assets" / f"{material_id}.mp4"),
+                    "videoBytes": 10,
+                    "videoSha256": "a" * 64,
+                }
+
+            with patch.object(
+                repair_manifest.pipeline,
+                "_attempt_wave_postprocess",
+                side_effect=local_attempt,
+            ) as postprocess:
+                result = repair_manifest.repair_batch(peak)
+
+            manifest = json.loads((peak / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(postprocess.call_count, 2)
+        self.assertEqual(result["postprocessAttemptedCount"], 2)
+        self.assertEqual(result["postprocessRemainingCount"], 2)
+        self.assertFalse(result["postprocessBatchComplete"])
+        self.assertEqual(manifest["stageCounts"]["postprocessSucceededCount"], 2)
+        self.assertEqual(
+            [entry["status"] for entry in manifest["materials"][2:]],
+            ["pending", "pending"],
+        )
+
+    def test_download_checkpoint_survives_frame_extraction_failure(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            material_id = "m-1"
+            entry = {
+                "materialId": material_id,
+                "rank": 1,
+                "rpaStatus": "selected",
+                "postprocessStatus": "queued",
+                "status": "running",
+                "diagnosisRecordsPath": "diagnosis-records/m-1.json",
+                "summaryJson": None,
+                "summaryMd": None,
+                "timingsSec": {},
+            }
+            peak = write_manifest(root, entry)
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            (records_dir / "m-1.json").write_text(
+                json.dumps([{
+                    "recordType": "material_info",
+                    "materialId": material_id,
+                    "videoUrl": "https://video.example/m-1.mp4",
+                }]),
+                encoding="utf-8",
+            )
+
+            def interrupted_attempt(args, current):
+                args._postprocess_checkpoint(current["materialId"], {
+                    "postprocessStatus": "running",
+                    "postprocessSubstage": "frame_extraction",
+                    "videoPath": str(peak / "video-assets" / "m-1.mp4"),
+                    "videoBytes": 123,
+                    "videoSha256": "b" * 64,
+                    "timingsSec": {"videoDownloadSec": 2.0},
+                })
+                return {"result": None, "error": RuntimeError("frame extraction stopped")}
+
+            with patch.object(
+                repair_manifest.pipeline,
+                "_attempt_wave_postprocess",
+                side_effect=interrupted_attempt,
+            ):
+                result = repair_manifest.repair_batch(peak)
+
+            persisted = json.loads((peak / "batch-manifest.json").read_text(encoding="utf-8"))
+            repaired = persisted["materials"][0]
+
+        self.assertFalse(result["valid"])
+        self.assertEqual(repaired["videoBytes"], 123)
+        self.assertEqual(repaired["videoSha256"], "b" * 64)
+        self.assertEqual(repaired["postprocessSubstage"], "frame_extraction")
+        self.assertEqual(repaired["timingsSec"]["videoDownloadSec"], 2.0)
+
+    def test_failed_materials_do_not_starve_unattempted_materials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            peak = root / "peak-frames"
+            peak.mkdir()
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            entries = []
+            for index in range(4):
+                material_id = f"m-{index}"
+                entries.append({
+                    "materialId": material_id,
+                    "rank": index + 1,
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "failed" if index < 2 else "queued",
+                    "postprocessAttemptCount": 1 if index < 2 else 0,
+                    "postprocessAttempts": [],
+                    "status": "failed" if index < 2 else "pending",
+                    "diagnosisRecordsPath": f"diagnosis-records/{material_id}.json",
+                    "summaryJson": None,
+                    "summaryMd": None,
+                    "timingsSec": {},
+                })
+                (records_dir / f"{material_id}.json").write_text(
+                    json.dumps([{
+                        "recordType": "material_info",
+                        "materialId": material_id,
+                        "videoUrl": f"https://video.example/{material_id}.mp4",
+                    }]),
+                    encoding="utf-8",
+                )
+            (peak / "batch-manifest.json").write_text(
+                json.dumps({
+                    "schemaVersion": 2,
+                    "source": "rpa",
+                    "runId": "run-1",
+                    "targetTopN": 4,
+                    "candidateCount": 4,
+                    "candidateLimit": 4,
+                    "materialIds": [entry["materialId"] for entry in entries],
+                    "materials": entries,
+                    "submittedMaterials": entries,
+                    "selectedMaterials": entries,
+                    "rejectedMaterials": [],
+                    "cancelledMaterials": [],
+                }),
+                encoding="utf-8",
+            )
+            attempted = []
+
+            def local_attempt(_args, entry):
+                material_id = entry["materialId"]
+                attempted.append(material_id)
+                output = peak / material_id
+                output.mkdir()
+                summary_json = output / "summary.json"
+                summary_md = output / "summary.md"
+                summary_json.write_text(json.dumps({
+                    "materialId": material_id,
+                    "frames": [{"framePath": "peak.jpg"}],
+                    "warnings": [],
+                }), encoding="utf-8")
+                summary_md.write_text("summary\n", encoding="utf-8")
+                (output / "peak.jpg").write_bytes(b"\xff\xd8frame\xff\xd9")
+                return {"result": (output, summary_json, summary_md), "error": None}
+
+            with patch.object(
+                repair_manifest.pipeline,
+                "_attempt_wave_postprocess",
+                side_effect=local_attempt,
+            ):
+                result = repair_manifest.repair_batch(peak)
+            manifest = json.loads(
+                (peak / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertCountEqual(attempted, ["m-2", "m-3"])
+        self.assertEqual(result["postprocessRemainingCount"], 2)
+        self.assertEqual(
+            [entry["postprocessAttemptCount"] for entry in manifest["materials"]],
+            [1, 1, 1, 1],
+        )
+        self.assertTrue(
+            all(isinstance(entry["postprocessAttempts"], list) for entry in manifest["materials"])
+        )
+
+    def test_integer_postprocess_attempts_are_migrated_to_count_and_list(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            material_id = "m-legacy"
+            entry = {
+                "materialId": material_id,
+                "rank": 1,
+                "rpaStatus": "selected",
+                "postprocessStatus": "queued",
+                "postprocessAttempts": 3,
+                "status": "pending",
+                "diagnosisRecordsPath": f"diagnosis-records/{material_id}.json",
+                "summaryJson": None,
+                "summaryMd": None,
+                "timingsSec": {},
+            }
+            peak = write_manifest(root, entry)
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            (records_dir / f"{material_id}.json").write_text(
+                json.dumps([{
+                    "recordType": "material_info",
+                    "materialId": material_id,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                }]),
+                encoding="utf-8",
+            )
+
+            def local_attempt(_args, current):
+                output = peak / material_id
+                output.mkdir()
+                summary_json = output / "summary.json"
+                summary_md = output / "summary.md"
+                summary_json.write_text(json.dumps({
+                    "materialId": material_id,
+                    "frames": [{"framePath": "peak.jpg"}],
+                    "warnings": [],
+                }), encoding="utf-8")
+                summary_md.write_text("summary\n", encoding="utf-8")
+                (output / "peak.jpg").write_bytes(b"\xff\xd8frame\xff\xd9")
+                return {"result": (output, summary_json, summary_md), "error": None}
+
+            with patch.object(
+                repair_manifest.pipeline,
+                "_attempt_wave_postprocess",
+                side_effect=local_attempt,
+            ):
+                repair_manifest.repair_batch(peak)
+            repaired = json.loads(
+                (peak / "batch-manifest.json").read_text(encoding="utf-8")
+            )["materials"][0]
+
+        self.assertEqual(repaired["postprocessAttemptCount"], 4)
+        self.assertIsInstance(repaired["postprocessAttempts"], list)
+        self.assertEqual(len(repaired["postprocessAttempts"]), 1)
+        self.assertEqual(repaired["postprocessAttempts"][0]["status"], "succeeded")
 
     def test_repairs_records_when_manifest_status_claims_success_but_summary_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:

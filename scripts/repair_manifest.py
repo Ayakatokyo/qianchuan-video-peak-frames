@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
 
 import extract_peak_frames as pipeline
@@ -56,12 +57,44 @@ def _valid_summary(material_id, entry):
     return not errors
 
 
+def _normalize_postprocess_attempts(entry):
+    """Normalize the short-lived integer regression without losing its count."""
+    attempts = entry.get("postprocessAttempts")
+    count = entry.get("postprocessAttemptCount", 0)
+    if type(count) is not int or count < 0:
+        count = 0
+    if type(attempts) is int:
+        count = max(count, attempts)
+        attempts = []
+    elif not isinstance(attempts, list):
+        attempts = []
+    count = max(count, len(attempts))
+    entry["postprocessAttemptCount"] = count
+    entry["postprocessAttempts"] = attempts
+    return attempts
+
+
 def _default_postprocess(args, entry):
     attempt = pipeline._attempt_wave_postprocess(args, entry)
     if attempt["error"] is not None:
         raise attempt["error"]
     _result_dir, summary_json, summary_md = attempt["result"]
-    return {"summaryJson": str(summary_json), "summaryMd": str(summary_md)}
+    return {
+        "summaryJson": str(summary_json),
+        "summaryMd": str(summary_md),
+        "timingsSec": attempt.get("timingsSec"),
+        **{
+            key: attempt[key]
+            for key in (
+                "videoUrlSource",
+                "videoUrlFallbackReason",
+                "videoPath",
+                "videoBytes",
+                "videoSha256",
+            )
+            if key in attempt
+        },
+    }
 
 
 def _load_receipted_records(root, material_id):
@@ -170,12 +203,15 @@ def repair_batch(
     top_materials_json=None,
     postprocess=None,
     download_concurrency=2,
-    postprocess_concurrency=1,
+    postprocess_concurrency=2,
+    max_materials_per_run=2,
 ):
     if type(download_concurrency) is not int or download_concurrency <= 0:
         raise ValueError("download_concurrency must be a positive integer")
     if type(postprocess_concurrency) is not int or postprocess_concurrency <= 0:
         raise ValueError("postprocess_concurrency must be a positive integer")
+    if type(max_materials_per_run) is not int or max_materials_per_run <= 0:
+        raise ValueError("max_materials_per_run must be a positive integer")
     peak_dir = Path(peak_output_dir)
     root = peak_dir.parent
     manifest_path = peak_dir / "batch-manifest.json"
@@ -210,10 +246,12 @@ def repair_batch(
     actions = []
     errors = []
     pending_postprocess = []
+    checkpoint_lock = threading.RLock()
 
     def checkpoint():
-        _rebuild_manifest(manifest, materials, base_dir=peak_dir.parent)
-        write_json_atomically(manifest_path, manifest)
+        with checkpoint_lock:
+            _rebuild_manifest(manifest, materials, base_dir=peak_dir.parent)
+            write_json_atomically(manifest_path, manifest)
 
     def finalize_entry(raw_entry, entry, material_id, records):
         if entry.get("summaryJson") and entry.get("summaryMd"):
@@ -243,10 +281,39 @@ def repair_batch(
         raw_entry.update(entry)
 
     def apply_postprocess_result(entry, material_id, result=None, error=None):
+        finished_at = time.monotonic()
+        attempts = _normalize_postprocess_attempts(entry)
+        attempt = attempts[-1] if attempts else None
+        if attempt is not None:
+            attempt.update(
+                {
+                    "finishedAtSec": finished_at,
+                    "durationSec": max(
+                        0.0,
+                        finished_at - attempt.get("startedAtSec", finished_at),
+                    ),
+                    "substage": "postprocess",
+                }
+            )
         if error is None:
+            attempt_timings = result.get("timingsSec")
+            if isinstance(attempt_timings, dict):
+                entry["timingsSec"] = pipeline._merge_wave_postprocess_timings(
+                    entry.get("timingsSec", {}), attempt_timings
+                )
+            for key in (
+                "videoUrlSource",
+                "videoUrlFallbackReason",
+                "videoPath",
+                "videoBytes",
+                "videoSha256",
+            ):
+                if key in result:
+                    entry[key] = result[key]
             entry.update(
                 {
                     "postprocessStatus": "succeeded",
+                    "postprocessSubstage": "completed",
                     "postprocessSucceeded": True,
                     "status": "succeeded",
                     "summaryJson": str(Path(result["summaryJson"]).resolve()),
@@ -255,6 +322,8 @@ def repair_batch(
                     "errorMessage": None,
                 }
             )
+            if attempt is not None:
+                attempt["status"] = "succeeded"
             actions.append(
                 {"materialId": material_id, "action": "records_to_postprocess"}
             )
@@ -268,10 +337,19 @@ def repair_batch(
                 "errorMessage": str(error),
             }
         )
+        if attempt is not None:
+            attempt.update(
+                {
+                    "status": "failed",
+                    "errorType": type(error).__name__,
+                    "errorMessage": str(error),
+                }
+            )
         errors.append(f"{material_id}: postprocess repair failed: {error}")
 
     for raw_entry in materials:
         entry = dict(raw_entry)
+        _normalize_postprocess_attempts(entry)
         material_id = str(entry.get("materialId") or "").strip()
         if not material_id:
             errors.append("manifest material has no materialId")
@@ -345,7 +423,7 @@ def repair_batch(
                         {
                             "postprocessStatus": "queued",
                             "postprocessSucceeded": False,
-                            "status": "running",
+                            "status": "pending",
                         }
                     )
                     raw_entry.clear()
@@ -364,13 +442,66 @@ def repair_batch(
         finalize_entry(raw_entry, entry, material_id, records)
 
     if pending_postprocess:
-        # Checkpoint every material as queued before local work starts, then
-        # checkpoint each completion so an interrupted repair can resume from
-        # durable records/video/summary artifacts without repeating RPA.
+        # Prefer materials that have not yet had a local postprocess attempt.
+        # Manifest order remains rank-stable; only this bounded execution queue
+        # is rotated so a repeatedly failing item cannot starve later items.
+        pending_postprocess.sort(
+            key=lambda item: (
+                item[1].get("postprocessAttemptCount", 0),
+                int(item[1].get("rank") or 0),
+            )
+        )
+        queued_by_material = {
+            material_id: (raw_entry, entry)
+            for raw_entry, entry, material_id, _records in pending_postprocess
+        }
+
+        def checkpoint_postprocess(material_id, updates):
+            queued = queued_by_material.get(material_id)
+            if queued is None:
+                return
+            raw_entry, live_entry = queued
+            with checkpoint_lock:
+                current = dict(raw_entry)
+                incoming_timings = updates.get("timingsSec")
+                if isinstance(incoming_timings, dict):
+                    current_timings = dict(current.get("timingsSec") or {})
+                    current_timings.update(incoming_timings)
+                    current["timingsSec"] = current_timings
+                current.update(
+                    {key: value for key, value in updates.items() if key != "timingsSec"}
+                )
+                raw_entry.clear()
+                raw_entry.update(current)
+                live_entry.clear()
+                live_entry.update(current)
+                checkpoint()
+
+        args._postprocess_checkpoint = checkpoint_postprocess
+        attempted_postprocess = pending_postprocess[:max_materials_per_run]
+        for raw_entry, entry, _material_id, _records in attempted_postprocess:
+            started_at = time.monotonic()
+            attempts = _normalize_postprocess_attempts(entry)
+            entry["postprocessAttemptCount"] += 1
+            attempts.append(
+                {
+                    "phase": "parallel",
+                    "startedAtSec": started_at,
+                    "status": "running",
+                }
+            )
+            raw_entry["postprocessAttemptCount"] = entry[
+                "postprocessAttemptCount"
+            ]
+            raw_entry["postprocessAttempts"] = list(attempts)
+            entry["status"] = "running"
+            raw_entry["status"] = "running"
+        # Persist the bounded active set before local work starts, then
+        # checkpoint downloads and each completion independently.
         checkpoint()
         queue_workers = min(
-            len(pending_postprocess),
-            max(8, download_concurrency + postprocess_concurrency),
+            len(attempted_postprocess),
+            download_concurrency + postprocess_concurrency,
         )
         with ThreadPoolExecutor(max_workers=queue_workers) as executor:
             futures = {
@@ -380,20 +511,28 @@ def repair_batch(
                     material_id,
                     records,
                 )
-                for raw_entry, entry, material_id, records in pending_postprocess
+                for raw_entry, entry, material_id, records in attempted_postprocess
             }
             for future in as_completed(futures):
                 raw_entry, entry, material_id, records = futures[future]
-                try:
-                    result = future.result()
-                except Exception as exc:
-                    apply_postprocess_result(entry, material_id, error=exc)
-                else:
-                    apply_postprocess_result(entry, material_id, result=result)
-                finalize_entry(raw_entry, entry, material_id, records)
-                checkpoint()
+                with checkpoint_lock:
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        apply_postprocess_result(entry, material_id, error=exc)
+                    else:
+                        apply_postprocess_result(entry, material_id, result=result)
+                    finalize_entry(raw_entry, entry, material_id, records)
+                    checkpoint()
+        del args._postprocess_checkpoint
+    else:
+        attempted_postprocess = []
 
     checkpoint()
+    remaining_postprocess = sum(
+        not _valid_summary(material_id, dict(raw_entry))
+        for raw_entry, _entry, material_id, _records in pending_postprocess
+    )
     receipt = {
         "schemaVersion": 1,
         "manifestPath": str(manifest_path),
@@ -403,6 +542,10 @@ def repair_batch(
         "stageCounts": manifest["stageCounts"],
         "errors": errors,
         "valid": not errors,
+        "maxMaterialsPerRun": max_materials_per_run,
+        "postprocessAttemptedCount": len(attempted_postprocess),
+        "postprocessRemainingCount": remaining_postprocess,
+        "postprocessBatchComplete": remaining_postprocess == 0,
     }
     write_json_atomically(peak_dir / REPAIR_RECEIPT_NAME, receipt)
     return receipt
@@ -415,7 +558,8 @@ def build_parser():
     parser.add_argument("--diagnosis-csv-dir")
     parser.add_argument("--top-materials-json")
     parser.add_argument("--download-concurrency", type=int, default=2)
-    parser.add_argument("--postprocess-concurrency", type=int, default=1)
+    parser.add_argument("--postprocess-concurrency", type=int, default=2)
+    parser.add_argument("--max-materials-per-run", type=int, default=2)
     return parser
 
 
@@ -429,12 +573,14 @@ def main(argv=None):
             top_materials_json=args.top_materials_json,
             download_concurrency=args.download_concurrency,
             postprocess_concurrency=args.postprocess_concurrency,
+            max_materials_per_run=args.max_materials_per_run,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"repair-manifest failed: {exc}")
         return 2
     print(f"repair_manifest={Path(args.output_dir) / REPAIR_RECEIPT_NAME}")
     print("stage_counts=" + json.dumps(receipt["stageCounts"], sort_keys=True))
+    print(f"postprocess_remaining={receipt['postprocessRemainingCount']}")
     return 0 if receipt["valid"] else 5
 
 

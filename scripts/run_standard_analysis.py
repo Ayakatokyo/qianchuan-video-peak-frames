@@ -156,6 +156,10 @@ def main(argv=None):
             result = cleanup_original_videos(args.output_dir, mode=args.mode)
             print(json.dumps(result, ensure_ascii=False))
             return 2 if result['status'] == 'partial' else 0
+        if args.command == "status":
+            from workflow_status import standard_run_status
+            print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
+            return 0
         if args.command in {"prepare-local", "assemble-analysis"}:
             ensure_prepare_dependencies(allow_install=False)
         else:
@@ -181,8 +185,16 @@ def main(argv=None):
             )
             artifacts = summary["artifacts"]
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
-            print(f"diagnostic_analysis_prompt={Path(args.output_dir) / artifacts['diagnosticPrompt']}")
-            print(f"analysis_unit_manifest={Path(args.output_dir) / artifacts['analysisUnitManifest']}")
+            if summary.get("status") == "interrupted" and summary.get(
+                "activeStage"
+            ) == "local_postprocess":
+                print(
+                    "postprocess_recovery="
+                    + json.dumps(summary["postprocessRecovery"], sort_keys=True)
+                )
+            else:
+                print(f"diagnostic_analysis_prompt={Path(args.output_dir) / artifacts['diagnosticPrompt']}")
+                print(f"analysis_unit_manifest={Path(args.output_dir) / artifacts['analysisUnitManifest']}")
         elif args.command == "fetch-metadata":
             workflow.fetch_report_metadata(
                 workflow.WorkflowRequest(
@@ -222,8 +234,6 @@ def main(argv=None):
             print(json.dumps(workflow.assemble_analysis(
                 Path(args.output_dir) / "diagnostic-analysis", args.part, args.analysis_json,
             ), ensure_ascii=False))
-        else:
-            print(json.dumps(workflow.standard_run_status(args.output_dir), ensure_ascii=False))
     except DependencyBootstrapError as exc:
         print(f"dependencies: {exc}", file=sys.stderr)
         return 2

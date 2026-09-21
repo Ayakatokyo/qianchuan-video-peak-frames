@@ -36,6 +36,7 @@ _safe_component = safe_component
 
 
 FinalReportError = ReportRenderingError
+REPORT_BUILD_RECEIPT_NAME = "report-build-receipt.json"
 
 
 class AIQualityError(FinalReportError):
@@ -2281,6 +2282,124 @@ def load_top_material_roi_facts(peak_output_dir):
     )
 
 
+def _report_build_input_sha256(
+    top_materials_json,
+    peak_output_dir,
+    diagnosis_records_dir,
+    analysis_json,
+    quality_review,
+    *,
+    embed_assets,
+    copy_assets,
+    require_ai_quality,
+    require_local_video_assets,
+):
+    """Hash bounded report inputs and renderer sources, never large media files."""
+    candidates = {
+        Path(top_materials_json),
+        Path(__file__),
+        Path(__file__).with_name("highlight_export.py"),
+        Path(__file__).with_name("report_renderer.py"),
+        Path(__file__).with_name("qianchuan_presentation.py"),
+    }
+    if analysis_json:
+        analysis_path = Path(analysis_json)
+        candidates.add(analysis_path)
+        for name in (
+            "analysis-input-index.json",
+            "frame-review-progress.json",
+            "analysis-assembly.json",
+        ):
+            candidates.add(analysis_path.parent / name)
+        candidates.update((analysis_path.parent / "analysis-units").glob("*.json"))
+    if quality_review:
+        candidates.add(Path(quality_review))
+    peak_root = Path(peak_output_dir)
+    for name in (
+        "batch-manifest.json",
+        "batch-verification.json",
+        "top-material-roi-facts-v1.json",
+    ):
+        candidates.add(peak_root / name)
+    candidates.update(peak_root.glob("*/summary.json"))
+    candidates.update(Path(diagnosis_records_dir).glob("*.json"))
+    assets_root = Path(__file__).resolve().parents[1] / "assets" / "report"
+    if assets_root.is_dir():
+        candidates.update(path for path in assets_root.rglob("*") if path.is_file())
+
+    digest = hashlib.sha256()
+    digest.update(
+        json.dumps(
+            {
+                "embedAssets": embed_assets,
+                "copyAssets": copy_assets,
+                "requireAiQuality": require_ai_quality,
+                "requireLocalVideoAssets": require_local_video_assets,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    manifest_path = (peak_root / "batch-manifest.json").resolve()
+    for path in sorted({item.resolve() for item in candidates if item.is_file()}, key=str):
+        digest.update(str(path).encode("utf-8"))
+        if path == manifest_path:
+            try:
+                manifest_input = json.loads(path.read_text(encoding="utf-8"))
+                manifest_input.pop("reportReady", None)
+                counts = manifest_input.get("stageCounts")
+                if isinstance(counts, dict):
+                    counts["reportReadyCount"] = 0
+                digest.update(
+                    json.dumps(
+                        manifest_input,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                )
+                continue
+            except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+                pass
+        with path.open("rb") as source:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_report_build_receipt(output_dir):
+    return _load_report_artifact(Path(output_dir) / REPORT_BUILD_RECEIPT_NAME)
+
+
+def report_build_stage_complete(output_dir, stage, input_sha256, artifacts):
+    receipt = _read_report_build_receipt(output_dir)
+    stage_state = (receipt.get("stages") or {}).get(stage)
+    return bool(
+        receipt.get("schemaVersion") == 1
+        and receipt.get("inputSha256") == input_sha256
+        and isinstance(stage_state, dict)
+        and stage_state.get("status") == "complete"
+        and all(Path(path).is_file() for path in artifacts)
+    )
+
+
+def mark_report_build_stage(output_dir, input_sha256, stage, **details):
+    output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
+    receipt = _read_report_build_receipt(output_root)
+    if receipt.get("inputSha256") != input_sha256:
+        receipt = {"schemaVersion": 1, "inputSha256": input_sha256, "stages": {}}
+    receipt.setdefault("stages", {})[stage] = {"status": "complete", **details}
+    atomic_write_text(
+        output_root / REPORT_BUILD_RECEIPT_NAME,
+        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n",
+    )
+    return receipt
+
+
 def generate_final_report(
     top_materials_json,
     peak_output_dir,
@@ -2293,62 +2412,131 @@ def generate_final_report(
     require_local_video_assets=False,
     quality_review=None,
 ):
-    legacy_data, conclusion = _prepare_report_data(
-        top_materials_json,
-        peak_output_dir,
-        diagnosis_records_dir,
-        analysis_json,
-    )
-    if require_ai_quality:
-        quality = _review_analysis_quality(conclusion, legacy_data, analysis_json, quality_review)
-        if quality["analysisStatus"] != "valid":
-            raise FinalReportError("AI quality review required; run validate-analysis and review its findings")
-        legacy_data["analysisQuality"] = quality
     output_root = Path(output_dir)
+    output_root.mkdir(parents=True, exist_ok=True)
     data_path = output_root / "final-report-data.json"
     display_facts_path = output_root / "report-display-facts.json"
     presentation_path = output_root / "presentation-report.json"
     html_path = output_root / "final-report.html"
-    from qianchuan_presentation import build_presentation_report
-
-    chapter05_facts = {}
-    if analysis_json:
-        chapter05_path = Path(analysis_json).parent / "analysis-units" / "chapter05-material-input.json"
-        if chapter05_path.is_file():
-            chapter05_facts = _read_json(chapter05_path, "Chapter 05 material facts")
-    presentation = build_presentation_report(
-        {**legacy_data, "chapter05Facts": chapter05_facts}
-    )
-    data = {"presentation": presentation, **legacy_data}
-    data = materialize_report_video_assets(
-        data,
+    input_sha256 = _report_build_input_sha256(
+        top_materials_json,
         peak_output_dir,
-        output_root,
+        diagnosis_records_dir,
+        analysis_json,
+        quality_review,
+        embed_assets=embed_assets,
+        copy_assets=copy_assets,
+        require_ai_quality=require_ai_quality,
         require_local_video_assets=require_local_video_assets,
     )
-    export_path = export_highlight_workbook(
-        legacy_data, presentation, output_root / "highlight-frames.xlsx"
-    )
-    if export_path is not None:
-        data["highlightExportHref"] = export_path.name
-    atomic_write_text(
-        data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    )
-    atomic_write_text(
-        display_facts_path,
-        json.dumps(data.get("displayFacts", {}), ensure_ascii=False, indent=2) + "\n",
-    )
-    atomic_write_text(
-        presentation_path, json.dumps(presentation, ensure_ascii=False, indent=2) + "\n"
-    )
-    atomic_write_text(
-        html_path,
-        render_html_report(
+    from qianchuan_presentation import build_presentation_report
+
+    if report_build_stage_complete(
+        output_root,
+        "reportData",
+        input_sha256,
+        (data_path, display_facts_path, presentation_path),
+    ):
+        data = _read_json(data_path, "final report data")
+        presentation = _read_json(presentation_path, "presentation report")
+        legacy_data = data
+    else:
+        legacy_data, conclusion = _prepare_report_data(
+            top_materials_json,
+            peak_output_dir,
+            diagnosis_records_dir,
+            analysis_json,
+        )
+        if require_ai_quality:
+            quality = _review_analysis_quality(
+                conclusion, legacy_data, analysis_json, quality_review
+            )
+            if quality["analysisStatus"] != "valid":
+                raise FinalReportError(
+                    "AI quality review required; run validate-analysis and review its findings"
+                )
+            legacy_data["analysisQuality"] = quality
+        chapter05_facts = {}
+        if analysis_json:
+            chapter05_path = (
+                Path(analysis_json).parent
+                / "analysis-units"
+                / "chapter05-material-input.json"
+            )
+            if chapter05_path.is_file():
+                chapter05_facts = _read_json(
+                    chapter05_path, "Chapter 05 material facts"
+                )
+        presentation = build_presentation_report(
+            {**legacy_data, "chapter05Facts": chapter05_facts}
+        )
+        data = {"presentation": presentation, **legacy_data}
+        data = materialize_report_video_assets(
             data,
+            peak_output_dir,
             output_root,
-            embed_assets=embed_assets,
-            copy_assets=copy_assets,
-            contains_execution_process_term=_contains_execution_process_term,
-        ),
+            require_local_video_assets=require_local_video_assets,
+        )
+        atomic_write_text(
+            data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+        )
+        atomic_write_text(
+            display_facts_path,
+            json.dumps(data.get("displayFacts", {}), ensure_ascii=False, indent=2)
+            + "\n",
+        )
+        atomic_write_text(
+            presentation_path,
+            json.dumps(presentation, ensure_ascii=False, indent=2) + "\n",
+        )
+        mark_report_build_stage(
+            output_root,
+            input_sha256,
+            "reportData",
+            artifacts=[path.name for path in (data_path, display_facts_path, presentation_path)],
+        )
+
+    export_target = output_root / "highlight-frames.xlsx"
+    workbook_reusable = report_build_stage_complete(
+        output_root,
+        "workbook",
+        input_sha256,
+        (export_target,) if data.get("highlightExportHref") else (),
     )
+    if not workbook_reusable:
+        export_path = export_highlight_workbook(
+            legacy_data, presentation, export_target
+        )
+        if export_path is not None:
+            data["highlightExportHref"] = export_path.name
+        else:
+            data.pop("highlightExportHref", None)
+            export_target.unlink(missing_ok=True)
+        atomic_write_text(
+            data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+        )
+        mark_report_build_stage(
+            output_root,
+            input_sha256,
+            "workbook",
+            artifact=export_path.name if export_path is not None else None,
+        )
+
+    if not report_build_stage_complete(
+        output_root, "html", input_sha256, (html_path,)
+    ):
+        atomic_write_text(
+            html_path,
+            render_html_report(
+                data,
+                output_root,
+                embed_assets=embed_assets,
+                copy_assets=copy_assets,
+                contains_execution_process_term=_contains_execution_process_term,
+            ),
+        )
+        mark_report_build_stage(
+            output_root, input_sha256, "html", artifact=html_path.name
+        )
+    data["reportBuildInputSha256"] = input_sha256
     return data_path, html_path, data

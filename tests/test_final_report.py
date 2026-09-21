@@ -1,4 +1,5 @@
 import json
+import io
 from pathlib import Path
 import sys
 import tempfile
@@ -26,7 +27,9 @@ from final_report_lib import (  # noqa: E402
     _validate_custom_classification,
 )
 from final_report_lib import generate_final_report  # noqa: E402
+import final_report_lib  # noqa: E402
 import report_renderer  # noqa: E402
+from highlight_export import export_highlight_workbook  # noqa: E402
 from report_renderer import create_report_archive, report_data_for_template  # noqa: E402
 
 
@@ -66,6 +69,157 @@ def write_diagnosis_csv(path, records):
 
 
 class FinalReportArchiveTests(unittest.TestCase):
+    def test_report_build_fingerprint_ignores_only_report_ready_mutation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top.json"
+            top_path.write_text('{"materials": []}', encoding="utf-8")
+            peak_dir = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            peak_dir.mkdir()
+            records_dir.mkdir()
+            manifest_path = peak_dir / "batch-manifest.json"
+            manifest = {
+                "schemaVersion": 2,
+                "runId": "run-1",
+                "stageCounts": {"postprocessSucceededCount": 1, "reportReadyCount": 0},
+            }
+            write_json(manifest_path, manifest)
+
+            def fingerprint():
+                return final_report_lib._report_build_input_sha256(
+                    top_path,
+                    peak_dir,
+                    records_dir,
+                    None,
+                    None,
+                    embed_assets=False,
+                    copy_assets=True,
+                    require_ai_quality=True,
+                    require_local_video_assets=True,
+                )
+
+            before = fingerprint()
+            manifest["stageCounts"]["reportReadyCount"] = 1
+            manifest["reportReady"] = {"status": "ready", "dataPath": "data", "htmlPath": "html"}
+            write_json(manifest_path, manifest)
+            after = fingerprint()
+
+        self.assertEqual(before, after)
+
+    def test_report_retry_reuses_data_checkpoint_after_workbook_interruption(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top.json"
+            top_path.write_text('{"materials": []}', encoding="utf-8")
+            peak_dir = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            output_dir = root / "final-report"
+            peak_dir.mkdir()
+            records_dir.mkdir()
+            legacy_data = {"status": "complete", "materials": [], "displayFacts": {}}
+            presentation = {"chapters": {}}
+
+            with patch.object(
+                final_report_lib,
+                "_prepare_report_data",
+                return_value=(legacy_data, None),
+            ), patch(
+                "qianchuan_presentation.build_presentation_report",
+                return_value=presentation,
+            ), patch.object(
+                final_report_lib,
+                "materialize_report_video_assets",
+                side_effect=lambda data, *_args, **_kwargs: data,
+            ), patch.object(
+                final_report_lib,
+                "export_highlight_workbook",
+                side_effect=RuntimeError("workbook interrupted"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "workbook interrupted"):
+                    generate_final_report(
+                        top_path, peak_dir, records_dir, output_dir
+                    )
+
+            receipt = json.loads(
+                (output_dir / "report-build-receipt.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(receipt["stages"]["reportData"]["status"], "complete")
+            self.assertTrue((output_dir / "final-report-data.json").is_file())
+            self.assertNotIn("workbook", receipt["stages"])
+
+            def write_workbook(_data, _presentation, output_path):
+                Path(output_path).write_bytes(b"xlsx")
+                return Path(output_path)
+
+            with patch.object(
+                final_report_lib,
+                "_prepare_report_data",
+                side_effect=AssertionError("report data must be reused"),
+            ), patch.object(
+                final_report_lib,
+                "export_highlight_workbook",
+                side_effect=write_workbook,
+            ), patch.object(
+                final_report_lib,
+                "render_html_report",
+                return_value="<main>report</main>",
+            ):
+                data_path, html_path, data = generate_final_report(
+                    top_path, peak_dir, records_dir, output_dir
+                )
+
+            receipt = json.loads(
+                (output_dir / "report-build-receipt.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(data_path.is_file())
+            self.assertTrue(html_path.is_file())
+            self.assertEqual(data["highlightExportHref"], "highlight-frames.xlsx")
+            self.assertEqual(receipt["stages"]["workbook"]["status"], "complete")
+            self.assertEqual(receipt["stages"]["html"]["status"], "complete")
+
+    def test_highlight_workbook_embeds_bounded_thumbnails_not_full_frames(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            frame_path = root / "large-frame.png"
+            Image.new("RGB", (1600, 900), color=(180, 70, 40)).save(frame_path)
+            output_path = root / "highlight-frames.xlsx"
+            frame_ref = "highlight:m-1:peak_top_1"
+            frame = {
+                "frameRef": frame_ref,
+                "rankType": "peak_top_1",
+                "durationSec": 1,
+                "metricValue": 9,
+                "framePath": str(frame_path),
+            }
+            data = {
+                "materials": [{"materialId": "m-1", "rank": 1, "materialName": "素材", "highlightFrames": [frame]}]
+            }
+            presentation = {
+                "materials": data["materials"],
+                "chapters": {
+                    "chapter04": {"groups": {"product": {"frameRefs": [frame_ref]}}},
+                    "chapter05": {"materials": [{
+                        "materialId": "m-1",
+                        "highlight": {"frames": [frame]},
+                    }]},
+                },
+            }
+
+            export_highlight_workbook(data, presentation, output_path)
+
+            with zipfile.ZipFile(output_path) as archive:
+                media = [name for name in archive.namelist() if name.startswith("xl/media/")]
+                dimensions = []
+                for name in media:
+                    with Image.open(io.BytesIO(archive.read(name))) as embedded:
+                        dimensions.append(embedded.size)
+
+        self.assertGreaterEqual(len(dimensions), 2)
+        self.assertTrue(all(max(size) <= 112 for size in dimensions))
+
     def test_report_materializes_persisted_video_as_relative_preview_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -278,6 +432,65 @@ class FinalReportArchiveTests(unittest.TestCase):
                     archive.read("final-report/assets/videos/m-1.mp4"),
                     b"persistent-mp4",
                 )
+                self.assertEqual(
+                    archive.getinfo("final-report/assets/videos/m-1.mp4").compress_type,
+                    zipfile.ZIP_STORED,
+                )
+
+    def test_custom_archive_path_outside_report_parent_keeps_source_validation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_dir = root / "run" / "final-report"
+            report_dir.mkdir(parents=True)
+            (report_dir / "final-report.html").write_text(
+                "<main></main>", encoding="utf-8"
+            )
+            (report_dir / "final-report-data.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            (report_dir / "presentation-report.json").write_text(
+                "{}", encoding="utf-8"
+            )
+            archive_path = root / "delivery" / "report.zip"
+            archive_path.parent.mkdir()
+
+            created = create_report_archive(report_dir, archive_path)
+
+        self.assertEqual(created, archive_path.resolve())
+
+    def test_report_reuses_unchanged_materialized_video_on_finalize_retry(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            peak_output_dir = root / "peak-frames"
+            source = peak_output_dir / "video-assets" / "m-1.mp4"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"persistent-mp4")
+            report_dir = root / "final-report"
+            data = {"materials": [{
+                "materialId": "m-1",
+                "video": {"src": "https://signed.example/m-1.mp4"},
+            }]}
+
+            report_renderer.materialize_report_video_assets(
+                data, peak_output_dir, report_dir
+            )
+            target = report_dir / "assets" / "videos" / "m-1.mp4"
+            target_mtime = target.stat().st_mtime_ns
+            with patch.object(
+                report_renderer,
+                "_copy_and_hash_video_asset",
+                wraps=report_renderer._copy_and_hash_video_asset,
+            ) as copy_video:
+                report_renderer.materialize_report_video_assets(
+                    data, peak_output_dir, report_dir
+                )
+
+            manifest = json.loads(
+                (peak_output_dir / "report-video-assets.json").read_text(encoding="utf-8")
+            )
+
+        copy_video.assert_not_called()
+        self.assertEqual(target_mtime, manifest["materials"][0]["previewMtimeNs"])
 
     def test_rejects_archive_when_referenced_local_image_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:

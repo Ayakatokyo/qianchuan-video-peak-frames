@@ -15,7 +15,12 @@ from video_resource_cleanup import cleanup_original_videos
 import export_top_materials
 import extract_peak_frames
 from diagnostic_analysis_lib import prepare_diagnostic_analysis
-from final_report_lib import generate_final_report, validate_standard_ai_analysis
+from final_report_lib import (
+    generate_final_report,
+    mark_report_build_stage,
+    report_build_stage_complete,
+    validate_standard_ai_analysis,
+)
 from qianchuan_report_client import fetch_material_report_metadata
 from report_renderer import create_report_archive
 from batch_runtime import (
@@ -29,6 +34,7 @@ from batch_runtime import (
 from repair_manifest import repair_batch as repair_retained_batch
 from top_material_roi_lib import write_top_material_roi_facts
 from top_material_roi_lib import build_top_material_roi_payload
+from workflow_status import standard_run_status
 
 
 SUMMARY_NAME = "run-summary.json"
@@ -231,76 +237,6 @@ def _write_running(request, paths, stage):
     ))
 
 
-def standard_run_status(output_dir):
-    paths = workflow_paths(output_dir)
-    summary = read_json(paths["summary"])
-    if not isinstance(summary, dict):
-        summary = {}
-    manifest = read_json(paths["peak_frames"] / "batch-manifest.json")
-    stage_counts = manifest.get("stageCounts", {}) if isinstance(manifest, dict) else {}
-    if not isinstance(stage_counts, dict):
-        stage_counts = {}
-
-    lock = None
-    workflow_lock_state = "missing"
-    summary_path = str(paths["summary"].resolve())
-    lock_root = paths["root"].parent / ".qianchuan-workflow-locks"
-    if lock_root.is_dir():
-        for lock_path in lock_root.glob("*.lock"):
-            payload = read_json(lock_path)
-            if not isinstance(payload, dict):
-                continue
-            manifest_path = payload.get("manifestPath")
-            if manifest_path and str(Path(manifest_path).resolve()) == summary_path:
-                lock = payload
-                workflow_lock_state, _payload = run_lock_state(lock_path)
-                break
-
-    batch_lock_path = paths["peak_frames"] / ".batch-run.lock"
-    batch_lock_state, batch_lock = run_lock_state(batch_lock_path)
-    observed_lock_state = (
-        "active"
-        if "active" in {workflow_lock_state, batch_lock_state}
-        else workflow_lock_state
-        if workflow_lock_state != "missing"
-        else batch_lock_state
-    )
-    persisted_status = summary.get("status", "not_started")
-    workflow_status = (
-        "interrupted"
-        if persisted_status == "running" and observed_lock_state != "active"
-        else persisted_status
-    )
-    progress_path = paths["peak_frames"] / "batch-progress.jsonl"
-    last_progress = None
-    if progress_path.is_file():
-        try:
-            lines = [line for line in progress_path.read_text(encoding="utf-8").splitlines() if line]
-            if lines:
-                last_progress = json.loads(lines[-1])
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            last_progress = None
-
-    return {
-        "workflowStatus": workflow_status,
-        "persistedWorkflowStatus": persisted_status,
-        "activeStage": summary.get("activeStage"),
-        "lock": lock or batch_lock,
-        "lockState": observed_lock_state,
-        "workflowLockState": workflow_lock_state,
-        "batchLockState": batch_lock_state,
-        "recoveryRequired": workflow_status == "interrupted",
-        "progressLog": str(progress_path) if progress_path.is_file() else None,
-        "lastProgress": last_progress,
-        "rpaRequestCount": stage_counts.get("rpaRequestCount", 0),
-        "rpaAcceptedCount": stage_counts.get("rpaAcceptedCount", 0),
-        "rpaSelectedCount": stage_counts.get("rpaSelectedCount", 0),
-        "recordsPersistedCount": stage_counts.get("recordsPersistedCount", 0),
-        "postprocessSucceededCount": stage_counts.get("postprocessSucceededCount", 0),
-        "reportReadyCount": stage_counts.get("reportReadyCount", 0),
-    }
-
-
 def validate_ready_materials(paths, top_n):
     ready = read_json(paths["peak_frames"] / READY_MATERIALS_NAME)
     materials = ready.get("materials") if isinstance(ready, dict) else None
@@ -476,12 +412,47 @@ def resume_standard_run(
         with acquire_workflow_lock(request, output_dir, reclaim_stale=True):
             recovery_started = True
             _write_running(request, paths, "recovery")
-            repair_batch(
-                paths["peak_frames"],
-                diagnosis_records_dir=paths["records"],
-                diagnosis_csv_dir=paths["root"] / "diagnosis-csv",
-                top_materials_json=paths["top_materials"],
-            )
+            repair_batches = 0
+            repaired_materials = 0
+            previous_remaining = None
+            while True:
+                repair_receipt = repair_batch(
+                    paths["peak_frames"],
+                    diagnosis_records_dir=paths["records"],
+                    diagnosis_csv_dir=paths["root"] / "diagnosis-csv",
+                    top_materials_json=paths["top_materials"],
+                )
+                repair_batches += 1
+                repaired_materials += repair_receipt.get(
+                    "postprocessAttemptedCount", 0
+                )
+                if repair_receipt.get("rpaCalls", 0) != 0:
+                    raise StandardWorkflowError(
+                        "recovery", "local retained-artifact repair attempted RPA"
+                    )
+                if not repair_receipt.get("valid", False):
+                    repair_errors = repair_receipt.get("errors") or []
+                    detail = "; ".join(str(item) for item in repair_errors[:3])
+                    if len(repair_errors) > 3:
+                        detail += f"; and {len(repair_errors) - 3} more"
+                    raise StandardWorkflowError(
+                        "recovery",
+                        "retained artifact repair is invalid"
+                        + (f": {detail}" if detail else ""),
+                    )
+                remaining = repair_receipt.get("postprocessRemainingCount", 0)
+                if repair_receipt.get("postprocessBatchComplete") is not False:
+                    break
+                attempted = repair_receipt.get("postprocessAttemptedCount", 0)
+                if attempted <= 0 or (
+                    previous_remaining is not None
+                    and remaining >= previous_remaining
+                ):
+                    raise StandardWorkflowError(
+                        "recovery",
+                        "local postprocess made no progress; stopped to avoid an infinite recovery loop",
+                    )
+                previous_remaining = remaining
             batch_arguments = [
                 "--source", "rpa",
                 "--top-materials-json", str(paths["top_materials"]),
@@ -526,6 +497,12 @@ def resume_standard_run(
                     paths["analysis"] / "analysis-units" / "analysis-unit-manifest.json"
                 ),
             )
+            summary["postprocessRecovery"] = {
+                "rpaCalls": 0,
+                "batchCount": repair_batches,
+                "attemptedCount": repaired_materials,
+                "remainingCount": 0,
+            }
             write_run_summary(paths["summary"], summary)
             return summary
     except WorkflowLockError:
@@ -717,14 +694,20 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
         advertiser_id=request_payload.get("advertiserId", ""),
         shop_id=request_payload.get("shopId", ""),
     ) if isinstance(request_payload, dict) else None
+    resumable_report = (
+        summary.get("status") == "running"
+        and summary.get("activeStage") == "report"
+    )
     try:
         _validate_request(request)
-        if summary.get("status") != "analysis_pending":
+        if summary.get("status") != "analysis_pending" and not resumable_report:
             raise StandardWorkflowError("report", "run is not awaiting AI analysis")
         analysis_path = Path(analysis_json)
         if not analysis_path.is_file():
             raise StandardWorkflowError("report", "analysis JSON is missing")
-        with acquire_workflow_lock(request, output_dir):
+        with acquire_workflow_lock(
+            request, output_dir, reclaim_stale=resumable_report
+        ):
             # The production path binds validation and rendering to the same bytes.
             candidate_hash = file_hash(analysis_path)
             frozen_inputs = None
@@ -764,8 +747,25 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
                 raise StandardWorkflowError("report", str(exc)) from exc
             if not mark_ready(paths["peak_frames"] / "batch-manifest.json", data_path, html_path):
                 raise StandardWorkflowError("report", "final report failed manifest validation")
+            report_input_sha256 = _data.get("reportBuildInputSha256")
+            expected_archive = paths["report"].parent / f"{paths['report'].name}.zip"
             try:
-                archive_path = create_report_archive(paths["report"])
+                if report_input_sha256 and report_build_stage_complete(
+                    paths["report"],
+                    "archive",
+                    report_input_sha256,
+                    (expected_archive,),
+                ):
+                    archive_path = expected_archive
+                else:
+                    archive_path = create_report_archive(paths["report"])
+                    if report_input_sha256:
+                        mark_report_build_stage(
+                            paths["report"],
+                            report_input_sha256,
+                            "archive",
+                            artifact=str(archive_path),
+                        )
             except Exception as exc:
                 raise StandardWorkflowError("report", str(exc)) from exc
             analysis_unit_manifest = (
@@ -784,13 +784,8 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
             )
             completed["analysisQuality"] = _data.get("analysisQuality", {})
             write_run_summary(paths["summary"], completed)
-            # New frozen-input runs use validated cleanup. Historical runs keep
-            # their sources unless the caller explicitly opts in.
-            index_path = paths["analysis"] / "analysis-input-index.json"
             mode = video_cleanup or "keep"
             try:
-                if video_cleanup is None and index_path.is_file() and read_object(index_path).get("schemaVersion") == 2:
-                    mode = "delete"
                 cleanup_original_videos(output_dir, mode=mode)
             except Exception as exc:
                 # Delivery is already complete. A cleanup/receipt failure must
@@ -802,7 +797,8 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
         raise
     except StandardWorkflowError as exc:
         status = "analysis_pending" if (
-            summary.get("status") == "analysis_pending" and exc.stage in {"analysis", "report"}
+            (summary.get("status") == "analysis_pending" or resumable_report)
+            and exc.stage in {"analysis", "report"}
         ) else "failed"
         _write_failure(request, paths, exc.stage, str(exc), status=status)
         raise

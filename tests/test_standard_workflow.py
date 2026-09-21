@@ -510,6 +510,151 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertNotIn("--resume", calls[2][1])
         self.assertEqual(calls[0][2]["diagnosis_records_dir"], root / "diagnosis-records")
 
+    def test_resume_drains_bounded_local_postprocess_chunks_in_one_call(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "top_materials.json").write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                encoding="utf-8",
+            )
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "interrupted",
+                    "activeStage": "recovery",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            remaining = iter((7, 5, 3, 1, 0))
+
+            def repair_batch(_peak_dir, **_kwargs):
+                calls.append("repair")
+                current = next(remaining)
+                return {
+                    "valid": True,
+                    "rpaCalls": 0,
+                    "postprocessAttemptedCount": 1 if current == 0 else 2,
+                    "postprocessRemainingCount": current,
+                    "postprocessBatchComplete": current == 0,
+                }
+
+            with patch.object(standard_workflow, "validate_ready_materials"), patch.object(
+                standard_workflow, "write_top_material_roi_facts"
+            ):
+                summary = standard_workflow.resume_standard_run(
+                    self.request(),
+                    root,
+                    extract_main=lambda argv: calls.append(
+                        "verify" if "--verify" in argv else "resume"
+                    ) or 0,
+                    repair_batch=repair_batch,
+                    prepare_facts=lambda **_kwargs: (
+                        root / "diagnostic-analysis" / "prompt.md",
+                        {},
+                    ),
+                )
+            persisted = json.loads(
+                (root / "run-summary.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(calls, ["repair"] * 5 + ["resume", "verify"])
+        self.assertEqual(summary["status"], "analysis_pending")
+        self.assertEqual(summary["postprocessRecovery"]["batchCount"], 5)
+        self.assertEqual(summary["postprocessRecovery"]["attemptedCount"], 9)
+        self.assertEqual(summary["postprocessRecovery"]["rpaCalls"], 0)
+        self.assertEqual(summary["postprocessRecovery"]["remainingCount"], 0)
+        self.assertEqual(persisted, summary)
+
+    def test_resume_stops_when_bounded_repair_makes_no_progress(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "top_materials.json").write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                encoding="utf-8",
+            )
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "interrupted",
+                    "activeStage": "recovery",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            with self.assertRaisesRegex(
+                standard_workflow.StandardWorkflowError, "made no progress"
+            ):
+                standard_workflow.resume_standard_run(
+                    self.request(),
+                    root,
+                    extract_main=lambda _argv: self.fail("RPA resume must not run"),
+                    repair_batch=lambda *_args, **_kwargs: {
+                        "valid": True,
+                        "rpaCalls": 0,
+                        "postprocessAttemptedCount": 0,
+                        "postprocessRemainingCount": 1,
+                        "postprocessBatchComplete": False,
+                    },
+                    prepare_facts=lambda **_kwargs: self.fail("facts must not run"),
+                )
+
+    def test_resume_stops_when_repair_is_invalid_without_remaining_postprocess(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "top_materials.json").write_text(
+                json.dumps({"materials": [{"materialId": "m-1"}]}),
+                encoding="utf-8",
+            )
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "interrupted",
+                    "activeStage": "recovery",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            def repair_batch(_peak_dir, **_kwargs):
+                calls.append("repair")
+                return {
+                    "valid": False,
+                    "rpaCalls": 0,
+                    "errors": ["m-1: retained records are unreadable"],
+                    "postprocessRemainingCount": 0,
+                    "postprocessBatchComplete": True,
+                }
+
+            with self.assertRaisesRegex(
+                standard_workflow.StandardWorkflowError,
+                "retained artifact repair is invalid",
+            ):
+                standard_workflow.resume_standard_run(
+                    self.request(),
+                    root,
+                    extract_main=lambda _argv: calls.append("extract") or 0,
+                    repair_batch=repair_batch,
+                    prepare_facts=lambda **_kwargs: self.fail("facts must not run"),
+                )
+            persisted = json.loads(
+                (root / "run-summary.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(calls, ["repair"])
+        self.assertEqual(persisted["status"], "interrupted")
+        self.assertEqual(persisted["failure"]["stage"], "recovery")
+
     def test_resume_request_mismatch_preserves_existing_run_summary(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -850,16 +995,83 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertIsNone(completed["failure"])
         self.assertEqual(persisted, completed)
 
+    def test_finalize_resumes_stale_running_report_stage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text('{"schemaVersion": 2}', encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "running",
+                    "activeStage": "report",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            summary = standard_workflow.finalize_standard_run(
+                root,
+                analysis_json,
+                render_report=lambda **_kwargs: write_rendered_report(root),
+                mark_ready=lambda *_paths: True,
+            )
+
+        self.assertEqual(summary["status"], "complete")
+        self.assertEqual(summary["artifacts"]["reportArchive"], "final-report.zip")
+
+    def test_finalize_reuses_completed_archive_stage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text('{"schemaVersion": 2}', encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "analysis_pending",
+                    "activeStage": None,
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+            data_path, html_path, _data = write_rendered_report(root)
+            archive_path = root / "final-report.zip"
+            archive_path.write_bytes(b"already-built")
+            input_hash = "a" * 64
+            standard_workflow.mark_report_build_stage(
+                root / "final-report",
+                input_hash,
+                "archive",
+                artifact=str(archive_path),
+            )
+
+            with patch.object(
+                standard_workflow,
+                "create_report_archive",
+                side_effect=AssertionError("archive must be reused"),
+            ):
+                summary = standard_workflow.finalize_standard_run(
+                    root,
+                    analysis_json,
+                    render_report=lambda **_kwargs: (
+                        data_path,
+                        html_path,
+                        {"reportBuildInputSha256": input_hash},
+                    ),
+                    mark_ready=lambda *_paths: True,
+                )
+
+        self.assertEqual(summary["status"], "complete")
+        self.assertEqual(summary["artifacts"]["reportArchive"], "final-report.zip")
+
 
 class StandardWorkflowCliTests(unittest.TestCase):
-    def test_dependency_bootstrap_runs_before_workflow_import(self):
+    def test_status_uses_lightweight_path_without_dependency_bootstrap_or_workflow_import(self):
         events = []
-
-        class FakeWorkflow:
-            def standard_run_status(self, _output_dir):
-                events.append("workflow_call")
-                return {"workflowStatus": "not_started"}
-
         with patch.object(
             run_standard_analysis,
             "ensure_prepare_dependencies",
@@ -867,12 +1079,12 @@ class StandardWorkflowCliTests(unittest.TestCase):
         ), patch.object(
             run_standard_analysis,
             "_load_workflow",
-            side_effect=lambda: events.append("workflow_import") or FakeWorkflow(),
+            side_effect=lambda: events.append("workflow_import"),
         ), redirect_stdout(io.StringIO()):
             result = run_standard_analysis.main(["status", "--output-dir", "run"])
 
         self.assertEqual(result, 0)
-        self.assertEqual(events, ["dependencies", "workflow_import", "workflow_call"])
+        self.assertEqual(events, [])
 
     def test_fetch_metadata_prints_run_artifacts_without_prepare_or_rpa(self):
         stdout = io.StringIO()

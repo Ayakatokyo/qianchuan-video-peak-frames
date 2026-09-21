@@ -32,6 +32,10 @@ REPORT_ARCHIVE_IMAGE_PATTERN = re.compile(
 REPORT_ARCHIVE_VIDEO_PATTERN = re.compile(
     r"assets/videos/[^\"'\s<>]+"
 )
+ARCHIVE_STORED_SUFFIXES = {
+    ".mp4", ".mov", ".webm", ".jpg", ".jpeg", ".png", ".gif", ".webp",
+    ".xlsx", ".zip", ".gz",
+}
 
 
 def _text(value):
@@ -129,6 +133,7 @@ def _report_video_references(report_dir, html_text):
 
 def _validate_report_archive(
     archive_path,
+    report_dir,
     report_name,
     image_references,
     video_references,
@@ -146,9 +151,21 @@ def _validate_report_archive(
         required.add(f"{prefix}report-display-facts.json")
     try:
         with zipfile.ZipFile(archive_path) as archive:
-            names = set(archive.namelist())
-            if len(names) != len(archive.namelist()) or archive.testzip() is not None:
+            infos = archive.infolist()
+            names = {info.filename for info in infos}
+            if len(names) != len(infos):
                 raise ReportRenderingError("report archive is corrupt or contains duplicates")
+            for info in infos:
+                source = Path(report_dir).parent / info.filename
+                if not source.is_file() or source.stat().st_size != info.file_size:
+                    raise ReportRenderingError("report archive member size is invalid")
+                # Stored media is already compressed and can dominate archive size.
+                # A completed central directory plus exact source/member size is the
+                # bounded validation path; compressed text is still fully CRC-read.
+                if info.compress_type != zipfile.ZIP_STORED:
+                    with archive.open(info) as member:
+                        while member.read(1024 * 1024):
+                            pass
     except (OSError, zipfile.BadZipFile) as exc:
         raise ReportRenderingError("report archive is unreadable") from exc
     if any(not name.startswith(prefix) for name in names) or not required.issubset(names):
@@ -192,14 +209,27 @@ def create_report_archive(report_dir, archive_path=None):
     try:
         with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for source in sorted(root.rglob("*")):
-                if source.name == "video-resource-cleanup.json":
+                if source.name in {
+                    "video-resource-cleanup.json",
+                    "report-build-receipt.json",
+                }:
                     continue  # Receipt binds the immutable ZIP; it cannot be inside it.
                 if source.is_symlink():
                     raise ReportRenderingError(f"symbolic report resource: {source}")
                 if source.is_file():
-                    archive.write(source, source.relative_to(root.parent).as_posix())
+                    compression = (
+                        zipfile.ZIP_STORED
+                        if source.suffix.lower() in ARCHIVE_STORED_SUFFIXES
+                        else zipfile.ZIP_DEFLATED
+                    )
+                    archive.write(
+                        source,
+                        source.relative_to(root.parent).as_posix(),
+                        compress_type=compression,
+                    )
         _validate_report_archive(
             staging,
+            root,
             root.name,
             image_references,
             video_references,
@@ -234,20 +264,49 @@ def copy_html_asset(source_path, asset_base_dir, material_id):
         ) from exc
 
 
-def copy_video_asset(source_path, asset_base_dir, material_id):
+def _copy_and_hash_video_asset(source_path, asset_base_dir, material_id):
     target_dir = Path(asset_base_dir) / "assets" / "videos"
     target_path = target_dir / f"{safe_component(material_id)}.mp4"
+    staging = None
     try:
         target_dir.mkdir(parents=True, exist_ok=True)
         resolved_source = Path(source_path).resolve()
         resolved_target = target_path.resolve()
+        digest = hashlib.sha256()
+        copied_bytes = 0
         if resolved_source != resolved_target:
-            shutil.copy2(resolved_source, resolved_target)
-        return Path("assets/videos") / target_path.name
+            staging = resolved_target.with_name(
+                f".{resolved_target.name}.{uuid.uuid4().hex}.tmp"
+            )
+            with resolved_source.open("rb") as source, staging.open("xb") as target:
+                while chunk := source.read(8 * 1024 * 1024):
+                    target.write(chunk)
+                    digest.update(chunk)
+                    copied_bytes += len(chunk)
+                target.flush()
+                os.fsync(target.fileno())
+            shutil.copystat(resolved_source, staging)
+            os.replace(staging, resolved_target)
+        else:
+            with resolved_source.open("rb") as source:
+                while chunk := source.read(8 * 1024 * 1024):
+                    digest.update(chunk)
+                    copied_bytes += len(chunk)
+        return Path("assets/videos") / target_path.name, copied_bytes, digest.hexdigest()
     except OSError as exc:
         raise ReportRenderingError(
             f"unable to copy report video asset: {source_path}"
         ) from exc
+    finally:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
+
+
+def copy_video_asset(source_path, asset_base_dir, material_id):
+    relative, _copied_bytes, _digest = _copy_and_hash_video_asset(
+        source_path, asset_base_dir, material_id
+    )
+    return relative
 
 
 def _sha256_file(path):
@@ -276,12 +335,55 @@ def materialize_report_video_assets(
     published = {}
     manifest_entries = {}
     run_root = peak_root.parent.resolve()
+    previous_entries = {}
+    previous_manifest_path = peak_root / "report-video-assets.json"
+    try:
+        previous_manifest = json.loads(
+            previous_manifest_path.read_text(encoding="utf-8")
+        )
+        previous_entries = {
+            item.get("materialId"): item
+            for item in previous_manifest.get("materials", [])
+            if isinstance(item, dict) and _text(item.get("materialId"))
+        }
+    except (AttributeError, OSError, TypeError, json.JSONDecodeError):
+        previous_entries = {}
 
     def run_relative(path):
         try:
             return Path(os.path.relpath(Path(path).resolve(), run_root)).as_posix()
         except (OSError, ValueError):
             return str(Path(path))
+
+    def reusable_entry(material_id, source, target):
+        previous = previous_entries.get(material_id)
+        if not isinstance(previous, dict) or not target.is_file() or target.is_symlink():
+            return None
+        try:
+            source_stat = source.stat()
+            target_stat = target.stat()
+        except OSError:
+            return None
+        expected = {
+            "sourcePath": run_relative(source),
+            "previewPath": run_relative(target),
+            "sourceBytes": source_stat.st_size,
+            "previewBytes": target_stat.st_size,
+            "sourceMtimeNs": source_stat.st_mtime_ns,
+            "previewMtimeNs": target_stat.st_mtime_ns,
+            "deliveryStrategy": "original-copy",
+        }
+        if any(previous.get(key) != value for key, value in expected.items()):
+            return None
+        source_hash = previous.get("sourceSha256")
+        if (
+            not isinstance(source_hash, str)
+            or len(source_hash) != 64
+            or previous.get("previewSha256") != source_hash
+            or source_stat.st_size != target_stat.st_size
+        ):
+            return None
+        return dict(previous)
 
     def visit(value):
         if isinstance(value, dict):
@@ -291,20 +393,36 @@ def materialize_report_video_assets(
                 source = source_root / f"{safe_component(material_id)}.mp4"
                 if source.is_file() and not source.is_symlink():
                     if material_id not in published:
-                        published[material_id] = copy_video_asset(
-                            source, report_root, material_id
-                        ).as_posix()
-                        target = report_root / published[material_id]
-                        manifest_entries[material_id] = {
-                            "materialId": material_id,
-                            "sourcePath": run_relative(source),
-                            "previewPath": run_relative(target),
-                            "sourceBytes": source.stat().st_size,
-                            "previewBytes": target.stat().st_size,
-                            "sourceSha256": _sha256_file(source),
-                            "previewSha256": _sha256_file(target),
-                            "deliveryStrategy": "original-copy",
-                        }
+                        relative_target = Path("assets/videos") / f"{safe_component(material_id)}.mp4"
+                        target = report_root / relative_target
+                        retained = reusable_entry(material_id, source, target)
+                        if retained is None:
+                            relative, copied_bytes, source_hash = _copy_and_hash_video_asset(
+                                source, report_root, material_id
+                            )
+                            published[material_id] = relative.as_posix()
+                            target = report_root / published[material_id]
+                            source_stat = source.stat()
+                            target_stat = target.stat()
+                            if copied_bytes != source_stat.st_size:
+                                raise ReportRenderingError(
+                                    f"copied report video size changed: {source}"
+                                )
+                            retained = {
+                                "materialId": material_id,
+                                "sourcePath": run_relative(source),
+                                "previewPath": run_relative(target),
+                                "sourceBytes": source_stat.st_size,
+                                "previewBytes": target_stat.st_size,
+                                "sourceSha256": source_hash,
+                                "previewSha256": source_hash,
+                                "sourceMtimeNs": source_stat.st_mtime_ns,
+                                "previewMtimeNs": target_stat.st_mtime_ns,
+                                "deliveryStrategy": "original-copy",
+                            }
+                        else:
+                            published[material_id] = relative_target.as_posix()
+                        manifest_entries[material_id] = retained
                     video["src"] = published[material_id]
                 elif require_local_video_assets:
                     raise ReportRenderingError(

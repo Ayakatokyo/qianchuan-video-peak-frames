@@ -17,6 +17,7 @@ ASSET_HEADERS = [
 ]
 GALLERY_COLUMNS = 5
 IMAGE_MAX_EDGE_PX = 112
+THUMBNAIL_JPEG_QUALITY = 72
 IMAGE_MARGIN_PX = 8
 IMAGE_COLUMN_WIDTH = 18
 PX_TO_POINTS = 0.75
@@ -137,17 +138,31 @@ def _load_workbook_dependencies():
     return Workbook, ExcelImage, Alignment, Border, Font, PatternFill, Side, Table, TableStyleInfo, Image
 
 
-def _image_entry(row, image_class):
+def _image_entry(row, image_class, thumbnail_dir, index):
     image_path = Path(row["__image_path"])
     with image_class.open(image_path) as image:
         image.load()
-        width, height = image.size
-    scale = min(1.0, IMAGE_MAX_EDGE_PX / max(width, height))
+        thumbnail = image.convert("RGB") if image.mode != "RGB" else image.copy()
+    resampling = getattr(image_class, "Resampling", image_class)
+    thumbnail.thumbnail(
+        (IMAGE_MAX_EDGE_PX, IMAGE_MAX_EDGE_PX),
+        getattr(resampling, "LANCZOS", 1),
+    )
+    thumbnail_path = Path(thumbnail_dir) / f"frame-{index:04d}.jpg"
+    thumbnail.save(
+        thumbnail_path,
+        format="JPEG",
+        quality=THUMBNAIL_JPEG_QUALITY,
+        optimize=True,
+    )
+    width, height = thumbnail.size
+    thumbnail.close()
     return {
         "row": row,
-        "path": image_path,
-        "width_px": max(1, round(width * scale)),
-        "height_px": max(1, round(height * scale)),
+        "path": thumbnail_path,
+        "source_path": image_path,
+        "width_px": max(1, width),
+        "height_px": max(1, height),
     }
 
 
@@ -343,21 +358,29 @@ def export_highlight_workbook(data, presentation, output_path):
     missing_images = [row["__image_path"] for row in rows if not Path(row["__image_path"]).is_file()]
     if missing_images:
         raise HighlightExportError(f"highlight frame image is missing: {missing_images[0]}")
-    try:
-        entries = [_image_entry(row, image_class) for row in rows]
-    except (image_class.UnidentifiedImageError, OSError):
-        # A report may still be generated when a legacy fixture or upstream
-        # artifact carries a non-decodable image. Never publish a partial XLSX.
-        return None
     target = Path(output_path).resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="qianchuan-highlight-xlsx-", dir=target.parent) as temp_dir:
+        thumbnail_dir = Path(temp_dir) / "thumbnails"
+        thumbnail_dir.mkdir()
+        try:
+            entries = [
+                _image_entry(row, image_class, thumbnail_dir, index)
+                for index, row in enumerate(rows, start=1)
+            ]
+        except (image_class.UnidentifiedImageError, OSError):
+            # A report may still be generated when a legacy fixture or upstream
+            # artifact carries a non-decodable image. Never publish a partial XLSX.
+            return None
         temp_output = Path(temp_dir) / target.name
         from openpyxl import Workbook
         workbook = Workbook()
-        _build_asset_sheet(workbook, rows, entries, deps)
-        _build_gallery_sheet(workbook, entries, deps)
-        workbook.save(temp_output)
+        try:
+            _build_asset_sheet(workbook, rows, entries, deps)
+            _build_gallery_sheet(workbook, entries, deps)
+            workbook.save(temp_output)
+        finally:
+            workbook.close()
         _validate_workbook(temp_output, len(rows), len(rows), rows)
         os.replace(temp_output, target)
     return target
