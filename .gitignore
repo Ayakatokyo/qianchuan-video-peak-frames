@@ -2,9 +2,9 @@
 __pycache__/
 *.pyc
 .test-output/
+.local/
 .DS_Store
 runs/
-docs/
 .worktrees/
 .superpowers/
 千川数据资源/
