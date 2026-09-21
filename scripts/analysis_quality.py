@@ -136,6 +136,21 @@ def finding(level, message, *, field=None, evidence_refs=(), examples=(), count=
     return item
 
 
+def write_review_template(result, output_path):
+    """Copy exact evidence sets; leave every content decision to the model."""
+    if not result.get('structurally_valid') or result.get('analysisStatus') != 'review_required':
+        raise ValueError('review template requires a structurally valid candidate with pending reviews')
+    template = {key: result[key] for key in ('policyVersion', 'analysisSha256', 'inputSha256')}
+    template['findings'] = [
+        {**item, 'decision': None, 'reason': ''}
+        for item in result['findings'] if item['level'] == 'review'
+    ]
+    # Refuse to overwrite either original evidence or model-authored reviews.
+    with Path(output_path).open('x', encoding='utf-8') as handle:
+        json.dump(template, handle, ensure_ascii=False, indent=2)
+        handle.write('\n')
+
+
 def review_result(findings, analysis_json, material_cards, quality_review=None, input_context=None):
     """A current-model review resolves heuristics, never structural errors.
 

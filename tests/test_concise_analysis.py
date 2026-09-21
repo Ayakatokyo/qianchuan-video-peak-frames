@@ -151,3 +151,53 @@ def test_invalid_chapter_shape_fails_precheck_cleanly(tmp_path, value):
     path.write_text(json.dumps(value))
     with pytest.raises(ValueError):
         handoff.check_analysis_part(root, path)
+
+
+def test_task_sections_preserve_facts_and_bound_entire_cli_page(tmp_path):
+    from analysis_tasks import task_plan, read_task
+    from analysis_task_io import restore_task_pages, pretty_json
+    root = fixtures.AnalysisReaderTests().inputs(tmp_path)
+    packets = {}
+    for section in ('all', 'facts', 'contract', 'references'):
+        plan = task_plan(root, section=section)
+        task = next(t for t in plan['tasks'] if t['taskId'] == 'chapter03')
+        pages = []
+        for page in range(task['pageCount']):
+            result = read_task(root, 'chapter03', page, plan['inputSha256'], section=section)
+            assert len((pretty_json(result) + '\n').encode()) <= 8000
+            pages.append(result['records'])
+        packets[section] = restore_task_pages(pages)
+    assert packets['facts']['scopedFacts'] == packets['all']['scopedFacts']
+    assert packets['contract']['outputSkeleton'] == packets['all']['outputSkeleton']
+    assert packets['references']['allowedEvidenceRefs'] == packets['all']['allowedEvidenceRefs']
+    assert 'allowedEvidenceRefs' not in packets['facts']
+    assert 'outputSkeleton' not in packets['facts']
+    assert 'scopedFacts' not in packets['contract']
+    with pytest.raises(ValueError, match='section'):
+        task_plan(root, section='unknown')
+
+
+def test_cli_facts_projection_has_no_duplicate_reference_table(tmp_path):
+    from analysis_tasks import task_plan
+    root = fixtures.AnalysisReaderTests().inputs(tmp_path)
+    plan = task_plan(root)
+    out = io.StringIO()
+    with redirect_stdout(out):
+        code = cli.main(['analysis-task', '--output-dir', str(tmp_path), '--task', 'chapter03',
+                         '--input-sha256', plan['inputSha256'], '--section', 'facts'])
+    assert code == 0
+    result = json.loads(out.getvalue())
+    assert result['section'] == 'facts'
+    assert 'allowedEvidenceRefs' not in out.getvalue()
+    assert len(out.getvalue().encode()) <= 8000
+
+
+def test_long_reference_lists_do_not_repeat_a_path_for_every_reference():
+    from analysis_task_io import task_pages, restore_task_pages, pretty_json
+    value = {'scopedFacts': {'evidenceIndex': {'audience': [
+        f'audience:SHOW_COUNT:city:城市-{i}' for i in range(1000)]}}}
+    pages = task_pages(value, budget=8000, envelope={'inputSha256': 'a' * 64})
+    assert restore_task_pages(pages) == value
+    # Envelope and path bookkeeping should not double the actual reference data.
+    size = sum(len(pretty_json(p).encode()) for p in pages)
+    assert size < len(pretty_json(value).encode()) * 1.3

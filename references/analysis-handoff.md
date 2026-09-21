@@ -18,13 +18,13 @@ python scripts/run_standard_analysis.py prepare-local \
 当前唯一默认流程使用精简分析任务，五章原始事实和全部成功 JPEG 继续完整保留。原有 analysis-plan/read-analysis 提供无损全文溯源，但不是默认模型阅读路径。
 
 ```bash
-python scripts/run_standard_analysis.py analysis-task --output-dir "$PWD/千川数据资源/<run-id>"
-python scripts/run_standard_analysis.py analysis-task --output-dir "$PWD/千川数据资源/<run-id>" --task chapter01 --page 0 --input-sha256 "<计划哈希>"
+python scripts/run_standard_analysis.py analysis-task --output-dir "$PWD/千川数据资源/<run-id>" --section facts
+python scripts/run_standard_analysis.py analysis-task --output-dir "$PWD/千川数据资源/<run-id>" --task chapter01 --page 0 --input-sha256 "<计划哈希>" --section facts
 ```
 
-按 nextPage 读到 null。每页 records 序列化后不超过10000字节、普通内容行不超过1200字节，外层元数据另计。records 用 path/value 表示值，container 初始化大对象、数组或字符串，text 按 start 拼接。截断页不得算已读。inputSha256 绑定事实、图片、Prompt和任务实现；自定义分类仍使用 sha256:<manifestSha256>。
+按 nextPage 读到 null。每个任务页完整 stdout（含外层元数据、缩进和换行）不超过8000字节。records 用 path/value 表示值，container 初始化大对象、数组或字符串，text 按 start 拼接；数组连续片段用 start/items 写回对应区间，避免每条引用重复打印长路径。截断页不得算已读。inputSha256 绑定事实、图片、Prompt、任务及分页实现；自定义分类仍使用 sha256:<manifestSha256>。
 
-每个任务给出 scopedFacts、outputSkeleton、allowedEvidenceRefs 和写作预算。骨架中的 null 必须由模型写入，空引用必须从当前合法引用选择，不能把骨架作为成品提交。顺序为 chapter01、chapter02、chapter03、material-001…、chapter04。每张唯一图片实际观察后，同次完成该素材及第四章所需观察，不写中间长篇视觉报告。
+默认阅读路径为 `--section facts`：只读 scopedFacts、来源和写作预算，事实内的逐项引用保留。Prompt 中字段不清楚时读 `--section contract` 获取 outputSkeleton（每种结构读一次，素材专属帧引用以本素材事实为准）；查找合法标识时读 `--section references` 获取 allowedEvidenceRefs，尤其 Chapter 01 的聚合引用。省略 section 的旧调用仍返回 all 完整视图。切换 section 从 page 0 开始，按该视图自己的 nextPage 继续，不复用别的视图页码。骨架中的 null 必须由模型写入，空引用必须从当前合法引用选择，不能把骨架作为成品提交。顺序为 chapter01、chapter02、chapter03、material-001…、chapter04。每张唯一图片实际观察后，同次完成该素材及第四章所需观察，不写中间长篇视觉报告。
 
 - chapter01：完整聚合、爆款和全量成本分布，另给消耗前10项；sourceCount/missingCostCount与读取边界明确；缺失成本不当零，ROI不由局部列表重新计算。
 - chapter02：三个人群口径与全部维度及原分母保留；超过8个桶的维度只读原顺序前5桶，bucketReadingCoverage标明省略量，不能重算总体比例；三条洞察各自绑定 SHOW_COUNT、CLICK_COUNT、TRANSACTION_AMOUNT。
@@ -44,7 +44,7 @@ python scripts/run_standard_analysis.py check-analysis-part --output-dir "$PWD/�
 
 报告执行只写本次 run 的约定数据产物：图片观察账本、模型分析片段、候选 JSON、合并来源记录、质量校验与复核记录、正式报告及资源。不得新增或执行临时 `.py/.sh/.js`，也不得用内联 Python、shell、JavaScript 的循环或字符串模板生成业务正文。报告请求不等于技能开发授权；缺少程序能力时记录缺口，只有用户明确授权修改技能才编辑维护中的程序。
 
-当前模型按章节、素材阅读正式任务事实视图并查看全部成功 JPEG，直接用文件编辑工具写 JSON。使用正式 `frame-review` 命令冻结索引并恢复下一批，每批最多 4 个唯一 SHA。当前模型将该批实际观察写成 JSON 后提交一次 checkpoint，程序原子维护 `visualObservationCache`、`frameRefsBySha256`、逐引用覆盖和 complete 状态，不手工 patch 账本。只复用视觉观察，不跨素材复用商业解释；完整命令见[运维手册](qianchuan-operations-runbook.md#图片理解断点与吞吐)。业务解释可以随素材审阅逐项撰写，不要求等到单次巨型输出。
+当前模型按章节、素材阅读正式任务事实视图并查看全部成功 JPEG，直接用文件编辑工具写 JSON。使用正式 `frame-review` 命令冻结索引并恢复下一批，新建账本每批最多 6 个唯一 SHA（旧账本按原冻结批次续接）。当前模型将该批实际观察写成 JSON 后提交一次 checkpoint，程序原子维护 `visualObservationCache`、`frameRefsBySha256`、逐引用覆盖和 complete 状态，不手工 patch 账本。只复用视觉观察，不跨素材复用商业解释；完整命令见[运维手册](qianchuan-operations-runbook.md#图片理解断点与吞吐)。业务解释可以随素材审阅逐项撰写，不要求等到单次巨型输出。
 
 片段置于 `diagnostic-analysis/parts/`。章节片段包含自己负责的顶层字段；素材片段包含 `materialAnalyses` 数组。数组由正式程序连接；标量/对象顶层字段只允许一个来源，冲突报错，绝不自动补写缺失内容。Chapter 04 的逐帧分析统一放在相应的 Chapter 05 素材片段中，避免同一素材重复合并。
 
@@ -80,7 +80,9 @@ python scripts/run_standard_analysis.py assemble-analysis \
 - `review`：文本相似等启发式信号。读取 `field`、`evidenceRefs`、`examples` 和 `count`，回到 JPEG/事实复核该类全部命中，代表样例不替代全范围判断。无依据套话必须重写，禁止补字和改词求通过。
 - `advice`：字数、关键词一句话写法等表达建议。短而充分的结论可直接交付，不要求逐条消除建议。
 
-对确有证据支持或存在共同证据限制的相似内容，当前模型直接写 `quality-review.json`，无需用户重复批准。复制校验结果中的 `policyVersion`、`analysisSha256`、`inputSha256`，并逐项写：
+首次 `validate-analysis` 加 `--review-template <新文件>`：仅当结构通过且需要复核时，自动复制绑定哈希、所有 review 项的完整 evidenceRefs、field/message/count/examples 和 requiredDecision；decision 留 null，reason 留空。程序不生成结论、不替模型放行，拒绝覆盖已有文件。模型读取各项说明、回查整个证据集合后，仅填写 decision/reason；引用已完整保存在文件，无需打印和手抄上千条引用。需要再次查看结果时从 `.validation.json` 的 `findings` 按 level 筛选，文件没有顶层 review 数组。无复核项时不产生模板。
+
+对确有证据支持或存在共同证据限制的相似内容，无需用户重复批准。手动写复核记录时，其最小结构如下，evidenceRefs 必须与该项集合完全一致（不能只传子集）：
 
 ```json
 {
@@ -102,7 +104,7 @@ python scripts/run_standard_analysis.py assemble-analysis \
 
 structurally_valid 与 content_reviewed 分别表示结构通过和复核完成；contentReviewStatus=reviewed_with_limits 保留 evidence_limited 的理由及引用到运行摘要、Presentation 和报告 JSON（HTML 中的机器数据可保留，但封面不渲染这些质量门禁文字）。complete 只表示流程完成，不代表无内容限制。表达 advice 无需清零。硬错误即使有复核记录也不能豁免。
 
-校验和收口都传入同一个 `--quality-review <文件>`。候选、事实或 JPEG 变化后旧复核失效，重新审阅。没有 review 项则不需要此文件。`finalize` 再执行同一门禁，并核对候选哈希；绝不使用 `require_ai_quality=false`。
+模板填完直接 `finalize --quality-review <文件>`；finalize 内部重新完整校验，未通过时不会生成报告，无需在它之前再做一次同输入的 validate-analysis。若单独排查仍可执行 `validate-analysis --quality-review <文件>`。候选、事实或 JPEG 变化后旧复核失效，重新审阅。没有 review 项则不需要此文件。`finalize` 再执行同一门禁，并核对候选哈希；绝不使用 `require_ai_quality=false`。
 
 同类失败只有新增证据或实质修正后才重试；无新信息时保留候选和具体冲突，不做机械循环。历史事实、提示词快照和失败草稿保留追溯，不在报告任务中偷偷更新旧快照。
 

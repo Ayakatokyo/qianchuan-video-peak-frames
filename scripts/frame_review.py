@@ -9,7 +9,7 @@ from pathlib import Path
 from analysis_handoff import file_hash, inspect_inputs, read_object
 from batch_runtime import acquire_run_lock, write_json_atomically
 
-DEFAULT_REVIEW_BATCH_SIZE = 4
+DEFAULT_REVIEW_BATCH_SIZE = 6
 LEGACY_REVIEW_BATCH_SIZE = 6
 
 
@@ -76,7 +76,7 @@ def _validate_state(index, state):
             or set(completed) & set(pending) or set(completed) | set(pending) != set(refs)):
         raise ValueError('frame review coverage mismatch')
     batch_size = state.get('batchSize', LEGACY_REVIEW_BATCH_SIZE)
-    if batch_size not in {DEFAULT_REVIEW_BATCH_SIZE, LEGACY_REVIEW_BATCH_SIZE}:
+    if batch_size not in {4, 6}:
         raise ValueError('frame review batch size is unsupported')
     if state.get('batches') != _batches(index, batch_size):
         raise ValueError('frame review batch plan mismatch')

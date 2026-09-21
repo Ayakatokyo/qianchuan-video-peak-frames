@@ -3,14 +3,24 @@ import json
 
 
 def pretty_json(value):
-    return json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
+    # One-space indentation keeps structural cues without paying for deep
+    # duplicated whitespace in every tool response.
+    return json.dumps(value, ensure_ascii=False, indent=1, allow_nan=False)
 
 
-def task_pages(value, budget=10000):
+def task_pages(value, budget=10000, *, envelope=None):
+    def page_size(page):
+        payload = {**envelope, 'records': page} if envelope is not None else page
+        return len((pretty_json(payload) + '\n').encode())
+
+    def fits_record(record):
+        encoded = pretty_json(record)
+        return (len(encoded.encode()) <= budget // 2
+                and max(len(line.encode()) for line in encoded.splitlines()) <= 1200)
+
     def records(item, path=()):
         record = {'path': list(path), 'value': item}
-        encoded = pretty_json(record)
-        if len(encoded.encode()) <= budget // 2 and max(map(lambda s: len(s.encode()), encoded.splitlines())) <= 1200:
+        if fits_record(record):
             yield record
         elif isinstance(item, dict):
             yield {'path': list(path), 'container': 'object'}
@@ -18,8 +28,19 @@ def task_pages(value, budget=10000):
                 yield from records(child, (*path, key))
         elif isinstance(item, list):
             yield {'path': list(path), 'container': 'array', 'length': len(item)}
+            pending, start = [], 0
             for i, child in enumerate(item):
-                yield from records(child, (*path, i))
+                if pending and not fits_record({'path': list(path), 'start': start, 'items': [*pending, child]}):
+                    yield {'path': list(path), 'start': start, 'items': pending}
+                    pending = []
+                if not fits_record({'path': list(path), 'start': i, 'items': [child]}):
+                    yield from records(child, (*path, i))
+                else:
+                    if not pending:
+                        start = i
+                    pending.append(child)
+            if pending:
+                yield {'path': list(path), 'start': start, 'items': pending}
         elif isinstance(item, str):
             yield {'path': list(path), 'container': 'string'}
             for start in range(0, len(item), 160):
@@ -28,9 +49,9 @@ def task_pages(value, budget=10000):
             raise ValueError('task path exceeds output budget')
     pages, page = [], []
     for record in records(value):
-        if len(pretty_json([record]).encode()) > budget:
+        if page_size([record]) > budget:
             raise ValueError('task record exceeds output budget')
-        if page and len(pretty_json([*page, record]).encode()) > budget:
+        if page and page_size([*page, record]) > budget:
             pages.append(page)
             page = []
         page.append(record)
@@ -53,6 +74,10 @@ def restore_task_pages(pages):
                 value = root
                 for key in path:
                     value = value[key]
+                if 'items' in record:
+                    start = record['start']
+                    value[start:start + len(record['items'])] = record['items']
+                    continue
                 if len(value) != record['start']:
                     raise ValueError('non-contiguous text')
                 value += record['text']

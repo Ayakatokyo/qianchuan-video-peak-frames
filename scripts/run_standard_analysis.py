@@ -79,6 +79,8 @@ def build_parser():
     task.add_argument("--task")
     task.add_argument("--page", type=int, default=0)
     task.add_argument("--input-sha256")
+    task.add_argument("--section", choices=("all", "facts", "contract", "references"), default="all",
+                      help="Read facts without repeating the contract and reference table")
 
     check_part = commands.add_parser("check-analysis-part", help="Check a model-authored chapter or material part before assembly")
     check_part.add_argument("--output-dir", required=True)
@@ -110,6 +112,7 @@ def build_parser():
     validate_analysis.add_argument("--output-dir", required=True)
     validate_analysis.add_argument("--analysis-json", required=True)
     validate_analysis.add_argument("--quality-review")
+    validate_analysis.add_argument("--review-template", help="Write a new review template after structural validation")
 
     status = commands.add_parser("status")
     status.add_argument("--output-dir", required=True)
@@ -127,7 +130,8 @@ def main(argv=None):
             from analysis_tasks import task_plan, read_task
             from analysis_task_io import pretty_json
             root = Path(args.output_dir) / 'diagnostic-analysis'
-            result = read_task(root, args.task, args.page, args.input_sha256) if args.task else task_plan(root)
+            result = (read_task(root, args.task, args.page, args.input_sha256, section=args.section)
+                      if args.task else task_plan(root, section=args.section))
             print(pretty_json(result))
             return 0
         if args.command == "check-analysis-part":
@@ -224,11 +228,20 @@ def main(argv=None):
             if summary.get("videoResourceCleanup"):
                 print(f"video_cleanup_status={summary['videoResourceCleanup']['status']}")
         elif args.command == "validate-analysis":
+            if args.review_template and Path(args.review_template).exists():
+                raise ValueError("review template already exists; use --quality-review after editing it")
             options = {"quality_review": args.quality_review} if args.quality_review else {}
             result = workflow.validate_analysis(args.output_dir, args.analysis_json, **options)
             # Keep console output bounded; the full result is a structured artifact.
-            print(json.dumps({k: v for k, v in result.items() if k != "findings"}, ensure_ascii=False))
+            print(json.dumps({k: v for k, v in result.items()
+                              if k not in {"findings", "reviewDecisions", "contentReviewLimitations", "pendingReviewIds"}},
+                             ensure_ascii=False))
             print(f"validation_report={Path(args.analysis_json).with_suffix('.validation.json')}")
+            print(f"pending_review_count={len(result.get('pendingReviewIds', []))}")
+            if args.review_template and result['analysisStatus'] == 'review_required':
+                from analysis_quality import write_review_template
+                write_review_template(result, args.review_template)
+                print(f"quality_review_template={args.review_template}")
             return {"valid": 0, "review_required": 3}.get(result["analysisStatus"], 2)
         elif args.command == "assemble-analysis":
             print(json.dumps(workflow.assemble_analysis(

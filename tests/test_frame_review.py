@@ -86,14 +86,37 @@ class FrameReviewTests(unittest.TestCase):
             checkpoint(root, s)
             review.validate_frame_review(root)
 
-    def test_more_than_four_unique_images_splits_batch(self):
+    def test_material_with_six_frames_needs_one_checkpoint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = inputs(Path(directory), [[bytes([i]) for i in range(6)]])
+            s = review.start_frame_review(root)
+            self.assertEqual(len(s['imagesToView']), 6)
+            self.assertEqual(checkpoint(root, s)['status'], 'complete')
+
+    def test_more_than_six_unique_images_splits_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = inputs(Path(directory), [[bytes([i]) for i in range(8)]])
             s = review.start_frame_review(root)
-            self.assertEqual(len(s['imagesToView']), 4)
+            self.assertEqual(len(s['imagesToView']), 6)
             s = checkpoint(root, s)
-            self.assertEqual(len(s['imagesToView']), 4)
+            self.assertEqual(len(s['imagesToView']), 2)
             self.assertEqual(checkpoint(root, s)['status'], 'complete')
+
+    def test_existing_four_image_ledger_keeps_its_frozen_batches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = inputs(Path(directory), [[bytes([i]) for i in range(6)]])
+            review.start_frame_review(root)
+            index = read_object(root / 'analysis-input-index.json')
+            state = read_object(root / 'frame-review-progress.json')
+            state['batchSize'] = 4
+            state['batches'] = review._batches(index, 4)
+            state['currentBatchFrameRefs'] = state['batches'][0]['frameRefs']
+            (root / 'frame-review-progress.json').write_text(json.dumps(state))
+            resumed = review.start_frame_review(root)
+            self.assertEqual(len(resumed['imagesToView']), 4)
+            resumed = checkpoint(root, resumed)
+            self.assertEqual(len(resumed['imagesToView']), 2)
+            self.assertEqual(checkpoint(root, resumed)['status'], 'complete')
 
     def test_legacy_six_image_batch_ledger_remains_resumable(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -4,7 +4,7 @@
 
 统一精简分析，不设详细档位或切换参数。建议总览100–150字、经营/人群维度40–70字、两类脚本洞察每条50–80字、每张唯一画面观察25–60字、单素材核心结论80–120字；每个分类组默认一条共性判断和一个可测试方向。字数是表达预算，不是必须达到的门槛；保留事实、范围、引用及必要字段，不补字、不重复解释。
 
-先由正式 analysis-task 校验 manifest、五包、素材和 JPEG，再读本提示词一次及各任务的 scopedFacts、outputSkeleton、allowedEvidenceRefs。原始五包是事实权威；默认不重复全文读取完整榜单和曲线。以下为必要时定向溯源的路径，模型分片撰写后组装唯一 JSON：
+先由正式 analysis-task 校验 manifest、五包、素材和 JPEG，再读本提示词一次及各任务的 scopedFacts；outputSkeleton 和 allowedEvidenceRefs 按需读取。原始五包是事实权威；默认不重复全文读取完整榜单和曲线。以下为必要时定向溯源的路径，模型分片撰写后组装唯一 JSON：
 
 `report-display-facts.json` 是前端展示快照，不属于模型输入；模型不得读取、引用或复述其中的 TOP3/图表展示字段。
 
@@ -24,7 +24,7 @@
 
 ## 高效执行顺序
 
-默认使用 `analysis-task --output-dir <run>` 获取任务与 inputSha256，再以 `analysis-task --output-dir <run> --task <taskId> --page 0 --input-sha256 <sha>` 读取。有界多行 JSON 的 records 使用 path/value 或 container/start/text；按 nextPage 读到 null。完整事实保留在 sourceFile/sourcePath；不把省略的展示明细当缺失，不从截断输出得出结论。旧 analysis-plan/read-analysis 仅用于定向核验，不作为默认重复读取步骤。
+默认使用 `analysis-task --output-dir <run> --section facts` 获取任务与 inputSha256，再以 `analysis-task --output-dir <run> --task <taskId> --page 0 --input-sha256 <sha> --section facts` 读取。输出字段不清楚时按需读 `--section contract`（同种结构读一次），查找引用时读 `--section references`；Chapter 01 聚合引用以 references 为准。切换 section 从 page 0 开始，不混用不同视图页码。每个任务页完整 stdout 不超过8000字节；records 使用 path/value 或 container/start/text，连续数组段使用 start/items；按 nextPage 读到 null。完整事实保留在 sourceFile/sourcePath；不把省略的展示明细当缺失，不从截断输出得出结论。旧 analysis-plan/read-analysis 仅用于定向核验，不作为默认重复读取步骤。
 
 执行顺序：Chapter 01 → Chapter 02 → Chapter 03 → 逐素材的 Chapter 05（含 Chapter 04 逐帧分析）→ Chapter 04 跨素材分类汇总。当前任务只写它负责的字段；每个任务完整读取后直接写片段，不在每条素材前重读全部 Prompt 和其他章节。看完本素材 JPEG 后立即写 highlightAnalyses 和本素材结论，再进入下一条；不先写一份长篇观察报告再重复改写成 JSON。片段写完用 `check-analysis-part` 提前检查素材结构、引用和帧覆盖；该检查不代替最终 validate-analysis 和内容复核。
 
@@ -34,7 +34,7 @@
 
 - 当前模型直接完成分析，不需要额外的模型调用接口。按章节和素材读取正式 analysis-task 的全部分页；完整原包仅在定向溯源时读取。响应截断时继续当前页，记录已读范围，不能把截断输出当作完整事实。
 - 首次看图前使用正式 `frame-review` 命令冻结 `diagnostic-analysis/analysis-input-index.json`，逐项锁定 `frameRef`、`materialId`、`framePath` 和实际 SHA-256。路径、文件哈希、事实或 Prompt 改变时停止当前批次，显式重建索引后恢复，不混用新旧输入。
-- 按素材处理，每批最多 4 个唯一 SHA；先完成命令返回的 `imagesToView` 扫描，再一次提交该批 checkpoint。相同 SHA 只实际查看一次，程序把模型提供的 `visualObservation` 缓存到 `visualObservationCache`，并维护全部 `frameRefsBySha256`；仍须覆盖每个 frameRef，不能跨素材复用商业解释。相邻画面变化依赖各自上下文，不作为共享缓存事实。操作结构见技能运维手册，不逐帧 patch、不借程序生成分析正文。
+- 按素材处理，新建账本每批最多 6 个唯一 SHA（旧账本按原冻结批次续接）；先完成命令返回的 `imagesToView` 扫描，再一次提交该批 checkpoint。相同 SHA 只实际查看一次，程序把模型提供的 `visualObservation` 缓存到 `visualObservationCache`，并维护全部 `frameRefsBySha256`；仍须覆盖每个 frameRef，不能跨素材复用商业解释。相邻画面变化依赖各自上下文，不作为共享缓存事实。操作结构见技能运维手册，不逐帧 patch、不借程序生成分析正文。
 - `frame-review-progress.json` 必须在全部引用覆盖后为 `status=complete`、`pendingFrameRefs=[]` 且有 `completedAt`，否则先续接帧审阅，不能 finalize。质量门禁元数据只保存在机器产物，业务分析正文不复述结构校验、内容复核状态或清理日志。
 - 只用本次 manifest 对应的事实与 JPEG 生成新结果。历史 AI JSON 不是 schema 模板；如需结构参考，使用下文契约，示例文字也不得复制为本批次事实。序列化工具可以保存模型逐项撰写的内容，不能批量拼接分析正文或补字数。
 - “独有”“不同”均以图像实际信息为前提。真实相同的 JPEG 可有相同视觉观察；由本地文件计算 SHA-256 证明相同，不能用 AI 自报的哈希、路径或素材名代替。每个 frameRef 仍须单独覆盖。若相邻帧没有变化，明确没有可见变化；字幕不可辨或没有字幕时如实写出，不制造叙事转折。
@@ -100,7 +100,7 @@ highlightDashboard 与 customClassification 每个非空组默认一条 commonCo
 
 - 按事实包的 evidenceIndex/evidenceRef 建立合法 frameRef/evidenceRefs 白名单，不为抄枚举或字数建议读取实现源码。枚举和引用属于硬契约，字符数仅为表达建议，不能为凑字数生成正文；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
 - 从 manifest 和五个章节事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
-- 按素材分片查看画面，每片最多 4 张，先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。写入后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/千川数据资源/<run-id>" --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"`，校验通过前不要调用 `finalize`；校验失败时只修正报错字段并重新校验。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
+- 按素材分片查看画面，新建账本每片最多 6 张（旧账本按冻结批次续接），先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。写入后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/千川数据资源/<run-id>" --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json" --review-template <新复核文件>`，结构/引用等硬错误先修正并重新校验；结构通过而只需内容复核时，填写正式模板的 decision/reason，直接使用 `finalize --quality-review <文件>` 完成同一门禁，不额外重复成功的校验调用。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
 
 ## 证据与归因规则
 

@@ -6,7 +6,10 @@ from pathlib import Path
 import time
 
 from analysis_reader import _snapshot, _tasks, json_text
+import analysis_task_io
 from analysis_task_io import task_pages
+
+TASK_SECTIONS = ('all', 'facts', 'contract', 'references')
 
 WRITING_RULE = ('统一精简分析：总览100–150字；维度40–70字；脚本每条50–80字；'
                 '唯一画面观察25–60字；素材核心判断80–120字；每组一条共性和一个测试方向。'
@@ -110,11 +113,16 @@ def output_skeleton(task_id, facts, manifest_sha):
                               'commercialInterpretation': None} for f in facts.get('highlight', {}).get('frames', [])]}]}
 
 
-def _packets(root):
+def _packets(root, task_id=None, section='all'):
+    if section not in TASK_SECTIONS:
+        raise ValueError('unknown analysis task section')
     inputs, binding, units = _snapshot(root)
-    binding = hashlib.sha256((binding + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()).encode()).hexdigest()
+    implementation = Path(__file__).read_bytes() + Path(analysis_task_io.__file__).read_bytes()
+    binding = hashlib.sha256((binding + hashlib.sha256(implementation).hexdigest()).encode()).hexdigest()
     packets = []
     for task in _tasks(units, inputs['materialIds']):
+        if task_id is not None and task['taskId'] != task_id:
+            continue
         source = units[task['unitId']]
         for key in task['sourcePath']:
             source = source[key]
@@ -128,32 +136,48 @@ def _packets(root):
                   'allowedEvidenceRefs': sorted(refs), 'scopedFacts': facts}
         if task['taskId'] == 'chapter02':
             packet['requiredAudienceMetrics'] = ['SHOW_COUNT', 'CLICK_COUNT', 'TRANSACTION_AMOUNT']
+        if section != 'all':
+            selected = {'facts': 'scopedFacts', 'contract': 'outputSkeleton',
+                        'references': 'allowedEvidenceRefs'}[section]
+            for key in ('scopedFacts', 'outputSkeleton', 'allowedEvidenceRefs'):
+                if key != selected:
+                    packet.pop(key)
         packets.append((task, source, packet))
     return inputs, binding, packets
 
 
-def task_plan(root):
+def _pages(packet, binding, task_id, section):
+    # Reserve the actual CLI envelope, including indentation and newline. Large
+    # cursors bound the smaller real page numbers without iterative pagination.
+    envelope = {'inputSha256': binding, 'taskId': task_id, 'section': section,
+                'page': 9999999999, 'pageCount': 9999999999, 'nextPage': 9999999999}
+    return task_pages(packet, budget=8000, envelope=envelope)
+
+
+def task_plan(root, *, section='all'):
     start = time.perf_counter()
-    inputs, binding, packets = _packets(root)
+    inputs, binding, packets = _packets(root, section=section)
     tasks = [{**task, 'sourceBytes': len(json_text(source).encode()),
-              'taskBytes': len(json_text(packet).encode()), 'pageCount': len(task_pages(packet))}
+              'taskBytes': len(json_text(packet).encode()),
+              'pageCount': len(_pages(packet, binding, task['taskId'], section))}
              for task, source, packet in packets]
     return {'format': 'concise-tasks-v1', 'inputSha256': binding, 'manifestSha256': inputs['manifestSha256'],
+            'section': section, 'pageByteLimit': 8000,
             'materialIds': inputs['materialIds'], 'frameCount': len(inputs['frames']),
             'uniqueImageCount': inputs['uniqueImageCount'], 'contentReviewed': False, 'tasks': tasks,
             'measurement': 'UTF-8 bytes and local preparation seconds; not model tokens or model elapsed time',
             'prepareSeconds': round(time.perf_counter() - start, 6)}
 
 
-def read_task(root, task_id, page, input_sha256):
-    _, binding, packets = _packets(root)
+def read_task(root, task_id, page, input_sha256, *, section='all'):
+    _, binding, packets = _packets(root, task_id=task_id, section=section)
     if binding != input_sha256:
         raise ValueError('analysis inputs changed; get a new task plan')
     packet = next((packet for task, _, packet in packets if task['taskId'] == task_id), None)
     if packet is None:
         raise ValueError('unknown analysis task')
-    pages = task_pages(packet)
+    pages = _pages(packet, binding, task_id, section)
     if type(page) is not int or not 0 <= page < len(pages):
         raise ValueError('analysis page is out of range')
-    return {'inputSha256': binding, 'taskId': task_id, 'page': page, 'pageCount': len(pages),
+    return {'inputSha256': binding, 'taskId': task_id, 'section': section, 'page': page, 'pageCount': len(pages),
             'nextPage': page + 1 if page + 1 < len(pages) else None, 'records': pages[page]}

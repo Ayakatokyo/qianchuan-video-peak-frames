@@ -22,7 +22,7 @@ metadata:
 
 - **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向默认各一条（结构兼容 1–3 条）。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不把不同机制合成单一混合类。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
 
-- **环境**：执行 `prepare`、`fetch-metadata` 或 `finalize` 前确认当前解释器有 `requests`、`imageio-ffmpeg`、`jsonschema`、`jieba`、`openpyxl`、`Pillow`；缺失则安装，失败即停，不发起任何请求。`prepare` 也会再次执行该门禁。`status` 是轻量只读入口，不加载上述报告依赖。
+- **环境**：`prepare`、`fetch-metadata`、`finalize` 入口自动检查 `requests`、`imageio-ffmpeg`、`jsonschema`、`jieba`、`openpyxl`、`Pillow`，缺失则安装，失败即停。标准流程无需额外执行一轮 import 检查。`status` 是轻量只读入口，不加载上述报告依赖。
 - **授权**：`--shop-id` 只用于报表连接器；`--rpa-shop-id` 只使用表单 `rpa_shop` 所选的千川 RPA ID。运行时必须在当前授权列表中验证该 ID；无授权或所选 ID 不在列表时停止，不重复提交素材诊断。
 - **单 Agent 执行边界**：主 Agent 直接执行全流程，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。
 - **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
@@ -30,7 +30,9 @@ metadata:
 
 ## RPA 动态参数契约
 
-逐素材诊断只静态保留 connector code。每次新取数先运行 `python scripts/rpa_dynamic_client.py detail` 和 `python scripts/rpa_dynamic_client.py schema`，从实时详情读取 `platformCode`、`inParamJsonSchemaText` / `inParamList` 与输出字段；需要授权账号时再运行 `python scripts/rpa_dynamic_client.py list-accounts`。根据本次素材与周期生成完整业务 JSON 后，先用 `python scripts/rpa_dynamic_client.py validate --params-json '<JSON对象>'` 校验；参数较长时改用 `--params-file`。标准 `prepare` 内部也执行同一套实时详情反查和二次校验，再走异步 fetch、轮询、CSV 落盘与后处理，不把详情返回的 `id` 当 connector code，不拼接或改写 `platformCode`。
+标准 `prepare` 已自动完成授权列表检查、实时 connector 详情反查和业务参数校验，再走异步 fetch、轮询、CSV 落盘与后处理；表单参数齐全时直接执行，不再单独调用 detail、schema、list-accounts、validate。逐素材诊断只静态保留 connector code，不把详情返回的 `id` 当 connector code，不拼接或改写 `platformCode`。
+
+只有排查连接器契约或独立单条取数时，才运行 `python scripts/rpa_dynamic_client.py detail`、`python scripts/rpa_dynamic_client.py schema`；需要选账号时运行 `python scripts/rpa_dynamic_client.py list-accounts`。从实时详情读取 `platformCode`、`inParamJsonSchemaText` / `inParamList` 与输出字段，使用 `python scripts/rpa_dynamic_client.py validate --params-json '<JSON对象>'`（长参数用 `--params-file`）校验。
 
 只有需要单独取一条诊断数据时才直接运行 `python scripts/rpa_dynamic_client.py fetch --shop-id <RPA授权ID> --params-json '<JSON对象>' --output-dir '千川数据资源/<run-id>/diagnosis-source'`；执行工具显式设置 3600 秒超时。标准 `prepare` 已包含取数，不要在它之前额外执行一次 `fetch`，避免重复提交。
 
@@ -40,7 +42,7 @@ metadata:
 
 当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先读取正式任务的精简事实视图、查看图片并保存观察要点，由当前模型逐项写分析片段，最后合并成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
 
-**默认分析路径**：使用正式 `analysis-task` 读取带输出骨架和合法引用的精简任务，按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。每条素材看图后直接写正式片段，执行 `check-analysis-part` 提前检查，再处理下一条；不重复抄写长篇观察报告。事实包和每个成功帧完整保留，正文统一精简，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
+**默认分析路径**：使用正式 `analysis-task --section facts` 读取精简事实；输出字段不清楚时按需读 `--section contract`，查找引用时按需读 `--section references`，按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。每条素材看图后直接写正式片段；同一次工具调用可提交看图 checkpoint 并执行 `check-analysis-part`，再处理下一条；不重复抄写长篇观察报告。事实包和每个成功帧完整保留，正文统一精简，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
 
 ## 统一分析要求
 
@@ -87,7 +89,7 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 #### AI 交接前置检查
 
-先由 analysis-task 按 manifest 校验五包与 JPEG，再读提示词一次并完整读取各任务页；无需重复读取完整榜单和曲线。任务明确省略范围，原五包继续用于报告与验证；输出截断不算已读取，不自行 head 截取事实。核对字节数、SHA-256、素材数、成功帧数、`missingFrames`。首次实际查看 JPEG 前执行正式 `frame-review` 命令，冻结 `analysis-input-index.json` 的素材、路径和 SHA；按素材串行，每批不超过 4 帧（按唯一 SHA 计）。相同 SHA 只实际查看一次，只复用视觉观察，保留全部 frameRef，商业解释按素材分别核对。每帧只记录 **少量真实可见要点**，每批结束只写一次 `frame-review-progress.json` checkpoint；全部完成须为 `status=complete`。索引变化先冻结并显式重建，不混用新旧路径；命令和观察文件结构见[运维手册](references/qianchuan-operations-runbook.md#图片理解断点与吞吐)。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
+先由 analysis-task 按 manifest 校验五包与 JPEG，再读提示词一次并完整读取各任务页；无需重复读取完整榜单和曲线。任务明确省略范围，原五包继续用于报告与验证；输出截断不算已读取，不自行 head 截取事实。核对字节数、SHA-256、素材数、成功帧数、`missingFrames`。首次实际查看 JPEG 前执行正式 `frame-review` 命令，冻结 `analysis-input-index.json` 的素材、路径和 SHA；按素材串行，新建账本每批不超过 6 帧（按唯一 SHA 计，通常一条素材一批；旧账本按冻结批次续接）。相同 SHA 只实际查看一次，只复用视觉观察，保留全部 frameRef，商业解释按素材分别核对。每帧只记录 **少量真实可见要点**，每批结束只写一次 `frame-review-progress.json` checkpoint，直接使用返回的下一批，不再单独查询；全部完成须为 `status=complete`。索引变化先冻结并显式重建，不混用新旧路径；命令和观察文件结构见[运维手册](references/qianchuan-operations-runbook.md#图片理解断点与吞吐)。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物。
 
 “唯一正式 JSON”约束交付一致性，不限制当前模型分批撰写。可直接写完整 JSON，或使用正式 `assemble-analysis` 合并模型已写出的片段；不得使用外部模型、`codex exec`、子进程或子代理替代当前模型分析。最终使用 `schemaVersion: 5`。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读由 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实投影的正式任务，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 100–150 字，突出核心判断和优先动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
 
@@ -97,15 +99,16 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 报告执行不得新增临时脚本，也不得以内联代码批量生产正文。需要修改技能程序时须有明确技能开发授权；当前报告流程只使用维护中的正式命令。具体写入边界、复核记录和重试规则见[分析交接契约](references/analysis-handoff.md)。
 
-写入后先校验（保存候选同名 `.validation.json`，不修改事实或运行状态），再收口：
+写入后先校验（保存候选同名 `.validation.json`，不修改事实或运行状态）；首次可同时生成待复核模板：
 
 ```bash
 python scripts/run_standard_analysis.py validate-analysis \
   --output-dir "$PWD/千川数据资源/<run-id>" \
-  --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
+  --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json" \
+  --review-template "$PWD/千川数据资源/<run-id>/diagnostic-analysis/quality-review.json"
 ```
 
-失败先按运维手册区分状态、证据引用、结构、内容和资源问题，再由当前模型修正有证据支持的报错字段；用户要求全新分析时，写新候选文件，不改旧 JSON。不得用临时脚本填长文、删必填分类或绕过质量门禁。没有新证据的同类错误不做机械循环，不重跑 `prepare`；结构或引用错误必须修正；相似度命中由当前模型基于证据写复核记录；字数仅提示，不用补长。通过后执行 `finalize`，有复核记录时两个命令均传 `--quality-review`，它会再次执行同一门禁。
+失败先按运维手册区分状态、证据引用、结构、内容和资源问题，再由当前模型修正有证据支持的报错字段；用户要求全新分析时，写新候选文件，不改旧 JSON。不得用临时脚本填长文、删必填分类或绕过质量门禁。没有新证据的同类错误不做机械循环，不重跑 `prepare`；结构或引用错误必须修正；相似度命中由当前模型基于证据写复核记录；字数仅提示，不用补长。结构通过但需内容复核时，程序模板已复制全部引用和绑定哈希；当前模型核对证据，仅填写 decision/reason，不能默认放行。模板不覆盖已有文件，后续不再传 `--review-template`。填完后直接执行 `finalize --quality-review <文件>`，由它重新执行同一门禁；无需先重复一次成功的 validate-analysis。有硬错误先修正并重新校验。
 
 ### 4. 交付
 
