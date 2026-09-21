@@ -1228,6 +1228,17 @@ def _attempt_wave_postprocess(args, entry):
             "videoBytes": video_bytes,
             "videoSha256": video_sha256,
         }
+        checkpoint = getattr(args, "_postprocess_checkpoint", None)
+        if callable(checkpoint):
+            checkpoint(
+                material_id,
+                {
+                    **video_metadata,
+                    "postprocessStatus": "running",
+                    "postprocessSubstage": "frame_extraction",
+                    "timingsSec": dict(timings),
+                },
+            )
         substage = "frame_extraction"
         with _bounded_postprocess_stage(args, "_ffmpeg_semaphore"):
             result = _time_call(

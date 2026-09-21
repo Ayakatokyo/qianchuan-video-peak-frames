@@ -9,19 +9,22 @@ from pathlib import Path
 from analysis_handoff import file_hash, inspect_inputs, read_object
 from batch_runtime import acquire_run_lock, write_json_atomically
 
+DEFAULT_REVIEW_BATCH_SIZE = 4
+LEGACY_REVIEW_BATCH_SIZE = 6
+
 
 def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _batches(inputs):
+def _batches(inputs, batch_size=DEFAULT_REVIEW_BATCH_SIZE):
     batches = []
     for mid in inputs['materialIds']:
         group, hashes = [], set()
         for frame in inputs['frames']:
             if frame['materialId'] != mid:
                 continue
-            if frame['sha256'] not in hashes and len(hashes) == 6:
+            if frame['sha256'] not in hashes and len(hashes) == batch_size:
                 batches.append({'materialId': mid, 'frameRefs': group})
                 group, hashes = [], set()
             group.append(frame['frameRef'])
@@ -37,7 +40,8 @@ def _state(inputs, index_hash, cache=None):
             'inputIndexSha256': index_hash,
             'analysisUnitManifestPath': 'analysis-units/analysis-unit-manifest.json',
             'promptPath': 'diagnostic-analysis-prompt.md',
-            'uniqueImageCount': inputs['uniqueImageCount'], 'reviewBatchCount': 0,
+            'uniqueImageCount': inputs['uniqueImageCount'],
+            'batchSize': DEFAULT_REVIEW_BATCH_SIZE, 'reviewBatchCount': 0,
             'visualObservationCache': cache, 'frameRefsBySha256': {},
             'completedFrameRefs': [], 'pendingFrameRefs': [f['frameRef'] for f in inputs['frames']],
             'batches': _batches(inputs), 'checkpoints': []}
@@ -71,7 +75,10 @@ def _validate_state(index, state):
     if (len(completed) != len(set(completed)) or len(pending) != len(set(pending))
             or set(completed) & set(pending) or set(completed) | set(pending) != set(refs)):
         raise ValueError('frame review coverage mismatch')
-    if state.get('batches') != _batches(index):
+    batch_size = state.get('batchSize', LEGACY_REVIEW_BATCH_SIZE)
+    if batch_size not in {DEFAULT_REVIEW_BATCH_SIZE, LEGACY_REVIEW_BATCH_SIZE}:
+        raise ValueError('frame review batch size is unsupported')
+    if state.get('batches') != _batches(index, batch_size):
         raise ValueError('frame review batch plan mismatch')
     cache = state.get('visualObservationCache', {})
     for sha, entry in cache.items():

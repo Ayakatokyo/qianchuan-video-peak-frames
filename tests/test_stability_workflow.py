@@ -20,7 +20,7 @@ class StabilityWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(workflow.StandardWorkflowError, 'frame review is incomplete'):
                 workflow.validate_analysis(root, candidate)
 
-    def test_new_run_cleanup_defaults_delete_and_failures_do_not_rewind_delivery(self):
+    def test_new_run_cleanup_defaults_keep_and_failures_do_not_rewind_delivery(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             handoff_fixtures.write(root / 'run-summary.json', {'status': 'analysis_pending', 'request': workflow_fixtures.StandardWorkflowTests().request_payload()})
@@ -33,4 +33,4 @@ class StabilityWorkflowTests(unittest.TestCase):
             self.assertEqual(result['status'], 'complete')
             self.assertEqual(result['videoResourceCleanup']['status'], 'partial')
             self.assertTrue((root / 'final-report.zip').is_file())
-            cleanup.assert_called_once_with(root, mode='delete')
+            cleanup.assert_called_once_with(root, mode='keep')

@@ -86,14 +86,30 @@ class FrameReviewTests(unittest.TestCase):
             checkpoint(root, s)
             review.validate_frame_review(root)
 
-    def test_more_than_six_unique_images_splits_batch(self):
+    def test_more_than_four_unique_images_splits_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = inputs(Path(directory), [[bytes([i]) for i in range(8)]])
             s = review.start_frame_review(root)
-            self.assertEqual(len(s['imagesToView']), 6)
+            self.assertEqual(len(s['imagesToView']), 4)
             s = checkpoint(root, s)
-            self.assertEqual(len(s['imagesToView']), 2)
+            self.assertEqual(len(s['imagesToView']), 4)
             self.assertEqual(checkpoint(root, s)['status'], 'complete')
+
+    def test_legacy_six_image_batch_ledger_remains_resumable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = inputs(Path(directory), [[bytes([i]) for i in range(8)]])
+            review.start_frame_review(root)
+            index = read_object(root / 'analysis-input-index.json')
+            state = read_object(root / 'frame-review-progress.json')
+            state.pop('batchSize')
+            state['batches'] = review._batches(index, 6)
+            state['currentMaterialId'] = 'm-1'
+            state['currentBatchFrameRefs'] = state['batches'][0]['frameRefs']
+            (root / 'frame-review-progress.json').write_text(json.dumps(state))
+
+            resumed = review.start_frame_review(root)
+
+        self.assertEqual(len(resumed['imagesToView']), 6)
 
     def test_changed_prompt_or_path_blocks_existing_review(self):
         with tempfile.TemporaryDirectory() as directory:

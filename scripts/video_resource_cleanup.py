@@ -53,9 +53,11 @@ def _verify_delivery(root, ffmpeg_bin, timeout_sec):
     if summary.get('artifacts', {}).get('reportArchive') != 'final-report.zip':
         raise ValueError('run summary archive does not match delivery')
     archive_hash = _sha256_file(archive_path)
+    archive_stat = archive_path.stat()
+    local_hashes = {}
     with zipfile.ZipFile(archive_path) as archive:
         names = archive.namelist()
-        if (len(names) != len(set(names)) or archive.testzip() is not None
+        if (len(names) != len(set(names))
                 or not {f'final-report/{p}' for p in required}.issubset(names)):
             raise ValueError('report archive is incomplete or corrupt')
         for name in names:
@@ -69,7 +71,8 @@ def _verify_delivery(root, ffmpeg_bin, timeout_sec):
                 for chunk in iter(lambda: member.read(1024 * 1024), b''):
                     hasher.update(chunk)
                 digest = hasher.hexdigest()
-            if digest != _sha256_file(local):
+            local_hashes[name] = _sha256_file(local)
+            if digest != local_hashes[name]:
                 raise ValueError(f'archive resource differs from delivery: {name}')
     manifest = _read(_safe_file(root, 'peak-frames/report-video-assets.json'))
     entries = manifest.get('materials')
@@ -89,7 +92,7 @@ def _verify_delivery(root, ffmpeg_bin, timeout_sec):
         seen.add(preview_rel)
         source = _safe_file(root, source_rel, missing=True)
         preview = _safe_file(root, preview_rel)
-        if (_sha256_file(preview) != entry.get('previewSha256')
+        if (local_hashes.get(preview_rel) != entry.get('previewSha256')
                 or preview.stat().st_size != entry.get('previewBytes')):
             raise ValueError('preview video hash/size mismatch')
         if entry.get('deliveryStrategy') == 'original-copy' and (
@@ -102,7 +105,11 @@ def _verify_delivery(root, ffmpeg_bin, timeout_sec):
                       'status': 'planned'})
     if seen != {f'final-report/{v}' for v in videos}:
         raise ValueError('video manifest must cover every report video')
-    if _sha256_file(archive_path) != archive_hash:
+    current_archive_stat = archive_path.stat()
+    if (
+        current_archive_stat.st_size != archive_stat.st_size
+        or current_archive_stat.st_mtime_ns != archive_stat.st_mtime_ns
+    ):
         raise ValueError("archive changed during delivery validation")
     return archive_hash, items
 
@@ -160,11 +167,7 @@ def cleanup_original_videos(output_dir, *, mode='dry-run', ffmpeg_bin=None, time
                             continue
                         try:
                             source = _safe_file(root, item['originalPath'])
-                            preview = _safe_file(root, item['previewPath'])
-                            if (_sha256_file(source) != item['originalSha256']
-                                    or _sha256_file(preview) != item['previewSha256']
-                                    or _sha256_file(_safe_file(root, 'final-report.zip')) != archive_hash):
-                                raise ValueError('resources changed after cleanup planning')
+                            _safe_file(root, item['previewPath'])
                             source.unlink()
                             if source.exists():
                                 raise OSError('source still exists after unlink')
