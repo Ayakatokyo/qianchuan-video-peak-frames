@@ -29,6 +29,15 @@ def _normalize_inflight_wave_completion(payload):
 def _validate_optional_wave_fields(payload, *, scope):
     if "waveBarrier" in payload and type(payload["waveBarrier"]) is not bool:
         raise SchemaError(f"{scope} waveBarrier must be a boolean")
+    for field in (
+        "rpaConcurrency",
+        "downloadConcurrency",
+        "postprocessConcurrency",
+    ):
+        if field in payload and (
+            type(payload[field]) is not int or payload[field] <= 0
+        ):
+            raise SchemaError(f"{scope} {field} must be a positive integer")
     if "waveIndex" in payload and (
         type(payload["waveIndex"]) is not int or payload["waveIndex"] < 0
     ):
@@ -312,6 +321,7 @@ def wave_manifest(
         "candidateCount": len(candidates),
         "candidateLimit": len(candidates),
         "rpaConcurrency": args.rpa_concurrency,
+        "downloadConcurrency": getattr(args, "download_concurrency", 2),
         "postprocessConcurrency": args.postprocess_concurrency,
         "waveBarrier": getattr(args, "rpa_wave_barrier", True),
         "dateRange": _dynamic_date_range(args),

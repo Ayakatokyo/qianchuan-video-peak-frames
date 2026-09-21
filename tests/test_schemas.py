@@ -46,6 +46,8 @@ class SchemaNormalizationTests(unittest.TestCase):
                 "schemaVersion": 2,
                 "waveBarrier": True,
                 "rpaConcurrency": 3,
+                "downloadConcurrency": 2,
+                "postprocessConcurrency": 1,
                 "materials": [
                     {
                         "materialId": "m-1",
@@ -67,7 +69,24 @@ class SchemaNormalizationTests(unittest.TestCase):
         )
 
         self.assertTrue(normalized["waveBarrier"])
+        self.assertEqual(normalized["downloadConcurrency"], 2)
         self.assertEqual(normalized["materials"][1]["waveIndex"], 1)
+
+    def test_manifest_rejects_invalid_concurrency_limits(self):
+        for field, value in (
+            ("rpaConcurrency", 0),
+            ("downloadConcurrency", "2"),
+            ("postprocessConcurrency", True),
+        ):
+            with self.subTest(field=field, value=value):
+                with self.assertRaisesRegex(SchemaError, field):
+                    validate_manifest(
+                        {
+                            "schemaVersion": 2,
+                            field: value,
+                            "materials": [{"materialId": "m-1"}],
+                        }
+                    )
 
     def test_manifest_normalizes_legacy_inflight_wave_null_completion(self):
         normalized = validate_manifest(

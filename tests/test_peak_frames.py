@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr
 from unittest.mock import patch
 
@@ -2840,6 +2841,138 @@ class ProcessingPipelineTests(unittest.TestCase):
             self.assertEqual(attempt["videoBytes"], len(b"persistent-mp4"))
             self.assertRegex(attempt["videoSha256"], r"^[0-9a-f]{64}$")
 
+    def test_wave_postprocess_reuses_download_after_frame_failure(self):
+        material_id = "m-reuse-video"
+        records = [{
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": "https://rpa.example/video.mp4",
+        }]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "ffmpeg_bin": None,
+                "ffmpeg_timeout_sec": 10,
+            })()
+            entry = {
+                "materialId": material_id,
+                "records": records,
+                "timingsSec": extract_peak_frames._empty_material_timings(),
+            }
+
+            def download_video(_url, target):
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+
+            successful_result = (
+                root / material_id,
+                root / material_id / "summary.json",
+                root / material_id / "summary.md",
+            )
+            with patch.object(
+                extract_peak_frames, "download_video", side_effect=download_video
+            ) as download, patch.object(
+                extract_peak_frames,
+                "process_records",
+                side_effect=[FfmpegError("first frame attempt failed"), successful_result],
+            ):
+                first = extract_peak_frames._attempt_wave_postprocess(args, entry)
+                self.assertIsNotNone(first["error"])
+                entry.update(
+                    {
+                        key: first[key]
+                        for key in (
+                            "videoUrlSource",
+                            "videoUrlFallbackReason",
+                            "videoPath",
+                            "videoBytes",
+                            "videoSha256",
+                        )
+                    }
+                )
+                entry["timingsSec"] = first["timingsSec"]
+                second = extract_peak_frames._attempt_wave_postprocess(args, entry)
+
+            self.assertIsNone(second["error"])
+            self.assertEqual(download.call_count, 1)
+
+    def test_wave_postprocess_enforces_download_and_ffmpeg_limits(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "ffmpeg_bin": None,
+                "ffmpeg_timeout_sec": 10,
+                "_video_download_semaphore": threading.BoundedSemaphore(2),
+                "_ffmpeg_semaphore": threading.BoundedSemaphore(1),
+            })()
+            lock = threading.Lock()
+            four_downloads_started = threading.Event()
+            active_downloads = 0
+            max_downloads = 0
+            active_ffmpeg = 0
+            max_ffmpeg = 0
+
+            def download_video(_url, target):
+                nonlocal active_downloads, max_downloads
+                with lock:
+                    active_downloads += 1
+                    max_downloads = max(max_downloads, active_downloads)
+                    if active_downloads >= 4:
+                        four_downloads_started.set()
+                four_downloads_started.wait(timeout=0.05)
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+                with lock:
+                    active_downloads -= 1
+
+            def process_records(_records, _label, _video, _output, **_kwargs):
+                nonlocal active_ffmpeg, max_ffmpeg
+                with lock:
+                    active_ffmpeg += 1
+                    max_ffmpeg = max(max_ffmpeg, active_ffmpeg)
+                time.sleep(0.02)
+                with lock:
+                    active_ffmpeg -= 1
+                material_id = _records[0]["materialId"]
+                return (
+                    root / material_id,
+                    root / material_id / "summary.json",
+                    root / material_id / "summary.md",
+                )
+
+            entries = [
+                {
+                    "materialId": f"m-{index}",
+                    "records": [{
+                        "recordType": "material_info",
+                        "materialId": f"m-{index}",
+                        "videoUrl": f"https://rpa.example/{index}.mp4",
+                    }],
+                    "timingsSec": extract_peak_frames._empty_material_timings(),
+                }
+                for index in range(4)
+            ]
+            with patch.object(
+                extract_peak_frames, "download_video", side_effect=download_video
+            ), patch.object(
+                extract_peak_frames, "process_records", side_effect=process_records
+            ):
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    attempts = list(
+                        executor.map(
+                            lambda entry: extract_peak_frames._attempt_wave_postprocess(
+                                args, entry
+                            ),
+                            entries,
+                        )
+                    )
+
+            self.assertTrue(all(attempt["error"] is None for attempt in attempts))
+            self.assertEqual(max_downloads, 2)
+            self.assertEqual(max_ffmpeg, 1)
+
     def test_wave_postprocess_classifies_invalid_api_candidates(self):
         material_id = "m-postprocess-invalid"
         entry = {
@@ -3325,7 +3458,18 @@ class CliTests(unittest.TestCase):
         args = extract_peak_frames.build_parser().parse_args([])
 
         self.assertEqual(args.rpa_concurrency, 3)
-        self.assertEqual(args.postprocess_concurrency, 3)
+        self.assertEqual(args.download_concurrency, 2)
+        self.assertEqual(args.postprocess_concurrency, 1)
+
+    def test_legacy_concurrency_override_updates_all_three_limits(self):
+        argv = ["--concurrency", "4"]
+        args = extract_peak_frames.build_parser().parse_args(argv)
+
+        extract_peak_frames.resolve_concurrency(args, argv)
+
+        self.assertEqual(args.rpa_concurrency, 4)
+        self.assertEqual(args.download_concurrency, 4)
+        self.assertEqual(args.postprocess_concurrency, 4)
 
     def test_batch_run_lock_rejects_active_lock_and_releases(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -3461,7 +3605,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(manifest["targetTopN"], 1)
         self.assertEqual(manifest["candidateLimit"], 1)
         self.assertEqual(manifest["rpaConcurrency"], 3)
-        self.assertEqual(manifest["postprocessConcurrency"], 3)
+        self.assertEqual(manifest["downloadConcurrency"], 2)
+        self.assertEqual(manifest["postprocessConcurrency"], 1)
         timings = manifest["selectedMaterials"][0]["timingsSec"]
         self.assertEqual(timings["videoProbeSec"], 0.0)
         self.assertEqual(timings["ffmpegBatchSec"], 0.0)
@@ -3747,7 +3892,7 @@ class CliTests(unittest.TestCase):
             [0, 0, 1, 1],
         )
 
-    def test_wave_starts_postprocess_before_other_rpa_jobs_finish(self):
+    def test_wave_waits_for_all_rpa_jobs_before_postprocess(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -3798,9 +3943,9 @@ class CliTests(unittest.TestCase):
             releaser.join()
 
         self.assertEqual(result, 0)
-        self.assertEqual(saw_postprocess_before_release, [True])
+        self.assertEqual(saw_postprocess_before_release, [False])
 
-    def test_wave_waits_for_prior_postprocess_before_starting_next_wave(self):
+    def test_next_rpa_wave_finishes_before_postprocess_starts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -3856,13 +4001,14 @@ class CliTests(unittest.TestCase):
 
             runner = threading.Thread(target=run_batch)
             runner.start()
-            self.assertTrue(first_postprocess_started.wait(timeout=1))
-            self.assertEqual(set(starts), {"m-1", "m-2"})
-            second_csv_release.set()
             deadline = time.monotonic() + 1
-            while time.monotonic() < deadline:
+            while len(starts) < 2 and time.monotonic() < deadline:
                 time.sleep(0.01)
-            self.assertNotIn("m-3", starts)
+            self.assertEqual(set(starts), {"m-1", "m-2"})
+            self.assertFalse(first_postprocess_started.is_set())
+            second_csv_release.set()
+            self.assertTrue(first_postprocess_started.wait(timeout=1))
+            self.assertIn("m-3", starts)
             self.assertFalse(first_postprocess_release.is_set())
             first_postprocess_release.set()
             runner.join(timeout=2)

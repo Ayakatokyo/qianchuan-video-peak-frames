@@ -135,7 +135,13 @@ def build_parser():
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--concurrency", type=_positive_int)
     parser.add_argument("--rpa-concurrency", type=_positive_int, default=3)
-    parser.add_argument("--postprocess-concurrency", type=_positive_int, default=3)
+    parser.add_argument("--download-concurrency", type=_positive_int, default=2)
+    parser.add_argument(
+        "--postprocess-concurrency",
+        type=_positive_int,
+        default=1,
+        help="Maximum concurrent FFmpeg/frame-extraction tasks.",
+    )
     parser.set_defaults(
         rpa_wave_barrier=True,
     )
@@ -151,6 +157,8 @@ def resolve_concurrency(args, argv):
     if legacy is not None:
         if not any(token == "--rpa-concurrency" or token.startswith("--rpa-concurrency=") for token in argv):
             args.rpa_concurrency = legacy
+        if not any(token == "--download-concurrency" or token.startswith("--download-concurrency=") for token in argv):
+            args.download_concurrency = legacy
         if not any(token == "--postprocess-concurrency" or token.startswith("--postprocess-concurrency=") for token in argv):
             args.postprocess_concurrency = legacy
     args.concurrency = legacy or 1
@@ -1136,11 +1144,57 @@ def _attempt_wave_rpa(args, entry):
     return updated
 
 
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _reusable_wave_video(entry, video_path):
+    expected_path = str(entry.get("videoPath") or "").strip()
+    expected_hash = str(entry.get("videoSha256") or "").strip()
+    expected_bytes = entry.get("videoBytes")
+    if not expected_path or not expected_hash or isinstance(expected_bytes, bool):
+        return None
+    try:
+        expected_size = int(expected_bytes)
+        candidate = Path(expected_path)
+        if candidate.resolve() != Path(video_path).resolve():
+            return None
+        if not candidate.is_file() or candidate.stat().st_size != expected_size:
+            return None
+        if _file_sha256(candidate) != expected_hash:
+            return None
+    except (OSError, TypeError, ValueError):
+        return None
+    return {
+        "source": entry.get("videoUrlSource") or "rpa",
+        "fallbackReason": entry.get("videoUrlFallbackReason"),
+        "videoBytes": expected_size,
+        "videoSha256": expected_hash,
+    }
+
+
+@contextmanager
+def _bounded_postprocess_stage(args, attribute):
+    semaphore = getattr(args, attribute, None)
+    if semaphore is None:
+        yield
+        return
+    with semaphore:
+        yield
+
+
 def _attempt_wave_postprocess(args, entry):
     started_at = time.perf_counter()
     timings = dict(entry["timingsSec"])
     material_id = entry["materialId"]
     substage = "records"
+    resolution = None
+    video_path = None
+    video_metadata = {}
     try:
         records = entry.get("records")
         if records is None:
@@ -1151,48 +1205,62 @@ def _attempt_wave_postprocess(args, entry):
             Path(args.output_dir) / "video-assets", material_id, ".mp4"
         )
         substage = "download"
-        resolution = _time_call(
-            timings,
-            "videoDownloadSec",
-            _resolve_video_source,
-            records,
-            entry,
-            video_path,
-        )
+        resolution = _reusable_wave_video(entry, video_path)
+        if resolution is None:
+            with _bounded_postprocess_stage(args, "_video_download_semaphore"):
+                resolution = _time_call(
+                    timings,
+                    "videoDownloadSec",
+                    _resolve_video_source,
+                    records,
+                    entry,
+                    video_path,
+                )
+            video_bytes = video_path.stat().st_size
+            video_sha256 = _file_sha256(video_path)
+        else:
+            video_bytes = resolution["videoBytes"]
+            video_sha256 = resolution["videoSha256"]
+        video_metadata = {
+            "videoUrlSource": resolution["source"],
+            "videoUrlFallbackReason": resolution.get("fallbackReason"),
+            "videoPath": str(video_path),
+            "videoBytes": video_bytes,
+            "videoSha256": video_sha256,
+        }
         substage = "frame_extraction"
-        result = _time_call(
-            timings,
-            "frameExtractionSec",
-            process_records,
-            records,
-            f"rpa://{CONNECTOR_CODE}/{material_id}",
-            video_path,
-            args.output_dir,
-            ffmpeg_bin=args.ffmpeg_bin,
-            ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
-            video_source="rpa-persistent-download",
-            timings=timings,
-        )
+        with _bounded_postprocess_stage(args, "_ffmpeg_semaphore"):
+            result = _time_call(
+                timings,
+                "frameExtractionSec",
+                process_records,
+                records,
+                f"rpa://{CONNECTOR_CODE}/{material_id}",
+                video_path,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                video_source="rpa-persistent-download",
+                timings=timings,
+            )
     except HANDLED_MATERIAL_ERRORS as exc:
         timings["totalSec"] = _elapsed_since(started_at)
-        return {
+        failure = {
             "result": None,
             "error": exc,
             "timingsSec": timings,
             "substage": substage,
             "failureReason": str(exc) if isinstance(exc, RpaAdapterError) else None,
         }
+        failure.update(video_metadata)
+        return failure
     timings["totalSec"] = _elapsed_since(started_at)
     return {
         "result": result,
         "error": None,
         "timingsSec": timings,
         "substage": "completed",
-        "videoUrlSource": resolution["source"],
-        "videoUrlFallbackReason": resolution.get("fallbackReason"),
-        "videoPath": str(video_path),
-        "videoBytes": video_path.stat().st_size,
-        "videoSha256": hashlib.sha256(video_path.read_bytes()).hexdigest(),
+        **video_metadata,
     }
 
 
@@ -1257,28 +1325,38 @@ def _resolve_video_source(records, entry, target_path):
 
 def _run_wave_rpa_batch(args, candidate_payload, *, is_interrupted=None):
     manifest_path = _batch_manifest_path(args)
-    manifest, failures, last_result = rpa_batch_runner.run_wave_batch(
-        args,
-        candidate_payload,
-        wave_entry=_wave_entry,
-        resume_state=_resume_wave_state,
-        attempt_rpa=_attempt_wave_rpa,
-        attempt_postprocess=_attempt_wave_postprocess,
-        merge_timings=_merge_wave_postprocess_timings,
-        new_manifest=_new_wave_batch_manifest,
-        write_json=_write_json_atomically,
-        manifest_path=manifest_path,
-        ready_payload=_ready_top_materials_payload,
-        ready_path=_ready_top_materials_path(args),
-        entry_result=_entry_result,
-        elapsed=_elapsed_since,
-        accounted_indices=rpa_batch_runner.accounted_indices,
-        ordered=rpa_batch_runner.ordered,
-        write_progress=lambda manifest: _append_batch_progress(
-            manifest_path, manifest
-        ),
-        is_interrupted=is_interrupted,
+    args._video_download_semaphore = threading.BoundedSemaphore(
+        args.download_concurrency
     )
+    args._ffmpeg_semaphore = threading.BoundedSemaphore(
+        args.postprocess_concurrency
+    )
+    try:
+        manifest, failures, last_result = rpa_batch_runner.run_wave_batch(
+            args,
+            candidate_payload,
+            wave_entry=_wave_entry,
+            resume_state=_resume_wave_state,
+            attempt_rpa=_attempt_wave_rpa,
+            attempt_postprocess=_attempt_wave_postprocess,
+            merge_timings=_merge_wave_postprocess_timings,
+            new_manifest=_new_wave_batch_manifest,
+            write_json=_write_json_atomically,
+            manifest_path=manifest_path,
+            ready_payload=_ready_top_materials_payload,
+            ready_path=_ready_top_materials_path(args),
+            entry_result=_entry_result,
+            elapsed=_elapsed_since,
+            accounted_indices=rpa_batch_runner.accounted_indices,
+            ordered=rpa_batch_runner.ordered,
+            write_progress=lambda manifest: _append_batch_progress(
+                manifest_path, manifest
+            ),
+            is_interrupted=is_interrupted,
+        )
+    finally:
+        del args._video_download_semaphore
+        del args._ffmpeg_semaphore
     return manifest_path, last_result, failures
 
 

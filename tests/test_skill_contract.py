@@ -345,13 +345,14 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("frame_review_pending", runbook)
         self.assertIn("从未完成批次续接", runbook)
 
-    def test_skill_requires_rpa_and_postprocess_completion_before_next_wave(self):
+    def test_skill_requires_rpa_collection_before_local_postprocess(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
 
         self.assertIn("RPA 输出契约", skill)
-        self.assertIn("RPA and postprocess terminality", contract)
-        self.assertIn("before it opens the next RPA wave", contract)
+        self.assertIn("video download and FFmpeg never run during this collection phase", contract)
+        self.assertIn("collects and checkpoints `targetTopN` accepted records", contract)
+        self.assertIn("before the next RPA wave opens", contract)
 
     def test_frame_review_has_compact_per_material_progress_contract(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")

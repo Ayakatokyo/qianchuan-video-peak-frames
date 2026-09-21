@@ -136,7 +136,7 @@ def run_wave_batch(
         index: wave_entry(material, index + 1)
         for index, material in enumerate(candidates)
     }
-    submitted, selected, rejected, cancelled, pending_postprocess = resume_state(
+    submitted, selected, rejected, cancelled, _pending_postprocess = resume_state(
         args, candidates, entries
     )
     rpa_futures = {}
@@ -239,7 +239,7 @@ def run_wave_batch(
         rpa_futures[future] = index
         return future
 
-    def complete_rpa(future, index, postprocess_executor):
+    def complete_rpa(future, index):
         scheduled_entry = entries[index]
         try:
             entry = future.result()
@@ -292,7 +292,6 @@ def run_wave_batch(
             entry, records_base_dir=records_base_dir
         ):
             selected[index] = entry
-            submit_postprocess(postprocess_executor, index)
         else:
             if entry["rpaStatus"] == "selected":
                 entry.update(
@@ -433,35 +432,59 @@ def run_wave_batch(
             - include_rpa,
         )
 
-    def collect_done(done, postprocess_executor):
+    def collect_rpa_done(done):
         changed = False
         for future in sorted(done & set(rpa_futures), key=lambda item: rpa_futures[item]):
             index = rpa_futures.pop(future)
-            complete_rpa(future, index, postprocess_executor)
+            complete_rpa(future, index)
             changed = True
+        return changed
+
+    def collect_postprocess_done(done, postprocess_executor):
+        changed = False
         for future in sorted(done & set(postprocess_futures), key=lambda item: postprocess_futures[item]):
             index = postprocess_futures.pop(future)
             complete_postprocess(future, index, postprocess_executor)
             changed = True
         return changed
 
-    def wave_postprocess_pending(wave):
-        """Return whether this wave still has an active postprocess attempt."""
-        if not wave:
-            return False
-        wave_indices = set(wave.values())
-        return any(
-            index in wave_indices
-            for index in postprocess_futures.values()
-        )
+    def run_postprocess_queue(indices):
+        queue = [
+            index
+            for index in sorted(set(indices))
+            if (
+                index in selected
+                and has_accepted_record(
+                    selected[index], records_base_dir=records_base_dir
+                )
+                and selected[index].get("postprocessStatus") != "succeeded"
+                and selected[index].get("postprocessAttemptCount", 0) < 2
+            )
+        ]
+        if not queue:
+            return
+        download_workers = max(1, int(getattr(args, "download_concurrency", 1)))
+        ffmpeg_workers = max(1, int(args.postprocess_concurrency))
+        # The worker pool only keeps stage work queued. Actual network and
+        # FFmpeg concurrency are enforced inside the postprocess hook, so
+        # threads waiting for FFmpeg do not prevent the next video download.
+        queue_workers = min(len(queue), max(8, download_workers + ffmpeg_workers))
+        with ThreadPoolExecutor(max_workers=queue_workers) as postprocess_executor:
+            for index in queue:
+                submit_postprocess(postprocess_executor, index)
+            persist()
+            while postprocess_futures:
+                done, _pending = wait(
+                    set(postprocess_futures),
+                    timeout=poll_interval_sec,
+                    return_when=FIRST_COMPLETED,
+                )
+                if collect_postprocess_done(done, postprocess_executor):
+                    persist()
 
-    with ThreadPoolExecutor(
-        max_workers=args.rpa_concurrency
-    ) as rpa_executor, ThreadPoolExecutor(
-        max_workers=args.postprocess_concurrency
-    ) as postprocess_executor:
-        for index in pending_postprocess:
-            submit_postprocess(postprocess_executor, index)
+    # Phase 1: collect and persist all required RPA records. Video download
+    # and FFmpeg are deliberately excluded from this phase.
+    with ThreadPoolExecutor(max_workers=args.rpa_concurrency) as rpa_executor:
         next_index = next_unaccounted_index(next_index)
         if getattr(args, "rpa_wave_barrier", True):
             wave_index = 0
@@ -472,7 +495,6 @@ def run_wave_batch(
                 if (
                     not pending_wave
                     and not wave
-                    and not postprocess_futures
                     and interruption is None
                 ):
                     capacity = min(args.rpa_concurrency, primary_collection_slots())
@@ -499,21 +521,21 @@ def run_wave_batch(
                             wave[future] = index
                         pending_wave = set(wave)
                         persist()
-                    elif not postprocess_futures:
+                    else:
                         break
-                elif not pending_wave and not postprocess_futures:
+                elif not pending_wave:
                     break
-                wait_for = pending_wave | set(postprocess_futures)
+                wait_for = pending_wave
                 if not wait_for:
                     continue
                 done, _pending = wait(
                     wait_for, timeout=poll_interval_sec, return_when=FIRST_COMPLETED
                 )
-                changed = collect_done(done, postprocess_executor)
+                changed = collect_rpa_done(done)
                 checkpoint_interruption()
                 if pending_wave:
                     pending_wave -= done
-                if not pending_wave and wave and not wave_postprocess_pending(wave):
+                if not pending_wave and wave:
                     wave_finished_at = elapsed(batch_started_at)
                     for index in wave.values():
                         entries[index]["waveFinishedAtSec"] = wave_finished_at
@@ -541,18 +563,23 @@ def run_wave_batch(
                         ),
                     )
                     next_index = next_unaccounted_index(next_index + 1)
-                wait_for = set(rpa_futures) | set(postprocess_futures)
+                wait_for = set(rpa_futures)
                 if not wait_for:
                     break
                 done, _pending = wait(
                     wait_for, timeout=poll_interval_sec, return_when=FIRST_COMPLETED
                 )
-                changed = collect_done(done, postprocess_executor)
+                changed = collect_rpa_done(done)
                 if changed:
                     persist()
 
     if interruption is not None:
         raise BatchInterrupted(interruption)
+
+    # Persist the RPA/postprocess boundary before any network video download
+    # or FFmpeg work begins, then process every accepted material locally.
+    persist()
+    run_postprocess_queue(selected)
 
     def compensate_terminal_failures():
         compensation_queue = sorted(
@@ -599,9 +626,7 @@ def run_wave_batch(
     def run_terminal_backfill_wave(indices):
         with ThreadPoolExecutor(
             max_workers=min(args.rpa_concurrency, len(indices))
-        ) as rpa_executor, ThreadPoolExecutor(
-            max_workers=args.postprocess_concurrency
-        ) as postprocess_executor:
+        ) as rpa_executor:
             for index in indices:
                 submit_rpa(
                     rpa_executor,
@@ -609,15 +634,19 @@ def run_wave_batch(
                     backfill_reason="postprocess_failed_after_retries",
                 )
             persist()
-            while rpa_futures or postprocess_futures:
+            while rpa_futures:
                 done, _pending = wait(
-                    set(rpa_futures) | set(postprocess_futures),
+                    set(rpa_futures),
                     timeout=poll_interval_sec,
                     return_when=FIRST_COMPLETED,
                 )
-                changed = collect_done(done, postprocess_executor)
+                changed = collect_rpa_done(done)
                 if changed:
                     persist()
+        # Backfill obeys the same phase boundary: finish and persist its RPA
+        # records before starting local video work for those candidates.
+        persist()
+        run_postprocess_queue(indices)
 
     compensate_terminal_failures()
     while True:

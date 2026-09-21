@@ -2,9 +2,11 @@
 """Repair retained Qianchuan batch artifacts without calling RPA."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import extract_peak_frames as pipeline
@@ -85,7 +87,10 @@ def _load_receipted_records(root, material_id):
 
 
 def _rebuild_manifest(manifest, materials, base_dir=None):
-    ordered = sorted(materials, key=lambda item: int(item.get("rank") or 0))
+    ordered = [
+        {key: value for key, value in item.items() if key != "records"}
+        for item in sorted(materials, key=lambda item: int(item.get("rank") or 0))
+    ]
     submitted = [
         item for item in ordered
         if item.get("rpaStatus") in {"selected", "rejected"}
@@ -164,7 +169,13 @@ def repair_batch(
     diagnosis_csv_dir=None,
     top_materials_json=None,
     postprocess=None,
+    download_concurrency=2,
+    postprocess_concurrency=1,
 ):
+    if type(download_concurrency) is not int or download_concurrency <= 0:
+        raise ValueError("download_concurrency must be a positive integer")
+    if type(postprocess_concurrency) is not int or postprocess_concurrency <= 0:
+        raise ValueError("postprocess_concurrency must be a positive integer")
     peak_dir = Path(peak_output_dir)
     root = peak_dir.parent
     manifest_path = peak_dir / "batch-manifest.json"
@@ -181,14 +192,83 @@ def repair_batch(
         raise ValueError("streaming batch manifest must contain a materials list")
     records_dir = Path(diagnosis_records_dir) if diagnosis_records_dir else root / "diagnosis-records"
     csv_dir = Path(diagnosis_csv_dir) if diagnosis_csv_dir else root / "diagnosis-csv"
+    parallel_postprocess = postprocess is None
     postprocess = postprocess or _default_postprocess
     args = SimpleNamespace(
         output_dir=str(peak_dir),
         ffmpeg_bin=None,
         ffmpeg_timeout_sec=pipeline.DEFAULT_FFMPEG_TIMEOUT_SEC,
+        download_concurrency=download_concurrency,
+        postprocess_concurrency=postprocess_concurrency,
+        _video_download_semaphore=threading.BoundedSemaphore(
+            download_concurrency
+        ),
+        _ffmpeg_semaphore=threading.BoundedSemaphore(postprocess_concurrency),
     )
+    manifest["downloadConcurrency"] = download_concurrency
+    manifest["postprocessConcurrency"] = postprocess_concurrency
     actions = []
     errors = []
+    pending_postprocess = []
+
+    def checkpoint():
+        _rebuild_manifest(manifest, materials, base_dir=peak_dir.parent)
+        write_json_atomically(manifest_path, manifest)
+
+    def finalize_entry(raw_entry, entry, material_id, records):
+        if entry.get("summaryJson") and entry.get("summaryMd"):
+            entry["summaryJson"] = str(
+                _resolve(root, entry["summaryJson"], Path(entry["summaryJson"]))
+            )
+            entry["summaryMd"] = str(
+                _resolve(root, entry["summaryMd"], Path(entry["summaryMd"]))
+            )
+            if _valid_summary(material_id, entry):
+                entry.update(
+                    {
+                        "postprocessStatus": "succeeded",
+                        "postprocessSucceeded": True,
+                        "status": "succeeded",
+                    }
+                )
+                if records is not None:
+                    entry["rpaStatus"] = "selected"
+                if not any(
+                    item.get("materialId") == material_id for item in actions
+                ):
+                    actions.append(
+                        {"materialId": material_id, "action": "summary_to_manifest"}
+                    )
+        raw_entry.clear()
+        raw_entry.update(entry)
+
+    def apply_postprocess_result(entry, material_id, result=None, error=None):
+        if error is None:
+            entry.update(
+                {
+                    "postprocessStatus": "succeeded",
+                    "postprocessSucceeded": True,
+                    "status": "succeeded",
+                    "summaryJson": str(Path(result["summaryJson"]).resolve()),
+                    "summaryMd": str(Path(result["summaryMd"]).resolve()),
+                    "errorType": None,
+                    "errorMessage": None,
+                }
+            )
+            actions.append(
+                {"materialId": material_id, "action": "records_to_postprocess"}
+            )
+            return
+        entry.update(
+            {
+                "postprocessStatus": "failed",
+                "postprocessSucceeded": False,
+                "status": "failed",
+                "errorType": type(error).__name__,
+                "errorMessage": str(error),
+            }
+        )
+        errors.append(f"{material_id}: postprocess repair failed: {error}")
 
     for raw_entry in materials:
         entry = dict(raw_entry)
@@ -254,51 +334,66 @@ def repair_batch(
             entry["recordsPersisted"] = True
             entry["records"] = records
             entry["diagnosisRecordsPath"] = _relative(root, records_path)
+            entry.setdefault("timingsSec", pipeline._empty_material_timings())
             # An interrupted worker may have checkpointed a successful status
             # before writing summary/JPEG artifacts. Trust the retained files,
             # not the status flag, when deciding whether local postprocess is
             # still required.
             if not _valid_summary(material_id, entry):
+                if parallel_postprocess:
+                    entry.update(
+                        {
+                            "postprocessStatus": "queued",
+                            "postprocessSucceeded": False,
+                            "status": "running",
+                        }
+                    )
+                    raw_entry.clear()
+                    raw_entry.update(entry)
+                    pending_postprocess.append(
+                        (raw_entry, entry, material_id, records)
+                    )
+                    continue
                 try:
                     result = postprocess(args, entry)
-                    entry.update(
-                        {
-                            "postprocessStatus": "succeeded",
-                            "postprocessSucceeded": True,
-                            "status": "succeeded",
-                            "summaryJson": str(Path(result["summaryJson"]).resolve()),
-                            "summaryMd": str(Path(result["summaryMd"]).resolve()),
-                            "errorType": None,
-                            "errorMessage": None,
-                        }
-                    )
-                    actions.append({"materialId": material_id, "action": "records_to_postprocess"})
                 except Exception as exc:
-                    entry.update(
-                        {
-                            "postprocessStatus": "failed",
-                            "postprocessSucceeded": False,
-                            "status": "failed",
-                            "errorType": type(exc).__name__,
-                            "errorMessage": str(exc),
-                        }
-                    )
-                    errors.append(f"{material_id}: postprocess repair failed: {exc}")
+                    apply_postprocess_result(entry, material_id, error=exc)
+                else:
+                    apply_postprocess_result(entry, material_id, result=result)
 
-        if entry.get("summaryJson") and entry.get("summaryMd"):
-            entry["summaryJson"] = str(_resolve(root, entry["summaryJson"], Path(entry["summaryJson"])))
-            entry["summaryMd"] = str(_resolve(root, entry["summaryMd"], Path(entry["summaryMd"])))
-            if _valid_summary(material_id, entry):
-                entry.update({"postprocessStatus": "succeeded", "postprocessSucceeded": True, "status": "succeeded"})
-                if records is not None:
-                    entry["rpaStatus"] = "selected"
-                if not any(item.get("materialId") == material_id for item in actions):
-                    actions.append({"materialId": material_id, "action": "summary_to_manifest"})
-        raw_entry.clear()
-        raw_entry.update(entry)
+        finalize_entry(raw_entry, entry, material_id, records)
 
-    _rebuild_manifest(manifest, materials, base_dir=peak_dir.parent)
-    write_json_atomically(manifest_path, manifest)
+    if pending_postprocess:
+        # Checkpoint every material as queued before local work starts, then
+        # checkpoint each completion so an interrupted repair can resume from
+        # durable records/video/summary artifacts without repeating RPA.
+        checkpoint()
+        queue_workers = min(
+            len(pending_postprocess),
+            max(8, download_concurrency + postprocess_concurrency),
+        )
+        with ThreadPoolExecutor(max_workers=queue_workers) as executor:
+            futures = {
+                executor.submit(postprocess, args, dict(entry)): (
+                    raw_entry,
+                    entry,
+                    material_id,
+                    records,
+                )
+                for raw_entry, entry, material_id, records in pending_postprocess
+            }
+            for future in as_completed(futures):
+                raw_entry, entry, material_id, records = futures[future]
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    apply_postprocess_result(entry, material_id, error=exc)
+                else:
+                    apply_postprocess_result(entry, material_id, result=result)
+                finalize_entry(raw_entry, entry, material_id, records)
+                checkpoint()
+
+    checkpoint()
     receipt = {
         "schemaVersion": 1,
         "manifestPath": str(manifest_path),
@@ -319,6 +414,8 @@ def build_parser():
     parser.add_argument("--diagnosis-records-dir")
     parser.add_argument("--diagnosis-csv-dir")
     parser.add_argument("--top-materials-json")
+    parser.add_argument("--download-concurrency", type=int, default=2)
+    parser.add_argument("--postprocess-concurrency", type=int, default=1)
     return parser
 
 
@@ -330,6 +427,8 @@ def main(argv=None):
             diagnosis_records_dir=args.diagnosis_records_dir,
             diagnosis_csv_dir=args.diagnosis_csv_dir,
             top_materials_json=args.top_materials_json,
+            download_concurrency=args.download_concurrency,
+            postprocess_concurrency=args.postprocess_concurrency,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"repair-manifest failed: {exc}")

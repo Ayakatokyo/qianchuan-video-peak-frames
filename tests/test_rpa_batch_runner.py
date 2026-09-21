@@ -24,7 +24,8 @@ class WaveBatchRunnerTests(unittest.TestCase):
             "target_top_n": 3,
             "candidate_top_n": None,
             "rpa_concurrency": 3,
-            "postprocess_concurrency": 3,
+            "download_concurrency": 2,
+            "postprocess_concurrency": 1,
             "rpa_wave_barrier": True,
         }
         values.update(overrides)
@@ -329,31 +330,33 @@ class WaveBatchRunnerTests(unittest.TestCase):
         self.assertEqual(postprocess_calls, [])
         self.assertEqual(manifest["rejectedMaterials"][0]["rpaStatus"], "rejected")
 
-    def test_completed_postprocess_is_persisted_while_rpa_wave_waits(self):
-        persisted_success = threading.Event()
+    def test_rpa_collection_finishes_before_postprocess_starts(self):
+        rpa_finished = []
+        observed_rpa_sets = []
 
         def attempt_rpa(_args, entry):
-            if entry["materialId"] == "m-3":
-                self.assertTrue(persisted_success.wait(timeout=0.5))
+            rpa_finished.append(entry["materialId"])
             return self._verified_rpa_success(entry)
 
-        def write_json(path, manifest):
-            if path == "manifest" and any(
-                item["materialId"] == "m-1"
-                and item["postprocessStatus"] == "succeeded"
-                for item in manifest["materials"]
-            ):
-                persisted_success.set()
-            self._write_json(path, manifest)
+        def attempt_postprocess(args, entry):
+            observed_rpa_sets.append(set(rpa_finished))
+            return self._success_postprocess(args, entry)
 
         self.run_batch(
             ["m-1", "m-2", "m-3", "m-4"],
             attempt_rpa,
-            self._success_postprocess,
-            write_json=write_json,
+            attempt_postprocess,
+            args={"target_top_n": 4, "rpa_concurrency": 2},
         )
 
-        self.assertTrue(persisted_success.is_set())
+        self.assertEqual(set(rpa_finished), {"m-1", "m-2", "m-3", "m-4"})
+        self.assertTrue(observed_rpa_sets)
+        self.assertTrue(
+            all(
+                observed == {"m-1", "m-2", "m-3", "m-4"}
+                for observed in observed_rpa_sets
+            )
+        )
 
     def test_each_manifest_checkpoint_emits_compact_progress(self):
         progress = []
@@ -402,36 +405,33 @@ class WaveBatchRunnerTests(unittest.TestCase):
 
         self.assertFalse(runner.is_alive())
 
-    def test_wave_waits_for_postprocess_terminal_state_before_starting_next_wave(self):
+    def test_all_rpa_waves_finish_before_any_postprocess(self):
         rpa_starts = []
-        postprocess_started = threading.Event()
-        release_postprocess = threading.Event()
+        observed_rpa_sets = []
 
         def attempt_rpa(_args, entry):
             rpa_starts.append(entry["materialId"])
             return self._verified_rpa_success(entry)
 
         def attempt_postprocess(_args, entry):
-            if entry["materialId"] == "m-1":
-                postprocess_started.set()
-                release_postprocess.wait(timeout=1)
+            observed_rpa_sets.append(set(rpa_starts))
             return self._success_postprocess(_args, entry)
 
-        runner = threading.Thread(
-            target=self.run_batch,
-            args=(["m-1", "m-2", "m-3", "m-4"], attempt_rpa, attempt_postprocess),
-            kwargs={"args": {"target_top_n": 4, "rpa_concurrency": 2}},
+        self.run_batch(
+            ["m-1", "m-2", "m-3", "m-4"],
+            attempt_rpa,
+            attempt_postprocess,
+            args={"target_top_n": 4, "rpa_concurrency": 2},
         )
-        runner.start()
-        self.assertTrue(postprocess_started.wait(timeout=1))
-        time.sleep(0.1)
-        self.assertEqual(rpa_starts, ["m-1", "m-2"])
-        release_postprocess.set()
-        runner.join(timeout=2)
-
-        self.assertFalse(runner.is_alive())
         self.assertEqual(rpa_starts[:2], ["m-1", "m-2"])
         self.assertEqual(set(rpa_starts[2:]), {"m-3", "m-4"})
+        self.assertTrue(observed_rpa_sets)
+        self.assertTrue(
+            all(
+                observed == {"m-1", "m-2", "m-3", "m-4"}
+                for observed in observed_rpa_sets
+            )
+        )
 
     def test_wave_backfills_only_after_terminal_postprocess_failure(self):
         rpa_starts = []

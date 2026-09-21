@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -39,6 +41,12 @@ def write_manifest(root, entry):
 
 
 class RepairManifestTests(unittest.TestCase):
+    def test_repair_defaults_match_staged_postprocess_limits(self):
+        args = repair_manifest.build_parser().parse_args(["--output-dir", "/tmp/run"])
+
+        self.assertEqual(args.download_concurrency, 2)
+        self.assertEqual(args.postprocess_concurrency, 1)
+
     def test_recovers_stale_manifest_from_records_persisted_receipt_without_rpa(self):
         """A durable RPA receipt must outrank an interrupted manifest checkpoint."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -113,6 +121,8 @@ class RepairManifestTests(unittest.TestCase):
         self.assertEqual(manifest["materials"][0]["rpaStatus"], "selected")
         self.assertEqual(manifest["materials"][0]["rpaResultStatus"], "available")
         self.assertEqual(manifest["stageCounts"]["postprocessSucceededCount"], 1)
+        self.assertNotIn("records", manifest["materials"][0])
+        self.assertNotIn("records", manifest["selectedMaterials"][0])
 
     def test_default_postprocess_uses_current_wave_postprocess_contract(self):
         result_dir = Path("/tmp/peak-frames/m-1")
@@ -236,6 +246,103 @@ class RepairManifestTests(unittest.TestCase):
         self.assertEqual(result["rpaCalls"], 0)
         self.assertEqual(result["actions"][0]["action"], "records_to_postprocess")
         self.assertEqual(manifest["stageCounts"]["postprocessSucceededCount"], 1)
+
+    def test_default_repair_queues_multiple_local_postprocess_jobs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            peak = root / "peak-frames"
+            peak.mkdir()
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            entries = []
+            for index in range(4):
+                material_id = f"m-{index}"
+                entries.append(
+                    {
+                        "materialId": material_id,
+                        "rank": index + 1,
+                        "rpaStatus": "selected",
+                        "postprocessStatus": "queued",
+                        "status": "running",
+                        "diagnosisRecordsPath": f"diagnosis-records/{material_id}.json",
+                        "summaryJson": None,
+                        "summaryMd": None,
+                        "timingsSec": {},
+                    }
+                )
+                (records_dir / f"{material_id}.json").write_text(
+                    json.dumps(
+                        [{
+                            "recordType": "material_info",
+                            "materialId": material_id,
+                            "videoUrl": f"https://video.example/{material_id}.mp4",
+                        }]
+                    ),
+                    encoding="utf-8",
+                )
+            (peak / "batch-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "source": "rpa",
+                        "runId": "run-1",
+                        "targetTopN": 4,
+                        "candidateCount": 4,
+                        "candidateLimit": 4,
+                        "materialIds": [entry["materialId"] for entry in entries],
+                        "materials": entries,
+                        "submittedMaterials": entries,
+                        "selectedMaterials": entries,
+                        "rejectedMaterials": [],
+                        "cancelledMaterials": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lock = threading.Lock()
+            active = 0
+            max_active = 0
+
+            def local_attempt(_args, entry):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.03)
+                material_id = entry["materialId"]
+                output = peak / material_id
+                output.mkdir()
+                summary_json = output / "summary.json"
+                summary_md = output / "summary.md"
+                summary_json.write_text(
+                    json.dumps(
+                        {
+                            "materialId": material_id,
+                            "frames": [{"framePath": "peak.jpg"}],
+                            "warnings": [],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                summary_md.write_text("summary\n", encoding="utf-8")
+                (output / "peak.jpg").write_bytes(b"\xff\xd8frame\xff\xd9")
+                with lock:
+                    active -= 1
+                return {
+                    "result": (output, summary_json, summary_md),
+                    "error": None,
+                }
+
+            with patch.object(
+                repair_manifest.pipeline,
+                "_attempt_wave_postprocess",
+                side_effect=local_attempt,
+            ):
+                result = repair_manifest.repair_batch(peak)
+
+        self.assertTrue(result["valid"])
+        self.assertGreater(max_active, 1)
+        self.assertEqual(result["stageCounts"]["postprocessSucceededCount"], 4)
 
     def test_repairs_records_when_manifest_status_claims_success_but_summary_is_missing(self):
         with tempfile.TemporaryDirectory() as temp_dir:

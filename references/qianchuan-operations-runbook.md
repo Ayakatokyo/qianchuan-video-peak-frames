@@ -124,7 +124,7 @@ python scripts/run_standard_analysis.py resume \
 
 先运行 `run_standard_analysis.py status`，按五层产物分别盘点并记录数量：`rpaRequestCount`（提交数）→ `rpaAcceptedCount`（有效诊断结果数）→ `rpaSelectedCount`（含可用 videoUrl 的选中数）→ `recordsPersistedCount`/CSV 数（诊断结果已落盘数）→ `postprocessSucceededCount`（截帧与 `summary.json`、`summary.md` 均完整数）。提交数、平台/UI 的“成功”数字、素材目录数均不等于本地落盘或完整后处理数；没有本地 CSV/records 时不得声称平台已成功或失败。
 
-波次调度使用双重屏障：只有上一批 RPA 全部终态且该批已选素材后处理全部终态，下一批 RPA 才会提交。后处理重试耗尽后的失败是终态，允许下一批提交候选素材补位；后处理尚在运行或重试时不得接入下一批。
+调度使用分阶段屏障：先按 RPA 并发 3 个逐波收集，当前波次的 RPA 和 CSV/records 落盘全部终态后即可进入下一波；达到目标 records 数前不启动视频下载或 FFmpeg。本地后处理默认视频下载并发 2、FFmpeg 并发 1。后处理终态失败时，才对下一顺位候选素材执行独立的 RPA 补位阶段。
 
 若用户未明确授权再次调用 RPA，先运行“修复保留产物”章节的 `repair_manifest.py`。该修复优先核验 `rpa-receipts/<materialId>.json` 的 `records_persisted` 收据；收据中的 records 已包含目标素材的平铺 `recordType=material_info` 与非空 `videoUrl` 时，即使 manifest 仍为 submitted/pending，也直接进入本地后处理，不会发起 RPA。即使 manifest 的 `postprocessStatus` 已写成 `succeeded`，也会以实际 `summary.json`、`summary.md` 和 JPEG 是否完整为准，补跑缺失的截帧。检查 `repair-manifest.json` 的 `rpaCalls` 必须为 `0`，并核对修复后的三层数量。
 
@@ -154,10 +154,12 @@ python scripts/extract_peak_frames.py \
 python scripts/repair_manifest.py \
   --output-dir "/path/to/run/peak-frames" \
   --diagnosis-records-dir "/path/to/run/diagnosis-records" \
-  --diagnosis-csv-dir "/path/to/run/diagnosis-csv"
+  --diagnosis-csv-dir "/path/to/run/diagnosis-csv" \
+  --download-concurrency 2 \
+  --postprocess-concurrency 1
 ```
 
-该命令先执行 `records_persisted receipt -> records`，再执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。
+该命令先执行 `records_persisted receipt -> records`，再执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。下载与 FFmpeg 分别受独立并发上限控制，每个素材完成后立即 checkpoint manifest。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。
 
 检查保留的 `diagnosis-records/`、`diagnosis-csv/`、素材 `summary.json` 与 JPEG，而不是仅凭文件名判断成功。RPA 输出字段、下载上限和波次状态的完整约束见 [RPA 输出契约](rpa-output-contract.md)。
 
