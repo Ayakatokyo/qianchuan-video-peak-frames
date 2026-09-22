@@ -62,7 +62,7 @@ class WorkflowLockError(StandardWorkflowError):
 
 
 def workflow_paths(output_dir):
-    root = Path(output_dir)
+    root = Path(output_dir).absolute()
     return {
         "root": root,
         "source_data": root / "source-data",
@@ -412,47 +412,27 @@ def resume_standard_run(
         with acquire_workflow_lock(request, output_dir, reclaim_stale=True):
             recovery_started = True
             _write_running(request, paths, "recovery")
-            repair_batches = 0
-            repaired_materials = 0
-            previous_remaining = None
-            while True:
-                repair_receipt = repair_batch(
-                    paths["peak_frames"],
-                    diagnosis_records_dir=paths["records"],
-                    diagnosis_csv_dir=paths["root"] / "diagnosis-csv",
-                    top_materials_json=paths["top_materials"],
+            # Reconcile CSV/records and paths once. The batch engine owns both
+            # collection and postprocess so resume cannot bypass its barrier.
+            repair_receipt = repair_batch(
+                paths["peak_frames"],
+                diagnosis_records_dir=paths["records"],
+                diagnosis_csv_dir=paths["root"] / "diagnosis-csv",
+                top_materials_json=paths["top_materials"],
+                records_only=True,
+            )
+            if repair_receipt.get("rpaCalls", 0) != 0 or repair_receipt.get("postprocessAttemptedCount", 0) != 0:
+                raise StandardWorkflowError(
+                    "recovery", "records-only repair attempted RPA or video postprocess"
                 )
-                repair_batches += 1
-                repaired_materials += repair_receipt.get(
-                    "postprocessAttemptedCount", 0
+            if not repair_receipt.get("valid", False):
+                repair_errors = repair_receipt.get("errors") or []
+                detail = "; ".join(str(item) for item in repair_errors[:3])
+                if len(repair_errors) > 3:
+                    detail += f"; and {len(repair_errors) - 3} more"
+                raise StandardWorkflowError(
+                    "recovery", "retained artifact repair is invalid" + (f": {detail}" if detail else "")
                 )
-                if repair_receipt.get("rpaCalls", 0) != 0:
-                    raise StandardWorkflowError(
-                        "recovery", "local retained-artifact repair attempted RPA"
-                    )
-                if not repair_receipt.get("valid", False):
-                    repair_errors = repair_receipt.get("errors") or []
-                    detail = "; ".join(str(item) for item in repair_errors[:3])
-                    if len(repair_errors) > 3:
-                        detail += f"; and {len(repair_errors) - 3} more"
-                    raise StandardWorkflowError(
-                        "recovery",
-                        "retained artifact repair is invalid"
-                        + (f": {detail}" if detail else ""),
-                    )
-                remaining = repair_receipt.get("postprocessRemainingCount", 0)
-                if repair_receipt.get("postprocessBatchComplete") is not False:
-                    break
-                attempted = repair_receipt.get("postprocessAttemptedCount", 0)
-                if attempted <= 0 or (
-                    previous_remaining is not None
-                    and remaining >= previous_remaining
-                ):
-                    raise StandardWorkflowError(
-                        "recovery",
-                        "local postprocess made no progress; stopped to avoid an infinite recovery loop",
-                    )
-                previous_remaining = remaining
             batch_arguments = [
                 "--source", "rpa",
                 "--top-materials-json", str(paths["top_materials"]),
@@ -499,8 +479,9 @@ def resume_standard_run(
             )
             summary["postprocessRecovery"] = {
                 "rpaCalls": 0,
-                "batchCount": repair_batches,
-                "attemptedCount": repaired_materials,
+                "batchCount": 1,
+                "attemptedCount": 0,
+                "recordsOnly": True,
                 "remainingCount": 0,
             }
             write_run_summary(paths["summary"], summary)

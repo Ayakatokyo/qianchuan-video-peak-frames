@@ -29,10 +29,17 @@ def _read_json(path):
 
 
 def _resolve(root, path, fallback):
+    root = Path(root).resolve()
     if isinstance(path, str) and path.strip():
         candidate = Path(path)
-        return candidate if candidate.is_absolute() else root / candidate
-    return fallback
+        if candidate.is_absolute():
+            return candidate
+        # Historical manifests contain both run-relative paths and paths that
+        # already include the run directory relative to cwd. Normalize once,
+        # even when the referenced file is missing; never prepend root twice.
+        absolute = candidate.resolve()
+        return absolute if absolute.is_relative_to(root) else (root / candidate).resolve()
+    return Path(fallback).resolve()
 
 
 def _relative(root, path):
@@ -205,6 +212,7 @@ def repair_batch(
     download_concurrency=2,
     postprocess_concurrency=2,
     max_materials_per_run=2,
+    records_only=False,
 ):
     if type(download_concurrency) is not int or download_concurrency <= 0:
         raise ValueError("download_concurrency must be a positive integer")
@@ -212,7 +220,7 @@ def repair_batch(
         raise ValueError("postprocess_concurrency must be a positive integer")
     if type(max_materials_per_run) is not int or max_materials_per_run <= 0:
         raise ValueError("max_materials_per_run must be a positive integer")
-    peak_dir = Path(peak_output_dir)
+    peak_dir = Path(peak_output_dir).resolve()
     root = peak_dir.parent
     manifest_path = peak_dir / "batch-manifest.json"
     if manifest_path.is_file():
@@ -226,9 +234,8 @@ def repair_batch(
     materials = manifest.get("materials")
     if not isinstance(materials, list):
         raise ValueError("streaming batch manifest must contain a materials list")
-    records_dir = Path(diagnosis_records_dir) if diagnosis_records_dir else root / "diagnosis-records"
-    csv_dir = Path(diagnosis_csv_dir) if diagnosis_csv_dir else root / "diagnosis-csv"
-    parallel_postprocess = postprocess is None
+    records_dir = Path(diagnosis_records_dir).resolve() if diagnosis_records_dir else root / "diagnosis-records"
+    csv_dir = Path(diagnosis_csv_dir).resolve() if diagnosis_csv_dir else root / "diagnosis-csv"
     postprocess = postprocess or _default_postprocess
     args = SimpleNamespace(
         output_dir=str(peak_dir),
@@ -246,6 +253,7 @@ def repair_batch(
     actions = []
     errors = []
     pending_postprocess = []
+    collected_materials = set()
     checkpoint_lock = threading.RLock()
 
     def checkpoint():
@@ -360,6 +368,13 @@ def repair_batch(
             errors.append(f"{material_id}: invalid material ID: {exc}")
             continue
         _normalize_summary_paths(root, entry)
+        if any(entry.get(key) and not Path(entry[key]).is_file()
+               for key in ("summaryJson", "summaryMd")):
+            # Recover older duplicated prefixes only through the canonical
+            # material directory and full summary/JPEG validation, not globbing.
+            recovered_summary = pipeline._existing_wave_summary_entry(args, entry)
+            if recovered_summary is not None:
+                entry.update(recovered_summary)
         if not entry.get("summaryJson"):
             default_summary = material_dir(peak_dir, material_id) / "summary.json"
             if default_summary.is_file():
@@ -408,6 +423,13 @@ def repair_batch(
                 errors.append(f"{material_id}: CSV repair failed: {exc}")
 
         if records is not None:
+            try:
+                pipeline.find_material_video_url(records, material_id)
+            except Exception as exc:
+                errors.append(f"{material_id}: records have no usable video: {exc}")
+                finalize_entry(raw_entry, entry, material_id, None)
+                continue
+            collected_materials.add(material_id)
             entry["rpaStatus"] = "selected"
             entry["recordsPersisted"] = True
             entry["records"] = records
@@ -418,30 +440,25 @@ def repair_batch(
             # not the status flag, when deciding whether local postprocess is
             # still required.
             if not _valid_summary(material_id, entry):
-                if parallel_postprocess:
-                    entry.update(
-                        {
-                            "postprocessStatus": "queued",
-                            "postprocessSucceeded": False,
-                            "status": "pending",
-                        }
-                    )
-                    raw_entry.clear()
-                    raw_entry.update(entry)
-                    pending_postprocess.append(
-                        (raw_entry, entry, material_id, records)
-                    )
-                    continue
-                try:
-                    result = postprocess(args, entry)
-                except Exception as exc:
-                    apply_postprocess_result(entry, material_id, error=exc)
-                else:
-                    apply_postprocess_result(entry, material_id, result=result)
+                entry.update(
+                    {
+                        "postprocessStatus": "queued",
+                        "postprocessSucceeded": False,
+                        "status": "pending",
+                    }
+                )
+                raw_entry.clear()
+                raw_entry.update(entry)
+                pending_postprocess.append((raw_entry, entry, material_id, records))
+                continue
 
         finalize_entry(raw_entry, entry, material_id, records)
 
-    if pending_postprocess:
+    target = manifest.get("targetTopN")
+    collection_complete = type(target) is int and target > 0 and len(collected_materials) >= target
+    blocked_reason = ("records_only" if records_only else
+                      "rpa_collection_incomplete" if not collection_complete else None)
+    if pending_postprocess and not blocked_reason:
         # Prefer materials that have not yet had a local postprocess attempt.
         # Manifest order remains rank-stable; only this bounded execution queue
         # is rotated so a repeatedly failing item cannot starve later items.
@@ -546,6 +563,8 @@ def repair_batch(
         "postprocessAttemptedCount": len(attempted_postprocess),
         "postprocessRemainingCount": remaining_postprocess,
         "postprocessBatchComplete": remaining_postprocess == 0,
+        "recordsOnly": records_only,
+        "postprocessBlockedReason": blocked_reason,
     }
     write_json_atomically(peak_dir / REPAIR_RECEIPT_NAME, receipt)
     return receipt
@@ -560,6 +579,7 @@ def build_parser():
     parser.add_argument("--download-concurrency", type=int, default=2)
     parser.add_argument("--postprocess-concurrency", type=int, default=2)
     parser.add_argument("--max-materials-per-run", type=int, default=2)
+    parser.add_argument("--records-only", action="store_true", help="Reconcile retained records and paths without video download or FFmpeg")
     return parser
 
 
@@ -574,6 +594,7 @@ def main(argv=None):
             download_concurrency=args.download_concurrency,
             postprocess_concurrency=args.postprocess_concurrency,
             max_materials_per_run=args.max_materials_per_run,
+            records_only=args.records_only,
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"repair-manifest failed: {exc}")
@@ -581,6 +602,10 @@ def main(argv=None):
     print(f"repair_manifest={Path(args.output_dir) / REPAIR_RECEIPT_NAME}")
     print("stage_counts=" + json.dumps(receipt["stageCounts"], sort_keys=True))
     print(f"postprocess_remaining={receipt['postprocessRemainingCount']}")
+    if receipt['postprocessBlockedReason']:
+        print(f"postprocess_blocked={receipt['postprocessBlockedReason']}")
+    if receipt['postprocessBlockedReason'] == 'rpa_collection_incomplete':
+        return 5
     return 0 if receipt["valid"] else 5
 
 

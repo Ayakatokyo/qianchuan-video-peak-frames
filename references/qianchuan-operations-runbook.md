@@ -57,6 +57,8 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 观测轮询每次等待不超过 60 秒，每次都使用新的有界 `status` 调用，使用者的停止指令可以在下一个轮询周期被处理。`status` 是轻量只读入口，不加载报告、Jieba、OpenPyXL 或 Pillow。一旦运行面会话为 `lost` 或控制通道丢失，立即向用户说明“控制面异常，后台状态待核对”，并只执行一次 `status`：锁为 active 时才说明后台仍在运行并反读 `lastProgress`；锁为 stale/missing 且 `workflowStatus=interrupted` 时直接进入标准恢复。不得在核验前固定声称后台仍在运行。
 
+优先使用 `status.nextAction`：`wait` 才继续有界观察，`resume` 表示中断待按授权恢复，`finalize` 表示从报告构建断点恢复，`analyze` 表示进入当前模型分析，`verify_delivery` 表示核验交付。`recoveryStage` 与 `rpaRemainingCount` 是基于落盘计数的阶段提示，不代替文件校验。进程已中断时不得以反复 sleep 等待其自行完成；工具返回 `-1`/`-9` 或极短 duration 也不证明后台继续运行或真实阶段耗时。常规观测不再组合多轮 find/jq/进程扫描。
+
 ## 策略拒绝但后台仍在运行
 
 `GUARDRAIL_ERROR`、策略拒绝或连接器拒绝只能说明调用层没有给出可用完成态，不能据此判断 `prepare` 未提交或已失败。先通过运行面的后台任务/执行会话查询该命令的真实状态；查询不可用时，再反读 `run-summary.json`、`peak-frames/batch-manifest.json` 和 CSV/records/summary 落盘数量。后台为 `running` 时不得重复提交、覆盖目录或向用户报告任务中止；保持同一运行目录，等待后台终态。后台为 `analysis_pending` 时直接进入 AI 分析，为 `complete` 时仅核验交付物。
@@ -107,7 +109,7 @@ python scripts/run_standard_analysis.py frame-review \
 
 ## 运行中断或陈旧批次
 
-先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。恢复已有批次时，默认先做不触发 RPA 的本地修复；`--resume` 只轮询已保存的远程任务，不会重新提交 RPA：
+先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。先用 `status` 确认原进程结束，再恢复同一批次。已有远程任务只轮询原 ID，不重提同一素材；补齐缺口可以提交尚未提交的候选，因此 `resume` 仍属于 RPA 操作。
 
 `status` 会核对工作流锁和批次锁的 pid、hostname 与 processStart。持久摘要仍为 `running`、但两把锁都不是 active 时，对外返回 `workflowStatus=interrupted`、`persistedWorkflowStatus=running` 和 `recoveryRequired=true`；`status` 本身保持只读。不得使用 `pgrep -af` 或其他会输出完整命令行与环境变量的命令查进程；需要复核时只按锁内 pid 查存活性，不输出 args/env。
 
@@ -120,13 +122,13 @@ python scripts/run_standard_analysis.py resume \
   --output-dir "/path/to/run"
 ```
 
-`resume` 校验请求参数与旧摘要一致，拒绝 active 批次，自动接管陈旧工作流/批次锁，先执行 `rpaCalls=0` 的本地修复；本地阶段在同一次 `resume` 内按每批 2 条自动循环，直到全部排空或某批失败/无进展，再用已保存收据查询原远程任务并补齐缺口。它不重跑报表选品，也不需要人工重复调用 5 轮。
+`resume` 校验请求参数与旧摘要一致，拒绝 active 批次，自动接管陈旧工作流/批次锁。先且仅做一次 `records_only` 本地对账，收据必须为 `rpaCalls=0`、`postprocessAttemptedCount=0`；然后由同一个批处理引擎查询已保存远程 ID、补齐目标数量的有效 records，最后统一执行待完成后处理。有效 summary/JPEG 复用；不重跑报表选品，不循环调用每次两条的独立 repair。
 
 先运行 `run_standard_analysis.py status`，按五层产物分别盘点并记录数量：`rpaRequestCount`（提交数）→ `rpaAcceptedCount`（有效诊断结果数）→ `rpaSelectedCount`（含可用 videoUrl 的选中数）→ `recordsPersistedCount`/CSV 数（诊断结果已落盘数）→ `postprocessSucceededCount`（截帧与 `summary.json`、`summary.md` 均完整数）。提交数、平台/UI 的“成功”数字、素材目录数均不等于本地落盘或完整后处理数；没有本地 CSV/records 时不得声称平台已成功或失败。
 
 调度使用分阶段屏障：先按 RPA 并发 3 个逐波收集，当前波次的 RPA 和 CSV/records 落盘全部终态后即可进入下一波；达到目标 records 数前不启动视频下载或 FFmpeg。本地后处理默认视频下载并发 2、FFmpeg 并发 2；下载与截帧使用独立信号量。后处理终态失败时，才对下一顺位候选素材执行独立的 RPA 补位阶段。
 
-若用户未明确授权再次调用 RPA，先运行“修复保留产物”章节的 `repair_manifest.py`。该修复优先核验 `rpa-receipts/<materialId>.json` 的 `records_persisted` 收据；收据中的 records 已包含目标素材的平铺 `recordType=material_info` 与非空 `videoUrl` 时，即使 manifest 仍为 submitted/pending，也直接进入本地后处理，不会发起 RPA。即使 manifest 的 `postprocessStatus` 已写成 `succeeded`，也会以实际 `summary.json`、`summary.md` 和 JPEG 是否完整为准，补跑缺失的截帧。检查 `repair-manifest.json` 的 `rpaCalls` 必须为 `0`，并核对修复后的三层数量。
+若用户未明确授权再次调用 RPA，且原进程已结束，可运行“修复保留产物”章节的 `repair_manifest.py --records-only`。它优先核验 `rpa-receipts/<materialId>.json` 的 `records_persisted` 收据，将有效 receipt/CSV 恢复为 records，并核对已有 summary/JPEG，不下载、不截帧。数量不足或目标数量未知时，即使省略 `--records-only` 也会阻止后处理；只有目标数量的有效 records 已齐备，独立 repair 才能补跑缺失后处理。检查收据的 `rpaCalls`、`postprocessAttemptedCount` 和 `postprocessBlockedReason`。
 
 `resume` 返回的本地修复或远程对账需要进一步诊断时，才使用下面的底层命令：
 
@@ -144,7 +146,7 @@ python scripts/extract_peak_frames.py \
 
 `--resume` 只可用于同一日期、同一候选池和同一店铺的既有批次；它会复用有效 summary 与已落盘 records。
 
-`--resume` 只对带已保存 `task_group_id` 的 `submitted` 素材继续轮询同一远程任务。没有本地 CSV/records 且没有可复用远程任务 ID 的素材直接标记失败，不会重新提交 RPA。用户要求停止 RPA 时只使用上面的本地 repair，并把悬空素材保留为待对账。
+`--resume` 对带已保存 `task_group_id` 的 `submitted` 素材继续轮询同一远程任务。已提交但没有本地 CSV/records、也没有可复用远程任务 ID 的素材标记失败，不重提该素材；引擎可以用尚未提交的候选补齐缺口。用户要求停止 RPA 时只使用 `--records-only` 本地对账，并把悬空素材保留为待对账。
 
 ## 修复保留产物
 
@@ -160,7 +162,9 @@ python scripts/repair_manifest.py \
   --max-materials-per-run 2
 ```
 
-该命令先执行 `records_persisted receipt -> records`，再执行 `CSV -> records`、`records -> 后处理` 和 `summary/JPEG -> manifest` 修复，不重新调用 RPA。下载与 FFmpeg 分别受独立并发上限控制；独立 `repair_manifest.py` 默认每次只启动 2 条素材，视频下载并完成大小/SHA-256 后立即 checkpoint，整条素材完成后再次 checkpoint。读取 `repair-manifest.json.postprocessRemainingCount`，大于 0 时可继续执行同一底层命令；标准 `resume` 已内置该有界循环。不要再用外部 `timeout` 在任意时刻杀进程。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。`postprocessAttemptCount` 是公平调度计数，`postprocessAttempts` 始终是尝试记录列表；旧错误版本留下的整数会自动迁移到计数字段。
+该命令先执行 `records_persisted receipt -> records`、`CSV -> records` 和 `summary/JPEG -> manifest` 对账，不重新调用 RPA。加入 `--records-only` 时到此结束；否则必须先证明 `targetTopN` 个不同素材有有效 records 和可用 videoUrl，才执行 `records -> 后处理`。采集不足或目标数量未知时返回退出码 5、`postprocessBlockedReason=rpa_collection_incomplete`，不要重复调用等待其自动补齐。
+
+下载与 FFmpeg 分别受独立并发上限控制；独立 repair 默认每次只启动 2 条素材，视频下载并完成大小/SHA-256 后立即 checkpoint，整条素材完成后再次 checkpoint。仅当未被屏障阻止且本次有实际进展时，才按 `postprocessRemainingCount` 决定是否继续独立修复；标准 `resume` 直接使用共享批处理队列，无此循环。不要再用外部 `timeout` 在任意时刻杀进程。若 manifest 缺失，再传入 `--top-materials-json`；无法证明诊断阶段时保持 `rpaStatus: unknown`。`postprocessAttemptCount` 是公平调度计数，`postprocessAttempts` 始终是尝试记录列表；旧错误版本留下的整数会自动迁移到计数字段。
 
 ## 报告生成中断与续跑
 

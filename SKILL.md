@@ -14,7 +14,7 @@ metadata:
 
 # 千川投放素材全景分析
 
-收集报表授权店铺、该店铺下的广告主、同一投放主体的 RPA 授权账号、分析周期和 Top 素材数量。标准入口先用 API 授权店铺及广告主查询素材视频报表，再将 `materialId` 交给用户选定的 RPA 授权账号；先完成目标数量的 RPA 和 records 落盘，再进入本地后处理（默认视频下载并发 2、FFmpeg 并发 2，每轮最多启动 2 条素材）。候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成。每个素材的 RPA 只提交一次。
+收集报表授权店铺、该店铺下的广告主、同一投放主体的 RPA 授权账号、分析周期和 Top 素材数量。标准入口先用 API 授权店铺及广告主查询素材视频报表，再将 `materialId` 交给用户选定的 RPA 授权账号；先完成目标数量的 RPA 和有效 records 落盘，再进入本地后处理（默认视频下载并发 2、FFmpeg 并发 2，由同一个队列持续推进）。首次采集、恢复和独立修复均遵守该屏障；候选耗尽但数量不足时保留结果并停止，不对部分素材提前下载或截帧。候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成。每个素材的 RPA 只提交一次。
 
 `api_advertiser` 会按 `api_shop` 过滤广告主，二者构成同一投放主体。`api_shop.extra.shop_id`、`advertiser_id` 与 `rpa_shop.extra.shop_id` 属于不同 ID 域，格式可以不同，**不得比较是否相等**；客户须选择与该广告主同一投放主体的 RPA 授权账号。执行前仅校验所选 RPA ID 仍出现在当前 `RPA_JULIANG_QC` 授权列表中；不在列表则停止，不提交后续 RPA 任务。
 
@@ -63,7 +63,7 @@ python scripts/run_standard_analysis.py prepare \
 python scripts/run_standard_analysis.py status --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
-观测会话失联后先执行一次轻量 `status`：`lockState=active` 时只读 `lastProgress` 并继续等待，不能宣称后台已停止或重复提交；只有 `workflowStatus=interrupted` 且锁为 stale/missing 时才进入恢复。标准恢复入口会自动接管陈旧锁，在同一次调用内按每批 2 条持续修复已落盘 CSV/records/截帧，直到本地后处理排空或出现真实失败，再续接已保存的远程任务并只补齐缺口，不重跑报表选品：
+观测会话失联后先执行一次轻量 `status`：`nextAction=wait` 且 `lockState=active` 时读 `lastProgress` 并继续有界等待；`nextAction=resume` 且 `workflowStatus=interrupted` 时按授权恢复，不反复 sleep。`rpaRemainingCount` 和 `recoveryStage` 提示当前缺口与阶段，实际产物仍由恢复入口核验。标准恢复只做一次 CSV/records 与路径对账（不下载、不截帧），再由原批处理引擎续接远程任务、补齐目标数量后统一后处理；有效 summary/JPEG 直接复用，不重跑报表选品：
 
 ```bash
 python scripts/run_standard_analysis.py resume \
@@ -73,7 +73,7 @@ python scripts/run_standard_analysis.py resume \
   --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
-用户明确要求“继续/恢复并补齐剩余素材”时可执行 `resume`。若用户要求停止 RPA，或尚未确认原进程终止，只运行 `status` 与无 RPA 的本地修复，不执行 `resume`。
+用户明确要求“继续/恢复并补齐剩余素材”时可执行 `resume`：已有远端 ID 继续查询，已提交素材不重提，缺口可使用尚未提交的候选。原进程仍活动或终止状态未知时只运行 `status`；已确认终止但用户要求停止 RPA 时，仅可按运维手册执行 `--records-only` 本地对账，不执行 `resume`。
 
 只验证报表授权、不进入 RPA 时改用 `fetch-metadata`（仍写入同一类目录；只产生 `source-data/gateway-response.json` 与 `run-summary.json`，状态 `metadata_ready`）。仅当状态为 `analysis_pending` 才继续 AI。
 

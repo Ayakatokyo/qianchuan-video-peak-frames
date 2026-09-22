@@ -94,7 +94,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
             args,
             candidate_payload,
             wave_entry=self._wave_entry,
-            resume_state=lambda *_args: ({}, {}, {}, {}, []),
+            resume_state=overrides.pop("resume_state", lambda *_args: ({}, {}, {}, {}, [])),
             attempt_rpa=attempt_rpa,
             attempt_postprocess=attempt_postprocess,
             merge_timings=self._merge_timings,

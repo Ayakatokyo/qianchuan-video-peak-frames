@@ -510,7 +510,7 @@ class StandardWorkflowTests(unittest.TestCase):
         self.assertNotIn("--resume", calls[2][1])
         self.assertEqual(calls[0][2]["diagnosis_records_dir"], root / "diagnosis-records")
 
-    def test_resume_drains_bounded_local_postprocess_chunks_in_one_call(self):
+    def test_resume_reconciles_once_and_leaves_postprocess_to_the_batch_engine(self):
         calls = []
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -530,17 +530,15 @@ class StandardWorkflowTests(unittest.TestCase):
                 },
             )
 
-            remaining = iter((7, 5, 3, 1, 0))
-
             def repair_batch(_peak_dir, **_kwargs):
+                self.assertTrue(_kwargs['records_only'])
                 calls.append("repair")
-                current = next(remaining)
                 return {
                     "valid": True,
                     "rpaCalls": 0,
-                    "postprocessAttemptedCount": 1 if current == 0 else 2,
-                    "postprocessRemainingCount": current,
-                    "postprocessBatchComplete": current == 0,
+                    "postprocessAttemptedCount": 0,
+                    "postprocessRemainingCount": 9,
+                    "postprocessBatchComplete": False,
                 }
 
             with patch.object(standard_workflow, "validate_ready_materials"), patch.object(
@@ -562,15 +560,16 @@ class StandardWorkflowTests(unittest.TestCase):
                 (root / "run-summary.json").read_text(encoding="utf-8")
             )
 
-        self.assertEqual(calls, ["repair"] * 5 + ["resume", "verify"])
+        self.assertEqual(calls, ["repair", "resume", "verify"])
         self.assertEqual(summary["status"], "analysis_pending")
-        self.assertEqual(summary["postprocessRecovery"]["batchCount"], 5)
-        self.assertEqual(summary["postprocessRecovery"]["attemptedCount"], 9)
+        self.assertEqual(summary["postprocessRecovery"]["batchCount"], 1)
+        self.assertEqual(summary["postprocessRecovery"]["attemptedCount"], 0)
+        self.assertTrue(summary["postprocessRecovery"]["recordsOnly"])
         self.assertEqual(summary["postprocessRecovery"]["rpaCalls"], 0)
         self.assertEqual(summary["postprocessRecovery"]["remainingCount"], 0)
         self.assertEqual(persisted, summary)
 
-    def test_resume_stops_when_bounded_repair_makes_no_progress(self):
+    def test_resume_rejects_postprocess_attempted_during_records_only_repair(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             (root / "top_materials.json").write_text(
@@ -590,7 +589,7 @@ class StandardWorkflowTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                standard_workflow.StandardWorkflowError, "made no progress"
+                standard_workflow.StandardWorkflowError, "records-only repair attempted"
             ):
                 standard_workflow.resume_standard_run(
                     self.request(),
@@ -599,7 +598,7 @@ class StandardWorkflowTests(unittest.TestCase):
                     repair_batch=lambda *_args, **_kwargs: {
                         "valid": True,
                         "rpaCalls": 0,
-                        "postprocessAttemptedCount": 0,
+                        "postprocessAttemptedCount": 1,
                         "postprocessRemainingCount": 1,
                         "postprocessBatchComplete": False,
                     },

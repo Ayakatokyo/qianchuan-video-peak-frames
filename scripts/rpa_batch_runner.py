@@ -578,7 +578,12 @@ def run_wave_batch(
 
     # Persist the RPA/postprocess boundary before any network video download
     # or FFmpeg work begins, then process every accepted material locally.
-    persist()
+    manifest = persist()
+    if len(accepted_entries()) < args.target_top_n:
+        # Candidate exhaustion is not permission to process a partial batch.
+        # Retain the records for recovery without advertising a stale ready set.
+        Path(ready_path).unlink(missing_ok=True)
+        return manifest, True, None
     run_postprocess_queue(selected)
 
     def compensate_terminal_failures():

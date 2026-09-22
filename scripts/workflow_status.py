@@ -61,6 +61,36 @@ def standard_run_status(output_dir):
         except (OSError, UnicodeError, json.JSONDecodeError):
             last_progress = None
 
+    request = summary.get("request") or {}
+    target = request.get("topN") if isinstance(request, dict) else None
+    if target is None and isinstance(manifest, dict):
+        target = manifest.get("targetTopN")
+    if type(target) is not int or target <= 0:
+        target = None
+    accepted = stage_counts.get("rpaAcceptedCount")
+    remaining = max(0, target - accepted) if target and type(accepted) is int else None
+    active_stage = summary.get("activeStage")
+    next_action = (
+        "wait" if observed_lock_state == "active" else
+        "finalize" if workflow_status == "interrupted" and active_stage == "report" else
+        "resume" if workflow_status == "interrupted" else
+        "analyze" if workflow_status == "analysis_pending" else
+        "verify_delivery" if workflow_status == "complete" else "inspect"
+    )
+    recovery_stage = None
+    if next_action in {"wait", "resume", "finalize"}:
+        processed = stage_counts.get("postprocessSucceededCount", 0)
+        if active_stage in {"selection", "metadata", "verification", "facts", "report"}:
+            recovery_stage = active_stage
+        elif remaining is None:
+            recovery_stage = "inspect_artifacts"
+        elif remaining:
+            recovery_stage = "rpa_collection"
+        elif type(processed) is int and processed >= target:
+            recovery_stage = "verification"
+        else:
+            recovery_stage = "local_postprocess"
+
     return {
         "workflowStatus": workflow_status,
         "persistedWorkflowStatus": persisted_status,
@@ -70,6 +100,10 @@ def standard_run_status(output_dir):
         "workflowLockState": workflow_lock_state,
         "batchLockState": batch_lock_state,
         "recoveryRequired": workflow_status == "interrupted",
+        "nextAction": next_action,
+        "recoveryStage": recovery_stage,
+        "targetTopN": target,
+        "rpaRemainingCount": remaining,
         "progressLog": str(progress_path) if progress_path.is_file() else None,
         "lastProgress": last_progress,
         "rpaRequestCount": stage_counts.get("rpaRequestCount", 0),
