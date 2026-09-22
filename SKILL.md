@@ -42,7 +42,7 @@ metadata:
 
 当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先读取正式任务的精简事实视图、查看图片并保存观察要点，由当前模型逐项写分析片段，最后合并成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
 
-**默认分析路径**：使用正式 `analysis-task --section facts` 读取精简事实；输出字段不清楚时按需读 `--section contract`，查找引用时按需读 `--section references`，按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。每条素材看图后直接写正式片段；同一次工具调用可提交看图 checkpoint 并执行 `check-analysis-part`，再处理下一条；不重复抄写长篇观察报告。事实包和每个成功帧完整保留，正文统一精简，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
+**默认分析路径**：使用正式 `analysis-task --section facts --export-dir <本次分析目录内的新目录>` 一次生成精简事实分页，按索引完整读取文件，避免每页重启程序。首次写一种结构前读 `--section contract`；查找引用时按需读 `--section references`，长引用表同样一次导出。按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。每条素材看图后直接写含观察和商业解释（或具体证据限制）的正式片段；同一次工具调用可提交看图 checkpoint 并执行 `check-analysis-part`，再处理下一条；不重复抄写长篇观察报告。事实包和每个成功帧完整保留，正文统一精简，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
 
 ## 统一分析要求
 

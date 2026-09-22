@@ -8,14 +8,6 @@ from pathlib import Path
 import uuid
 import re
 
-try:
-    import jieba
-    import jieba.posseg as pseg
-except ImportError:  # pragma: no cover - dependency bootstrap reports this clearly
-    jieba = None
-    pseg = None
-
-
 UNIT_DEFINITIONS = (
     ("chapter01-portfolio", "chapter01-portfolio-input.json"),
     ("chapter02-audience", "chapter02-audience-input.json"),
@@ -138,6 +130,12 @@ def build_display_facts(analysis):
     }
 
 
+def script_label_evidence_refs(materials):
+    """Canonical script references accepted by batch/material conclusions."""
+    return {f"script:{material['materialId']}:{label['level1']}:{label['level2']}"
+            for material in materials for label in material.get('labels', [])}
+
+
 def _script_unit(analysis):
     scripts = analysis.get("scripts", {})
     if not isinstance(scripts, dict):
@@ -195,9 +193,12 @@ _KEYWORD_POS_PREFIXES = ("n", "v", "a", "eng")
 
 
 def _script_keywords(text):
+    # Reading frozen facts and checkpointing images never needs segmentation.
+    try:
+        import jieba.posseg as pseg
+    except ImportError as exc:  # pragma: no cover - dependency gate handles this
+        raise RuntimeError("jieba is required for deterministic Chinese keyword extraction") from exc
     tokens = []
-    if jieba is None:
-        raise RuntimeError("jieba is required for deterministic Chinese keyword extraction")
     previous = None
     for item in pseg.cut(text):
         token = item.word.strip()

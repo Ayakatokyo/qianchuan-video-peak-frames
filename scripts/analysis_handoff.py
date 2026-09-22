@@ -2,9 +2,10 @@
 
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 
-from analysis_units_lib import UNIT_DEFINITIONS
+from analysis_units_lib import UNIT_DEFINITIONS, script_label_evidence_refs
 from batch_runtime import write_json_atomically
 
 
@@ -95,7 +96,7 @@ def verify_assembly(analysis_json, inputs):
     return file_hash(receipt_path)
 
 
-def check_material_part(analysis_dir, part_path):
+def check_material_part(analysis_dir, part_path, *, _context=None):
     """Early material shape/reference checks, never a substitute for final review."""
     from final_report_lib import FinalReportError, _validate_v2_material_analysis
 
@@ -103,14 +104,17 @@ def check_material_part(analysis_dir, part_path):
     path = Path(part_path)
     if path.is_symlink() or not path.resolve().is_relative_to(root) or path.suffix != ".json":
         raise ValueError("material part must be a JSON file within the analysis directory")
-    inputs = inspect_inputs(root)
+    units = {}
+    inputs = inspect_inputs(root, loaded_units=units) if _context is None else _context[0]
+    if _context is not None:
+        units = _context[1]
     part = read_object(path)
     if set(part) - {"schemaVersion", "materialAnalyses"} or part.get("schemaVersion", 5) != 5:
         raise ValueError("material part may contain only schemaVersion 5 and materialAnalyses")
     analyses = part.get("materialAnalyses")
     if not isinstance(analyses, list) or not analyses:
         raise ValueError("materialAnalyses must be a non-empty list")
-    unit = read_object(root / "analysis-units/chapter05-material-input.json")
+    unit = units['chapter05-material']
     source = {item["materialId"]: item for item in unit["materials"]}
     frame_hashes = {f["frameRef"]: f["sha256"] for f in inputs["frames"]}
     ids = []
@@ -145,14 +149,14 @@ def check_material_part(analysis_dir, part_path):
             "partSha256": file_hash(path), "contentReviewed": False, "finalValidationRequired": True}
 
 
-def check_analysis_part(analysis_dir, part_path):
+def check_analysis_part(analysis_dir, part_path, *, _context=None):
     """Preflight chapter slots and references; final validation still required."""
     root, path = Path(analysis_dir).resolve(), Path(part_path)
     if path.is_symlink() or not path.resolve().is_relative_to(root) or path.suffix != '.json':
         raise ValueError('part must be a JSON file within the analysis directory')
     part = read_object(path)
     if 'materialAnalyses' in part:
-        return check_material_part(root, path)
+        return check_material_part(root, path, _context=_context)
     allowed = {'schemaVersion', 'analysisProvenance', 'overallConclusion', 'portfolioDimensionConclusions',
                'hotMaterialInsight', 'batchInsights', 'keywordCloudReview', 'keywordCloudInsight',
                'highlightDashboard', 'customClassification'}
@@ -178,7 +182,9 @@ def check_analysis_part(analysis_dir, part_path):
                 for item in insights):
             raise ValueError('batchInsights requires nonempty script or audience objects')
     units = {}
-    inspect_inputs(root, loaded_units=units)
+    inputs = inspect_inputs(root, loaded_units=units) if _context is None else _context[0]
+    if _context is not None:
+        units = _context[1]
     from analysis_tasks import evidence_refs
     from final_report_lib import _validate_v2_insight
     for topic, count, unit in [('script', 2, 'chapter03-script'), ('audience', 3, 'chapter02-audience')]:
@@ -187,10 +193,16 @@ def check_analysis_part(analysis_dir, part_path):
             continue
         if len(items) != count:
             raise ValueError(f'chapter part requires {count} {topic} insights')
-        known = evidence_refs(units[unit])
+        items = [_validate_v2_insight(item, i) for i, item in enumerate(items)]
+        known = (script_label_evidence_refs(units[unit]['materials'])
+                 if topic == 'script' else evidence_refs(units[unit]))
+        invalid = sorted({ref for item in items for ref in item.get('evidenceRefs', []) if ref not in known})
+        if invalid and topic == 'script':
+            raise ValueError('batchInsights script evidence reference requires label refs '
+                             '(script:<materialId>:<level1>:<level2>); keyword text refs belong to '
+                             'keywordCloudInsight.sellingPoints. Invalid: ' + ', '.join(invalid))
         metrics = set()
         for i, item in enumerate(items):
-            _validate_v2_insight(item, i)
             if not item.get('evidenceRefs') or any(ref not in known for ref in item['evidenceRefs']):
                 raise ValueError('unknown or empty chapter evidence reference')
             if topic == 'audience':
@@ -200,8 +212,61 @@ def check_analysis_part(analysis_dir, part_path):
                 metrics.update(values)
         if topic == 'audience' and metrics != {'SHOW_COUNT', 'CLICK_COUNT', 'TRANSACTION_AMOUNT'}:
             raise ValueError('audience insights must cover all three metrics')
+    expected_frames = {frame['frameRef'] for frame in inputs['frames']}
+    for field in ('highlightDashboard', 'customClassification'):
+        if field not in part:
+            continue
+        raw = part[field]
+        if not isinstance(raw, dict) or not isinstance(raw.get('groups'), list):
+            raise ValueError(f'{field}.groups must be a list')
+        refs = []
+        for group in raw['groups']:
+            if not isinstance(group, dict) or not isinstance(group.get('frameRefs'), list):
+                raise ValueError(f'{field}.groups requires frameRefs lists')
+            refs.extend(group['frameRefs'])
+        if field == 'customClassification':
+            unclassified = raw.get('unclassifiedFrameRefs', [])
+            if not isinstance(unclassified, list):
+                raise ValueError('customClassification.unclassifiedFrameRefs must be a list')
+            refs.extend(unclassified)
+        if any(not isinstance(ref, str) for ref in refs):
+            raise ValueError(f'{field} frameRefs must be strings')
+        counts = Counter(refs)
+        issues = {'duplicates': sorted(ref for ref, count in counts.items() if count > 1),
+                  'missing': sorted(expected_frames - counts.keys()),
+                  'unknown': sorted(counts.keys() - expected_frames)}
+        if any(issues.values()):
+            raise ValueError(f'{field} coverage: ' + json.dumps(issues, ensure_ascii=False))
+        if field == 'customClassification':
+            from final_report_lib import _validate_custom_classification
+            _validate_custom_classification(raw, expected_frames)
+            if raw['inputFrameManifestHash'] != 'sha256:' + inputs['manifestSha256']:
+                raise ValueError('customClassification inputFrameManifestHash mismatch')
+        else:
+            from final_report_lib import _validate_highlight_dashboard_group, HIGHLIGHT_DASHBOARD_CATEGORIES
+            groups = [_validate_highlight_dashboard_group(g, i) for i, g in enumerate(raw['groups'])]
+            categories = [g['category'] for g in groups]
+            if categories != [c for c in HIGHLIGHT_DASHBOARD_CATEGORIES if c in categories]:
+                raise ValueError('highlightDashboard requires unique categories in portrait, product, other order')
     return {'status': 'chapter_structure_checked', 'partSha256': file_hash(path),
             'contentReviewed': False, 'finalValidationRequired': True}
+
+
+def check_analysis_parts(analysis_dir, part_paths):
+    """Validate independent fragments against one snapshot; report every failed part."""
+    from final_report_lib import FinalReportError
+    units = {}
+    inputs = inspect_inputs(analysis_dir, loaded_units=units)
+    results, errors = [], []
+    for path in part_paths:
+        try:
+            result = check_analysis_part(analysis_dir, path, _context=(inputs, units))
+        except (ValueError, OSError, FinalReportError) as exc:
+            errors.append({'part': str(path), 'error': str(exc)})
+        else:
+            results.append({'part': str(path), **result})
+    return {'status': 'invalid' if errors else 'parts_structure_checked', 'parts': results,
+            'errors': errors, 'contentReviewed': False, 'finalValidationRequired': True}
 
 
 def assemble_analysis(analysis_dir, part_paths, output_path):

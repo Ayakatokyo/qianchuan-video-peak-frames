@@ -18,17 +18,20 @@ python scripts/run_standard_analysis.py prepare-local \
 当前唯一默认流程使用精简分析任务，五章原始事实和全部成功 JPEG 继续完整保留。原有 analysis-plan/read-analysis 提供无损全文溯源，但不是默认模型阅读路径。
 
 ```bash
-python scripts/run_standard_analysis.py analysis-task --output-dir "$PWD/千川数据资源/<run-id>" --section facts
-python scripts/run_standard_analysis.py analysis-task --output-dir "$PWD/千川数据资源/<run-id>" --task chapter01 --page 0 --input-sha256 "<计划哈希>" --section facts
+python scripts/run_standard_analysis.py analysis-task \
+  --output-dir "$PWD/千川数据资源/<run-id>" --section facts \
+  --export-dir "$PWD/千川数据资源/<run-id>/diagnostic-analysis/task-pages-facts"
 ```
 
-按 nextPage 读到 null。每个任务页完整 stdout（含外层元数据、缩进和换行）不超过8000字节。records 用 path/value 表示值，container 初始化大对象、数组或字符串，text 按 start 拼接；数组连续片段用 start/items 写回对应区间，避免每条引用重复打印长路径。截断页不得算已读。inputSha256 绑定事实、图片、Prompt、任务及分页实现；自定义分类仍使用 sha256:<manifestSha256>。
+导出一次校验五包与 JPEG，返回 `indexPath`。用文件读取工具读取索引中当前任务的全部 `pages`，每页带 byteSize/SHA-256；每个页文件（含元数据、缩进和换行）不超过8000字节。索引只证明文件生成，不证明模型已读；记录 taskId/page 断点，逐页读到 nextPage=null。不再用 shell 循环逐页重启 analysis-task；单页临时查询仍支持 `--task chapter01 --page 0 --input-sha256 <计划哈希>`。导出只允许分析目录内的新目录，可用 `--task` 导出单任务，支持 `--input-sha256` 拒绝过期输入。中断复用已导出文件；事实、图片、Prompt 或读取程序变化时重新导出，不修改旧分页。帧审阅及最终校验仍重验源输入。
+
+records 用 path/value 表示值，container 初始化大对象、数组或字符串，text 按 start 拼接；数组连续片段用 start/items 写回对应区间，避免每条引用重复打印长路径。不要假设数据总在 `.records[0].value`，也不要用临时 jq 抽样代替完整任务读取。输出截断时读取保存的页文件，不能把截断页算已读。inputSha256 绑定事实、图片、Prompt、任务及分页实现；自定义分类仍使用 sha256:<manifestSha256>。
 
 默认阅读路径为 `--section facts`：只读 scopedFacts、来源和写作预算，事实内的逐项引用保留。Prompt 中字段不清楚时读 `--section contract` 获取 outputSkeleton（每种结构读一次，素材专属帧引用以本素材事实为准）；查找合法标识时读 `--section references` 获取 allowedEvidenceRefs，尤其 Chapter 01 的聚合引用。省略 section 的旧调用仍返回 all 完整视图。切换 section 从 page 0 开始，按该视图自己的 nextPage 继续，不复用别的视图页码。骨架中的 null 必须由模型写入，空引用必须从当前合法引用选择，不能把骨架作为成品提交。顺序为 chapter01、chapter02、chapter03、material-001…、chapter04。每张唯一图片实际观察后，同次完成该素材及第四章所需观察，不写中间长篇视觉报告。
 
 - chapter01：完整聚合、爆款和全量成本分布，另给消耗前10项；sourceCount/missingCostCount与读取边界明确；缺失成本不当零，ROI不由局部列表重新计算。
 - chapter02：三个人群口径与全部维度及原分母保留；超过8个桶的维度只读原顺序前5桶，bucketReadingCoverage标明省略量，不能重算总体比例；三条洞察各自绑定 SHOW_COUNT、CLICK_COUNT、TRANSACTION_AMOUNT。
-- chapter03：完整脚本、标签、关键词与证据；保留一二级内容公式和脚本文案两条洞察。
+- chapter03：完整脚本、标签、关键词与证据；保留一二级内容公式和脚本文案两条洞察。`batchInsights` 仅用 `evidenceRules.batchInsights.allowedEvidenceRefs` 中的标签型引用；关键词文本引用只用于绑定自身关键词的卖点，来源为 `keywordCloud.keywords[*].evidenceRefs`。总 `allowedEvidenceRefs` 表示本任务引用并集，不代表每个输出字段都接受所有引用。
 - material：全部脚本、帧、缺失和证据，时序保留峰值与点数；原points在事实包供报告曲线。不得据精简视图推断完整走势，必要时按sourceFile/sourcePath定向读取。
 - chapter04：全部成功帧的两套分类，每组默认一条共性判断和一个方向，不能遗漏frameRef。
 
@@ -36,7 +39,7 @@ python scripts/run_standard_analysis.py analysis-task --output-dir "$PWD/千川�
 python scripts/run_standard_analysis.py check-analysis-part --output-dir "$PWD/千川数据资源/<run-id>" --part "<本次片段.json>"
 ```
 
-命令前置章节洞察数量、引用、人群口径及单素材结构／帧覆盖检查。contentReviewed=false和finalValidationRequired=true说明仍须最终assemble-analysis、validate-analysis、内容复核和finalize，不证明实际看图。失败只修受影响片段。
+命令前置章节洞察数量、字段引用族、人群口径、单素材结构／帧覆盖及 Chapter 04 两套分类的覆盖检查；分类重复、遗漏和未知引用一次列出。每条素材完成时就检查该片段，避免到整份候选才发现批量漏写 commercialInterpretation。多个已写完片段可重复传 `--part`：只核验一次输入，并返回各片段错误；退出码 2 表示有错误。不要用 `2>/dev/null | head/tail` 隐藏错误或原退出码。contentReviewed=false和finalValidationRequired=true说明仍须最终assemble-analysis、validate-analysis、内容复核和finalize，不证明实际看图。失败只修受影响片段，重新检查通过后再组装，不为查一个引用反复重建整份候选。
 
 任务计划记录sourceBytes、taskBytes、pageCount及prepareSeconds；字节与本地准备时长不能直接换算AI提速。旧批次只读接续；新Prompt对照需在独立副本中重新冻结，不覆盖原事实、候选或报告。
 

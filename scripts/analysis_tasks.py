@@ -3,11 +3,15 @@ from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 import hashlib
 from pathlib import Path
+import tempfile
 import time
 
 from analysis_reader import _snapshot, _tasks, json_text
 import analysis_task_io
+import analysis_units_lib
 from analysis_task_io import task_pages
+from analysis_units_lib import script_label_evidence_refs
+from batch_runtime import write_json_atomically
 
 TASK_SECTIONS = ('all', 'facts', 'contract', 'references')
 
@@ -117,7 +121,8 @@ def _packets(root, task_id=None, section='all'):
     if section not in TASK_SECTIONS:
         raise ValueError('unknown analysis task section')
     inputs, binding, units = _snapshot(root)
-    implementation = Path(__file__).read_bytes() + Path(analysis_task_io.__file__).read_bytes()
+    implementation = (Path(__file__).read_bytes() + Path(analysis_task_io.__file__).read_bytes()
+                      + Path(analysis_units_lib.__file__).read_bytes())
     binding = hashlib.sha256((binding + hashlib.sha256(implementation).hexdigest()).encode()).hexdigest()
     packets = []
     for task in _tasks(units, inputs['materialIds']):
@@ -136,6 +141,20 @@ def _packets(root, task_id=None, section='all'):
                   'allowedEvidenceRefs': sorted(refs), 'scopedFacts': facts}
         if task['taskId'] == 'chapter02':
             packet['requiredAudienceMetrics'] = ['SHOW_COUNT', 'CLICK_COUNT', 'TRANSACTION_AMOUNT']
+        if task['taskId'] == 'chapter03':
+            packet['evidenceRules'] = {
+                'batchInsights': {'rule': 'Use script label references, not keyword text references.',
+                                  'allowedEvidenceRefs': sorted(script_label_evidence_refs(source['materials']))},
+                'keywordCloudInsight.sellingPoints': {
+                    'rule': 'Each keywordRef must bind to its own candidate evidenceRefs; text references belong here.',
+                    'sourcePath': 'keywordCloud.keywords[*].evidenceRefs'},
+            }
+            if section == 'facts':
+                packet['evidenceRules']['batchInsights'].pop('allowedEvidenceRefs')
+        if task['taskId'].startswith('material-'):
+            packet['frameWritingRule'] = ('每帧写 visualObservation 与有证据的 commercialInterpretation；'
+                '不足时用 interpretationStatus=insufficient_evidence + limitation，不能强编。'
+                '同素材同图可用 shared + sharedInterpretationRef 指向直接 supported 帧；观察缓存不替代商业分析。')
         if section != 'all':
             selected = {'facts': 'scopedFacts', 'contract': 'outputSkeleton',
                         'references': 'allowedEvidenceRefs'}[section]
@@ -181,3 +200,38 @@ def read_task(root, task_id, page, input_sha256, *, section='all'):
         raise ValueError('analysis page is out of range')
     return {'inputSha256': binding, 'taskId': task_id, 'section': section, 'page': page, 'pageCount': len(pages),
             'nextPage': page + 1 if page + 1 < len(pages) else None, 'records': pages[page]}
+
+
+def export_tasks(root, export_dir, *, task_id=None, input_sha256=None, section='facts'):
+    """Verify once and publish bounded pages; no generated prose or review state."""
+    root, destination = Path(root).resolve(), Path(export_dir).absolute()
+    if destination.exists() or destination.is_symlink() or not destination.resolve().is_relative_to(root):
+        raise ValueError('use a new task export directory within diagnostic-analysis')
+    inputs, binding, packets = _packets(root, task_id=task_id, section=section)
+    if input_sha256 is not None and input_sha256 != binding:
+        raise ValueError('analysis inputs changed; get a new task plan')
+    if not packets:
+        raise ValueError('unknown analysis task')
+    index = {'format': 'concise-task-export-v1', 'inputSha256': binding,
+             'manifestSha256': inputs['manifestSha256'], 'promptSha256': inputs['promptSha256'],
+             'section': section, 'pageByteLimit': 8000, 'contentReviewed': False, 'tasks': []}
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.task-export-', dir=destination.parent) as staging:
+        staging = Path(staging)
+        for task, _, packet in packets:
+            pages = _pages(packet, binding, task['taskId'], section)
+            entry = {**task, 'pages': []}
+            for number, records in enumerate(pages):
+                payload = {'inputSha256': binding, 'taskId': task['taskId'], 'section': section,
+                           'page': number, 'pageCount': len(pages),
+                           'nextPage': number + 1 if number + 1 < len(pages) else None, 'records': records}
+                raw = (analysis_task_io.pretty_json(payload) + '\n').encode()
+                name = f"{task['taskId']}.{number:03d}.json"
+                (staging / name).write_bytes(raw)
+                entry['pages'].append({'path': name, 'byteSize': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+            index['tasks'].append(entry)
+        write_json_atomically(staging / 'index.json', index)
+        staging.rename(destination)
+    return {'indexPath': str(destination / 'index.json'), 'inputSha256': binding,
+            'taskCount': len(index['tasks']), 'pageCount': sum(len(t['pages']) for t in index['tasks']),
+            'section': section, 'contentReviewed': False}

@@ -24,9 +24,9 @@
 
 ## 高效执行顺序
 
-默认使用 `analysis-task --output-dir <run> --section facts` 获取任务与 inputSha256，再以 `analysis-task --output-dir <run> --task <taskId> --page 0 --input-sha256 <sha> --section facts` 读取。输出字段不清楚时按需读 `--section contract`（同种结构读一次），查找引用时读 `--section references`；Chapter 01 聚合引用以 references 为准。切换 section 从 page 0 开始，不混用不同视图页码。每个任务页完整 stdout 不超过8000字节；records 使用 path/value 或 container/start/text，连续数组段使用 start/items；按 nextPage 读到 null。完整事实保留在 sourceFile/sourcePath；不把省略的展示明细当缺失，不从截断输出得出结论。旧 analysis-plan/read-analysis 仅用于定向核验，不作为默认重复读取步骤。
+默认使用 `analysis-task --output-dir <run> --section facts --export-dir <analysis目录内的新目录>` 一次校验并导出任务分页，读取返回的 indexPath，再按 taskId 和 pages 路径完整读取文件；无需为每页重启程序。首次写一种结构前读 `--section contract`（同种结构读一次），查找引用时读 `--section references`；长引用表也可一次导出。Chapter 01 聚合引用以 references 为准；Chapter 03 的 batchInsights 只用 evidenceRules 中的标签型引用，关键词文本引用仅用于关键词自身卖点证据，不能将总 allowedEvidenceRefs 并集当成所有字段的白名单。切换 section 从 page 0 开始，不混用不同视图页码。每个任务页完整内容不超过8000字节；records 使用 path/value 或 container/start/text，连续数组段使用 start/items；按 nextPage 读到 null。导出不等于已读，记录当前 taskId/page。完整事实保留在 sourceFile/sourcePath；不把省略的展示明细当缺失，不从截断输出得出结论。旧 analysis-plan/read-analysis 仅用于定向核验，不作为默认重复读取步骤。
 
-执行顺序：Chapter 01 → Chapter 02 → Chapter 03 → 逐素材的 Chapter 05（含 Chapter 04 逐帧分析）→ Chapter 04 跨素材分类汇总。当前任务只写它负责的字段；每个任务完整读取后直接写片段，不在每条素材前重读全部 Prompt 和其他章节。看完本素材 JPEG 后立即写 highlightAnalyses 和本素材结论，再进入下一条；不先写一份长篇观察报告再重复改写成 JSON。片段写完用 `check-analysis-part` 提前检查素材结构、引用和帧覆盖；该检查不代替最终 validate-analysis 和内容复核。
+执行顺序：Chapter 01 → Chapter 02 → Chapter 03 → 逐素材的 Chapter 05（含 Chapter 04 逐帧分析）→ Chapter 04 跨素材分类汇总。当前任务只写它负责的字段；每个任务完整读取后直接写片段，不在每条素材前重读全部 Prompt 和其他章节。看完本素材 JPEG 后立即写 highlightAnalyses 的 visualObservation、commercialInterpretation（或下文允许的证据不足/同图共享形式）和本素材结论，再进入下一条；不先写一份长篇观察报告再重复改写成 JSON。片段写完用 `check-analysis-part` 提前检查素材结构、字段引用族和帧覆盖；多个已完成片段可重复传 --part 一次检查，Chapter 04 分类先查重复/遗漏再组装。该检查不代替最终 validate-analysis 和内容复核。
 
 批次脚本/人群结论只依据各自章节；逐帧观察与解释只写在对应素材片段一次。Chapter 04 汇总复用本轮已看图片的观察账本及素材片段，核对该章全部事实和引用；只有信息遗忘、机制不清或复核命中时回看对应 JPEG。事实、Prompt 或图片变更后按原冻结规则重建，不跨批次复用结论。分类数量、卖点维度和复核要求保持下述契约。
 

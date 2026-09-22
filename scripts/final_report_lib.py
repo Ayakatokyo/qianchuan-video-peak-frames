@@ -21,7 +21,7 @@ from diagnostic_analysis_lib import (
     build_material_audience,
     load_retained_diagnosis_records,
 )
-from analysis_units_lib import build_display_facts
+from analysis_units_lib import build_display_facts, script_label_evidence_refs
 from report_renderer import (
     ReportRenderingError,
     atomic_write_text,
@@ -1301,12 +1301,7 @@ def _known_evidence_refs(diagnostic, summaries_by_material, top_material_roi):
                 refs.add(
                     f"audience:{metric}:{dimension_key}:{bucket['bucket']}"
                 )
-    for material in diagnostic["scripts"]["materials"]:
-        for label in material["labels"]:
-            refs.add(
-                f"script:{material['materialId']}:{label['level1']}:"
-                f"{label['level2']}"
-            )
+    refs.update(script_label_evidence_refs(diagnostic["scripts"]["materials"]))
     for material_id, summary in summaries_by_material.items():
         if not isinstance(summary, dict):
             continue

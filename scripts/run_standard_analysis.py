@@ -79,12 +79,13 @@ def build_parser():
     task.add_argument("--task")
     task.add_argument("--page", type=int, default=0)
     task.add_argument("--input-sha256")
+    task.add_argument("--export-dir", help="Verify once and write all bounded pages to a new directory within diagnostic-analysis")
     task.add_argument("--section", choices=("all", "facts", "contract", "references"), default="all",
                       help="Read facts without repeating the contract and reference table")
 
     check_part = commands.add_parser("check-analysis-part", help="Check a model-authored chapter or material part before assembly")
     check_part.add_argument("--output-dir", required=True)
-    check_part.add_argument("--part", required=True)
+    check_part.add_argument("--part", action="append", required=True)
 
     review = commands.add_parser("frame-review", help="Freeze, resume or checkpoint actual JPEG observations")
     review.add_argument("--output-dir", required=True)
@@ -127,16 +128,32 @@ def main(argv=None):
     workflow = None
     try:
         if args.command == 'analysis-task':
-            from analysis_tasks import task_plan, read_task
+            from analysis_tasks import task_plan, read_task, export_tasks
             from analysis_task_io import pretty_json
             root = Path(args.output_dir) / 'diagnostic-analysis'
-            result = (read_task(root, args.task, args.page, args.input_sha256, section=args.section)
-                      if args.task else task_plan(root, section=args.section))
+            if args.export_dir:
+                if args.page:
+                    raise ValueError('export writes all pages; do not combine it with --page')
+                result = export_tasks(root, args.export_dir, task_id=args.task,
+                                      input_sha256=args.input_sha256, section=args.section)
+            else:
+                result = (read_task(root, args.task, args.page, args.input_sha256, section=args.section)
+                          if args.task else task_plan(root, section=args.section))
             print(pretty_json(result))
             return 0
         if args.command == "check-analysis-part":
-            from analysis_handoff import check_analysis_part
-            print(json.dumps(check_analysis_part(Path(args.output_dir) / "diagnostic-analysis", args.part), ensure_ascii=False))
+            from analysis_handoff import check_analysis_part, check_analysis_parts
+            from analysis_task_io import pretty_json
+            root = Path(args.output_dir) / "diagnostic-analysis"
+            result = (check_analysis_part(root, args.part[0]) if len(args.part) == 1
+                      else check_analysis_parts(root, args.part))
+            print(pretty_json(result))
+            return 2 if result.get('errors') else 0
+        if args.command == "assemble-analysis":
+            from analysis_handoff import assemble_analysis
+            from analysis_task_io import pretty_json
+            result = assemble_analysis(Path(args.output_dir) / 'diagnostic-analysis', args.part, args.analysis_json)
+            print(pretty_json(result))
             return 0
         if args.command in {"analysis-plan", "read-analysis"}:
             from analysis_reader import analysis_plan, read_analysis, json_text
@@ -148,12 +165,13 @@ def main(argv=None):
         if args.command == "frame-review":
             from frame_review import start_frame_review, checkpoint_frame_review
             from analysis_handoff import read_object
+            from analysis_task_io import pretty_json
             root = Path(args.output_dir) / "diagnostic-analysis"
             if args.batch_json and args.rebuild:
                 raise ValueError("rebuild and batch checkpoint must be separate commands")
             result = (checkpoint_frame_review(root, read_object(args.batch_json)) if args.batch_json
                       else start_frame_review(root, rebuild=args.rebuild))
-            print(json.dumps(result, ensure_ascii=False))
+            print(pretty_json(result))
             return 0
         if args.command == "cleanup-videos":
             from video_resource_cleanup import cleanup_original_videos
@@ -164,7 +182,7 @@ def main(argv=None):
             from workflow_status import standard_run_status
             print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
             return 0
-        if args.command in {"prepare-local", "assemble-analysis"}:
+        if args.command == "prepare-local":
             ensure_prepare_dependencies(allow_install=False)
         else:
             ensure_prepare_dependencies()
@@ -243,10 +261,6 @@ def main(argv=None):
                 write_review_template(result, args.review_template)
                 print(f"quality_review_template={args.review_template}")
             return {"valid": 0, "review_required": 3}.get(result["analysisStatus"], 2)
-        elif args.command == "assemble-analysis":
-            print(json.dumps(workflow.assemble_analysis(
-                Path(args.output_dir) / "diagnostic-analysis", args.part, args.analysis_json,
-            ), ensure_ascii=False))
     except DependencyBootstrapError as exc:
         print(f"dependencies: {exc}", file=sys.stderr)
         return 2

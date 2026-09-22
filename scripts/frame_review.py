@@ -166,7 +166,13 @@ def _review_status(index, state):
             'reviewBatchCount': state['reviewBatchCount'], 'uniqueImageCount': state['uniqueImageCount'],
             'completedCount': len(state['completedFrameRefs']), 'pendingCount': len(state['pendingFrameRefs']),
             'materialId': state['currentMaterialId'], 'frameRefs': state['currentBatchFrameRefs'],
-            'imagesToView': list(unique.values()), 'cachedObservations': reused}
+            'imagesToView': list(unique.values()), 'cachedObservations': reused,
+            'taskId': (f"material-{index['materialIds'].index(state['currentMaterialId']) + 1:03d}"
+                       if state['currentMaterialId'] else None),
+            'checkpointTemplate': ({'inputIndexSha256': state['inputIndexSha256'],
+                'frameRefs': list(state['currentBatchFrameRefs']), 'observations': [
+                    {'sourceFrameRef': f['frameRef'], 'visualObservation': None} for f in unique.values()]}
+                if state['currentMaterialId'] else None)}
 
 
 def checkpoint_frame_review(analysis_dir, batch):
