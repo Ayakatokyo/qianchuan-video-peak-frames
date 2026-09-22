@@ -55,7 +55,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 长任务每次 manifest checkpoint 还会追加一条 `peak-frames/batch-progress.jsonl`，只保留时间、runId、`rpaCollection`、`stageCounts` 和中断信息。运行面会话失联时可直接读末行，无需回显进程命令行或猜测目录数。
 
-观测轮询每次等待不超过 60 秒，每次都使用新的有界 `status` 调用，使用者的停止指令可以在下一个轮询周期被处理。`status` 是轻量只读入口，不加载报告、Jieba、OpenPyXL 或 Pillow。一旦运行面会话为 `lost` 或控制通道丢失，立即向用户说明“控制面异常，后台状态待核对”，并只执行一次 `status`：锁为 active 时才说明后台仍在运行并反读 `lastProgress`；锁为 stale/missing 且 `workflowStatus=interrupted` 时直接进入标准恢复。不得在核验前固定声称后台仍在运行。
+长任务在首次启动时就应通过 `setsid ... </dev/null >"$RUN_DIR/prepare.log" 2>&1 &` 脱离 Bash 会话，不把一次命令工具会话当作运行生命周期。`status` 是轻量只读入口，不加载报告、Jieba、OpenPyXL 或 Pillow。日常进度以 `batch-progress.jsonl` 和最后一次 `status` 为准；不为了“看进度”连续执行多次 Bash、`jq`、`head` 或短 `sleep`。一旦运行面会话为 `lost` 或控制通道丢失，立即向用户说明“控制面异常，后台状态待核对”，并只执行一次 `status`：锁为 active 时才说明后台仍在运行并反读 `lastProgress`；锁为 stale/missing 且 `workflowStatus=interrupted` 时直接进入标准恢复。不得在核验前固定声称后台仍在运行。
 
 优先使用 `status.nextAction`：`wait` 才继续有界观察，`resume` 表示中断待按授权恢复，`finalize` 表示从报告构建断点恢复，`analyze` 表示进入当前模型分析，`verify_delivery` 表示核验交付。`recoveryStage` 与 `rpaRemainingCount` 是基于落盘计数的阶段提示，不代替文件校验。进程已中断时不得以反复 sleep 等待其自行完成；工具返回 `-1`/`-9` 或极短 duration 也不证明后台继续运行或真实阶段耗时。常规观测不再组合多轮 find/jq/进程扫描。
 
@@ -168,18 +168,18 @@ python scripts/repair_manifest.py \
 
 ## 报告生成中断与续跑
 
-`finalize` 按 `reportData → workbook → html → archive` 写入 `final-report/report-build-receipt.json`。收据绑定候选分析、质量复核、冻结输入索引、records/summary 和渲染代码哈希；输入未变化且阶段产物存在时，重跑只续接未完成阶段。不要删除已经完成的 1.2GB 视频资产或手工把摘要改回 `analysis_pending`。
+`finalize` 按 `reportData → workbook(可省略) → html → archive(可省略)` 写入 `final-report/report-build-receipt.json`。默认只产生可直接打开的 `final-report/` 目录；只在明确要求时使用 `--include-workbook` 或 `--archive`。收据绑定候选分析、质量复核、冻结输入索引、records/summary 和渲染代码哈希；输入未变化且阶段产物存在时，重跑只续接未完成阶段。摘要处于 `running/report` 且旧进程已结束时直接重跑同一 `finalize`，不要手工改回 `analysis_pending`。
 
-高光帧 XLSX 使用最长边 112px、JPEG quality 72 的临时缩略图；资产表和图片墙分别锚定缩略图，不把完整 JPEG 重复嵌入工作簿。完整 JPEG 仍复制到 HTML 报告资产，不降低网页证据质量。若 workbook 阶段被 SIGKILL，确认旧进程结束后直接重跑同一 `finalize`；已写好的 report data、presentation 和视频资产会复用。
+仅当使用 `--include-workbook` 时，高光帧 XLSX 才使用最长边 112px、JPEG quality 72 的临时缩略图。完整 JPEG 始终复制到 HTML 报告资产，不降低网页证据质量。报告视频直接复用已下载 MP4，优先硬链接、失败才拷贝，不再为报告单独转码。若任一阶段被 SIGKILL，确认旧进程结束后直接重跑同一 `finalize`；已写好的 report data、presentation 和视频资产会复用。
 
 检查保留的 `diagnosis-records/`、`diagnosis-csv/`、素材 `summary.json` 与 JPEG，而不是仅凭文件名判断成功。RPA 输出字段、下载上限和波次状态的完整约束见 [RPA 输出契约](rpa-output-contract.md)。
 
 
 ## 交付后源视频清理
 
-finalize 在报告和 ZIP 校验通过、摘要为 complete 后默认保留 `peak-frames/video-assets/<materialId>.mp4`，避免把大文件清理校验并入交付关键路径。需要回收空间时，在交付完成后独立执行下方 `cleanup-videos --mode dry-run/delete`；也可在 finalize 显式传 `--video-cleanup delete`，但长任务环境不推荐把清理与交付绑在同一进程。
+finalize 在报告校验通过、摘要为 complete 后默认保留 `peak-frames/video-assets/<materialId>.mp4`，避免把大文件清理校验并入交付关键路径。需要回收空间时，必须先通过 `finalize --archive` 显式生成并校验 ZIP，然后再独立执行下方 `cleanup-videos --mode dry-run/delete`；默认无归档路径不允许删除源视频。
 
-清理前核验每个原始/预览路径、大小、SHA，预览须 FFmpeg 解码通过、HTML 引用本地预览、ZIP 的必需条目完整且归档内容与磁盘字节一致；禁止符号链接和目录级删除。任一前置校验失败不删除，单文件删除失败记 partial。未列入 manifest 的文件保留。
+清理前核验每个源视频及报告引用路径的大小、SHA，HTML 引用本地资产、ZIP 的必需条目完整且归档内容与磁盘字节一致；禁止符号链接和目录级删除。任一前置校验失败不删除，单文件删除失败记 partial。未列入 manifest 的文件保留。
 
 ```bash
 python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/千川数据资源/<run-id>" --mode dry-run

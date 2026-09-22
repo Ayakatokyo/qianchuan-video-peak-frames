@@ -800,7 +800,7 @@ class StandardWorkflowTests(unittest.TestCase):
             "message": "batch manifest material waveSize must be a positive integer",
         })
 
-    def test_finalize_marks_run_complete_only_after_manifest_validation(self):
+    def test_finalize_defaults_to_html_directory_without_archive(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             analysis_json = root / "diagnostic-ai-analysis.json"
@@ -821,18 +821,78 @@ class StandardWorkflowTests(unittest.TestCase):
                     "failure": None,
                 },
             )
-            summary = standard_workflow.finalize_standard_run(
-                root, analysis_json,
-                render_report=lambda **_kwargs: write_rendered_report(root),
-                mark_ready=lambda *_paths: True,
-            )
+            with patch.object(
+                standard_workflow,
+                "create_report_archive",
+                side_effect=AssertionError("default finalize must not create an archive"),
+            ):
+                summary = standard_workflow.finalize_standard_run(
+                    root, analysis_json,
+                    render_report=lambda **_kwargs: write_rendered_report(root),
+                    mark_ready=lambda *_paths: True,
+                )
             archive_exists = (root / "final-report.zip").is_file()
 
         self.assertEqual(summary["status"], "complete")
         self.assertEqual(summary["artifacts"]["report"], "final-report/final-report.html")
-        self.assertEqual(summary["artifacts"]["reportArchive"], "final-report.zip")
+        self.assertIsNone(summary["artifacts"]["reportArchive"])
         self.assertIsNone(summary["artifacts"]["analysisUnitManifest"])
-        self.assertTrue(archive_exists)
+        self.assertFalse(archive_exists)
+
+    def test_finalize_creates_archive_only_when_requested(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text("{}", encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "analysis_pending",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            summary = standard_workflow.finalize_standard_run(
+                root,
+                analysis_json,
+                render_report=lambda **_kwargs: write_rendered_report(root),
+                mark_ready=lambda *_paths: True,
+                archive=True,
+            )
+
+        self.assertEqual(summary["status"], "complete")
+        self.assertEqual(summary["artifacts"]["reportArchive"], "final-report.zip")
+
+    def test_finalize_rejects_source_video_deletion_without_archive(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text("{}", encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "analysis_pending",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            with self.assertRaisesRegex(
+                standard_workflow.StandardWorkflowError,
+                "archive",
+            ):
+                standard_workflow.finalize_standard_run(
+                    root,
+                    analysis_json,
+                    render_report=lambda **_kwargs: write_rendered_report(root),
+                    mark_ready=lambda *_paths: True,
+                    video_cleanup="delete",
+                )
 
     def test_validate_analysis_checks_existing_artifacts_without_changing_run_state(self):
         calls = []
@@ -1019,7 +1079,37 @@ class StandardWorkflowTests(unittest.TestCase):
             )
 
         self.assertEqual(summary["status"], "complete")
-        self.assertEqual(summary["artifacts"]["reportArchive"], "final-report.zip")
+        self.assertIsNone(summary["artifacts"]["reportArchive"])
+
+    def test_validate_analysis_accepts_internal_report_resume(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            analysis_json = root / "diagnostic-ai-analysis.json"
+            analysis_json.write_text('{"schemaVersion": 5}', encoding="utf-8")
+            standard_workflow.write_run_summary(
+                root / "run-summary.json",
+                {
+                    "schemaVersion": 2,
+                    "status": "running",
+                    "activeStage": "report",
+                    "request": self.request_payload(),
+                    "artifacts": {},
+                    "failure": None,
+                },
+            )
+
+            result = standard_workflow.validate_analysis(
+                root,
+                analysis_json,
+                allow_report_resume=True,
+                validate=lambda **_kwargs: {
+                    "analysisSchemaVersion": 5,
+                    "materialCount": 2,
+                    "highlightFrameCount": 12,
+                },
+            )
+
+        self.assertEqual(result["analysisStatus"], "valid")
 
     def test_finalize_reuses_completed_archive_stage(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1062,6 +1152,7 @@ class StandardWorkflowTests(unittest.TestCase):
                         {"reportBuildInputSha256": input_hash},
                     ),
                     mark_ready=lambda *_paths: True,
+                    archive=True,
                 )
 
         self.assertEqual(summary["status"], "complete")
@@ -1246,6 +1337,7 @@ class StandardWorkflowCliTests(unittest.TestCase):
                         "/tmp/qianchuan-run",
                         "--analysis-json",
                         "/tmp/analysis.json",
+                        "--archive",
                     ]
                 )
 
@@ -1254,13 +1346,49 @@ class StandardWorkflowCliTests(unittest.TestCase):
             "final_report_zip=/tmp/qianchuan-run/final-report.zip",
             stdout.getvalue(),
         )
+        self.assertTrue(finalize_standard_run.call_args.kwargs["archive"])
+
+    def test_finalize_default_prints_report_directory_without_zip(self):
+        stdout = io.StringIO()
+        finalize_standard_run = Mock(return_value={
+            "artifacts": {
+                "report": "final-report/final-report.html",
+                "reportArchive": None,
+                "highlightExport": None,
+            }
+        })
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "finalize_standard_run": finalize_standard_run,
+        })()
+        with patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow):
+            with redirect_stdout(stdout):
+                result = run_standard_analysis.main(
+                    [
+                        "finalize",
+                        "--output-dir",
+                        "/tmp/qianchuan-run",
+                        "--analysis-json",
+                        "/tmp/analysis.json",
+                    ]
+                )
+
+        self.assertEqual(result, 0)
+        self.assertIn(
+            "final_report_dir=/tmp/qianchuan-run/final-report",
+            stdout.getvalue(),
+        )
+        self.assertNotIn("final_report_zip=", stdout.getvalue())
+        self.assertFalse(finalize_standard_run.call_args.kwargs["archive"])
+        self.assertFalse(finalize_standard_run.call_args.kwargs["include_workbook"])
 
     def test_finalize_prints_standalone_final_report_path(self):
         stdout = io.StringIO()
         finalize_standard_run = Mock(return_value={
             "artifacts": {
                 "report": "final-report/final-report.html",
-                "reportArchive": "final-report.zip",
+                "reportArchive": None,
             }
         })
         fake_workflow = type("FakeWorkflow", (), {

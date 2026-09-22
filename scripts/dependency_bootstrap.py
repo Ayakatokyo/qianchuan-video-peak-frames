@@ -12,6 +12,8 @@ PREPARE_DEPENDENCIES = {
     "imageio_ffmpeg": "imageio-ffmpeg",
     "jsonschema": "jsonschema",
     "jieba": "jieba",
+}
+WORKBOOK_DEPENDENCIES = {
     "openpyxl": "openpyxl",
     "PIL": "Pillow",
 }
@@ -22,17 +24,20 @@ class DependencyBootstrapError(RuntimeError):
     """Raised when prepare dependencies cannot be made available."""
 
 
-def _missing_prepare_dependencies():
+def _missing_prepare_dependencies(*, include_workbook=False):
+    dependencies = dict(PREPARE_DEPENDENCIES)
+    if include_workbook:
+        dependencies.update(WORKBOOK_DEPENDENCIES)
     return [
         distribution
-        for module, distribution in PREPARE_DEPENDENCIES.items()
+        for module, distribution in dependencies.items()
         if importlib.util.find_spec(module) is None
     ]
 
 
-def ensure_prepare_dependencies(*, allow_install=True):
+def ensure_prepare_dependencies(*, allow_install=True, include_workbook=False):
     """Install missing prepare dependencies into this process's Python environment."""
-    missing = _missing_prepare_dependencies()
+    missing = _missing_prepare_dependencies(include_workbook=include_workbook)
     if not missing:
         return
     if not allow_install:
@@ -64,7 +69,7 @@ def ensure_prepare_dependencies(*, allow_install=True):
             f"unable to install prepare dependencies ({', '.join(missing)}): {detail}"
         )
 
-    still_missing = _missing_prepare_dependencies()
+    still_missing = _missing_prepare_dependencies(include_workbook=include_workbook)
     if still_missing:
         raise DependencyBootstrapError(
             "uv completed but prepare dependencies are unavailable to "

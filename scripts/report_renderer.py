@@ -2,6 +2,7 @@
 
 import base64
 from copy import deepcopy
+import errno
 import hashlib
 import json
 import mimetypes
@@ -278,14 +279,29 @@ def _copy_and_hash_video_asset(source_path, asset_base_dir, material_id):
             staging = resolved_target.with_name(
                 f".{resolved_target.name}.{uuid.uuid4().hex}.tmp"
             )
-            with resolved_source.open("rb") as source, staging.open("xb") as target:
-                while chunk := source.read(8 * 1024 * 1024):
-                    target.write(chunk)
-                    digest.update(chunk)
-                    copied_bytes += len(chunk)
-                target.flush()
-                os.fsync(target.fileno())
-            shutil.copystat(resolved_source, staging)
+            try:
+                os.link(resolved_source, staging)
+            except OSError as exc:
+                if exc.errno not in {
+                    errno.EACCES,
+                    errno.EPERM,
+                    errno.EXDEV,
+                    getattr(errno, "ENOTSUP", errno.EPERM),
+                }:
+                    raise
+                with resolved_source.open("rb") as source, staging.open("xb") as target:
+                    while chunk := source.read(8 * 1024 * 1024):
+                        target.write(chunk)
+                        digest.update(chunk)
+                        copied_bytes += len(chunk)
+                    target.flush()
+                    os.fsync(target.fileno())
+                shutil.copystat(resolved_source, staging)
+            else:
+                with resolved_source.open("rb") as source:
+                    while chunk := source.read(8 * 1024 * 1024):
+                        digest.update(chunk)
+                        copied_bytes += len(chunk)
             os.replace(staging, resolved_target)
         else:
             with resolved_source.open("rb") as source:
@@ -364,6 +380,9 @@ def materialize_report_video_assets(
             target_stat = target.stat()
         except OSError:
             return None
+        delivery_strategy = previous.get("deliveryStrategy")
+        if delivery_strategy not in {"hardlink", "original-copy"}:
+            return None
         expected = {
             "sourcePath": run_relative(source),
             "previewPath": run_relative(target),
@@ -371,7 +390,7 @@ def materialize_report_video_assets(
             "previewBytes": target_stat.st_size,
             "sourceMtimeNs": source_stat.st_mtime_ns,
             "previewMtimeNs": target_stat.st_mtime_ns,
-            "deliveryStrategy": "original-copy",
+            "deliveryStrategy": delivery_strategy,
         }
         if any(previous.get(key) != value for key, value in expected.items()):
             return None
@@ -382,6 +401,8 @@ def materialize_report_video_assets(
             or previous.get("previewSha256") != source_hash
             or source_stat.st_size != target_stat.st_size
         ):
+            return None
+        if delivery_strategy == "hardlink" and not os.path.samefile(source, target):
             return None
         return dict(previous)
 
@@ -418,7 +439,11 @@ def materialize_report_video_assets(
                                 "previewSha256": source_hash,
                                 "sourceMtimeNs": source_stat.st_mtime_ns,
                                 "previewMtimeNs": target_stat.st_mtime_ns,
-                                "deliveryStrategy": "original-copy",
+                                "deliveryStrategy": (
+                                    "hardlink"
+                                    if os.path.samefile(source, target)
+                                    else "original-copy"
+                                ),
                             }
                         else:
                             published[material_id] = relative_target.as_posix()
@@ -503,12 +528,16 @@ def _load_report_template():
 
 def json_for_html_script(data):
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-    return (
-        payload.replace("&", "\\u0026")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
+    return payload.translate(
+        str.maketrans(
+            {
+                "&": "\\u0026",
+                "<": "\\u003c",
+                ">": "\\u003e",
+                "\u2028": "\\u2028",
+                "\u2029": "\\u2029",
+            }
+        )
     )
 
 
@@ -606,20 +635,7 @@ def report_data_for_template(
         )
     ]
     template_data_presentation = presentation_for_template(data.get("presentation"))
-    template_display_facts = data.get("displayFacts", {})
-    if isinstance(template_display_facts, dict):
-        template_display_facts = deepcopy(template_display_facts)
-        template_display_facts.pop("highlights", None)
-        template_display_facts.pop("delivery", None)
-        template_display_facts["materials"] = [
-            {
-                key: deepcopy(value)
-                for key, value in material.items()
-                if key not in {"summaryPath", "warnings", "analysis", "highlightFrames"}
-            }
-            for material in template_display_facts.get("materials", [])
-            if isinstance(material, dict)
-        ]
+    source_display_facts = data.get("displayFacts", {})
     presentation_chapters = (
         template_data_presentation.get("chapters", {})
         if isinstance(template_data_presentation, dict)
@@ -648,14 +664,10 @@ def report_data_for_template(
             }
             for material in materials
         ]
-    if isinstance(template_display_facts, dict) and has_v1_presentation:
+    if isinstance(source_display_facts, dict) and has_v1_presentation:
         if isinstance(chapter02, dict):
             chapter02.pop("metrics", None)
             chapter02.pop("preferencesByMetric", None)
-        # Chapter 03 is already projected into Presentation. Keep the raw
-        # script facts available to the AI/report artifacts, but do not embed
-        # a second unused copy in the v1 browser payload.
-        template_display_facts.pop("scripts", None)
         # Chapter 05 Presentation is the sole browser source for per-material
         # facts; keep only the audience drill-down fallback in displayFacts.
         # Chapter 05 Presentation and Chapter 02 Presentation are the only
@@ -664,8 +676,23 @@ def report_data_for_template(
         # ROI snapshots duplicate Presentation/top-level summaries and are
         # not read by the template.
         template_display_facts = {
-            "audience": deepcopy(template_display_facts.get("audience", {}))
+            "audience": deepcopy(source_display_facts.get("audience", {}))
         }
+    else:
+        template_display_facts = source_display_facts
+        if isinstance(template_display_facts, dict):
+            template_display_facts = deepcopy(template_display_facts)
+            template_display_facts.pop("highlights", None)
+            template_display_facts.pop("delivery", None)
+            template_display_facts["materials"] = [
+                {
+                    key: deepcopy(value)
+                    for key, value in material.items()
+                    if key not in {"summaryPath", "warnings", "analysis", "highlightFrames"}
+                }
+                for material in template_display_facts.get("materials", [])
+                if isinstance(material, dict)
+            ]
     return {
         "schemaVersion": data.get("schemaVersion"),
         "presentation": template_data_presentation,

@@ -22,11 +22,11 @@ metadata:
 
 - **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向默认各一条（结构兼容 1–3 条）。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不把不同机制合成单一混合类。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
 
-- **环境**：`prepare`、`fetch-metadata`、`finalize` 入口自动检查 `requests`、`imageio-ffmpeg`、`jsonschema`、`jieba`、`openpyxl`、`Pillow`，缺失则安装，失败即停。标准流程无需额外执行一轮 import 检查。`status` 是轻量只读入口，不加载上述报告依赖。
+- **环境**：`prepare`、`fetch-metadata`、`finalize` 入口自动检查核心依赖；只有 `finalize --include-workbook` 额外检查 `openpyxl` 和 `Pillow`。缺失则安装，失败即停。标准流程无需额外执行一轮 import 检查。`status` 是轻量只读入口，不加载报告依赖。
 - **授权**：`--shop-id` 只用于报表连接器；`--rpa-shop-id` 只使用表单 `rpa_shop` 所选的千川 RPA ID。运行时必须在当前授权列表中验证该 ID；无授权或所选 ID 不在列表时停止，不重复提交素材诊断。
 - **单 Agent 执行边界**：主 Agent 直接执行全流程，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。
 - **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
-- **长任务**：`prepare` 是单一长任务；无实时进度不要另起运行或手工干预。进度同时写入 `peak-frames/batch-manifest.json` 与紧凑的 `peak-frames/batch-progress.jsonl`。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复先查询已保存远端 ID，**不得重复提交**。
+- **长任务**：`prepare` / `resume` 首次启动就脱离 Bash 会话，将日志写入运行目录；不因工具会话结束而重提任务。进度同时写入 `peak-frames/batch-manifest.json` 与紧凑的 `peak-frames/batch-progress.jsonl`，后续仅用 `status.nextAction` 决定等待、恢复、分析或交付，不组合多轮 `sleep` / `jq` / 进程扫描。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复先查询已保存远端 ID，**不得重复提交**。
 
 ## RPA 动态参数契约
 
@@ -55,12 +55,14 @@ metadata:
 每次使用同一个 `$PWD/千川数据资源/<run-id>`，不得写入技能安装目录：
 
 ```bash
-python scripts/run_standard_analysis.py prepare \
+RUN_DIR="$PWD/千川数据资源/<run-id>"
+mkdir -p "$RUN_DIR"
+setsid python scripts/run_standard_analysis.py prepare \
   --shop-id "<api_shop.extra.shop_id>" --rpa-shop-id "<rpa_shop.extra.shop_id>" \
   --start-date 2026-07-19 --end-date 2026-07-25 \
   --top-n 9 --advertiser-id "1770096415226951" \
-  --output-dir "$PWD/千川数据资源/<run-id>"
-python scripts/run_standard_analysis.py status --output-dir "$PWD/千川数据资源/<run-id>"
+  --output-dir "$RUN_DIR" </dev/null >"$RUN_DIR/prepare.log" 2>&1 &
+python scripts/run_standard_analysis.py status --output-dir "$RUN_DIR"
 ```
 
 观测会话失联后先执行一次轻量 `status`：`nextAction=wait` 且 `lockState=active` 时读 `lastProgress` 并继续有界等待；`nextAction=resume` 且 `workflowStatus=interrupted` 时按授权恢复，不反复 sleep。`rpaRemainingCount` 和 `recoveryStage` 提示当前缺口与阶段，实际产物仍由恢复入口核验。标准恢复只做一次 CSV/records 与路径对账（不下载、不截帧），再由原批处理引擎续接远程任务、补齐目标数量后统一后处理；有效 summary/JPEG 直接复用，不重跑报表选品：
@@ -79,9 +81,9 @@ python scripts/run_standard_analysis.py resume \
 
 AI 只读本次运行生成的 `diagnostic-analysis/analysis-units/analysis-unit-manifest.json`、五个章节事实包和 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 组装事实，**不得手写 `missingRanks`**。历史运行可能仍有 `diagnostic-analysis/diagnostic-analysis-data.json`，但新运行不再生成且不得读取。
 
-### 2. 视频与预览
+### 2. 视频与报告资源
 
-标准入口按顺序完成：**RPA 下载原始 MP4** 并持久化 `video-assets/<materialId>.mp4` → **原始视频提取高光帧**（以原始 MP4 提取 `zero_second` 与局部峰值 JPEG）→ **生成报告预览 MP4**（FFmpeg，并写入 `peak-frames/report-video-assets.json`）→ **报告引用预览 MP4**（放入 `final-report/assets/videos/<materialId>.mp4`，HTML/JSON 只引用相对本地路径）→ 打包 `final-report.zip`。每个引用文件须存在、非符号链接、可被 ZIP 收录并通过解码校验；图片不依赖三方链接；**原始 MP4 不进入 ZIP**；完整交付后默认保留源视频，需回收空间时再显式执行 `cleanup-videos --mode delete`，哈希和删除记录保留追溯。任一失败都不能标记后处理成功或进入 `complete`。
+标准入口按顺序完成：**RPA 下载原始 MP4** 并持久化 `video-assets/<materialId>.mp4` → **原始视频提取高光帧**（以原始 MP4 提取 `zero_second` 与局部峰值 JPEG）→ 报告直接复用该 MP4，不再执行第二次 FFmpeg。`finalize` 优先硬链接到 `final-report/assets/videos/<materialId>.mp4`，跨文件系统或权限不允许时才回退为字节拷贝；HTML/JSON 只引用相对本地路径，图片不依赖三方链接。交付后默认保留源视频；只有已显式生成并校验 ZIP 时才允许 `cleanup-videos --mode delete`。任一引用资源失败都不能进入 `complete`。
 
 ### 3. 当前模型分析与统一交付
 
@@ -118,7 +120,7 @@ python scripts/run_standard_analysis.py finalize \
   --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-仅当 `run-summary.json` 为 `complete` **同时交付以下两个产物**：独立报告 `final-report/final-report.html` 与完整压缩包 `final-report.zip`（HTML、数据、本地 JPEG 和预览 MP4）。图片和视频均为本地资源；不得交付草稿报告、不得只交付压缩包；封面只展示业务主体；结构校验和内容复核信息保留在机器 JSON 中，不插入封面。源 MP4 默认保留；需要清理时在交付后独立执行并按[运维手册](references/qianchuan-operations-runbook.md#交付后源视频清理)处理，清理失败不重跑分析或渲染。报告使用 `assets/report/`，`finalize` 自动内联资源，不得手工修改或改写成品 HTML。XLSX 只嵌入 112px 缩略图，HTML 继续使用完整 JPEG；`report-build-receipt.json` 对 `reportData → workbook → html → archive` 分阶段记账，输入哈希不变时重跑只续接未完成阶段。若仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；若进程在 report 阶段中断，确认旧进程已结束后可直接重跑 finalize 接管陈旧锁，无需手工改 `run-summary.json`。其余故障按运维手册处理。
+仅当 `run-summary.json` 为 `complete` 才交付独立报告目录 `final-report/`，主入口为 `final-report/final-report.html`。图片和视频均为本地资源；不得交付草稿报告；封面只展示业务主体；结构校验和内容复核信息保留在机器 JSON 中，不插入封面。默认不生成 XLSX 或 ZIP；只在用户明确需要时分别传入 `--include-workbook` 或 `--archive`。报告使用 `assets/report/`，`finalize` 自动内联资源，不得手工修改或改写成品 HTML。`report-build-receipt.json` 对 `reportData → workbook(可省略) → html → archive(可省略)` 分阶段记账，输入哈希不变时重跑只续接未完成阶段。若仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；若为 `running/report` 且旧进程已结束，同样直接重跑 finalize 接管陈旧锁，无需手工改 `run-summary.json`。源 MP4 默认保留；删除前必须先用 `--archive` 生成并校验 ZIP。其余故障按运维手册处理。
 
 ## 峰值帧口径
 

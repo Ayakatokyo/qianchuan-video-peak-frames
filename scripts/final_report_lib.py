@@ -2284,6 +2284,7 @@ def _report_build_input_sha256(
     analysis_json,
     quality_review,
     *,
+    include_workbook=False,
     embed_assets,
     copy_assets,
     require_ai_quality,
@@ -2326,6 +2327,7 @@ def _report_build_input_sha256(
     digest.update(
         json.dumps(
             {
+                "includeWorkbook": include_workbook,
                 "embedAssets": embed_assets,
                 "copyAssets": copy_assets,
                 "requireAiQuality": require_ai_quality,
@@ -2406,6 +2408,7 @@ def generate_final_report(
     require_ai_quality=False,
     require_local_video_assets=False,
     quality_review=None,
+    include_workbook=False,
 ):
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -2419,6 +2422,7 @@ def generate_final_report(
         diagnosis_records_dir,
         analysis_json,
         quality_review,
+        include_workbook=include_workbook,
         embed_assets=embed_assets,
         copy_assets=copy_assets,
         require_ai_quality=require_ai_quality,
@@ -2433,7 +2437,7 @@ def generate_final_report(
         (data_path, display_facts_path, presentation_path),
     ):
         data = _read_json(data_path, "final report data")
-        presentation = _read_json(presentation_path, "presentation report")
+        presentation = data.get("presentation", {})
         legacy_data = data
     else:
         legacy_data, conclusion = _prepare_report_data(
@@ -2492,30 +2496,48 @@ def generate_final_report(
         )
 
     export_target = output_root / "highlight-frames.xlsx"
-    workbook_reusable = report_build_stage_complete(
-        output_root,
-        "workbook",
-        input_sha256,
-        (export_target,) if data.get("highlightExportHref") else (),
-    )
-    if not workbook_reusable:
-        export_path = export_highlight_workbook(
-            legacy_data, presentation, export_target
-        )
-        if export_path is not None:
-            data["highlightExportHref"] = export_path.name
-        else:
-            data.pop("highlightExportHref", None)
-            export_target.unlink(missing_ok=True)
-        atomic_write_text(
-            data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-        )
-        mark_report_build_stage(
+    if include_workbook:
+        workbook_reusable = report_build_stage_complete(
             output_root,
-            input_sha256,
             "workbook",
-            artifact=export_path.name if export_path is not None else None,
+            input_sha256,
+            (export_target,) if data.get("highlightExportHref") else (),
         )
+        if not workbook_reusable:
+            export_path = export_highlight_workbook(
+                legacy_data, presentation, export_target
+            )
+            if export_path is not None:
+                data["highlightExportHref"] = export_path.name
+            else:
+                data.pop("highlightExportHref", None)
+                export_target.unlink(missing_ok=True)
+            atomic_write_text(
+                data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+            )
+            mark_report_build_stage(
+                output_root,
+                input_sha256,
+                "workbook",
+                artifact=export_path.name if export_path is not None else None,
+                mode="included",
+            )
+    else:
+        data.pop("highlightExportHref", None)
+        export_target.unlink(missing_ok=True)
+        if not report_build_stage_complete(
+            output_root,
+            "workbook",
+            input_sha256,
+            (),
+        ):
+            mark_report_build_stage(
+                output_root,
+                input_sha256,
+                "workbook",
+                artifact=None,
+                mode="omitted",
+            )
 
     if not report_build_stage_complete(
         output_root, "html", input_sha256, (html_path,)

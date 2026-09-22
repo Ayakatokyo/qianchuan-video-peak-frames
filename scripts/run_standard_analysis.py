@@ -107,6 +107,16 @@ def build_parser():
     finalize.add_argument("--output-dir", required=True)
     finalize.add_argument("--analysis-json", required=True)
     finalize.add_argument("--quality-review")
+    finalize.add_argument(
+        "--include-workbook",
+        action="store_true",
+        help="Also generate the optional highlight-frame XLSX workbook",
+    )
+    finalize.add_argument(
+        "--archive",
+        action="store_true",
+        help="Also package the report directory as final-report.zip",
+    )
     finalize.add_argument("--video-cleanup", choices=("dry-run", "delete", "keep"))
 
     validate_analysis = commands.add_parser("validate-analysis")
@@ -184,6 +194,8 @@ def main(argv=None):
             return 0
         if args.command == "prepare-local":
             ensure_prepare_dependencies(allow_install=False)
+        elif args.command == "finalize" and args.include_workbook:
+            ensure_prepare_dependencies(include_workbook=True)
         else:
             ensure_prepare_dependencies()
         workflow = _load_workflow()
@@ -232,17 +244,21 @@ def main(argv=None):
             print(f"gateway_response={Path(args.output_dir) / 'source-data' / 'gateway-response.json'}")
         elif args.command == "finalize":
             options = {"quality_review": args.quality_review} if args.quality_review else {}
+            options["include_workbook"] = args.include_workbook
+            options["archive"] = args.archive
             if args.video_cleanup:
                 options["video_cleanup"] = args.video_cleanup
             summary = workflow.finalize_standard_run(args.output_dir, args.analysis_json, **options)
             artifacts = summary["artifacts"]
             report_dir = Path(args.output_dir) / "final-report"
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
+            print(f"final_report_dir={report_dir}")
             print(f"final_report_data={report_dir / 'final-report-data.json'}")
             print(f"final_report_html={Path(args.output_dir) / artifacts['report']}")
             if artifacts.get("highlightExport"):
                 print(f"highlight_export={Path(args.output_dir) / artifacts['highlightExport']}")
-            print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
+            if artifacts.get("reportArchive"):
+                print(f"final_report_zip={Path(args.output_dir) / artifacts['reportArchive']}")
             if summary.get("videoResourceCleanup"):
                 print(f"video_cleanup_status={summary['videoResourceCleanup']['status']}")
         elif args.command == "validate-analysis":

@@ -85,7 +85,8 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
         self.assertIn("workflowStatus=interrupted", runbook)
-        self.assertIn("不超过 60 秒", runbook)
+        self.assertIn("status.nextAction", runbook)
+        self.assertIn("脱离 Bash 会话", runbook)
         self.assertIn("不得使用 `pgrep -af`", runbook)
 
     def test_skill_uses_qianchuan_resource_directory_for_new_standard_runs(self):
@@ -169,25 +170,31 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
 
         self.assertIn("run-summary.json", skill)
         self.assertIn("complete", skill)
-        self.assertIn("final-report.zip", skill)
         self.assertIn("final-report/final-report.html", skill)
         self.assertIn("图片不依赖三方链接", skill)
         self.assertIn("RPA 下载原始 MP4", skill)
         self.assertIn("原始视频提取高光帧", skill)
-        self.assertIn("生成报告预览 MP4", skill)
-        self.assertIn("报告引用预览 MP4", skill)
-        self.assertIn("原始 MP4 不进入 ZIP", skill)
+        self.assertIn("不再执行第二次 FFmpeg", skill)
+        self.assertIn("硬链接", skill)
+        self.assertIn("默认不生成 XLSX 或 ZIP", skill)
         self.assertNotIn("视频仍使用平台返回的 URL", skill)
         self.assertIn("不得交付草稿报告", skill)
 
-    def test_skill_delivers_standalone_report_and_archive(self):
+    def test_skill_defaults_to_report_directory_and_keeps_exports_opt_in(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("同时交付以下两个产物", skill)
         self.assertIn("独立报告", skill)
         self.assertIn("final-report/final-report.html", skill)
-        self.assertIn("final-report.zip", skill)
-        self.assertIn("不得只交付压缩包", skill)
+        self.assertIn("--include-workbook", skill)
+        self.assertIn("--archive", skill)
+        self.assertIn("默认不生成 XLSX 或 ZIP", skill)
+
+    def test_rpa_contract_documents_zero_transcode_default_delivery(self):
+        contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("hard link", contract)
+        self.assertIn("does not launch a second FFmpeg pass", contract)
+        self.assertIn("--archive", contract)
 
     def test_skill_keeps_report_delivery_single_agent(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -413,10 +420,11 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("CSV -> records", contract)
         self.assertIn("records -> 后处理", contract)
         self.assertIn("run_standard_analysis.py finalize", contract)
-        self.assertIn("final-report.zip", contract)
+        self.assertIn("final-report/final-report.html", contract)
         self.assertIn("report-video-assets.json", contract)
-        self.assertIn("preview MP4", contract)
-        self.assertIn("原始 MP4 不进入 ZIP", contract)
+        self.assertIn("does not launch a second FFmpeg pass", contract)
+        self.assertIn("--archive", contract)
+
     def test_rpa_contract_documents_only_wave_top_n_execution(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")

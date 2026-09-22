@@ -117,6 +117,8 @@ class FinalReportArchiveTests(unittest.TestCase):
             output_dir = root / "final-report"
             peak_dir.mkdir()
             records_dir.mkdir()
+            output_dir.mkdir()
+            (output_dir / "highlight-frames.xlsx").write_bytes(b"stale workbook")
             legacy_data = {"status": "complete", "materials": [], "displayFacts": {}}
             presentation = {"chapters": {}}
 
@@ -138,7 +140,8 @@ class FinalReportArchiveTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(RuntimeError, "workbook interrupted"):
                     generate_final_report(
-                        top_path, peak_dir, records_dir, output_dir
+                        top_path, peak_dir, records_dir, output_dir,
+                        include_workbook=True,
                     )
 
             receipt = json.loads(
@@ -166,7 +169,8 @@ class FinalReportArchiveTests(unittest.TestCase):
                 return_value="<main>report</main>",
             ):
                 data_path, html_path, data = generate_final_report(
-                    top_path, peak_dir, records_dir, output_dir
+                    top_path, peak_dir, records_dir, output_dir,
+                    include_workbook=True,
                 )
 
             receipt = json.loads(
@@ -177,6 +181,51 @@ class FinalReportArchiveTests(unittest.TestCase):
             self.assertEqual(data["highlightExportHref"], "highlight-frames.xlsx")
             self.assertEqual(receipt["stages"]["workbook"]["status"], "complete")
             self.assertEqual(receipt["stages"]["html"]["status"], "complete")
+
+    def test_report_defaults_to_html_without_building_workbook(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            top_path = root / "top.json"
+            top_path.write_text('{"materials": []}', encoding="utf-8")
+            peak_dir = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            output_dir = root / "final-report"
+            peak_dir.mkdir()
+            records_dir.mkdir()
+            legacy_data = {"status": "complete", "materials": [], "displayFacts": {}}
+
+            with patch.object(
+                final_report_lib,
+                "_prepare_report_data",
+                return_value=(legacy_data, None),
+            ), patch(
+                "qianchuan_presentation.build_presentation_report",
+                return_value={"chapters": {}},
+            ), patch.object(
+                final_report_lib,
+                "materialize_report_video_assets",
+                side_effect=lambda data, *_args, **_kwargs: data,
+            ), patch.object(
+                final_report_lib,
+                "export_highlight_workbook",
+                side_effect=AssertionError("default report must not build a workbook"),
+            ), patch.object(
+                final_report_lib,
+                "render_html_report",
+                return_value="<main>report</main>",
+            ):
+                data_path, html_path, data = generate_final_report(
+                    top_path, peak_dir, records_dir, output_dir
+                )
+
+            receipt = json.loads(
+                (output_dir / "report-build-receipt.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(data_path.is_file())
+            self.assertTrue(html_path.is_file())
+            self.assertNotIn("highlightExportHref", data)
+            self.assertFalse((output_dir / "highlight-frames.xlsx").exists())
+            self.assertEqual(receipt["stages"]["workbook"]["mode"], "omitted")
 
     def test_highlight_workbook_embeds_bounded_thumbnails_not_full_frames(self):
         from PIL import Image
@@ -220,7 +269,7 @@ class FinalReportArchiveTests(unittest.TestCase):
         self.assertGreaterEqual(len(dimensions), 2)
         self.assertTrue(all(max(size) <= 112 for size in dimensions))
 
-    def test_report_materializes_persisted_video_as_relative_preview_reference(self):
+    def test_report_reuses_persisted_video_as_relative_local_reference(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             peak_output_dir = root / "peak-frames"
@@ -263,10 +312,11 @@ class FinalReportArchiveTests(unittest.TestCase):
             )
             self.assertEqual(
                 (root / "final-report" / "assets" / "videos" / "m-1.mp4").read_bytes(),
-                b"preview-mp4",
+                b"persistent-mp4",
             )
+            self.assertEqual(subprocess_module.run.call_count, 0)
 
-    def test_report_copies_original_video_and_records_portable_asset_manifest(self):
+    def test_report_hardlinks_original_video_and_records_portable_asset_manifest(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             peak_output_dir = root / "peak-frames"
@@ -300,11 +350,12 @@ class FinalReportArchiveTests(unittest.TestCase):
             self.assertEqual(rendered["materials"][0]["video"]["src"], "assets/videos/m-1.mp4")
             self.assertEqual(source.read_bytes(), b"original-mp4")
             self.assertEqual(published.read_bytes(), b"original-mp4")
+            self.assertEqual(source.stat().st_ino, published.stat().st_ino)
             manifest = json.loads(
                 (peak_output_dir / "report-video-assets.json").read_text(encoding="utf-8")
             )
             self.assertEqual(manifest["schemaVersion"], 2)
-            self.assertEqual(manifest["materials"][0]["deliveryStrategy"], "original-copy")
+            self.assertEqual(manifest["materials"][0]["deliveryStrategy"], "hardlink")
             self.assertEqual(manifest["materials"][0]["materialId"], "m-1")
             self.assertEqual(manifest["materials"][0]["sourceBytes"], len(b"original-mp4"))
             self.assertEqual(manifest["materials"][0]["previewBytes"], len(b"original-mp4"))
@@ -322,7 +373,49 @@ class FinalReportArchiveTests(unittest.TestCase):
             self.assertIn("final-report/assets/videos/m-1.mp4", names)
             self.assertNotIn("final-report/video-assets/m-1.mp4", names)
 
-    def test_report_rejects_unreadable_preview_video(self):
+    def test_v1_template_does_not_deepcopy_unused_display_facts(self):
+        class MustNotCopy(dict):
+            def __deepcopy__(self, _memo):
+                raise AssertionError("unused display facts must not be copied")
+
+        payload = {
+            "status": "complete",
+            "materials": [],
+            "displayFacts": {
+                "audience": {"metrics": {}},
+                "portfolio": MustNotCopy({"large": "payload"}),
+            },
+            "presentation": {
+                "presentationSchemaVersion": 1,
+                "chapters": {
+                    "chapter02": {"availability": "available"},
+                    "chapter05": {"availability": "available", "materials": []},
+                },
+            },
+        }
+
+        rendered = report_data_for_template(payload, None)
+
+        self.assertEqual(rendered["displayFacts"], {"audience": {"metrics": {}}})
+
+    def test_html_json_escaping_is_complete(self):
+        class NoReplace(str):
+            def replace(self, *_args, **_kwargs):
+                raise AssertionError("HTML JSON escaping must use one translation pass")
+
+        with patch.object(
+            report_renderer.json,
+            "dumps",
+            return_value=NoReplace('{"text":"<&>\u2028\u2029","plain":"value"}'),
+        ):
+            escaped = report_renderer.json_for_html_script({"ignored": True})
+
+        self.assertEqual(
+            escaped,
+            '{"text":"\\u003c\\u0026\\u003e\\u2028\\u2029","plain":"value"}',
+        )
+
+    def test_report_materialization_never_launches_a_second_ffmpeg_pass(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             peak_output_dir = root / "peak-frames"
@@ -346,12 +439,14 @@ class FinalReportArchiveTests(unittest.TestCase):
                 report_renderer, "resolve_ffmpeg", create=True, return_value="ffmpeg"
             ), patch.object(report_renderer, "subprocess", create=True) as subprocess_module:
                 subprocess_module.run.side_effect = fake_ffmpeg
-                with self.assertRaisesRegex(report_renderer.ReportRenderingError, "decode"):
-                    report_renderer.materialize_report_video_assets(
-                        data,
-                        peak_output_dir,
-                        root / "final-report",
-                    )
+                rendered = report_renderer.materialize_report_video_assets(
+                    data,
+                    peak_output_dir,
+                    root / "final-report",
+                )
+
+            self.assertEqual(rendered["materials"][0]["video"]["src"], "assets/videos/m-1.mp4")
+            self.assertEqual(subprocess_module.run.call_count, 0)
 
     def test_report_requires_persisted_video_for_strict_materialization(self):
         with tempfile.TemporaryDirectory() as temp_dir:

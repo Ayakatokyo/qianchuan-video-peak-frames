@@ -140,7 +140,8 @@ def _relative(root, path):
 
 
 def _summary(request, paths, *, status, diagnostic_prompt=None,
-             analysis_unit_manifest=None, report=None, report_archive=None,
+             analysis_unit_manifest=None, report=None, highlight_export=None,
+             report_archive=None,
              failure=None, active_stage=None):
     root = paths["root"]
     request_summary = {
@@ -175,9 +176,7 @@ def _summary(request, paths, *, status, diagnostic_prompt=None,
                 else None
             ),
             "highlightExport": (
-                _relative(root, Path(report).parent / "highlight-frames.xlsx")
-                if report and (Path(report).parent / "highlight-frames.xlsx").is_file()
-                else None
+                _relative(root, highlight_export) if highlight_export else None
             ),
             "reportArchive": _relative(root, report_archive) if report_archive else None,
         },
@@ -617,7 +616,14 @@ def prepare_local_run(request, output_dir):
         return summary
 
 
-def validate_analysis(output_dir, analysis_json, *, quality_review=None, validate=validate_standard_ai_analysis):
+def validate_analysis(
+    output_dir,
+    analysis_json,
+    *,
+    quality_review=None,
+    validate=validate_standard_ai_analysis,
+    allow_report_resume=False,
+):
     """Validate AI analysis without changing the run's retryable state."""
     paths = workflow_paths(output_dir)
     summary = _read_summary(paths["summary"])
@@ -631,7 +637,12 @@ def validate_analysis(output_dir, analysis_json, *, quality_review=None, validat
     ) if isinstance(request_payload, dict) else None
     try:
         _validate_request(request)
-        if summary.get("status") != "analysis_pending":
+        report_resume = (
+            allow_report_resume
+            and summary.get("status") == "running"
+            and summary.get("activeStage") == "report"
+        )
+        if summary.get("status") != "analysis_pending" and not report_resume:
             raise StandardWorkflowError("analysis", "run is not awaiting AI analysis")
         analysis_path = Path(analysis_json)
         if not analysis_path.is_file():
@@ -663,8 +674,17 @@ def validate_analysis(output_dir, analysis_json, *, quality_review=None, validat
     return result
 
 
-def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, render_report=generate_final_report,
-                          mark_ready=mark_report_ready, video_cleanup=None):
+def finalize_standard_run(
+    output_dir,
+    analysis_json,
+    *,
+    quality_review=None,
+    render_report=generate_final_report,
+    mark_ready=mark_report_ready,
+    video_cleanup=None,
+    include_workbook=False,
+    archive=False,
+):
     paths = workflow_paths(output_dir)
     summary = _read_summary(paths["summary"])
     request_payload = summary.get("request")
@@ -681,6 +701,11 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
     )
     try:
         _validate_request(request)
+        if video_cleanup in {"dry-run", "delete"} and not archive:
+            raise StandardWorkflowError(
+                "report",
+                "video cleanup verification requires --archive",
+            )
         if summary.get("status") != "analysis_pending" and not resumable_report:
             raise StandardWorkflowError("report", "run is not awaiting AI analysis")
         analysis_path = Path(analysis_json)
@@ -695,7 +720,12 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
             frozen_review_hash = None
             review_hash = file_hash(quality_review) if quality_review else None
             if render_report is generate_final_report:
-                result = validate_analysis(output_dir, analysis_path, quality_review=quality_review)
+                result = validate_analysis(
+                    output_dir,
+                    analysis_path,
+                    quality_review=quality_review,
+                    allow_report_resume=resumable_report,
+                )
                 frozen_inputs = inspect_inputs(paths["analysis"])
                 frozen_review_hash = validate_frame_review(paths["analysis"])
                 if result["analysisStatus"] != "valid":
@@ -714,6 +744,7 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
                     copy_assets=True,
                     require_ai_quality=True,
                     require_local_video_assets=True,
+                    include_workbook=include_workbook,
                     **options,
                 )
                 if file_hash(analysis_path) != candidate_hash:
@@ -729,26 +760,28 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
             if not mark_ready(paths["peak_frames"] / "batch-manifest.json", data_path, html_path):
                 raise StandardWorkflowError("report", "final report failed manifest validation")
             report_input_sha256 = _data.get("reportBuildInputSha256")
-            expected_archive = paths["report"].parent / f"{paths['report'].name}.zip"
-            try:
-                if report_input_sha256 and report_build_stage_complete(
-                    paths["report"],
-                    "archive",
-                    report_input_sha256,
-                    (expected_archive,),
-                ):
-                    archive_path = expected_archive
-                else:
-                    archive_path = create_report_archive(paths["report"])
-                    if report_input_sha256:
-                        mark_report_build_stage(
-                            paths["report"],
-                            report_input_sha256,
-                            "archive",
-                            artifact=str(archive_path),
-                        )
-            except Exception as exc:
-                raise StandardWorkflowError("report", str(exc)) from exc
+            archive_path = None
+            if archive:
+                expected_archive = paths["report"].parent / f"{paths['report'].name}.zip"
+                try:
+                    if report_input_sha256 and report_build_stage_complete(
+                        paths["report"],
+                        "archive",
+                        report_input_sha256,
+                        (expected_archive,),
+                    ):
+                        archive_path = expected_archive
+                    else:
+                        archive_path = create_report_archive(paths["report"])
+                        if report_input_sha256:
+                            mark_report_build_stage(
+                                paths["report"],
+                                report_input_sha256,
+                                "archive",
+                                artifact=str(archive_path),
+                            )
+                except Exception as exc:
+                    raise StandardWorkflowError("report", str(exc)) from exc
             analysis_unit_manifest = (
                 paths["analysis"] / "analysis-units" / "analysis-unit-manifest.json"
             )
@@ -761,6 +794,12 @@ def finalize_standard_run(output_dir, analysis_json, *, quality_review=None, ren
                     analysis_unit_manifest if analysis_unit_manifest.is_file() else None
                 ),
                 report=html_path,
+                highlight_export=(
+                    paths["report"] / "highlight-frames.xlsx"
+                    if include_workbook
+                    and (paths["report"] / "highlight-frames.xlsx").is_file()
+                    else None
+                ),
                 report_archive=archive_path,
             )
             completed["analysisQuality"] = _data.get("analysisQuality", {})

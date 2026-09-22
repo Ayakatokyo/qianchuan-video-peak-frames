@@ -32,5 +32,6 @@ class StabilityWorkflowTests(unittest.TestCase):
                     render_report=lambda **kwargs: workflow_fixtures.write_rendered_report(root), mark_ready=lambda *args: True)
             self.assertEqual(result['status'], 'complete')
             self.assertEqual(result['videoResourceCleanup']['status'], 'partial')
-            self.assertTrue((root / 'final-report.zip').is_file())
+            self.assertIsNone(result['artifacts']['reportArchive'])
+            self.assertFalse((root / 'final-report.zip').exists())
             cleanup.assert_called_once_with(root, mode='keep')

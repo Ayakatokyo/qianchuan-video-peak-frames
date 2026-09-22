@@ -90,10 +90,32 @@ class DependencyBootstrapTests(unittest.TestCase):
             dependency_bootstrap.ensure_prepare_dependencies()
 
         self.assertIn(
-            "requests, imageio-ffmpeg, jsonschema, jieba, openpyxl, Pillow",
+            "requests, imageio-ffmpeg, jsonschema, jieba",
             str(error.exception),
         )
+        self.assertNotIn("openpyxl", str(error.exception))
+        self.assertNotIn("Pillow", str(error.exception))
         self.assertIn("uv", str(error.exception))
+
+    def test_workbook_dependencies_are_checked_only_when_requested(self):
+        def find_spec(name):
+            return None if name in {"openpyxl", "PIL"} else object()
+
+        with patch.object(
+            dependency_bootstrap.importlib.util, "find_spec", side_effect=find_spec
+        ), patch.object(dependency_bootstrap.subprocess, "run") as run:
+            dependency_bootstrap.ensure_prepare_dependencies()
+
+        run.assert_not_called()
+
+        with patch.object(
+            dependency_bootstrap.importlib.util, "find_spec", side_effect=find_spec
+        ), patch.object(
+            dependency_bootstrap.shutil, "which", return_value=None
+        ), self.assertRaises(dependency_bootstrap.DependencyBootstrapError) as error:
+            dependency_bootstrap.ensure_prepare_dependencies(include_workbook=True)
+
+        self.assertIn("openpyxl, Pillow", str(error.exception))
 
     def test_reports_uv_failure_without_hiding_its_output(self):
         completed = dependency_bootstrap.subprocess.CompletedProcess(
