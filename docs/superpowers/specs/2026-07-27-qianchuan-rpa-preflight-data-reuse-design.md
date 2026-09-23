@@ -365,4 +365,3 @@ python scripts/extract_peak_frames.py \
 4. 正式阶段仍生成 JPEG、summary、batch manifest；
 5. `--verify` 只验证 ready 素材；
 6. RPA 调用次数约等于预检扫描候选数，而不是预检扫描数加正式 ready 数。
-

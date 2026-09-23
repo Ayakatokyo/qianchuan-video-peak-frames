@@ -99,4 +99,3 @@ AND diagnostic-analysis-prompt.md exists
 4. RPA 本身失败时，阶段 A 请求候补并记录 `rpa_collection_failure`；RPA 已接收数量达到目标后，不因后处理尚未完成而继续请求候补。
 5. `status` 对活动锁、陈旧锁、`analysis_pending` 和 `complete` 都是只读的，且返回与 manifest/摘要一致的计数。
 6. AI 事实包中的素材 ID 集合严格等于 ready 清单和最终成功 manifest 集合；候选池中的其他素材不能出现。
-

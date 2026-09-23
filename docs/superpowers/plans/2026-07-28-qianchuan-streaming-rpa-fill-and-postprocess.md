@@ -270,4 +270,3 @@ Expected: preserve existing user changes and stage only reviewed implementation,
 git add scripts/extract_peak_frames.py scripts/rpa_adapter.py tests/test_peak_frames.py SKILL.md references/rpa-output-contract.md tests/test_skill_contract.py docs/superpowers/plans/2026-07-28-qianchuan-streaming-rpa-fill-and-postprocess.md
 git commit -m "feat: stream Qianchuan RPA Top-N processing"
 ~~~
-
