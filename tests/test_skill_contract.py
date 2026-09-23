@@ -40,33 +40,34 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("素材视频报表", skill)
         self.assertNotIn("资产表取数", skill)
 
-    def test_entry_prompt_requests_the_three_business_conditions(self):
+    def test_entry_prompt_requests_shop_rpa_account_and_range(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
         metadata = METADATA_PATH.read_text(encoding="utf-8")
 
         self.assertIn("name: 千川投放素材全景分析", skill)
         self.assertIn("时间范围", skill)
         self.assertIn("详情素材数", skill)
-        self.assertIn("千川广告主（ID）", skill)
-        self.assertNotIn("千川广告主（数字）", skill)
-        for field in ("api_shop", "advertiser_id", "rpa_shop", "date_range", "top_n"):
+        self.assertIn("千川广告主ID：__field:rpa_shop__", skill)
+        self.assertNotIn("__field:advertiser_id__", skill)
+        self.assertNotIn("千川广告主（邮箱）", skill)
+        for field in ("api_shop", "rpa_shop", "date_range", "top_n"):
             self.assertIn(f"__field:{field}__", skill)
             self.assertIn(f"- key: {field}", metadata)
+        self.assertNotIn("- key: advertiser_id", metadata)
 
-    def test_advertiser_selector_follows_the_api_shop(self):
+    def test_rpa_selector_is_labeled_advertiser_id(self):
         metadata = METADATA_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("- key: advertiser_id\n    type: api_advertiser", metadata)
+        self.assertNotIn("type: api_advertiser", metadata)
         self.assertIn(
-            "- key: advertiser_id\n"
-            "    type: api_advertiser\n"
-            "    label: 千川广告主（ID）\n"
-            "    description: 先选择报表授权店铺，再从该店铺的已授权广告主中选择；用于第一步素材报表查询\n"
-            "    application_id: OCEANENGINE",
+            "- key: rpa_shop\n"
+            "    type: rpa_shop\n"
+            "    label: 千川广告主ID\n"
+            "    description: 选择 account 为千川广告主 ID 的 RPA 授权账号；执行前核对该 ID 属于所选 API 店铺，授权项 ID 仅用于逐素材诊断",
             metadata,
         )
-        self.assertIn("shop_field: api_shop", metadata)
-        self.assertIn("同一投放主体", metadata)
+        self.assertIn("application_id: OCEANENGINE", metadata)
+        self.assertIn("application_id: RPA_JULIANG_QC", metadata)
 
     def test_skill_documents_standard_prepare_resume_and_finalize_commands(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
@@ -176,18 +177,18 @@ class StandardWorkflowSkillContractTests(unittest.TestCase):
         self.assertIn("原始视频提取高光帧", skill)
         self.assertIn("不再执行第二次 FFmpeg", skill)
         self.assertIn("硬链接", skill)
-        self.assertIn("默认不生成 XLSX 或 ZIP", skill)
+        self.assertIn("默认生成高光帧 XLSX，不生成 ZIP", skill)
         self.assertNotIn("视频仍使用平台返回的 URL", skill)
         self.assertIn("不得交付草稿报告", skill)
 
-    def test_skill_defaults_to_report_directory_and_keeps_exports_opt_in(self):
+    def test_skill_defaults_to_excel_and_keeps_archive_opt_in(self):
         skill = SKILL_PATH.read_text(encoding="utf-8")
 
         self.assertIn("独立报告", skill)
         self.assertIn("final-report/final-report.html", skill)
         self.assertIn("--include-workbook", skill)
         self.assertIn("--archive", skill)
-        self.assertIn("默认不生成 XLSX 或 ZIP", skill)
+        self.assertIn("默认生成高光帧 XLSX，不生成 ZIP", skill)
 
     def test_rpa_contract_documents_zero_transcode_default_delivery(self):
         contract = RPA_CONTRACT_PATH.read_text(encoding="utf-8")

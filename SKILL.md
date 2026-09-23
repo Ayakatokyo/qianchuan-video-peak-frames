@@ -2,31 +2,30 @@
 name: 千川投放素材全景分析
 description: 面向千川短视频投放复盘，识别高消耗素材的表现亮点、内容结构、转化触发点和可复用创意模式。
 metadata:
-  argument_hint: 依次选择报表授权店铺、该店铺下的投放广告主及同一投放主体的素材诊断授权账号，输入时间范围和详情素材数，生成千川投放素材全景分析报告。
+  argument_hint: 依次选择报表授权店铺和千川广告主 ID，输入时间范围和详情素材数，生成千川投放素材全景分析报告。
   pre_input: |
     请采集千川素材及相关诊断数据
     千川授权店铺：__field:api_shop__（必填）
-    千川广告主（ID）：__field:advertiser_id__（必填，店铺下广告主 ID）
-    千川广告主（邮箱）：__field:rpa_shop__（必填；请确认该邮箱账号与广告主ID为同一账号）
+    千川广告主ID：__field:rpa_shop__（必填）
     时间范围：__field:date_range__
     详情素材数：__field:top_n__（包含互动时序、人群、脚本和高光帧数据，默认10）
 ---
 
 # 千川投放素材全景分析
 
-收集报表授权店铺、该店铺下的广告主、同一投放主体的 RPA 授权账号、分析周期和 Top 素材数量。标准入口先用 API 授权店铺及广告主查询素材视频报表，再将 `materialId` 交给用户选定的 RPA 授权账号；先完成目标数量的 RPA 和有效 records 落盘，再进入本地后处理（默认视频下载并发 2、FFmpeg 并发 2，由同一个队列持续推进）。首次采集、恢复和独立修复均遵守该屏障；候选耗尽但数量不足时保留结果并停止，不对部分素材提前下载或截帧。候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成。每个素材的 RPA 只提交一次。
+收集报表授权店铺、千川广告主 ID 对应的 RPA 授权账号、分析周期和 Top 素材数量。标准入口先用 API 授权店铺及解析出的广告主 ID 查询素材视频报表，再将 `materialId` 交给用户选定的 RPA 授权账号；先完成目标数量的 RPA 和有效 records 落盘，再进入本地后处理（默认视频下载并发 2、FFmpeg 并发 2，由同一个队列持续推进）。首次采集、恢复和独立修复均遵守该屏障；候选耗尽但数量不足时保留结果并停止，不对部分素材提前下载或截帧。候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成。每个素材的 RPA 只提交一次。
 
-`api_advertiser` 会按 `api_shop` 过滤广告主，二者构成同一投放主体。`api_shop.extra.shop_id`、`advertiser_id` 与 `rpa_shop.extra.shop_id` 属于不同 ID 域，格式可以不同，**不得比较是否相等**；客户须选择与该广告主同一投放主体的 RPA 授权账号。执行前仅校验所选 RPA ID 仍出现在当前 `RPA_JULIANG_QC` 授权列表中；不在列表则停止，不提交后续 RPA 任务。
+表单不再单独收集 `advertiser_id`。首次 `prepare` 或 `fetch-metadata` 在报表取数前按所选 `rpa_shop.extra.shop_id` 查询当前 RPA 授权列表，要求唯一记录的 `account` 是数字广告主 ID，再确认它唯一出现在所选 `api_shop.extra.shop_id` 的 API 广告主授权关系中；无法确认则停止，不提交报表或 RPA 任务。`resume` 可从匹配的运行摘要读取已确认的广告主 ID。`api_shop.extra.shop_id` 与 `rpa_shop.extra.shop_id` 属于不同 ID 域，**不得比较是否相等**。
 
 ## 约束
 
 - **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向默认各一条（结构兼容 1–3 条）。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不把不同机制合成单一混合类。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
 
-- **环境**：`prepare`、`fetch-metadata`、`finalize` 入口自动检查核心依赖；只有 `finalize --include-workbook` 额外检查 `openpyxl` 和 `Pillow`。缺失则安装，失败即停。标准流程无需额外执行一轮 import 检查。`status` 是轻量只读入口，不加载报告依赖。
-- **授权**：`--shop-id` 只用于报表连接器；`--rpa-shop-id` 只使用表单 `rpa_shop` 所选的千川 RPA ID。运行时必须在当前授权列表中验证该 ID；无授权或所选 ID 不在列表时停止，不重复提交素材诊断。
+- **环境**：`prepare`、`fetch-metadata`、`finalize` 入口自动检查核心依赖；`finalize` 默认额外检查 `openpyxl` 和 `Pillow`；显式 `--skip-workbook` 时省略 Excel 依赖。缺失则安装，失败即停。标准流程无需额外执行一轮 import 检查。`status` 是轻量只读入口，不加载报告依赖。
+- **授权**：`--shop-id` 只用于报表连接器；`--rpa-shop-id` 只使用表单 `rpa_shop` 所选的千川 RPA ID。省略 `--advertiser-id` 时由正式入口按授权关系解析；无授权、账号不是数字 ID 或所选 ID 不在列表时停止，不重复提交素材诊断。
 - **单 Agent 执行边界**：主 Agent 直接执行全流程，**不得创建、调用或委派子代理**，也不得调用会强制创建子代理的渲染校验、并行执行或任务委派技能。
 - **日期**：相对周期按 T+2 换算为 `CUSTOM` 闭区间：近七天为执行日前第 8 天至执行日前第 2 天，近三十天为执行日前第 31 天至执行日前第 2 天；不含执行日和前一日。例如执行日 `2026-08-04` 的近七天是 `2026-07-27` 至 `2026-08-02`。
-- **长任务**：`prepare` / `resume` 首次启动就脱离 Bash 会话，将日志写入运行目录；不因工具会话结束而重提任务。进度同时写入 `peak-frames/batch-manifest.json` 与紧凑的 `peak-frames/batch-progress.jsonl`，后续仅用 `status.nextAction` 决定等待、恢复、分析或交付，不组合多轮 `sleep` / `jq` / 进程扫描。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复先查询已保存远端 ID，**不得重复提交**。
+- **长任务**：`prepare` / `resume` 优先交给运行面已支持的持久执行会话，将日志写入运行目录。只有确认后台进程能跨工具调用存活时才用 `setsid` 脱离 Bash 会话；它不能保证避开容器回收或资源限制。不因工具会话结束而重提任务。进度同时写入 `peak-frames/batch-manifest.json` 与紧凑的 `peak-frames/batch-progress.jsonl`，后续仅用 `status.nextAction` 决定等待、恢复、分析或交付，不组合多轮 `sleep` / `jq` / 进程扫描。中断、`GUARDRAIL_ERROR`、策略拒绝或状态不一致时保留目录，按[运维手册](references/qianchuan-operations-runbook.md)和 [RPA 输出契约](references/rpa-output-contract.md)恢复。长时执行工具的完成态契约见[运维手册](references/qianchuan-operations-runbook.md#长任务元数据)。RPA 的异步 `task_group_id`、波次终态、4260 秒外层截止和 `partial_success` 规则均以两份参考文档为准；恢复先查询已保存远端 ID，**不得重复提交**。
 
 ## RPA 动态参数契约
 
@@ -38,11 +37,11 @@ metadata:
 
 ## 已落盘数据接续
 
-用户要求“用已有数据继续分析/重做报告”时，先读指定 run 的摘要、事实包 manifest 和实际产物，缺少事实包时使用正式 `prepare-local`（参数见[分析交接契约](references/analysis-handoff.md)）；按[运维手册的已落盘分析接续](references/qianchuan-operations-runbook.md#已落盘分析接续)选择起点；不要默认执行 `prepare`。用户未指定来源时核对店铺、周期、素材集合和 manifest，不能只按目录日期或修改时间认定“最新”。已有信息足够则直接接续，不重复索要授权参数。
+用户要求“用已有数据继续分析/重做报告”时，先读指定 run 的摘要、事实包 manifest 和实际产物，缺少事实包时使用正式 `prepare-local`（参数见[分析交接契约](references/analysis-handoff.md)）；省略 `--advertiser-id` 时须传匹配的 `--rpa-shop-id`，由已有 `run-summary.json` 离线恢复广告主 ID，不重新查询授权。按[运维手册的已落盘分析接续](references/qianchuan-operations-runbook.md#已落盘分析接续)选择起点；不要默认执行 `prepare`。用户未指定来源时核对店铺、周期、素材集合和 manifest，不能只按目录日期或修改时间认定“最新”。已有信息足够则直接接续，不重复索要授权参数。
 
 当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先读取正式任务的精简事实视图、查看图片并保存观察要点，由当前模型逐项写分析片段，最后合并成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
 
-**默认分析路径**：使用正式 `analysis-task --section facts --export-dir <本次分析目录内的新目录>` 一次生成精简事实分页，按索引完整读取文件，避免每页重启程序。首次写一种结构前读 `--section contract`；查找引用时按需读 `--section references`，长引用表同样一次导出。按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。每条素材看图后直接写含观察和商业解释（或具体证据限制）的正式片段；同一次工具调用可提交看图 checkpoint 并执行 `check-analysis-part`，再处理下一条；不重复抄写长篇观察报告。事实包和每个成功帧完整保留，正文统一精简，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
+**默认分析路径**：使用正式 `analysis-task --section facts --export-dir <本次分析目录内的新目录>` 一次生成精简事实分页，按索引完整读取文件，避免每页重启程序。首次写一种结构前读 `--section contract`；查找引用时按需读 `--section references`，长引用表同样一次导出。按 Chapter 01、02、03 → 逐素材 Chapter 05（同时完成逐帧分析）→ Chapter 04 汇总推进。片段枚举取 contract 中的 allowedDecisions；customClassification 与 highlightDashboard 顶层同级，keywordRefs 逐字取原词并绑定该词的脚本证据。每条素材看图后直接写含观察和商业解释（或具体证据限制）的正式片段；同一次工具调用可提交看图 checkpoint 并执行 `check-analysis-part`，再处理下一条；不重复抄写长篇观察报告。事实包和每个成功帧完整保留，正文统一精简，最终仍执行原 validate-analysis / 内容复核 / finalize。编码、命令、读取断点和耗时度量见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
 
 ## 统一分析要求
 
@@ -52,32 +51,31 @@ metadata:
 
 ### 1. 准备事实包（首次采集）
 
-每次使用同一个 `$PWD/千川数据资源/<run-id>`，不得写入技能安装目录：
+每次使用同一个 `$PWD/千川数据资源/<run-id>`，不得写入技能安装目录。下面是提交给持久执行会话的命令正文；具体工具只使用其实际支持的参数，不自行假设 300 秒短会话可承载全流程：
 
 ```bash
 RUN_DIR="$PWD/千川数据资源/<run-id>"
 mkdir -p "$RUN_DIR"
-setsid python scripts/run_standard_analysis.py prepare \
+python scripts/run_standard_analysis.py prepare \
   --shop-id "<api_shop.extra.shop_id>" --rpa-shop-id "<rpa_shop.extra.shop_id>" \
   --start-date 2026-07-19 --end-date 2026-07-25 \
-  --top-n 9 --advertiser-id "1770096415226951" \
-  --output-dir "$RUN_DIR" </dev/null >"$RUN_DIR/prepare.log" 2>&1 &
-python scripts/run_standard_analysis.py status --output-dir "$RUN_DIR"
+  --top-n 9 \
+  --output-dir "$RUN_DIR" </dev/null >"$RUN_DIR/prepare.log" 2>&1
 ```
 
-观测会话失联后先执行一次轻量 `status`：`nextAction=wait` 且 `lockState=active` 时读 `lastProgress` 并继续有界等待；`nextAction=resume` 且 `workflowStatus=interrupted` 时按授权恢复，不反复 sleep。`rpaRemainingCount` 和 `recoveryStage` 提示当前缺口与阶段，实际产物仍由恢复入口核验。标准恢复只做一次 CSV/records 与路径对账（不下载、不截帧），再由原批处理引擎续接远程任务、补齐目标数量后统一后处理；有效 summary/JPEG 直接复用，不重跑报表选品：
+观测会话失联后先执行一次轻量 `status`：`nextAction=wait` 且 `lockState=active` 时读 `lastProgress` 并用 `python scripts/run_standard_analysis.py status --output-dir "$RUN_DIR" --wait-seconds 60` 有界观察（最多每 5 秒读一次轻量状态，离开 wait 立即返回）；`nextAction=resume` 且 `workflowStatus=interrupted` 时按授权恢复，不反复 sleep。`rpaRemainingCount` 和 `recoveryStage` 提示当前缺口与阶段，实际产物仍由恢复入口核验。标准恢复只做一次 CSV/records 与路径对账（不下载、不截帧），再由原批处理引擎续接远程任务、补齐目标数量后统一后处理；有效 summary/JPEG 直接复用，不重跑报表选品：
 
 ```bash
 python scripts/run_standard_analysis.py resume \
   --shop-id "<api_shop.extra.shop_id>" --rpa-shop-id "<rpa_shop.extra.shop_id>" \
   --start-date 2026-07-19 --end-date 2026-07-25 \
-  --top-n 9 --advertiser-id "1770096415226951" \
+  --top-n 9 \
   --output-dir "$PWD/千川数据资源/<run-id>"
 ```
 
 用户明确要求“继续/恢复并补齐剩余素材”时可执行 `resume`：已有远端 ID 继续查询，已提交素材不重提，缺口可使用尚未提交的候选。原进程仍活动或终止状态未知时只运行 `status`；已确认终止但用户要求停止 RPA 时，仅可按运维手册执行 `--records-only` 本地对账，不执行 `resume`。
 
-只验证报表授权、不进入 RPA 时改用 `fetch-metadata`（仍写入同一类目录；只产生 `source-data/gateway-response.json` 与 `run-summary.json`，状态 `metadata_ready`）。仅当状态为 `analysis_pending` 才继续 AI。
+只验证报表授权、不进入 RPA 时改用 `fetch-metadata`，传入所选 `--rpa-shop-id` 以解析广告主 ID（仍写入同一类目录；只产生 `source-data/gateway-response.json` 与 `run-summary.json`，状态 `metadata_ready`）。仅当状态为 `analysis_pending` 才继续 AI。
 
 AI 只读本次运行生成的 `diagnostic-analysis/analysis-units/analysis-unit-manifest.json`、五个章节事实包和 `diagnostic-analysis/diagnostic-analysis-prompt.md`；不得从 `top_materials.json` 组装事实，**不得手写 `missingRanks`**。历史运行可能仍有 `diagnostic-analysis/diagnostic-analysis-data.json`，但新运行不再生成且不得读取。
 
@@ -120,7 +118,7 @@ python scripts/run_standard_analysis.py finalize \
   --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
 ```
 
-仅当 `run-summary.json` 为 `complete` 才交付独立报告目录 `final-report/`，主入口为 `final-report/final-report.html`。图片和视频均为本地资源；不得交付草稿报告；封面只展示业务主体；结构校验和内容复核信息保留在机器 JSON 中，不插入封面。默认不生成 XLSX 或 ZIP；只在用户明确需要时分别传入 `--include-workbook` 或 `--archive`。报告使用 `assets/report/`，`finalize` 自动内联资源，不得手工修改或改写成品 HTML。`report-build-receipt.json` 对 `reportData → workbook(可省略) → html → archive(可省略)` 分阶段记账，输入哈希不变时重跑只续接未完成阶段。若仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；若为 `running/report` 且旧进程已结束，同样直接重跑 finalize 接管陈旧锁，无需手工改 `run-summary.json`。源 MP4 默认保留；删除前必须先用 `--archive` 生成并校验 ZIP。其余故障按运维手册处理。
+仅当 `run-summary.json` 为 `complete` 才交付独立报告目录 `final-report/`，主入口为 `final-report/final-report.html`。图片和视频均为本地资源；不得交付草稿报告；封面只展示业务主体；结构校验和内容复核信息保留在机器 JSON 中，不插入封面。默认生成高光帧 XLSX，不生成 ZIP；`--include-workbook` 保留兼容，用户明确不需要 Excel 才使用 `--skip-workbook`，需要 ZIP 时传 `--archive`。完成后同一目录可再次执行 `finalize --include-workbook` 补齐 Excel，仍需原候选 JSON、复核记录和事实包；不会重采 RPA。交付前核验 `highlightExportHref` 指向的工作簿存在，图片损坏导致导出失败须修复，不能静默隐藏入口。仅无成功帧或显式省略时说明没有 Excel。报告使用 `assets/report/`，`finalize` 自动内联资源，不得手工修改或改写成品 HTML。`report-build-receipt.json` 对 `reportData → workbook(可省略) → html → archive(可省略)` 分阶段记账，输入哈希不变时重跑只续接未完成阶段。若仍为 `analysis_pending`，修正 AI JSON 后，直接重新执行 finalize，无需重新执行 prepare 或任何运行命令；若为 `running/report` 且旧进程已结束，同样直接重跑 finalize 接管陈旧锁，无需手工改 `run-summary.json`。源 MP4 默认保留；删除前必须先用 `--archive` 生成并校验 ZIP。其余故障按运维手册处理。
 
 ## 峰值帧口径
 

@@ -81,6 +81,23 @@ class FakeSession:
 
 
 class QianchuanReportClientTests(unittest.TestCase):
+    def test_lists_api_advertiser_authorizations_without_fetching_report(self):
+        rows = [{"shop_id": "shop-1", "advertiser_id": "123", "account_name": "account"}]
+        session = FakeSession(FakeResponse({"success": True, "data": rows}))
+
+        result = client.list_authorized_advertisers(environ=valid_env(), session=session)
+
+        self.assertEqual(result, rows)
+        self.assertEqual(
+            session.post_call["args"][0],
+            "http://gateway.test/api/adg/v1/agent/api-platform/shops/advertisers",
+        )
+        self.assertEqual(
+            session.post_call["json"],
+            {"authorization": "authorization-token", "platform": "OCEANENGINE"},
+        )
+        self.assertIsNone(session.get_call)
+
     def test_default_query_matches_reference_material_report_contract(self):
         self.assertEqual(
             client.DEFAULT_DIMENSIONS,

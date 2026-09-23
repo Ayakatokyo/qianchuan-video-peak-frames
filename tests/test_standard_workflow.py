@@ -1160,6 +1160,100 @@ class StandardWorkflowTests(unittest.TestCase):
 
 
 class StandardWorkflowCliTests(unittest.TestCase):
+    def form_args(self):
+        return run_standard_analysis.build_parser().parse_args([
+            "prepare", "--start-date", "2026-07-19", "--end-date", "2026-07-25",
+            "--top-n", "5", "--shop-id", "shop-1", "--rpa-shop-id", "rpa-1",
+            "--output-dir", "run",
+        ])
+
+    def test_form_account_resolves_only_when_authorized_under_api_shop(self):
+        with patch("rpa_adapter.list_accounts", return_value={
+            "success": True, "data": [{"shop_id": "rpa-1", "account": "123"}],
+        }), patch("qianchuan_report_client.list_authorized_advertisers", return_value=[
+            {"shop_id": "shop-1", "advertiser_id": "123"},
+            {"shop_id": "shop-2", "advertiser_id": "456"},
+        ]):
+            advertiser_id = run_standard_analysis._resolve_advertiser_id(self.form_args())
+
+        self.assertEqual(advertiser_id, "123")
+
+    def test_prepare_without_advertiser_passes_resolved_id_to_workflow(self):
+        prepare_standard_run = Mock(return_value={"artifacts": {
+            "diagnosticPrompt": "diagnostic-analysis/prompt.md",
+            "analysisUnitManifest": "diagnostic-analysis/manifest.json",
+        }})
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "prepare_standard_run": prepare_standard_run,
+        })()
+        with patch.object(run_standard_analysis, "_resolve_advertiser_id", return_value="123"), \
+                patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow), \
+                redirect_stdout(io.StringIO()):
+            result = run_standard_analysis.main([
+                "prepare", "--start-date", "2026-07-19", "--end-date", "2026-07-25",
+                "--top-n", "5", "--shop-id", "shop-1", "--rpa-shop-id", "rpa-1",
+                "--output-dir", "run",
+            ])
+
+        self.assertEqual(result, 0)
+        request = prepare_standard_run.call_args.args[0]
+        self.assertEqual(request.advertiser_id, "123")
+        self.assertEqual(request.rpa_shop_id, "rpa-1")
+
+    def test_form_account_rejects_email_before_api_lookup(self):
+        with patch("rpa_adapter.list_accounts", return_value={
+            "success": True, "data": [{"shop_id": "rpa-1", "account": "name@example.com"}],
+        }), patch("qianchuan_report_client.list_authorized_advertisers") as api_list:
+            with self.assertRaisesRegex(ValueError, "not a numeric advertiser ID"):
+                run_standard_analysis._resolve_advertiser_id(self.form_args())
+
+        api_list.assert_not_called()
+
+    def test_form_account_rejects_other_shop_before_report_or_rpa(self):
+        with patch("rpa_adapter.list_accounts", return_value={
+            "success": True, "data": [{"shop_id": "rpa-1", "account": "123"}],
+        }), patch("qianchuan_report_client.list_authorized_advertisers", return_value=[
+            {"shop_id": "shop-2", "advertiser_id": "123"},
+        ]):
+            with self.assertRaisesRegex(ValueError, "not uniquely authorized"):
+                run_standard_analysis._resolve_advertiser_id(self.form_args())
+
+    def test_resume_without_advertiser_uses_matching_saved_request(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "run-summary.json").write_text(json.dumps({"request": {
+                "shopId": "shop-1", "rpaShopId": "rpa-1",
+                "advertiserId": "123", "startDate": "2026-07-19",
+                "endDate": "2026-07-25", "topN": 5,
+            }}), encoding="utf-8")
+            args = self.form_args()
+            args.command = "resume"
+            args.output_dir = str(root)
+            with patch("rpa_adapter.list_accounts") as rpa_list:
+                advertiser_id = run_standard_analysis._resolve_advertiser_id(args)
+
+        self.assertEqual(advertiser_id, "123")
+        rpa_list.assert_not_called()
+
+    def test_prepare_local_without_advertiser_uses_saved_request_offline(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "run-summary.json").write_text(json.dumps({"request": {
+                "shopId": "shop-1", "rpaShopId": "rpa-1",
+                "advertiserId": "123", "startDate": "2026-07-19",
+                "endDate": "2026-07-25", "topN": 5,
+            }}), encoding="utf-8")
+            args = self.form_args()
+            args.command = "prepare-local"
+            args.output_dir = str(root)
+            with patch("rpa_adapter.list_accounts") as rpa_list:
+                advertiser_id = run_standard_analysis._resolve_advertiser_id(args)
+
+        self.assertEqual(advertiser_id, "123")
+        rpa_list.assert_not_called()
+
     def test_status_uses_lightweight_path_without_dependency_bootstrap_or_workflow_import(self):
         events = []
         with patch.object(
@@ -1201,6 +1295,27 @@ class StandardWorkflowCliTests(unittest.TestCase):
             "gateway_response=/tmp/qianchuan-metadata/source-data/gateway-response.json",
             stdout.getvalue(),
         )
+
+    def test_fetch_metadata_without_advertiser_uses_selected_rpa_account(self):
+        fetch_metadata = Mock()
+        fake_workflow = type("FakeWorkflow", (), {
+            "WorkflowRequest": standard_workflow.WorkflowRequest,
+            "StandardWorkflowError": standard_workflow.StandardWorkflowError,
+            "fetch_report_metadata": fetch_metadata,
+        })()
+        with patch.object(run_standard_analysis, "_resolve_advertiser_id", return_value="123"), \
+                patch.object(run_standard_analysis, "_load_workflow", return_value=fake_workflow), \
+                redirect_stdout(io.StringIO()):
+            result = run_standard_analysis.main([
+                "fetch-metadata", "--start-date", "2026-07-19",
+                "--end-date", "2026-07-25", "--shop-id", "shop-1",
+                "--rpa-shop-id", "rpa-1", "--output-dir", "run",
+            ])
+
+        self.assertEqual(result, 0)
+        request = fetch_metadata.call_args.args[0]
+        self.assertEqual(request.advertiser_id, "123")
+        self.assertEqual(request.rpa_shop_id, "rpa-1")
 
     def test_prepare_prints_artifact_paths_without_artifact_path_helper(self):
         stdout = io.StringIO()
@@ -1381,7 +1496,7 @@ class StandardWorkflowCliTests(unittest.TestCase):
         )
         self.assertNotIn("final_report_zip=", stdout.getvalue())
         self.assertFalse(finalize_standard_run.call_args.kwargs["archive"])
-        self.assertFalse(finalize_standard_run.call_args.kwargs["include_workbook"])
+        self.assertTrue(finalize_standard_run.call_args.kwargs["include_workbook"])
 
     def test_finalize_prints_standalone_final_report_path(self):
         stdout = io.StringIO()

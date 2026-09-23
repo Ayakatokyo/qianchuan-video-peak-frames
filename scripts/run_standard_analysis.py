@@ -36,7 +36,7 @@ def build_parser():
     prepare.add_argument("--start-date", required=True)
     prepare.add_argument("--end-date", required=True)
     prepare.add_argument("--top-n", required=True, type=_positive_int)
-    prepare.add_argument("--advertiser-id", required=True)
+    prepare.add_argument("--advertiser-id", help="广告主 ID；省略时从所选 RPA 授权账号解析并核对 API 店铺")
     prepare.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
     prepare.add_argument("--rpa-shop-id", help="rpa_shop 的素材诊断授权账号 ID")
     prepare.add_argument("--output-dir", required=True)
@@ -45,7 +45,7 @@ def build_parser():
     resume.add_argument("--start-date", required=True)
     resume.add_argument("--end-date", required=True)
     resume.add_argument("--top-n", required=True, type=_positive_int)
-    resume.add_argument("--advertiser-id", required=True)
+    resume.add_argument("--advertiser-id", help="广告主 ID；省略时读取当前运行记录或重新解析授权")
     resume.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
     resume.add_argument("--rpa-shop-id", help="rpa_shop 的素材诊断授权账号 ID")
     resume.add_argument("--output-dir", required=True)
@@ -54,7 +54,7 @@ def build_parser():
     local.add_argument("--start-date", required=True)
     local.add_argument("--end-date", required=True)
     local.add_argument("--top-n", required=True, type=_positive_int)
-    local.add_argument("--advertiser-id", required=True)
+    local.add_argument("--advertiser-id", help="广告主 ID；省略时从匹配的运行摘要读取")
     local.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
     local.add_argument("--rpa-shop-id", help="rpa_shop 的素材诊断授权账号 ID")
     local.add_argument("--output-dir", required=True)
@@ -99,19 +99,20 @@ def build_parser():
     metadata = commands.add_parser("fetch-metadata")
     metadata.add_argument("--start-date", required=True)
     metadata.add_argument("--end-date", required=True)
-    metadata.add_argument("--advertiser-id", required=True)
+    metadata.add_argument("--advertiser-id", help="广告主 ID；省略时从所选 RPA 授权账号解析并核对 API 店铺")
     metadata.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
+    metadata.add_argument("--rpa-shop-id", help="用于解析广告主 ID 的 RPA 授权账号 ID；不提交诊断任务")
     metadata.add_argument("--output-dir", required=True)
 
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--output-dir", required=True)
     finalize.add_argument("--analysis-json", required=True)
     finalize.add_argument("--quality-review")
-    finalize.add_argument(
-        "--include-workbook",
-        action="store_true",
-        help="Also generate the optional highlight-frame XLSX workbook",
-    )
+    workbook = finalize.add_mutually_exclusive_group()
+    workbook.add_argument("--include-workbook", action="store_true", default=True,
+                          help="Generate the highlight-frame XLSX workbook (default)")
+    workbook.add_argument("--skip-workbook", dest="include_workbook", action="store_false",
+                          help="Explicitly omit Excel export from this delivery")
     finalize.add_argument(
         "--archive",
         action="store_true",
@@ -127,7 +128,58 @@ def build_parser():
 
     status = commands.add_parser("status")
     status.add_argument("--output-dir", required=True)
+    status.add_argument("--wait-seconds", type=int, default=0, choices=range(61), metavar="0..60")
     return parser
+
+
+def _resolve_advertiser_id(args):
+    explicit = str(args.advertiser_id or "").strip()
+    if explicit:
+        return explicit
+    rpa_shop_id = str(args.rpa_shop_id or "").strip()
+    if not rpa_shop_id:
+        raise ValueError("--rpa-shop-id is required when --advertiser-id is omitted")
+
+    if args.command in {"resume", "prepare-local"}:
+        summary_path = Path(args.output_dir) / "run-summary.json"
+        if summary_path.is_file():
+            saved = json.loads(summary_path.read_text(encoding="utf-8")).get("request") or {}
+            expected = {
+                "shopId": args.shop_id,
+                "rpaShopId": rpa_shop_id,
+                "startDate": args.start_date,
+                "endDate": args.end_date,
+                "topN": args.top_n,
+            }
+            if any(saved.get(key) != value for key, value in expected.items()):
+                raise ValueError("saved run request does not match resume inputs")
+            stored = str(saved.get("advertiserId") or "").strip()
+            if not (stored.isascii() and stored.isdecimal()):
+                raise ValueError("saved run has no numeric advertiser ID")
+            return stored
+        if args.command == "prepare-local":
+            raise ValueError("prepare-local needs --advertiser-id or a matching run-summary.json")
+
+    from rpa_adapter import list_accounts
+    from qianchuan_report_client import list_authorized_advertisers
+
+    response = list_accounts()
+    rows = response.get("data") if isinstance(response, dict) and response.get("success") is True else None
+    if not isinstance(rows, list):
+        raise ValueError("RPA authorization query has no usable account list")
+    matches = [row for row in rows if isinstance(row, dict)
+               and str(row.get("shop_id") or "").strip() == rpa_shop_id]
+    if len(matches) != 1:
+        raise ValueError("selected RPA authorization ID does not resolve to one account")
+    account = str(matches[0].get("account") or "").strip()
+    if not (account.isascii() and account.isdecimal()):
+        raise ValueError("selected RPA account is not a numeric advertiser ID")
+    authorized = [row for row in list_authorized_advertisers() if isinstance(row, dict)
+                  and str(row.get("shop_id") or "").strip() == args.shop_id
+                  and str(row.get("advertiser_id") or "").strip() == account]
+    if len(authorized) != 1:
+        raise ValueError("selected RPA account is not uniquely authorized under the API shop")
+    return account
 
 
 def main(argv=None):
@@ -152,11 +204,10 @@ def main(argv=None):
             print(pretty_json(result))
             return 0
         if args.command == "check-analysis-part":
-            from analysis_handoff import check_analysis_part, check_analysis_parts
+            from analysis_handoff import check_analysis_parts
             from analysis_task_io import pretty_json
             root = Path(args.output_dir) / "diagnostic-analysis"
-            result = (check_analysis_part(root, args.part[0]) if len(args.part) == 1
-                      else check_analysis_parts(root, args.part))
+            result = check_analysis_parts(root, args.part)
             print(pretty_json(result))
             return 2 if result.get('errors') else 0
         if args.command == "assemble-analysis":
@@ -189,8 +240,8 @@ def main(argv=None):
             print(json.dumps(result, ensure_ascii=False))
             return 2 if result['status'] == 'partial' else 0
         if args.command == "status":
-            from workflow_status import standard_run_status
-            print(json.dumps(standard_run_status(args.output_dir), ensure_ascii=False))
+            from workflow_status import wait_standard_run_status
+            print(json.dumps(wait_standard_run_status(args.output_dir, wait_seconds=args.wait_seconds), ensure_ascii=False))
             return 0
         if args.command == "prepare-local":
             ensure_prepare_dependencies(allow_install=False)
@@ -200,6 +251,7 @@ def main(argv=None):
             ensure_prepare_dependencies()
         workflow = _load_workflow()
         if args.command in {"prepare", "prepare-local", "resume"}:
+            advertiser_id = _resolve_advertiser_id(args)
             if args.command == "prepare":
                 prepare_run = workflow.prepare_standard_run
             elif args.command == "prepare-local":
@@ -211,7 +263,7 @@ def main(argv=None):
                     start_date=args.start_date,
                     end_date=args.end_date,
                     top_n=args.top_n,
-                    advertiser_id=args.advertiser_id,
+                    advertiser_id=advertiser_id,
                     shop_id=args.shop_id,
                     rpa_shop_id=args.rpa_shop_id,
                 ),
@@ -230,13 +282,15 @@ def main(argv=None):
                 print(f"diagnostic_analysis_prompt={Path(args.output_dir) / artifacts['diagnosticPrompt']}")
                 print(f"analysis_unit_manifest={Path(args.output_dir) / artifacts['analysisUnitManifest']}")
         elif args.command == "fetch-metadata":
+            advertiser_id = _resolve_advertiser_id(args)
             workflow.fetch_report_metadata(
                 workflow.WorkflowRequest(
                     start_date=args.start_date,
                     end_date=args.end_date,
                     top_n=None,
-                    advertiser_id=args.advertiser_id,
+                    advertiser_id=advertiser_id,
                     shop_id=args.shop_id,
+                    rpa_shop_id=args.rpa_shop_id,
                 ),
                 args.output_dir,
             )

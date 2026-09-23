@@ -204,6 +204,34 @@ def check_auth(environ=None):
     }
 
 
+def list_authorized_advertisers(*, environ=None, session=None):
+    """Read the current API shop-to-advertiser authorization relationships."""
+    context = resolve_runtime_context(os.environ if environ is None else environ)
+    if context["missing"]:
+        raise ReportClientError(
+            "missing report runtime environment: " + ", ".join(context["missing"])
+        )
+    session = requests.Session() if session is None else session
+    try:
+        response = session.post(
+            context["api_base"] + "/adg/v1/agent/api-platform/shops/advertisers",
+            json={"authorization": context["authorization"], "platform": PLATFORM},
+            headers={"Content-Type": "application/json"},
+            cookies={"YCSESSIONID": context["cookie_session_id"]},
+            timeout=30,
+        )
+        response.raise_for_status()
+        body = response.json()
+    except (requests.RequestException, TypeError, ValueError) as exc:
+        raise ReportClientError("API advertiser authorization query failed") from exc
+    if not isinstance(body, dict) or body.get("success") is not True:
+        raise ReportClientError("API advertiser authorization query was not successful")
+    rows = body.get("data")
+    if not isinstance(rows, list):
+        raise ReportClientError("API advertiser authorization response has no data list")
+    return rows
+
+
 def build_business_params(advertiser_id, start_date, end_date):
     _validate_field_contract()
     advertiser = _advertiser_id(advertiser_id)
