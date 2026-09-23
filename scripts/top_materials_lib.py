@@ -1,5 +1,7 @@
 """Pure parsing, selection, and rendering helpers for top materials."""
 
+from __future__ import annotations
+
 import json
 import re
 from dataclasses import dataclass

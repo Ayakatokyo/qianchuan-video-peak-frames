@@ -1,5 +1,7 @@
 """Standard orchestration for a complete Qianchuan material-analysis run."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import date
 import hashlib
