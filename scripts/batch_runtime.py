@@ -28,7 +28,8 @@ def write_json_atomically(path, payload):
     )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
         os.replace(temporary_name, target)
     except Exception:
         try:
@@ -133,6 +134,7 @@ def mark_report_ready(manifest_path, report_data_path, report_html_path):
         return False
     if not _report_matches_manifest(report_data, normalized_manifest):
         return False
+    del report_data  # Do not retain the large disk snapshot while parsing HTML data.
     embedded_data = _embedded_report_data(html_text)
     if embedded_data is None:
         return False
@@ -267,6 +269,13 @@ def _report_matches_manifest(report_data, manifest):
 
 
 def _embedded_assets_exist(report_data, html_dir):
+    export_href = report_data.get("highlightExportHref")
+    if export_href:
+        if not isinstance(export_href, str):
+            return False
+        target = (Path(html_dir) / export_href).resolve()
+        if not target.is_relative_to(Path(html_dir).resolve()) or not target.is_file():
+            return False
     for material in report_data.get("materials", []):
         for frame in material.get("highlightFrames", []):
             if not isinstance(frame, dict):

@@ -96,7 +96,7 @@ def verify_assembly(analysis_json, inputs):
     return file_hash(receipt_path)
 
 
-def check_material_part(analysis_dir, part_path, *, _context=None):
+def check_material_part(analysis_dir, part_path, *, _context=None, _part=None):
     """Early material shape/reference checks, never a substitute for final review."""
     from final_report_lib import FinalReportError, _validate_v2_material_analysis
 
@@ -108,7 +108,7 @@ def check_material_part(analysis_dir, part_path, *, _context=None):
     inputs = inspect_inputs(root, loaded_units=units) if _context is None else _context[0]
     if _context is not None:
         units = _context[1]
-    part = read_object(path)
+    part = read_object(path) if _part is None else _part
     if set(part) - {"schemaVersion", "materialAnalyses"} or part.get("schemaVersion", 5) != 5:
         raise ValueError("material part may contain only schemaVersion 5 and materialAnalyses")
     analyses = part.get("materialAnalyses")
@@ -149,14 +149,17 @@ def check_material_part(analysis_dir, part_path, *, _context=None):
             "partSha256": file_hash(path), "contentReviewed": False, "finalValidationRequired": True}
 
 
-def check_analysis_part(analysis_dir, part_path, *, _context=None):
+def check_analysis_part(analysis_dir, part_path, *, _context=None, _part=None):
     """Preflight chapter slots and references; final validation still required."""
     root, path = Path(analysis_dir).resolve(), Path(part_path)
     if path.is_symlink() or not path.resolve().is_relative_to(root) or path.suffix != '.json':
         raise ValueError('part must be a JSON file within the analysis directory')
-    part = read_object(path)
+    part = read_object(path) if _part is None else _part
     if 'materialAnalyses' in part:
-        return check_material_part(root, path, _context=_context)
+        return check_material_part(root, path, _context=_context, _part=part)
+    dashboard = part.get('highlightDashboard')
+    if isinstance(dashboard, dict) and 'customClassification' in dashboard:
+        raise ValueError('customClassification must be top-level, alongside highlightDashboard')
     allowed = {'schemaVersion', 'analysisProvenance', 'overallConclusion', 'portfolioDimensionConclusions',
                'hotMaterialInsight', 'batchInsights', 'keywordCloudReview', 'keywordCloudInsight',
                'highlightDashboard', 'customClassification'}
@@ -185,6 +188,15 @@ def check_analysis_part(analysis_dir, part_path, *, _context=None):
     inputs = inspect_inputs(root, loaded_units=units) if _context is None else _context[0]
     if _context is not None:
         units = _context[1]
+    if 'keywordCloudInsight' in part:
+        from analysis_quality import content_contract_findings
+        findings = content_contract_findings(
+            {**part, 'analysisProvenance': part.get('analysisProvenance',
+                {'author': 'current_model', 'businessTextGeneration': 'direct'})},
+            units['chapter03-script'])
+        errors = [item['message'] for item in findings if item['level'] == 'error']
+        if errors:
+            raise ValueError('; '.join(errors))
     from analysis_tasks import evidence_refs
     from final_report_lib import _validate_v2_insight
     for topic, count, unit in [('script', 2, 'chapter03-script'), ('audience', 3, 'chapter02-audience')]:
@@ -260,11 +272,42 @@ def check_analysis_parts(analysis_dir, part_paths):
     results, errors = [], []
     for path in part_paths:
         try:
-            result = check_analysis_part(analysis_dir, path, _context=(inputs, units))
+            part = read_object(path)
+            # Independent fields/materials fail together, using one verified snapshot.
+            chunks = []
+            failures = []
+            remaining = dict(part)
+            materials = remaining.pop('materialAnalyses', None)
+            if isinstance(materials, list) and materials:
+                ids = [item.get('materialId') for item in materials if isinstance(item, dict)]
+                if any(ids.count(mid) > 1 for mid in ids):
+                    failures.append('duplicate material in part')
+                chunks.extend({'schemaVersion': part.get('schemaVersion', 5),
+                               'materialAnalyses': [item]} for item in materials)
+            elif materials is not None:
+                chunks.append({'materialAnalyses': materials})
+            for key in ('highlightDashboard', 'customClassification', 'keywordCloudInsight'):
+                if key in remaining:
+                    chunk = {key: remaining.pop(key), 'schemaVersion': part.get('schemaVersion', 5)}
+                    if key == 'keywordCloudInsight':
+                        chunk['keywordCloudReview'] = part.get('keywordCloudReview', [])
+                        if 'analysisProvenance' in part:
+                            chunk['analysisProvenance'] = part['analysisProvenance']
+                    chunks.append(chunk)
+            if set(remaining) - {'schemaVersion', 'analysisProvenance', 'keywordCloudReview'} or not chunks:
+                chunks.append(remaining)
+            for chunk in chunks:
+                try:
+                    check_analysis_part(analysis_dir, path, _context=(inputs, units), _part=chunk)
+                except (ValueError, OSError, FinalReportError) as exc:
+                    failures.append(str(exc))
+            if failures:
+                raise ValueError('; '.join(failures))
         except (ValueError, OSError, FinalReportError) as exc:
             errors.append({'part': str(path), 'error': str(exc)})
         else:
-            results.append({'part': str(path), **result})
+            results.append({'part': str(path), 'partSha256': file_hash(path),
+                            'status': 'part_structure_checked'})
     return {'status': 'invalid' if errors else 'parts_structure_checked', 'parts': results,
             'errors': errors, 'contentReviewed': False, 'finalValidationRequired': True}
 

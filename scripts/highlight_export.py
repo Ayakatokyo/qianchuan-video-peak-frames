@@ -368,10 +368,8 @@ def export_highlight_workbook(data, presentation, output_path):
                 _image_entry(row, image_class, thumbnail_dir, index)
                 for index, row in enumerate(rows, start=1)
             ]
-        except (image_class.UnidentifiedImageError, OSError):
-            # A report may still be generated when a legacy fixture or upstream
-            # artifact carries a non-decodable image. Never publish a partial XLSX.
-            return None
+        except (image_class.UnidentifiedImageError, OSError) as exc:
+            raise HighlightExportError("unable to decode highlight frame image for Excel export") from exc
         temp_output = Path(temp_dir) / target.name
         from openpyxl import Workbook
         workbook = Workbook()

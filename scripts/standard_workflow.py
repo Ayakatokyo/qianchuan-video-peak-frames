@@ -639,8 +639,9 @@ def validate_analysis(
         _validate_request(request)
         report_resume = (
             allow_report_resume
-            and summary.get("status") == "running"
-            and summary.get("activeStage") == "report"
+            and (summary.get("status") == "complete" or (
+                summary.get("status") == "running" and summary.get("activeStage") == "report"
+            ))
         )
         if summary.get("status") != "analysis_pending" and not report_resume:
             raise StandardWorkflowError("analysis", "run is not awaiting AI analysis")
@@ -682,7 +683,7 @@ def finalize_standard_run(
     render_report=generate_final_report,
     mark_ready=mark_report_ready,
     video_cleanup=None,
-    include_workbook=False,
+    include_workbook=True,
     archive=False,
 ):
     paths = workflow_paths(output_dir)
@@ -696,9 +697,11 @@ def finalize_standard_run(
         shop_id=request_payload.get("shopId", ""),
     ) if isinstance(request_payload, dict) else None
     resumable_report = (
-        summary.get("status") == "running"
-        and summary.get("activeStage") == "report"
+        summary.get("status") == "complete" or (
+            summary.get("status") == "running" and summary.get("activeStage") == "report"
+        )
     )
+    report_started = False
     try:
         _validate_request(request)
         if video_cleanup in {"dry-run", "delete"} and not archive:
@@ -730,6 +733,7 @@ def finalize_standard_run(
                 frozen_review_hash = validate_frame_review(paths["analysis"])
                 if result["analysisStatus"] != "valid":
                     raise StandardWorkflowError("report", "analysis has pending evidence review; see candidate .validation.json")
+            report_started = True
             _write_running(request, paths, "report")
             try:
                 if file_hash(analysis_path) != candidate_hash:
@@ -747,6 +751,10 @@ def finalize_standard_run(
                     include_workbook=include_workbook,
                     **options,
                 )
+                # Keep only small receipt fields before rereading facts and report JSON.
+                report_input_sha256 = _data.get("reportBuildInputSha256")
+                analysis_quality = _data.get("analysisQuality", {})
+                del _data
                 if file_hash(analysis_path) != candidate_hash:
                     raise StandardWorkflowError("report", "analysis changed during rendering")
                 if frozen_inputs is not None and inspect_inputs(paths["analysis"]) != frozen_inputs:
@@ -759,7 +767,6 @@ def finalize_standard_run(
                 raise StandardWorkflowError("report", str(exc)) from exc
             if not mark_ready(paths["peak_frames"] / "batch-manifest.json", data_path, html_path):
                 raise StandardWorkflowError("report", "final report failed manifest validation")
-            report_input_sha256 = _data.get("reportBuildInputSha256")
             archive_path = None
             if archive:
                 expected_archive = paths["report"].parent / f"{paths['report'].name}.zip"
@@ -802,7 +809,7 @@ def finalize_standard_run(
                 ),
                 report_archive=archive_path,
             )
-            completed["analysisQuality"] = _data.get("analysisQuality", {})
+            completed["analysisQuality"] = analysis_quality
             write_run_summary(paths["summary"], completed)
             mode = video_cleanup or "keep"
             try:
@@ -816,6 +823,8 @@ def finalize_standard_run(
     except WorkflowLockError:
         raise
     except StandardWorkflowError as exc:
+        if summary.get("status") == "complete" and not report_started:
+            raise
         status = "analysis_pending" if (
             (summary.get("status") == "analysis_pending" or resumable_report)
             and exc.stage in {"analysis", "report"}

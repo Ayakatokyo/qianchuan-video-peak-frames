@@ -146,12 +146,17 @@ def _packets(root, task_id=None, section='all'):
                 'batchInsights': {'rule': 'Use script label references, not keyword text references.',
                                   'allowedEvidenceRefs': sorted(script_label_evidence_refs(source['materials']))},
                 'keywordCloudInsight.sellingPoints': {
-                    'rule': 'Each keywordRef must bind to its own candidate evidenceRefs; text references belong here.',
+                    'rule': 'keywordRefs are exact keywordCloud.keywords[*].keyword strings, not script refs or paraphrases. Each keywordRef must bind to its own candidate evidenceRefs; text references belong here.',
                     'sourcePath': 'keywordCloud.keywords[*].evidenceRefs'},
             }
             if section == 'facts':
                 packet['evidenceRules']['batchInsights'].pop('allowedEvidenceRefs')
+        if task['taskId'] == 'chapter04':
+            packet['fieldRules'] = {'customClassification': 'top-level, alongside highlightDashboard',
+                'frameRefs': 'Each successful frame exactly once per classification; group insight refs stay within its frameRefs'}
         if task['taskId'].startswith('material-'):
+            from final_report_lib import ALLOWED_DECISIONS
+            packet['allowedDecisions'] = sorted(ALLOWED_DECISIONS)
             packet['frameWritingRule'] = ('每帧写 visualObservation 与有证据的 commercialInterpretation；'
                 '不足时用 interpretationStatus=insufficient_evidence + limitation，不能强编。'
                 '同素材同图可用 shared + sharedInterpretationRef 指向直接 supported 帧；观察缓存不替代商业分析。')

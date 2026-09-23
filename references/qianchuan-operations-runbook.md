@@ -51,13 +51,13 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 ## 长任务元数据
 
-通过长时执行工具提交 `prepare` 时，设置 `max_runtime_seconds: 3600`、`completion_mode: data_collection`、`success_pattern: "run_summary=.*run-summary\\.json"`，并以本次 `run-summary.json` 的状态作为 `verify_command`。这些是工具元数据，不是 `prepare` 的命令行参数；只有验证为 `analysis_pending` 才可进入 AI 分析。
+仅在运行面的长时执行工具确实支持以下字段时，通过它提交 `prepare` 并设置 `max_runtime_seconds: 3600`、`completion_mode: data_collection`、`success_pattern: "run_summary=.*run-summary\\.json"`，并以本次 `run-summary.json` 的状态作为 `verify_command`。这些是工具元数据，不是 `prepare` 的命令行参数；只有验证为 `analysis_pending` 才可进入 AI 分析。
 
 长任务每次 manifest checkpoint 还会追加一条 `peak-frames/batch-progress.jsonl`，只保留时间、runId、`rpaCollection`、`stageCounts` 和中断信息。运行面会话失联时可直接读末行，无需回显进程命令行或猜测目录数。
 
-长任务在首次启动时就应通过 `setsid ... </dev/null >"$RUN_DIR/prepare.log" 2>&1 &` 脱离 Bash 会话，不把一次命令工具会话当作运行生命周期。`status` 是轻量只读入口，不加载报告、Jieba、OpenPyXL 或 Pillow。日常进度以 `batch-progress.jsonl` 和最后一次 `status` 为准；不为了“看进度”连续执行多次 Bash、`jq`、`head` 或短 `sleep`。一旦运行面会话为 `lost` 或控制通道丢失，立即向用户说明“控制面异常，后台状态待核对”，并只执行一次 `status`：锁为 active 时才说明后台仍在运行并反读 `lastProgress`；锁为 stale/missing 且 `workflowStatus=interrupted` 时直接进入标准恢复。不得在核验前固定声称后台仍在运行。
+长任务优先使用运行面已有的持久执行会话；只有实际验证跨工具调用存活时，才通过 `setsid ... </dev/null >"$RUN_DIR/prepare.log" 2>&1 &` 脱离 Bash 会话。setsid 只改变进程会话关系，不能抵抗运行面回收或 SIGKILL；一次成功不能证明所有运行都保活。`status` 是轻量只读入口，不加载报告、Jieba、OpenPyXL 或 Pillow。日常进度以 `batch-progress.jsonl` 和最后一次 `status` 为准；不为了“看进度”连续执行多次 Bash、`jq`、`head` 或短 `sleep`。一旦运行面会话为 `lost` 或控制通道丢失，立即向用户说明“控制面异常，后台状态待核对”，并只执行一次 `status`：锁为 active 时才说明后台仍在运行并反读 `lastProgress`；锁为 stale/missing 且 `workflowStatus=interrupted` 时直接进入标准恢复。不得在核验前固定声称后台仍在运行。
 
-优先使用 `status.nextAction`：`wait` 才继续有界观察，`resume` 表示中断待按授权恢复，`finalize` 表示从报告构建断点恢复，`analyze` 表示进入当前模型分析，`verify_delivery` 表示核验交付。`recoveryStage` 与 `rpaRemainingCount` 是基于落盘计数的阶段提示，不代替文件校验。进程已中断时不得以反复 sleep 等待其自行完成；工具返回 `-1`/`-9` 或极短 duration 也不证明后台继续运行或真实阶段耗时。常规观测不再组合多轮 find/jq/进程扫描。
+优先使用 `status.nextAction`：`wait` 才执行 `python scripts/run_standard_analysis.py status --output-dir "$RUN_DIR" --wait-seconds 60` 有界观察，工具超时须大于该等待窗口；每 5 秒检查，退出 wait 即返回，不再盲等 240/280/1500 秒。`resume` 表示中断待按授权恢复，`finalize` 表示从报告构建断点恢复，`analyze` 表示进入当前模型分析，`verify_delivery` 表示核验交付。`recoveryStage` 与 `rpaRemainingCount` 是基于落盘计数的阶段提示，不代替文件校验。进程已中断时不得以反复 sleep 等待其自行完成；工具返回 `-1`/`-9` 或极短 duration 也不证明后台继续运行或真实阶段耗时。常规观测不再组合多轮 find/jq/进程扫描。
 
 ## 策略拒绝但后台仍在运行
 
@@ -168,9 +168,9 @@ python scripts/repair_manifest.py \
 
 ## 报告生成中断与续跑
 
-`finalize` 按 `reportData → workbook(可省略) → html → archive(可省略)` 写入 `final-report/report-build-receipt.json`。默认只产生可直接打开的 `final-report/` 目录；只在明确要求时使用 `--include-workbook` 或 `--archive`。收据绑定候选分析、质量复核、冻结输入索引、records/summary 和渲染代码哈希；输入未变化且阶段产物存在时，重跑只续接未完成阶段。摘要处于 `running/report` 且旧进程已结束时直接重跑同一 `finalize`，不要手工改回 `analysis_pending`。
+`finalize` 按 `reportData → workbook(可省略) → html → archive(可省略)` 写入 `final-report/report-build-receipt.json`。标准入口默认生成可直接打开的 `final-report/` 目录和高光帧 XLSX，ZIP 仍需 `--archive`；明确省略 Excel 才用 `--skip-workbook`，`--include-workbook` 保留兼容。收据绑定候选分析、质量复核、冻结输入索引、records/summary 和渲染代码哈希；输入未变化且阶段产物存在时，重跑只续接未完成阶段。摘要处于 `running/report` 且旧进程已结束，或 `status=complete` 需补 Excel/归档时，直接重跑同一 `finalize`，不要手工改回 `analysis_pending`。仍执行事实、帧审阅、候选与内容复核门禁；只改变 Excel 选项不重建 reportData，但会刷新 HTML 和使旧归档收据失效。源码升级会使旧版本收据失效，首次升级补建可能重建报告投影。
 
-仅当使用 `--include-workbook` 时，高光帧 XLSX 才使用最长边 112px、JPEG quality 72 的临时缩略图。完整 JPEG 始终复制到 HTML 报告资产，不降低网页证据质量。报告视频直接复用已下载 MP4，优先硬链接、失败才拷贝，不再为报告单独转码。若任一阶段被 SIGKILL，确认旧进程结束后直接重跑同一 `finalize`；已写好的 report data、presentation 和视频资产会复用。
+高光帧 XLSX 使用最长边 112px、JPEG quality 72 的临时缩略图。完整 JPEG 始终复制到 HTML 报告资产，不降低网页证据质量。报告视频直接复用已下载 MP4，优先硬链接、失败才拷贝，不再为报告单独转码。若任一阶段被 SIGKILL，确认旧进程结束后直接重跑同一 `finalize`；已写好的 report data、presentation 和视频资产会复用。
 
 检查保留的 `diagnosis-records/`、`diagnosis-csv/`、素材 `summary.json` 与 JPEG，而不是仅凭文件名判断成功。RPA 输出字段、下载上限和波次状态的完整约束见 [RPA 输出契约](rpa-output-contract.md)。
 
@@ -193,3 +193,5 @@ python scripts/run_standard_analysis.py cleanup-videos --output-dir "$PWD/千川
 先比对候选 AI JSON 与 presentation-report.json：若数量相同，修正模型分析，不改前端截取条数。新 Prompt（mechanism-depth-v1）要求本批次默认 3–5 个主导画面机制类别；标准分类/本批次分类每个非空组默认一条共性结论和一个裂变方向，结构接受 1–3 条。54 帧归入一个混合总类仍须审查真实机制边界；每部分各一条无需虚构证据不足。
 
 分类不足填写 classificationLimitation，组内结论/方向不足填写 contentLimitation；说明不足后仍需 evidence_limited 复核，不能以“缺少因果证明”为由忽略可见画面差异。数量门槛通过后继续检查语义边界和可测试变量，不用脚本拆类或复制条目凑数。新规则由冻结 Prompt 启用；重做历史输入时创建新候选并重新绑定索引和复核哈希，不覆盖历史成品。
+
+耗时解释：sleep 可与后台业务重叠，超时前也可能已落盘有效成果，二者不能全算浪费；工具 duration 不含完整后台生命周期。分别记录首次启动、RPA 收齐、后处理完成、analysis_pending、候选首次/最终校验、complete 和复盘起点；缺少起止证据标 unknown。完整 Bash 汇总不证明模型已读完所有事实页或已看完所有图片。

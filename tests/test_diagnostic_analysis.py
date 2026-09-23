@@ -132,7 +132,7 @@ class DiagnosticAnalysisAudienceTests(unittest.TestCase):
         self.assertIn("total_prepay_and_pay_order_roi2", prompt)
         self.assertIn("不得读取 Chapter 01 顶层 `materials` 或 `materialIds`", prompt)
         self.assertIn("commercial.conclusion 不得重复 overallConclusion", prompt)
-        self.assertIn("至少包含三项分析判断", prompt)
+        self.assertIn("一个核心判断和一个优先验证动作", prompt)
         self.assertIn("Chapter 01 事实包不包含 `netSettlementRoi` 或 `overallPaymentRoi`", prompt)
         self.assertIn("不得读取 `topMaterialRoi`", prompt)
         self.assertIn("不得使用 RPA 精选素材数量、消耗", prompt)

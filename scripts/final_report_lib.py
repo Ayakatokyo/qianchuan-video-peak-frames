@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import math
 import re
 from pathlib import Path
-from batch_runtime import stage_counts
+from batch_runtime import stage_counts, write_json_atomically
 from analysis_quality import content_contract_findings, finding, review_result
 from asset_metrics_lib import (
     COST_METRIC,
@@ -2327,7 +2327,6 @@ def _report_build_input_sha256(
     digest.update(
         json.dumps(
             {
-                "includeWorkbook": include_workbook,
                 "embedAssets": embed_assets,
                 "copyAssets": copy_assets,
                 "requireAiQuality": require_ai_quality,
@@ -2475,19 +2474,11 @@ def generate_final_report(
             peak_output_dir,
             output_root,
             require_local_video_assets=require_local_video_assets,
+            in_place=True,
         )
-        atomic_write_text(
-            data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-        )
-        atomic_write_text(
-            display_facts_path,
-            json.dumps(data.get("displayFacts", {}), ensure_ascii=False, indent=2)
-            + "\n",
-        )
-        atomic_write_text(
-            presentation_path,
-            json.dumps(presentation, ensure_ascii=False, indent=2) + "\n",
-        )
+        write_json_atomically(data_path, data)
+        write_json_atomically(display_facts_path, data.get("displayFacts", {}))
+        write_json_atomically(presentation_path, presentation)
         mark_report_build_stage(
             output_root,
             input_sha256,
@@ -2495,7 +2486,18 @@ def generate_final_report(
             artifacts=[path.name for path in (data_path, display_facts_path, presentation_path)],
         )
 
+    # Workbook choice changes delivery stages, not the expensive fact projection.
+    receipt = _read_report_build_receipt(output_root)
+    stages = receipt.get("stages", {})
+    mode = "included" if include_workbook else "omitted"
+    workbook_state = stages.get("workbook", {})
     export_target = output_root / "highlight-frames.xlsx"
+    workbook_changed = (workbook_state.get("mode") != mode or (
+        include_workbook and data.get("highlightExportHref") and not export_target.is_file()))
+    if workbook_changed:
+        for stage in ("workbook", "html", "archive"):
+            stages.pop(stage, None)
+        write_json_atomically(output_root / REPORT_BUILD_RECEIPT_NAME, receipt)
     if include_workbook:
         workbook_reusable = report_build_stage_complete(
             output_root,
@@ -2512,9 +2514,7 @@ def generate_final_report(
             else:
                 data.pop("highlightExportHref", None)
                 export_target.unlink(missing_ok=True)
-            atomic_write_text(
-                data_path, json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-            )
+            write_json_atomically(data_path, data)
             mark_report_build_stage(
                 output_root,
                 input_sha256,
@@ -2524,6 +2524,8 @@ def generate_final_report(
             )
     else:
         data.pop("highlightExportHref", None)
+        if workbook_changed:
+            write_json_atomically(data_path, data)
         export_target.unlink(missing_ok=True)
         if not report_build_stage_complete(
             output_root,

@@ -1,6 +1,7 @@
 """Lightweight, read-only status inspection for a standard run."""
 
 import json
+import time
 from pathlib import Path
 
 from batch_runtime import read_json, run_lock_state
@@ -113,3 +114,16 @@ def standard_run_status(output_dir):
         "postprocessSucceededCount": stage_counts.get("postprocessSucceededCount", 0),
         "reportReadyCount": stage_counts.get("reportReadyCount", 0),
     }
+
+
+def wait_standard_run_status(output_dir, *, wait_seconds=0):
+    """Bounded observation; return promptly when work stops or needs an action."""
+    if not 0 <= wait_seconds <= 60:
+        raise ValueError("wait-seconds must be between 0 and 60")
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        result = standard_run_status(output_dir)
+        remaining = deadline - time.monotonic()
+        if result["nextAction"] != "wait" or remaining <= 0:
+            return result
+        time.sleep(min(5, remaining))

@@ -342,9 +342,10 @@ def materialize_report_video_assets(
     report_dir,
     *,
     require_local_video_assets=False,
+    in_place=False,
 ):
-    """Copy retained original MP4s into the portable report and rewrite sources."""
-    result = deepcopy(data)
+    """Publish MP4s; production owns its input and can avoid a full deep copy."""
+    result = data if in_place else deepcopy(data)
     peak_root = Path(peak_output_dir)
     report_root = Path(report_dir)
     source_root = peak_root / "video-assets"
