@@ -1,9 +1,16 @@
+import io
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 
@@ -11,21 +18,33 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from peak_frame_lib import (  # noqa: E402
+    DEFAULT_FFMPEG_TIMEOUT_SEC,
     FfmpegError,
     InputDataError,
+    Peak,
     SelectedPeak,
     SeriesPoint,
     build_summary,
     extract_frame,
+    extract_frames_batch,
     find_local_peaks,
     format_frame_filename,
     format_seconds_token,
     parse_click_series,
     probe_video_duration,
+    process_records,
     resolve_ffmpeg,
     select_peak_frames,
     validate_timestamps,
     write_summaries,
+)
+import rpa_adapter  # noqa: E402
+import rpa_artifact_receipts  # noqa: E402
+import extract_peak_frames  # noqa: E402
+from batch_runtime import (  # noqa: E402
+    BatchLockError,
+    acquire_run_lock,
+    mark_report_ready,
 )
 
 
@@ -92,12 +111,1100 @@ def successful_frame_subprocess(command, **_kwargs):
     )
 
 
+class FakeResponse:
+    def __init__(self, payload, status_error=None, content=b"", status_code=200, headers=None):
+        self._payload = payload
+        self._status_error = status_error
+        self.content = content
+        self.status_code = status_code
+        self.headers = {} if headers is None else headers
+        self.closed = False
+
+    def raise_for_status(self):
+        if self._status_error is not None:
+            raise self._status_error
+
+    def json(self):
+        return self._payload
+
+    def iter_content(self, chunk_size=8192):
+        for index in range(0, len(self.content), chunk_size):
+            yield self.content[index : index + chunk_size]
+
+    def close(self):
+        self.closed = True
+
+
+class RecordingSession:
+    def __init__(self, post_response, get_response=None):
+        self.post_response = post_response
+        self.get_response = post_response if get_response is None else get_response
+        self.posts = []
+        self.gets = []
+
+    def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        return self.post_response
+
+    def get(self, url, **kwargs):
+        self.gets.append((url, kwargs))
+        return self.get_response
+
+
+class RaisingPostSession:
+    def __init__(self, error):
+        self.error = error
+        self.posts = []
+
+    def post(self, url, **kwargs):
+        self.posts.append((url, kwargs))
+        raise self.error
+
+
+class RpaAdapterTests(unittest.TestCase):
+    def setUp(self):
+        self._sleep_patch = patch("rpa_adapter.time.sleep")
+        self._sleep_patch.start()
+        self._connector_detail_patch = patch(
+            "rpa_adapter.fetch_connector_detail",
+            return_value={
+                "connectorCode": "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
+                "platformCode": "RPA_QIANCHUAN_RUNTIME",
+                "inParamJsonSchemaText": None,
+                "inParamList": [
+                    {"param": "material_id", "isRequired": True, "dataTypeEnum": "STRING"},
+                    {"param": "date_range_type", "isRequired": True, "dataTypeEnum": "STRING"},
+                    {"param": "custom_start_date", "isRequired": False, "dataTypeEnum": "STRING"},
+                    {"param": "custom_end_date", "isRequired": False, "dataTypeEnum": "STRING"},
+                ],
+                "outParamList": [],
+            },
+        )
+        self._connector_detail_patch.start()
+        self._rpa_temp_dir = tempfile.TemporaryDirectory()
+        self.csv_dir = Path(self._rpa_temp_dir.name) / "diagnosis-csv"
+
+    def tearDown(self):
+        self._connector_detail_patch.stop()
+        self._sleep_patch.stop()
+        self._rpa_temp_dir.cleanup()
+
+    def _env(self):
+        return {
+            "ENV_BACKEND_HOST": "https://gateway.example/",
+            "YUCE_AUTHORIZATION": "auth-token",
+            "YUCE_SESSION_ID": "session-123",
+        }
+
+    def _async_session(self, terminal, csv_response=None):
+        if isinstance(terminal, list):
+            terminal = {
+                "success": True,
+                "data": {
+                    "status": "completed",
+                    "result_type": "payload",
+                    "payload": terminal,
+                },
+            }
+        else:
+            terminal = json.loads(json.dumps(terminal))
+            if "data" not in terminal:
+                terminal = {
+                    "success": True,
+                    "data": {
+                        "status": "completed",
+                        "result_type": "payload",
+                        **terminal,
+                    },
+                }
+            data = terminal.setdefault("data", {})
+            data.setdefault("status", "completed")
+        responses = [
+            FakeResponse({"success": True, "data": {"task_group_id": "group-1"}}),
+            FakeResponse({"success": True, "data": {"status": "pending"}}),
+            FakeResponse(terminal),
+        ]
+
+        class AsyncSession:
+            def __init__(self):
+                self.posts = []
+                self.gets = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return responses.pop(0)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return csv_response
+
+        return AsyncSession()
+
+    def _result_content_session(self, terminal, csv_bytes):
+        responses = [
+            FakeResponse({"success": True, "data": {"task_group_id": "group-1"}}),
+            FakeResponse(terminal),
+        ]
+
+        class ResultContentSession:
+            def __init__(self):
+                self.posts = []
+                self.gets = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return responses.pop(0)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return FakeResponse(None, content=csv_bytes)
+
+        return ResultContentSession()
+
+    def test_video_download_rejects_maximum_size_and_closes_response(self):
+        response = FakeResponse(None, content=b"12345")
+        session = RecordingSession(FakeResponse(None), response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "video.mp4"
+            with self.assertRaises(rpa_adapter.RpaAdapterError):
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    target,
+                    session=session,
+                    max_bytes=4,
+                )
+            self.assertFalse(target.exists())
+        self.assertTrue(response.closed)
+
+    def test_video_download_rejects_non_video_content_type(self):
+        response = FakeResponse(None, content=b"not-video", headers={"Content-Type": "text/html"})
+        session = RecordingSession(FakeResponse(None), response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "content type"):
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    Path(temp_dir) / "video.mp4",
+                    session=session,
+                )
+        self.assertTrue(response.closed)
+
+    def test_video_download_enforces_total_deadline_and_closes_response(self):
+        response = FakeResponse(None, content=b"1")
+        session = RecordingSession(FakeResponse(None), response)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(rpa_adapter.RpaAdapterError):
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    Path(temp_dir) / "video.mp4",
+                    session=session,
+                    deadline_sec=0,
+                )
+        self.assertTrue(response.closed)
+
+    def test_video_download_retries_transient_failure_and_cleans_staging_files(self):
+        success = FakeResponse(None, content=b"video")
+
+        class SequentialSession:
+            def __init__(self):
+                self.gets = []
+                self.responses = [ConnectionError("connection reset"), success]
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                response = self.responses.pop(0)
+                if isinstance(response, Exception):
+                    raise response
+                return response
+
+        session = SequentialSession()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "video.mp4"
+            with patch("rpa_adapter.time.sleep") as sleep:
+                rpa_adapter.download_video(
+                    "https://video.example/video.mp4",
+                    target,
+                    session=session,
+                    retry_attempts=2,
+                    retry_backoff_sec=0.01,
+                )
+
+            self.assertEqual(len(session.gets), 2)
+            self.assertEqual(sleep.call_args.args[0], 0.01)
+            self.assertEqual(target.read_bytes(), b"video")
+            self.assertFalse(list(Path(temp_dir).glob(".*.mp4")))
+        self.assertTrue(success.closed)
+
+    def _files_envelope(
+        self,
+        *,
+        success=True,
+        code="200",
+        status="COMPLETED",
+        failed_instances=0,
+        files=None,
+    ):
+        if files is None:
+            files = [
+                {
+                    "fileUrl": (
+                        "https://files.example/diagnosis.csv?secret=redacted"
+                    )
+                }
+            ]
+        return {
+            "success": success,
+            "code": code,
+            "data": {
+                "result_type": "files",
+                "result_content": {
+                    "status": status,
+                    "failedInstances": failed_instances,
+                    "files": files,
+                },
+            },
+        }
+
+    def test_fetch_material_diagnosis_downloads_nested_files_envelope(self):
+        envelope = {
+            "success": True,
+            "code": "200",
+            "data": {
+                "result_type": "files",
+                "result_content": {
+                    "status": "COMPLETED",
+                    "failedInstances": 0,
+                    "files": [
+                        {"fileUrl": "https://files.example/diagnosis.csv"}
+                    ],
+                },
+            },
+        }
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-files\x01CLICK_COUNT\x011\x012\n"
+        )
+        session = self._async_session(
+            envelope, FakeResponse(None, content=csv_bytes)
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_dir = Path(temp_dir) / "diagnosis-csv"
+            records = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-files",
+                business_params={"date_range_type": "LAST_7_DAYS"},
+                diagnosis_csv_dir=csv_dir,
+                environ=self._env(),
+                session=session,
+            )
+
+            self.assertEqual(records, [
+                {
+                    "recordType": "interaction_series",
+                    "materialId": "m-files",
+                    "interactionMetric": "CLICK_COUNT",
+                    "durationSec": 1.0,
+                    "metricValue": 2.0,
+                }
+            ])
+            self.assertEqual(
+                (csv_dir / "m-files.csv").read_bytes(), csv_bytes
+            )
+        self.assertEqual(
+            session.gets,
+            [
+                (
+                    "https://files.example/diagnosis.csv",
+                    {"stream": True, "timeout": 300},
+                )
+            ],
+        )
+
+    def test_fetch_material_diagnosis_downloads_direct_files_response(self):
+        envelope = {
+            "success": True,
+            "code": "200",
+            "data": {
+                "status": "completed",
+                "total_instances": 1,
+                "completed_instances": 1,
+                "failed_instances": 0,
+                "files": [
+                    {"fileUrl": "https://files.example/direct.csv"}
+                ],
+                "errors": None,
+            },
+        }
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-direct\x01CLICK_COUNT\x011\x012\n"
+        )
+        session = self._async_session(
+            envelope, FakeResponse(None, content=csv_bytes)
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_dir = Path(temp_dir) / "diagnosis-csv"
+            records = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="m-direct",
+                business_params={"date_range_type": "LAST_7_DAYS"},
+                diagnosis_csv_dir=csv_dir,
+                environ=self._env(),
+                session=session,
+            )
+
+            self.assertEqual(records[0]["materialId"], "m-direct")
+            self.assertEqual(
+                (csv_dir / "m-direct.csv").read_bytes(), csv_bytes
+            )
+
+    def test_fetch_material_diagnosis_submits_polls_and_downloads_files(self):
+        submitted = []
+        csv_bytes = (
+            b"recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue\n"
+            b"\x02interaction_series\x01m-1\x01CLICK_COUNT\x011\x012\n"
+        )
+
+        class AsyncSession:
+            def __init__(self):
+                self.posts = []
+                self.responses = [
+                    FakeResponse({"success": True, "data": {"task_group_id": "group-1"}}),
+                    FakeResponse({"success": True, "data": {"status": "pending"}}),
+                    FakeResponse(
+                        {
+                            "success": True,
+                            "data": {
+                                "status": "completed",
+                                "result_type": "files",
+                                "result_content": {
+                                    "files": [
+                                        {"fileUrl": "https://files.example/m-1.csv"}
+                                    ]
+                                },
+                            },
+                        }
+                    ),
+                ]
+                self.gets = []
+
+            def post(self, url, **kwargs):
+                self.posts.append((url, kwargs))
+                return self.responses.pop(0)
+
+            def get(self, url, **kwargs):
+                self.gets.append((url, kwargs))
+                return FakeResponse(
+                    None,
+                    content=csv_bytes,
+                    headers={"Content-Type": "text/csv"},
+                )
+
+        session = AsyncSession()
+        with tempfile.TemporaryDirectory() as temp_dir, patch("rpa_adapter.time.sleep"):
+            records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1", material_id="m-1", business_params={"date_range_type": "LAST_7_DAYS"},
+                diagnosis_csv_dir=Path(temp_dir), session=session,
+                environ=self._env(), timeout_sec=30, on_task_submitted=submitted.append,
+                return_metadata=True,
+            )
+            self.assertTrue(Path(csv_path).is_file())
+            self.assertEqual(records[0]["materialId"], "m-1")
+
+        self.assertEqual(submitted, ["group-1"])
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+        self.assertEqual(session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks")
+        self.assertEqual(session.posts[1][0], "https://gateway.example/adg/v1/agent/fetch/tasks/status")
+
+    def test_fetch_material_diagnosis_polls_with_complete_request_context(self):
+        session = self._result_content_session(
+            {
+                "success": True,
+                "code": "200",
+                "data": {
+                    "result_content": {
+                        "status": "COMPLETED",
+                        "files": [
+                            {"fileUrl": "https://files.example/m-context.csv"}
+                        ],
+                        "errors": [],
+                    }
+                },
+            },
+            b"recordType\x01materialId\n\x02material_info\x01m-context\n",
+        )
+
+        rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-context",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+        )
+
+        poll_payload = session.posts[1][1]["json"]
+        self.assertEqual(
+            poll_payload,
+            {
+                "authorization": "auth-token",
+                "agent_session_id": "session-123",
+                "data_source_type": "rpa",
+                "platform": "RPA_QIANCHUAN_RUNTIME",
+                "function_code": "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
+                "business_params": {
+                    "material_id": "m-context",
+                    "date_range_type": "LAST_7_DAYS",
+                },
+                "shop_id": "shop-1",
+                "task_group_id": "group-1",
+            },
+        )
+
+    def test_result_content_completed_envelope_downloads_csv(self):
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-completed\x01https://video.example/m.mp4\n"
+        )
+        session = self._result_content_session(
+            {
+                "success": True,
+                "code": "200",
+                "data": {
+                    "result_content": {
+                        "status": "COMPLETED",
+                        "files": [
+                            {"fileUrl": "https://files.example/m-completed.csv"}
+                        ],
+                        "errors": [],
+                    }
+                },
+            },
+            csv_bytes,
+        )
+
+        records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-completed",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+            return_metadata=True,
+        )
+
+        self.assertEqual(records[0]["materialId"], "m-completed")
+        self.assertEqual(Path(csv_path).read_bytes(), csv_bytes)
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+
+    def test_result_content_partial_success_downloads_csv_and_preserves_errors(self):
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-partial\x01https://video.example/m.mp4\n"
+        )
+        partial_errors = [{"message": "one account failed"}]
+        session = self._result_content_session(
+            {
+                "success": True,
+                "code": "200",
+                "data": {
+                    "result_content": {
+                        "status": "partial_success",
+                        "files": [
+                            {"fileUrl": "https://files.example/m-partial.csv"}
+                        ],
+                        "errors": partial_errors,
+                    }
+                },
+            },
+            csv_bytes,
+        )
+
+        records, csv_path, metadata = rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-partial",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+            return_metadata=True,
+        )
+
+        self.assertEqual(records[0]["materialId"], "m-partial")
+        self.assertEqual(Path(csv_path).read_bytes(), csv_bytes)
+        self.assertEqual(metadata["rpaPartialErrors"], partial_errors)
+
+    def _fetch_terminal(self, *, status="completed", result_type="files", files=None, errors=None):
+        data = {"status": status, "result_type": result_type}
+        if result_type == "files":
+            data["result_content"] = {
+                "files": files or [],
+                "errors": errors or [],
+            }
+        else:
+            data["payload"] = [click_record(0, 0, material_id="m-1")]
+        terminal = {"success": True, "code": 200, "data": data}
+        csv_response = FakeResponse(
+            None,
+            content=(
+                b"recordType\x01materialId\x01videoUrl\n"
+                b"material_info\x01m-1\x01https://video.example/m-1.mp4\n"
+            ),
+            headers={"Content-Type": "text/csv"},
+        )
+        session = self._async_session(terminal, csv_response)
+        return rpa_adapter.fetch_material_diagnosis(
+            shop_id="shop-1",
+            material_id="m-1",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            diagnosis_csv_dir=self.csv_dir,
+            environ=self._env(),
+            session=session,
+            return_metadata=True,
+        ), session
+
+    def test_partial_success_downloads_available_csv_and_preserves_errors(self):
+        result, _session = self._fetch_terminal(
+            status="partial_success",
+            files=[{"fileUrl": "https://files.example/m-1.csv"}],
+            errors=[{"message": "one account failed"}],
+        )
+
+        records, csv_path, metadata = result
+        self.assertTrue(Path(csv_path).is_file())
+        self.assertEqual(records[0]["materialId"], "m-1")
+        self.assertEqual(metadata["rpaPartialErrors"], [{"message": "one account failed"}])
+
+    def test_failed_fetch_task_exposes_remote_task_group_id(self):
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            self._fetch_terminal(
+                status="failed",
+                errors=[{"message": "denied"}],
+            )
+
+        self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+        self.assertEqual(
+            raised.exception.diagnostics["rpaErrors"], [{"message": "denied"}]
+        )
+
+    def test_partial_success_without_files_exposes_safe_errors_and_task_id(self):
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            self._fetch_terminal(
+                status="partial_success",
+                errors=[{"message": "no usable file"}],
+            )
+
+        self.assertEqual(raised.exception.diagnostics["remoteTaskGroupId"], "group-1")
+        self.assertEqual(
+            raised.exception.diagnostics["rpaErrors"], [{"message": "no usable file"}]
+        )
+
+    def test_payload_response_returns_no_csv_metadata(self):
+        result, _session = self._fetch_terminal(result_type="payload")
+
+        records, csv_path, metadata = result
+        self.assertIsNone(csv_path)
+        self.assertEqual(metadata["remoteTaskGroupId"], "group-1")
+        self.assertEqual(records[0]["materialId"], "m-1")
+
+    def test_fetch_material_diagnosis_uses_runtime_connector_platform(self):
+        records = [
+            click_record(0, 0, material_id="764"),
+            click_record(1, 5, material_id="764"),
+            click_record(2, 0, material_id="764"),
+        ]
+        session = self._async_session(records)
+
+        try:
+            result = rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="764",
+                business_params={"date_range_type": "LAST_7_DAYS"},
+                environ=self._env(),
+                session=session,
+            )
+        except Exception as exc:
+            self.fail(f"fetch_material_diagnosis raised {exc!r}")
+
+        self.assertEqual(result, records)
+        self.assertEqual(
+            session.posts[0][0], "https://gateway.example/adg/v1/agent/fetch/tasks"
+        )
+        payload = session.posts[0][1]["json"]
+        self.assertEqual(payload["authorization"], "auth-token")
+        self.assertEqual(payload["agent_session_id"], "session-123")
+        self.assertEqual(payload["data_source_type"], "rpa")
+        self.assertEqual(payload["platform"], "RPA_QIANCHUAN_RUNTIME")
+        self.assertEqual(
+            payload["function_code"],
+            "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
+        )
+        self.assertEqual(payload["shop_id"], "shop-1")
+        self.assertEqual(
+            payload["business_params"],
+            {"material_id": "764", "date_range_type": "LAST_7_DAYS"},
+        )
+        self.assertEqual(session.posts[0][1]["timeout"], 3600)
+
+    def test_list_accounts_uses_runtime_connector_platform(self):
+        payload = {"data": [{"shop_id": "shop-1"}]}
+        session = RecordingSession(FakeResponse(payload))
+
+        self.assertTrue(hasattr(rpa_adapter, "list_accounts"))
+        result = rpa_adapter.list_accounts(environ=self._env(), session=session)
+
+        self.assertEqual(result, payload)
+        self.assertEqual(
+            session.posts[0][0],
+            "https://gateway.example/adg/v1/agent/rpa/authorizations/query",
+        )
+        self.assertEqual(
+            session.posts[0][1]["json"],
+            {"authorization": "auth-token", "platform": "RPA_QIANCHUAN_RUNTIME"},
+        )
+        self.assertEqual(session.posts[0][1]["timeout"], 30)
+
+    def test_dynamic_validation_blocks_task_submission(self):
+        self._connector_detail_patch.stop()
+        invalid_detail = {
+            "connectorCode": "rpa.conn.juliang.qc.material.analysis.video.live.diagnosis",
+            "platformCode": "RPA_QIANCHUAN_RUNTIME",
+            "inParamJsonSchemaText": None,
+            "inParamList": [
+                {
+                    "param": "required_runtime_field",
+                    "isRequired": True,
+                    "dataTypeEnum": "STRING",
+                }
+            ],
+        }
+        session = RecordingSession(FakeResponse({"success": True}))
+
+        try:
+            with patch("rpa_adapter.fetch_connector_detail", return_value=invalid_detail):
+                with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "业务入参"):
+                    rpa_adapter.fetch_material_diagnosis(
+                        shop_id="shop-1",
+                        material_id="m-1",
+                        business_params={"date_range_type": "LAST_7_DAYS"},
+                        environ=self._env(),
+                        session=session,
+                    )
+        finally:
+            self._connector_detail_patch.start()
+
+        self.assertEqual(session.posts, [])
+
+    def test_runtime_config_uses_ycsessionid_when_rpa_session_id_is_not_set(self):
+        api_base, authorization, session_id, cookies = rpa_adapter.runtime_config(
+            {
+                "ENV_BACKEND_HOST": "https://gateway.example/",
+                "YUCE_AUTHORIZATION": "auth-token",
+                "YCSESSIONID": "browser-session",
+            }
+        )
+
+        self.assertEqual(api_base, "https://gateway.example")
+        self.assertEqual(authorization, "auth-token")
+        self.assertEqual(session_id, "browser-session")
+        self.assertEqual(cookies, {"YCSESSIONID": "browser-session"})
+
+    def test_fetch_material_diagnosis_keeps_rejected_submit_diagnostics(self):
+        session = RecordingSession(
+            FakeResponse(
+                {
+                    "success": False,
+                    "code": "403",
+                    "msg": "店铺未绑定有效的底层授权",
+                    "authorization": "secret-token",
+                    "YCSESSIONID": "browser-secret",
+                }
+            )
+        )
+
+        with self.assertRaises(rpa_adapter.RpaAdapterError) as raised:
+            rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="764",
+                business_params={"date_range_type": "LAST_7_DAYS"},
+                environ=self._env(),
+                session=session,
+            )
+
+        self.assertIn("店铺未绑定有效的底层授权", str(raised.exception))
+        self.assertEqual(raised.exception.diagnostics["gatewayPhase"], "submit")
+        self.assertEqual(raised.exception.diagnostics["gatewayCode"], "403")
+        self.assertEqual(
+            raised.exception.diagnostics["rpaFailureClass"],
+            "gateway_client_error",
+        )
+        self.assertIn("店铺未绑定有效的底层授权", raised.exception.diagnostics["responseSummary"])
+        self.assertNotIn("secret-token", raised.exception.diagnostics["responseSummary"])
+        self.assertNotIn("browser-secret", raised.exception.diagnostics["responseSummary"])
+
+    def test_fetch_wraps_gateway_http_errors(self):
+        session = RecordingSession(
+            FakeResponse([], status_error=RuntimeError("gateway down"))
+        )
+
+        with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "gateway"):
+            rpa_adapter.fetch_material_diagnosis(
+                shop_id="shop-1",
+                material_id="764",
+                business_params={"date_range_type": "LAST_7_DAYS"},
+                environ=self._env(),
+                session=session,
+            )
+
+    def test_normalize_gateway_records_accepts_payload_envelope(self):
+        records = [click_record(0, 0), click_record(1, 3), click_record(2, 0)]
+
+        self.assertTrue(hasattr(rpa_adapter, "normalize_gateway_records"))
+        self.assertEqual(
+            rpa_adapter.normalize_gateway_records(
+                {"result_type": "payload", "payload": records}
+            ),
+            records,
+        )
+
+    def test_preflight_material_availability_passes_with_video_url(self):
+        records = [
+            click_record(0, 0, material_id="m-available"),
+            {
+                "recordType": "material_info",
+                "materialId": "m-available",
+                "videoUrl": " https://video.example/m-available.mp4 ",
+            },
+        ]
+
+        result = rpa_adapter.preflight_material_availability(
+            records, "m-available"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "materialId": "m-available",
+                "rpaAvailable": True,
+                "failureReason": None,
+                "videoUrl": "https://video.example/m-available.mp4",
+            },
+        )
+
+    def test_preflight_material_availability_rejects_missing_material_info(self):
+        records = [click_record(0, 0, material_id="m-missing-info")]
+
+        result = rpa_adapter.preflight_material_availability(
+            records, "m-missing-info"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "materialId": "m-missing-info",
+                "rpaAvailable": False,
+                "failureReason": "missing_material_info",
+                "videoUrl": None,
+            },
+        )
+
+    def test_preflight_material_availability_rejects_empty_video_url(self):
+        records = [
+            {
+                "recordType": "material_info",
+                "materialId": "m-empty-video",
+                "videoUrl": "   ",
+            }
+        ]
+
+        result = rpa_adapter.preflight_material_availability(
+            records, "m-empty-video"
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "materialId": "m-empty-video",
+                "rpaAvailable": False,
+                "failureReason": "missing_video_url",
+                "videoUrl": None,
+            },
+        )
+
+    def test_fetch_material_preflight_classifies_invalid_payload(self):
+        session = self._async_session({"payload": {"not": "a-list"}})
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-invalid",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=session,
+        )
+
+        self.assertEqual(result["materialId"], "m-invalid")
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result["failureReason"], "rpa_payload_invalid")
+        self.assertIsNone(result["videoUrl"])
+
+    def test_fetch_material_preflight_uses_configured_timeout(self):
+        records = [
+            {
+                "recordType": "material_info",
+                "materialId": "m-timeout",
+                "videoUrl": "https://video.example/m-timeout.mp4",
+            }
+        ]
+        session = self._async_session(records)
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-timeout",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=session,
+            timeout_sec=45,
+        )
+
+        self.assertTrue(result["rpaAvailable"])
+        self.assertEqual(session.posts[0][1]["timeout"], 45)
+
+    def test_fetch_material_preflight_exposes_normalized_records(self):
+        records = [
+            {
+                "recordType": "material_info",
+                "materialId": "m-records",
+                "videoUrl": "https://video.example/m-records.mp4",
+            }
+        ]
+        session = self._async_session({"payload": records})
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-records",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=session,
+        )
+
+        self.assertTrue(result["rpaAvailable"])
+        self.assertEqual(result["records"], records)
+        self.assertIsNone(result["diagnosisCsvPath"])
+
+    def test_fetch_material_preflight_exposes_records_when_video_url_is_empty(self):
+        records = [
+            {
+                "recordType": "material_info",
+                "materialId": "m-empty-records",
+                "videoUrl": "",
+            }
+        ]
+        session = self._async_session({"payload": records})
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-empty-records",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=session,
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result["failureReason"], "missing_video_url")
+        self.assertEqual(result["records"], records)
+
+    def test_fetch_material_preflight_exposes_files_csv_path_and_records(self):
+        csv_bytes = (
+            b"recordType\x01materialId\x01videoUrl\n"
+            b"material_info\x01m-files-preflight\x01https://video.example/m-files.mp4\n"
+        )
+        session = self._async_session(
+            self._files_envelope(), FakeResponse(None, content=csv_bytes)
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_dir = Path(temp_dir) / "diagnosis-csv"
+            result = rpa_adapter.fetch_material_preflight(
+                shop_id="shop-1",
+                material_id="m-files-preflight",
+                business_params={"date_range_type": "LAST_7_DAYS"},
+                diagnosis_csv_dir=csv_dir,
+                environ=self._env(),
+                session=session,
+            )
+
+            self.assertTrue(result["rpaAvailable"])
+            self.assertEqual(
+                result["records"],
+                [
+                    {
+                        "recordType": "material_info",
+                        "materialId": "m-files-preflight",
+                        "videoUrl": "https://video.example/m-files.mp4",
+                    }
+                ],
+            )
+            self.assertEqual(
+                result["diagnosisCsvPath"], str(csv_dir / "m-files-preflight.csv")
+            )
+            self.assertEqual(
+                (csv_dir / "m-files-preflight.csv").read_bytes(), csv_bytes
+            )
+
+    def test_fetch_material_preflight_classifies_request_timeout(self):
+        session = RaisingPostSession(TimeoutError("timed out"))
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-timeout",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=session,
+            timeout_sec=1,
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result["failureReason"], "rpa_request_failed")
+
+    def test_fetch_material_preflight_preserves_gateway_failure_details(self):
+        session = RaisingPostSession(TimeoutError("timed out"))
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-timeout-details",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=session,
+            timeout_sec=1,
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result.get("rpaResultStatus"), "pending")
+        self.assertNotIn("retryable", result)
+        self.assertEqual(result.get("errorType"), "RpaAdapterError")
+        self.assertIn("timed out", result.get("errorMessage") or "")
+
+    def test_fetch_material_preflight_preserves_gateway_http_diagnostics(self):
+        response = FakeResponse(
+            {
+                "error": "rate limited",
+                "request_id": "req-123",
+                "authorization": "secret-token",
+            },
+            status_error=RuntimeError("429 Client Error"),
+            status_code=429,
+            headers={"X-Request-Id": "req-123"},
+        )
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-http-diagnostics",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=RecordingSession(response),
+        )
+
+        self.assertEqual(result["failureReason"], "rpa_request_failed")
+        self.assertEqual(result["httpStatus"], 429)
+        self.assertEqual(result["requestId"], "req-123")
+        self.assertIn("rate limited", result["responseSummary"])
+        self.assertNotIn("secret-token", result["responseSummary"])
+
+    def test_fetch_material_preflight_marks_invalid_payload_final(self):
+        session = self._async_session({"payload": {"not": "a-list"}})
+
+        result = rpa_adapter.fetch_material_preflight(
+            shop_id="shop-1",
+            material_id="m-invalid-final",
+            business_params={"date_range_type": "LAST_7_DAYS"},
+            environ=self._env(),
+            session=session,
+        )
+
+        self.assertFalse(result["rpaAvailable"])
+        self.assertEqual(result["failureReason"], "rpa_payload_invalid")
+        self.assertEqual(result.get("rpaResultStatus"), "final_failed")
+        self.assertNotIn("retryable", result)
+        self.assertEqual(result.get("errorType"), "RpaAdapterError")
+
+    def test_fetch_rejects_invalid_files_envelopes_without_url_leakage(self):
+        invalid_envelopes = [
+            self._files_envelope(success=False),
+            self._files_envelope(code="500"),
+            self._files_envelope(status="RUNNING"),
+            self._files_envelope(failed_instances=1),
+            self._files_envelope(files=[]),
+            self._files_envelope(files=[{}]),
+        ]
+
+        for envelope in invalid_envelopes:
+            with self.subTest(envelope=envelope):
+                session = RecordingSession(FakeResponse(envelope))
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    with self.assertRaises(rpa_adapter.RpaAdapterError) as error:
+                        rpa_adapter.fetch_material_diagnosis(
+                            shop_id="shop-1",
+                            material_id="m-files",
+                            business_params={"date_range_type": "LAST_7_DAYS"},
+                            diagnosis_csv_dir=Path(temp_dir),
+                            environ=self._env(),
+                            session=session,
+                        )
+                self.assertNotIn("secret=redacted", str(error.exception))
+                self.assertEqual(session.gets, [])
+
+    def test_fetch_redacts_download_error_url(self):
+        session = self._async_session(
+            self._files_envelope(),
+            FakeResponse(
+                None,
+                status_error=RuntimeError(
+                    "download https://files.example/diagnosis.csv?secret=redacted"
+                ),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaises(rpa_adapter.RpaAdapterError) as error:
+                rpa_adapter.fetch_material_diagnosis(
+                    shop_id="shop-1",
+                    material_id="m-files",
+                    business_params={"date_range_type": "LAST_7_DAYS"},
+                    diagnosis_csv_dir=Path(temp_dir),
+                    environ=self._env(),
+                    session=session,
+                )
+
+        self.assertNotIn("secret=redacted", str(error.exception))
+
+    def test_fetch_retains_malformed_diagnostic_csv(self):
+        csv_bytes = b"recordType,materialId\ninteraction_series,m-files\n"
+        session = self._async_session(
+            self._files_envelope(), FakeResponse(None, content=csv_bytes)
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            csv_dir = Path(temp_dir) / "diagnosis-csv"
+            with self.assertRaises(rpa_adapter.RpaAdapterError) as error:
+                rpa_adapter.fetch_material_diagnosis(
+                    shop_id="shop-1",
+                    material_id="m-files",
+                    business_params={"date_range_type": "LAST_7_DAYS"},
+                    diagnosis_csv_dir=csv_dir,
+                    environ=self._env(),
+                    session=session,
+                )
+
+            self.assertEqual((csv_dir / "m-files.csv").read_bytes(), csv_bytes)
+        self.assertNotIn("secret=redacted", str(error.exception))
+
+
 class PeakSelectionTests(unittest.TestCase):
-    def test_selects_first_chronological_peak_then_later_top_three(self):
-        values = [1, 5, 1, 9, 1, 7, 1, 8, 1]
+    def test_selects_zero_second_frame_then_global_top_five_peaks(self):
+        values = [1, 5, 1, 9, 1, 7, 1, 8, 1, 6, 1]
         points = [SeriesPoint(i, value) for i, value in enumerate(values)]
 
-        selected = select_peak_frames(find_local_peaks(points))
+        selected = select_peak_frames(points)
 
         self.assertEqual(
             [
@@ -105,12 +1212,26 @@ class PeakSelectionTests(unittest.TestCase):
                 for item in selected
             ],
             [
-                ("first_peak", 1.0, 5.0),
-                ("later_top_1", 3.0, 9.0),
-                ("later_top_2", 7.0, 8.0),
-                ("later_top_3", 5.0, 7.0),
+                ("zero_second", 0.0, 1.0),
+                ("peak_top_1", 3.0, 9.0),
+                ("peak_top_2", 7.0, 8.0),
+                ("peak_top_3", 5.0, 7.0),
+                ("peak_top_4", 9.0, 6.0),
+                ("peak_top_5", 1.0, 5.0),
             ],
         )
+
+    def test_selects_video_start_for_cover_when_series_starts_after_zero(self):
+        points = [
+            SeriesPoint(1.0, 5.0),
+            SeriesPoint(2.0, 1.0),
+            SeriesPoint(3.0, 9.0),
+            SeriesPoint(4.0, 1.0),
+        ]
+
+        selected = select_peak_frames(points)
+
+        self.assertEqual(selected[0], SelectedPeak("zero_second", 0.0, None))
 
     def test_collapses_equal_plateau_to_earliest_second(self):
         points = [
@@ -176,35 +1297,31 @@ class PeakSelectionTests(unittest.TestCase):
         )
 
     def test_later_ties_are_ordered_by_second(self):
-        values = [0, 2, 0, 6, 0, 6, 0, 6, 0]
+        values = [0, 2, 0, 6, 0, 6, 0, 6, 0, 6, 0, 6, 0]
 
         selected = select_peak_frames(
-            find_local_peaks(
-                [SeriesPoint(i, value) for i, value in enumerate(values)]
-            )
+            [SeriesPoint(i, value) for i, value in enumerate(values)]
         )
 
         self.assertEqual(
             [item.duration_sec for item in selected],
-            [1.0, 3.0, 5.0, 7.0],
+            [0.0, 3.0, 5.0, 7.0, 9.0, 11.0],
         )
 
     def test_select_rejects_no_peaks(self):
         with self.assertRaisesRegex(InputDataError, "No local peaks"):
             select_peak_frames([])
 
-    def test_returns_only_existing_later_peaks(self):
+    def test_returns_only_existing_top_peaks(self):
         values = [0, 5, 0, 4, 0]
 
         selected = select_peak_frames(
-            find_local_peaks(
-                [SeriesPoint(i, value) for i, value in enumerate(values)]
-            )
+            [SeriesPoint(i, value) for i, value in enumerate(values)]
         )
 
         self.assertEqual(
             [item.rank_type for item in selected],
-            ["first_peak", "later_top_1"],
+            ["zero_second", "peak_top_1", "peak_top_2"],
         )
 
 
@@ -579,6 +1696,40 @@ class FfmpegResolutionTests(unittest.TestCase):
 
 
 class FrameExtractionTests(unittest.TestCase):
+
+    def test_signal_killed_frame_retries_once_with_single_thread_ffmpeg(self):
+        commands = []
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            video_path = temp_path / "video.mp4"
+            output_path = temp_path / "frame.jpg"
+            video_path.touch()
+
+            def signal_then_succeed(command, **_kwargs):
+                commands.append(command)
+                if command[-1] == "-":
+                    return subprocess.CompletedProcess(
+                        command, returncode=0, stdout="", stderr=""
+                    )
+                if len(commands) == 1:
+                    return subprocess.CompletedProcess(
+                        command, returncode=-9, stdout="", stderr="killed"
+                    )
+                Path(command[-1]).write_bytes(DECODABLE_JPEG)
+                return subprocess.CompletedProcess(
+                    command, returncode=0, stdout="", stderr=""
+                )
+
+            with patch(
+                "peak_frame_lib.subprocess.run", side_effect=signal_then_succeed
+            ):
+                extract_frame("ffmpeg", video_path, 3.5, output_path)
+
+        self.assertEqual(len(commands), 3)
+        self.assertIn("-threads", commands[1])
+        self.assertEqual(commands[1][commands[1].index("-threads") + 1], "1")
+        self.assertIn("-filter_threads", commands[1])
+        self.assertEqual(output_path.exists(), False)
     def test_extracts_center_pixel_color_from_each_target_second(self):
         ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
         with tempfile.TemporaryDirectory(prefix="peak color proof ") as temp_dir:
@@ -746,6 +1897,58 @@ class FrameExtractionTests(unittest.TestCase):
 
             self.assertEqual(len(set(production_blobs)), 4)
 
+    def test_batch_extracts_multiple_exact_timestamps_in_one_ffmpeg_call(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video_path = root / "video.mp4"
+            video_path.touch()
+            outputs = [root / "zero.jpg", root / "peak.jpg"]
+            commands = []
+
+            def batch_success(command, **_kwargs):
+                commands.append(command)
+                for argument in command:
+                    if argument.endswith(".jpg") and str(root) in argument:
+                        Path(argument).write_bytes(DECODABLE_JPEG)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("peak_frame_lib.subprocess.run", side_effect=batch_success):
+                result = extract_frames_batch(
+                    "ffmpeg", video_path,
+                    [(0.0, outputs[0]), (3.5, outputs[1])],
+                    timeout_sec=10,
+                )
+
+        self.assertEqual(result, outputs)
+        self.assertEqual(len(commands), 1)
+        filter_graph = commands[0][commands[0].index("-filter_complex") + 1]
+        self.assertIn("trim=start=0.0", filter_graph)
+        self.assertIn("trim=start=3.5", filter_graph)
+
+    def test_real_batch_frames_match_exact_single_frame_extraction(self):
+        ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
+        with tempfile.TemporaryDirectory(prefix="batch exact ") as temp_dir:
+            root = Path(temp_dir)
+            video_path = root / "video.mp4"
+            generated = subprocess.run(
+                [
+                    ffmpeg_bin, "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "testsrc2=s=64x64:r=25:d=4",
+                    "-c:v", "mpeg4", "-y", str(video_path),
+                ], capture_output=True, text=True, check=False, timeout=30,
+            )
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            batch_outputs = [root / "batch-0.jpg", root / "batch-3.jpg"]
+            exact_outputs = [root / "exact-0.jpg", root / "exact-3.jpg"]
+            extract_frames_batch(
+                ffmpeg_bin, video_path,
+                [(0.0, batch_outputs[0]), (3.0, batch_outputs[1])],
+            )
+            extract_frame(ffmpeg_bin, video_path, 0.0, exact_outputs[0])
+            extract_frame(ffmpeg_bin, video_path, 3.0, exact_outputs[1])
+            self.assertEqual(batch_outputs[0].read_bytes(), exact_outputs[0].read_bytes())
+            self.assertEqual(batch_outputs[1].read_bytes(), exact_outputs[1].read_bytes())
+
     def test_real_ffmpeg_accepts_plain_decimal_submicrosecond_timestamp(self):
         ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
         with tempfile.TemporaryDirectory(prefix="tiny timestamp ") as temp_dir:
@@ -775,7 +1978,7 @@ class FrameExtractionTests(unittest.TestCase):
             self.assertEqual(generated.returncode, 0, generated.stderr)
             self.assertIsNone(
                 validate_timestamps(
-                    [SelectedPeak("first_peak", 1e-7, 1.0)],
+                    [SelectedPeak("zero_second", 1e-7, 1.0)],
                     1.0,
                 )
             )
@@ -838,7 +2041,9 @@ class FrameExtractionTests(unittest.TestCase):
             self.assertEqual(staging_path.suffix, output_path.suffix)
             self.assertFalse(staging_path.exists())
             self.assertEqual(output_path.read_bytes(), DECODABLE_JPEG)
-            self.assertEqual(extraction_call.kwargs["timeout"], 30.0)
+            self.assertEqual(
+                extraction_call.kwargs["timeout"], DEFAULT_FFMPEG_TIMEOUT_SEC
+            )
             self.assertEqual(
                 run_mock.call_args_list[1].args[0],
                 [
@@ -855,7 +2060,10 @@ class FrameExtractionTests(unittest.TestCase):
                     "-",
                 ],
             )
-            self.assertEqual(run_mock.call_args_list[1].kwargs["timeout"], 30.0)
+            self.assertEqual(
+                run_mock.call_args_list[1].kwargs["timeout"],
+                DEFAULT_FFMPEG_TIMEOUT_SEC,
+            )
 
     def test_successive_extractions_use_unique_same_directory_staging_paths(self):
         staging_paths = []
@@ -1301,8 +2509,8 @@ class FrameExtractionTests(unittest.TestCase):
 class TimestampValidationTests(unittest.TestCase):
     def test_accepts_zero_and_timestamp_just_under_video_duration(self):
         selected = [
-            SelectedPeak("first_peak", 0.0, 10.0),
-            SelectedPeak("later_top_1", 9.999999, 8.0),
+            SelectedPeak("zero_second", 0.0, 10.0),
+            SelectedPeak("peak_top_1", 9.999999, 8.0),
         ]
 
         self.assertIsNone(validate_timestamps(selected, 10.0))
@@ -1316,7 +2524,7 @@ class TimestampValidationTests(unittest.TestCase):
 
             for index, timestamp in enumerate(timestamps):
                 with self.subTest(timestamp=timestamp):
-                    selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+                    selected = [SelectedPeak("peak_top_1", timestamp, 10.0)]
                     self.assertIsNone(validate_timestamps(selected, 1.0))
                     output_path = temp_path / f"frame-{index}.jpg"
 
@@ -1333,7 +2541,7 @@ class TimestampValidationTests(unittest.TestCase):
     def test_rejects_timestamp_outside_video_bounds(self):
         for timestamp in (-0.1, 10.0, 10.1):
             with self.subTest(timestamp=timestamp):
-                selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+                selected = [SelectedPeak("peak_top_1", timestamp, 10.0)]
 
                 with self.assertRaises(InputDataError) as context:
                     validate_timestamps(selected, 10.0)
@@ -1345,7 +2553,7 @@ class TimestampValidationTests(unittest.TestCase):
     def test_rejects_nonfinite_peak_timestamp(self):
         for timestamp in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(timestamp=timestamp):
-                selected = [SelectedPeak("first_peak", timestamp, 10.0)]
+                selected = [SelectedPeak("peak_top_1", timestamp, 10.0)]
 
                 with self.assertRaises(InputDataError) as context:
                     validate_timestamps(selected, 10.0)
@@ -1363,7 +2571,7 @@ class TimestampValidationTests(unittest.TestCase):
             -1.0,
         ):
             with self.subTest(duration=duration):
-                selected = [SelectedPeak("first_peak", 1.0, 10.0)]
+                selected = [SelectedPeak("peak_top_1", 1.0, 10.0)]
 
                 with self.assertRaises(InputDataError) as context:
                     validate_timestamps(selected, duration)
@@ -1372,23 +2580,36 @@ class TimestampValidationTests(unittest.TestCase):
 
 
 class SummaryTests(unittest.TestCase):
+    def test_summary_uses_stable_source_for_temporary_rpa_download(self):
+        summary = build_summary(
+            "m-123",
+            "rpa://connector/m-123",
+            "/temporary/download/m-123.mp4",
+            [SelectedPeak("zero_second", 0.0, 5.0)],
+            ["first.jpg"],
+            video_source="rpa-temporary-download",
+        )
+
+        self.assertEqual(summary["videoSource"], "rpa-temporary-download")
+        self.assertNotIn("videoPath", summary)
+
     def test_formats_integer_fractional_and_submicrosecond_seconds_safely(self):
         self.assertEqual(format_seconds_token(7.0), "0007s")
         self.assertEqual(format_seconds_token(7.5), "0007p5s")
         self.assertEqual(format_seconds_token(0.0000001), "0000p0000001s")
         self.assertEqual(
-            format_frame_filename("first_peak", 7.0, 18.0),
-            "first_peak_0007s_18.jpg",
+            format_frame_filename("zero_second", 7.0, 18.0),
+            "zero_second_0007s_18.jpg",
         )
         self.assertEqual(
-            format_frame_filename("later_top_1", 7.5, 12.25),
-            "later_top_1_0007p5s_12p25.jpg",
+            format_frame_filename("peak_top_1", 7.5, 12.25),
+            "peak_top_1_0007p5s_12p25.jpg",
         )
 
-    def test_summary_warns_when_later_peaks_are_missing(self):
+    def test_summary_explains_curve_with_fewer_than_five_peaks(self):
         selected = [
-            SelectedPeak("first_peak", 1.0, 5.0),
-            SelectedPeak("later_top_1", 3.0, 4.0),
+            SelectedPeak("zero_second", 0.0, 1.0),
+            SelectedPeak("peak_top_1", 3.0, 4.0),
         ]
 
         summary = build_summary(
@@ -1402,15 +2623,20 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(len(summary["frames"]), 2)
         self.assertEqual(
             summary["warnings"],
-            ["2 later peak frame(s) unavailable"],
+            ["click curve has 1 local peak(s); up to 5 are targeted"],
         )
         self.assertEqual(
+            summary["selectionRule"]["peaks"],
+            "top_5_local_peaks_by_metric_desc_then_time_asc",
+        )
+        self.assertEqual(summary["frameCoverage"]["targetFrameCount"], 6)
+        self.assertEqual(
             [frame["rankType"] for frame in summary["frames"]],
-            ["first_peak", "later_top_1"],
+            ["zero_second", "peak_top_1"],
         )
 
     def test_summary_rejects_mismatched_peaks_and_paths(self):
-        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        selected = [SelectedPeak("zero_second", 0.0, 5.0)]
 
         with self.assertRaisesRegex(ValueError, "equal length"):
             build_summary(
@@ -1418,7 +2644,7 @@ class SummaryTests(unittest.TestCase):
             )
 
     def test_summary_stores_portable_frame_filenames(self):
-        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        selected = [SelectedPeak("zero_second", 0.0, 5.0)]
         summary = build_summary(
             "m-123",
             "input.json",
@@ -1431,8 +2657,8 @@ class SummaryTests(unittest.TestCase):
 
     def test_writes_json_and_markdown_after_frames_exist(self):
         selected = [
-            SelectedPeak("first_peak", 1.0, 5.0),
-            SelectedPeak("later_top_1", 3.0, 4.0),
+            SelectedPeak("zero_second", 0.0, 1.0),
+            SelectedPeak("peak_top_1", 3.0, 4.0),
         ]
         with tempfile.TemporaryDirectory() as temp_dir:
             result_dir = Path(temp_dir) / "m-123"
@@ -1455,22 +2681,22 @@ class SummaryTests(unittest.TestCase):
             self.assertEqual(payload, summary)
             self.assertIn("input.json", markdown)
             self.assertIn("video.mp4", markdown)
-            self.assertIn("earliest_local_peak", markdown)
+            self.assertIn("video_timestamp_0_seconds", markdown)
             self.assertIn(
-                "top_3_by_metric_desc_then_time_asc_after_first", markdown
+                "top_5_local_peaks_by_metric_desc_then_time_asc", markdown
             )
             self.assertIn("collapse_to_earliest_second", markdown)
             self.assertIn("boundariesExcluded: true", markdown)
             self.assertIn("请求截帧秒数", markdown)
-            self.assertIn("| first_peak | 1 | 5 | 1 | first.jpg |", markdown)
+            self.assertIn("| zero_second | 0 | 1 | 0 | first.jpg |", markdown)
             self.assertLess(
-                markdown.index("first_peak"), markdown.index("later_top_1")
+                markdown.index("zero_second"), markdown.index("peak_top_1")
             )
-            self.assertIn("2 later peak frame(s) unavailable", markdown)
+            self.assertIn("click curve has 1 local peak(s); up to 5 are targeted", markdown)
             self.assertEqual(list(result_dir.glob("*.tmp*")), [])
 
     def test_refuses_to_write_summaries_for_missing_or_empty_frame(self):
-        selected = [SelectedPeak("first_peak", 1.0, 5.0)]
+        selected = [SelectedPeak("zero_second", 0.0, 5.0)]
         with tempfile.TemporaryDirectory() as temp_dir:
             result_dir = Path(temp_dir)
             missing = result_dir / "missing.jpg"
@@ -1493,7 +2719,599 @@ class SummaryTests(unittest.TestCase):
             self.assertFalse((result_dir / "summary.md").exists())
 
 
+class ProcessingPipelineTests(unittest.TestCase):
+    def test_video_resolver_prefers_rpa_url(self):
+        records = [{"recordType": "material_info", "materialId": "m-resolve", "videoUrl": "https://rpa.example/video.mp4"}]
+        entry = {"materialId": "m-resolve", "videoUrlCandidates": ["https://api.example/video.mp4"]}
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            extract_peak_frames, "download_video", return_value=Path(temp_dir) / "video.mp4"
+        ) as download:
+            resolved = extract_peak_frames._resolve_video_source(
+                records, entry, Path(temp_dir) / "video.mp4"
+            )
+        self.assertEqual(resolved["source"], "rpa")
+        self.assertEqual(resolved["videoUrl"], "https://rpa.example/video.mp4")
+        download.assert_called_once()
+
+    def test_video_resolver_uses_api_fallback_when_rpa_url_empty(self):
+        records = [{"recordType": "material_info", "materialId": "m-fallback", "videoUrl": ""}]
+        entry = {"materialId": "m-fallback", "videoUrlCandidates": ["https://api.example/video.mp4"]}
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            extract_peak_frames, "download_video", return_value=Path(temp_dir) / "video.mp4"
+        ) as download:
+            resolved = extract_peak_frames._resolve_video_source(
+                records, entry, Path(temp_dir) / "video.mp4"
+            )
+        self.assertEqual(resolved["source"], "api_fallback")
+        self.assertEqual(resolved["videoUrl"], "https://api.example/video.mp4")
+        self.assertEqual(resolved["fallbackReason"], "missing_rpa_video_url")
+        download.assert_called_once()
+
+    def test_video_resolver_tries_api_candidates_in_order(self):
+        records = [{"recordType": "material_info", "materialId": "m-candidates", "videoUrl": ""}]
+        entry = {"materialId": "m-candidates", "videoUrlCandidates": ["https://api.example/bad.mp4", "https://api.example/good.mp4"]}
+        def download(url, _target):
+            if url.endswith("bad.mp4"):
+                raise rpa_adapter.RpaAdapterError("download failed")
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            extract_peak_frames, "download_video", side_effect=download
+        ) as download_mock:
+            resolved = extract_peak_frames._resolve_video_source(
+                records, entry, Path(temp_dir) / "video.mp4"
+            )
+        self.assertEqual(resolved["videoUrl"], "https://api.example/good.mp4")
+        self.assertEqual(download_mock.call_args_list[0].args[0], "https://api.example/bad.mp4")
+
+    def test_video_resolver_reports_missing_or_invalid_api_urls(self):
+        records = [{"recordType": "material_info", "materialId": "m-no-url", "videoUrl": ""}]
+        entry = {"materialId": "m-no-url", "videoUrlCandidates": []}
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(rpa_adapter.RpaAdapterError, "missing_video_url"):
+                extract_peak_frames._resolve_video_source(
+                    records, entry, Path(temp_dir) / "video.mp4"
+                )
+
+    def test_wave_postprocess_uses_api_fallback_and_reports_source(self):
+        material_id = "m-postprocess-fallback"
+        records = [{"recordType": "material_info", "materialId": material_id, "videoUrl": ""}]
+        entry = {
+            "materialId": material_id,
+            "videoUrlCandidates": ["https://api.example/video.mp4"],
+            "records": records,
+            "timingsSec": extract_peak_frames._empty_material_timings(),
+        }
+        args = type("Args", (), {
+            "output_dir": tempfile.mkdtemp(),
+            "ffmpeg_bin": None,
+            "ffmpeg_timeout_sec": 10,
+        })()
+        try:
+            def download_video(_url, target):
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+
+            with patch.object(extract_peak_frames, "download_video", side_effect=download_video) as download, patch.object(
+                extract_peak_frames, "process_records",
+                return_value=(Path(args.output_dir), Path(args.output_dir) / "summary.json", Path(args.output_dir) / "summary.md"),
+            ):
+                attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+        finally:
+            import shutil
+            shutil.rmtree(args.output_dir, ignore_errors=True)
+        self.assertIsNone(attempt["error"])
+        self.assertEqual(attempt["videoUrlSource"], "api_fallback")
+        self.assertEqual(attempt["videoUrlFallbackReason"], "missing_rpa_video_url")
+        download.assert_called_once_with("https://api.example/video.mp4", download.call_args.args[1])
+
+    def test_wave_postprocess_persists_downloaded_video_in_output_cache(self):
+        material_id = "m-persistent-video"
+        records = [{
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": "https://rpa.example/video.mp4",
+        }]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "ffmpeg_bin": None,
+                "ffmpeg_timeout_sec": 10,
+            })()
+            def download_video(_url, target):
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+
+            with patch.object(extract_peak_frames, "download_video", side_effect=download_video), patch.object(
+                extract_peak_frames,
+                "process_records",
+                return_value=(root, root / "summary.json", root / "summary.md"),
+            ):
+                attempt = extract_peak_frames._attempt_wave_postprocess(
+                    args,
+                    {
+                        "materialId": material_id,
+                        "records": records,
+                        "timingsSec": extract_peak_frames._empty_material_timings(),
+                    },
+                )
+
+            video_path = root / "peak-frames" / "video-assets" / f"{material_id}.mp4"
+            self.assertEqual(attempt["videoPath"], str(video_path))
+            self.assertEqual(video_path.read_bytes(), b"persistent-mp4")
+            self.assertEqual(attempt["videoBytes"], len(b"persistent-mp4"))
+            self.assertRegex(attempt["videoSha256"], r"^[0-9a-f]{64}$")
+
+    def test_wave_postprocess_reuses_download_after_frame_failure(self):
+        material_id = "m-reuse-video"
+        records = [{
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": "https://rpa.example/video.mp4",
+        }]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "ffmpeg_bin": None,
+                "ffmpeg_timeout_sec": 10,
+            })()
+            entry = {
+                "materialId": material_id,
+                "records": records,
+                "timingsSec": extract_peak_frames._empty_material_timings(),
+            }
+
+            def download_video(_url, target):
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+
+            successful_result = (
+                root / material_id,
+                root / material_id / "summary.json",
+                root / material_id / "summary.md",
+            )
+            with patch.object(
+                extract_peak_frames, "download_video", side_effect=download_video
+            ) as download, patch.object(
+                extract_peak_frames,
+                "process_records",
+                side_effect=[FfmpegError("first frame attempt failed"), successful_result],
+            ):
+                first = extract_peak_frames._attempt_wave_postprocess(args, entry)
+                self.assertIsNotNone(first["error"])
+                entry.update(
+                    {
+                        key: first[key]
+                        for key in (
+                            "videoUrlSource",
+                            "videoUrlFallbackReason",
+                            "videoPath",
+                            "videoBytes",
+                            "videoSha256",
+                        )
+                    }
+                )
+                entry["timingsSec"] = first["timingsSec"]
+                second = extract_peak_frames._attempt_wave_postprocess(args, entry)
+
+            self.assertIsNone(second["error"])
+            self.assertEqual(download.call_count, 1)
+
+    def test_wave_postprocess_enforces_download_and_ffmpeg_limits(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "ffmpeg_bin": None,
+                "ffmpeg_timeout_sec": 10,
+                "_video_download_semaphore": threading.BoundedSemaphore(2),
+                "_ffmpeg_semaphore": threading.BoundedSemaphore(1),
+            })()
+            lock = threading.Lock()
+            four_downloads_started = threading.Event()
+            active_downloads = 0
+            max_downloads = 0
+            active_ffmpeg = 0
+            max_ffmpeg = 0
+
+            def download_video(_url, target):
+                nonlocal active_downloads, max_downloads
+                with lock:
+                    active_downloads += 1
+                    max_downloads = max(max_downloads, active_downloads)
+                    if active_downloads >= 4:
+                        four_downloads_started.set()
+                four_downloads_started.wait(timeout=0.05)
+                Path(target).parent.mkdir(parents=True, exist_ok=True)
+                Path(target).write_bytes(b"persistent-mp4")
+                with lock:
+                    active_downloads -= 1
+
+            def process_records(_records, _label, _video, _output, **_kwargs):
+                nonlocal active_ffmpeg, max_ffmpeg
+                with lock:
+                    active_ffmpeg += 1
+                    max_ffmpeg = max(max_ffmpeg, active_ffmpeg)
+                time.sleep(0.02)
+                with lock:
+                    active_ffmpeg -= 1
+                material_id = _records[0]["materialId"]
+                return (
+                    root / material_id,
+                    root / material_id / "summary.json",
+                    root / material_id / "summary.md",
+                )
+
+            entries = [
+                {
+                    "materialId": f"m-{index}",
+                    "records": [{
+                        "recordType": "material_info",
+                        "materialId": f"m-{index}",
+                        "videoUrl": f"https://rpa.example/{index}.mp4",
+                    }],
+                    "timingsSec": extract_peak_frames._empty_material_timings(),
+                }
+                for index in range(4)
+            ]
+            with patch.object(
+                extract_peak_frames, "download_video", side_effect=download_video
+            ), patch.object(
+                extract_peak_frames, "process_records", side_effect=process_records
+            ):
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    attempts = list(
+                        executor.map(
+                            lambda entry: extract_peak_frames._attempt_wave_postprocess(
+                                args, entry
+                            ),
+                            entries,
+                        )
+                    )
+
+            self.assertTrue(all(attempt["error"] is None for attempt in attempts))
+            self.assertEqual(max_downloads, 2)
+            self.assertEqual(max_ffmpeg, 1)
+
+    def test_wave_postprocess_classifies_invalid_api_candidates(self):
+        material_id = "m-postprocess-invalid"
+        entry = {
+            "materialId": material_id,
+            "videoUrlCandidates": ["https://api.example/bad.mp4"],
+            "records": [{"recordType": "material_info", "materialId": material_id, "videoUrl": ""}],
+            "timingsSec": extract_peak_frames._empty_material_timings(),
+        }
+        args = type("Args", (), {
+            "output_dir": tempfile.mkdtemp(),
+            "ffmpeg_bin": None,
+            "ffmpeg_timeout_sec": 10,
+        })()
+        try:
+            with patch.object(
+                extract_peak_frames,
+                "download_video",
+                side_effect=rpa_adapter.RpaAdapterError("HTTP 404"),
+            ):
+                attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+        finally:
+            import shutil
+            shutil.rmtree(args.output_dir, ignore_errors=True)
+        self.assertIsNotNone(attempt["error"])
+        self.assertEqual(attempt["failureReason"], "api_video_url_invalid")
+
+    def test_process_records_reports_stage_timings(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+            timings = {}
+
+            def write_frame(_ffmpeg, _video, _timestamp, output, **_kwargs):
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch("peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"), patch(
+                "peak_frame_lib.probe_video_duration", return_value=6.0
+            ), patch(
+                "peak_frame_lib.extract_frames_batch", side_effect=FfmpegError("batch failed")
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=write_frame
+            ):
+                process_records(records, "records.json", video, root / "output", timings=timings)
+
+        for field in (
+            "videoProbeSec",
+            "ffmpegBatchSec",
+            "ffmpegFallbackSec",
+            "summaryWriteSec",
+        ):
+            self.assertIn(field, timings)
+            self.assertGreaterEqual(timings[field], 0.0)
+        self.assertGreater(timings["ffmpegBatchSec"], 0.0)
+        self.assertGreater(timings["ffmpegFallbackSec"], 0.0)
+
+    def test_select_peak_frames_accepts_monotonic_curve_with_only_cover_frame(self):
+        selected = select_peak_frames(
+            [
+                Peak(0.0, 9.0),
+                Peak(1.0, 6.0),
+                Peak(2.0, 2.0),
+            ]
+        )
+
+        self.assertEqual([peak.rank_type for peak in selected], ["zero_second"])
+
+    def test_process_records_skips_curve_peaks_outside_video_duration(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 9, 0, 8, 0, 7, 0, 6, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def write_frame(_ffmpeg, _video, _timestamp, output, **_kwargs):
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=7.5
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=write_frame
+            ):
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records, "records.json", video, root / "output"
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["zero_second", "peak_top_1", "peak_top_2", "peak_top_3"],
+        )
+        self.assertEqual(summary["frameCoverage"]["expectedPeakCount"], 3)
+        self.assertIn(
+            "click curve has 3 local peak(s); up to 5 are targeted",
+            summary["warnings"],
+        )
+
+    def test_process_records_keeps_later_frames_after_expected_peak_failure(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def extract_one_frame(_ffmpeg, _video, timestamp, output, **_kwargs):
+                if timestamp == 2.0:
+                    raise FfmpegError("peak decoder killed")
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=6.0
+            ), patch(
+                "peak_frame_lib.extract_frames_batch", side_effect=FfmpegError("batch failed")
+            ), patch(
+                "peak_frame_lib.extract_frame", side_effect=extract_one_frame
+            ) as extract:
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records, "records.json", video, root / "output"
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(extract.call_count, 3)
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["zero_second", "peak_top_2"],
+        )
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["missingFrames"]],
+            ["peak_top_1"],
+        )
+
+    def test_process_records_isolates_a_failed_batch_target_before_legacy_fallback(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([10, 0, 8, 0, 7, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def batch_extract(_ffmpeg, _video, targets, **_kwargs):
+                if len(targets) > 1:
+                    raise FfmpegError("batch has one bad target")
+                timestamp, output = targets[0]
+                if timestamp == 2.0:
+                    raise FfmpegError("target decoder killed")
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            def legacy_extract(_ffmpeg, _video, timestamp, output, **_kwargs):
+                self.assertEqual(timestamp, 2.0)
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=6.0
+            ), patch(
+                "peak_frame_lib.extract_frames_batch", side_effect=batch_extract
+            ) as batch, patch(
+                "peak_frame_lib.extract_frame", side_effect=legacy_extract
+            ) as legacy:
+                _result_dir, summary_path, _markdown_path = process_records(
+                    records, "records.json", video, root / "output"
+                )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(legacy.call_count, 1)
+        self.assertGreater(batch.call_count, 1)
+        self.assertEqual(
+            [frame["rankType"] for frame in summary["frames"]],
+            ["zero_second", "peak_top_1", "peak_top_2"],
+        )
+
+    def test_process_records_passes_configured_timeout_to_probe_and_frames(self):
+        records = [
+            click_record(second, value)
+            for second, value in enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "material.mp4"
+            video.touch()
+
+            def write_frame(_ffmpeg, _video, _timestamp, output, **_kwargs):
+                Path(output).write_bytes(DECODABLE_JPEG)
+
+            with patch(
+                "peak_frame_lib.resolve_ffmpeg", return_value="ffmpeg"
+            ), patch(
+                "peak_frame_lib.probe_video_duration", return_value=9.0
+            ) as probe_video, patch(
+                "peak_frame_lib.extract_frame", side_effect=write_frame
+            ) as extract:
+                process_records(
+                    records,
+                    "records.json",
+                    video,
+                    root / "output",
+                    ffmpeg_timeout_sec=120,
+                )
+
+        probe_video.assert_called_once_with("ffmpeg", video, timeout_sec=120)
+        self.assertEqual(extract.call_count, 5)
+        self.assertEqual(
+            [call.kwargs["timeout_sec"] for call in extract.call_args_list],
+            [120, 120, 120, 120, 120],
+        )
+
+
 class CliTests(unittest.TestCase):
+
+    def setUp(self):
+        self._authorized_accounts = patch.object(
+            extract_peak_frames,
+            "list_accounts",
+            return_value={"data": [{"account": "bound@example.com", "shop_id": "shop-1"}]},
+        )
+        self._authorized_accounts.start()
+
+    def tearDown(self):
+        self._authorized_accounts.stop()
+
+    def test_wave_postprocess_passes_timings_to_process_records_once(self):
+        entry = {
+            "materialId": "m-123",
+            "records": [
+                {
+                    "recordType": "material_info",
+                    "materialId": "m-123",
+                    "videoUrl": "https://video.example/m-123.mp4",
+                }
+            ],
+            "timingsSec": {},
+        }
+        args = type(
+            "Args",
+            (),
+            {
+                "output_dir": "/tmp/qianchuan-test-output",
+                "ffmpeg_bin": "ffmpeg",
+                "ffmpeg_timeout_sec": 30,
+            },
+        )()
+
+        def download_video(_url, target):
+            Path(target).parent.mkdir(parents=True, exist_ok=True)
+            Path(target).touch()
+
+        with patch.object(
+            extract_peak_frames, "download_video", side_effect=download_video
+        ), patch.object(
+            extract_peak_frames,
+            "process_records",
+            return_value=(Path("result"), Path("summary.json"), Path("summary.md")),
+        ) as process:
+            attempt = extract_peak_frames._attempt_wave_postprocess(args, entry)
+
+        self.assertIsNone(attempt["error"])
+        process.assert_called_once()
+        self.assertIs(process.call_args.kwargs["timings"], attempt["timingsSec"])
+
+    def test_rpa_cli_rejects_removed_compatibility_flags(self):
+        parser = extract_peak_frames.build_parser()
+        for flag in (
+            "--preflight-only",
+            "--rpa-preflight-json",
+            "--allow-rpa-refetch",
+            "--no-rpa-wave-barrier",
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                parser.parse_args([flag])
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_rpa_cli_rejects_single_material_mode(self):
+        parser = extract_peak_frames.build_parser()
+        with self.assertRaises(SystemExit) as raised:
+            parser.parse_args(["--material-id", "m-1"])
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_rpa_cli_uses_one_dynamic_json_instead_of_date_field_flags(self):
+        parser = extract_peak_frames.build_parser()
+        args = parser.parse_args(
+            [
+                "--params-json",
+                '{"date_range_type":"CUSTOM","custom_start_date":"2026-06-01","custom_end_date":"2026-06-02"}',
+            ]
+        )
+
+        self.assertFalse(hasattr(args, "date_range_type"))
+        self.assertFalse(hasattr(args, "custom_start_date"))
+        self.assertFalse(hasattr(args, "custom_end_date"))
+        self.assertTrue(hasattr(args, "params_file"))
+
+    def test_wave_barrier_is_enabled_by_default(self):
+        parser = extract_peak_frames.build_parser()
+
+        self.assertTrue(parser.parse_args([]).rpa_wave_barrier)
+
+    def test_temporary_wave_signal_handlers_request_checkpoint_and_restore(self):
+        previous_term = signal.getsignal(signal.SIGTERM)
+        previous_int = signal.getsignal(signal.SIGINT)
+
+        with extract_peak_frames._temporary_wave_signal_handlers() as interrupted:
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+            self.assertTrue(interrupted.is_set())
+
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous_term)
+        self.assertIs(signal.getsignal(signal.SIGINT), previous_int)
+
+    def test_rpa_isolation_uses_spawn_on_windows(self):
+        with patch.object(extract_peak_frames.os, "name", "nt"):
+            self.assertEqual(
+                extract_peak_frames._rpa_multiprocessing_context_name(), "spawn"
+            )
+
+    def test_rpa_isolation_keeps_fork_on_unix(self):
+        with patch.object(extract_peak_frames.os, "name", "posix"):
+            self.assertEqual(
+                extract_peak_frames._rpa_multiprocessing_context_name(), "fork"
+            )
+
     def _make_video(self, ffmpeg, video, duration=9):
         completed = subprocess.run(
             [
@@ -1537,6 +3355,31 @@ class CliTests(unittest.TestCase):
             timeout=90,
         )
 
+    def _run_local_csv(
+        self, input_csv, video, output, ffmpeg, diagnosis_records_dir=None
+    ):
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / "extract_peak_frames.py"),
+            "--input-csv",
+            str(input_csv),
+            "--video",
+            str(video),
+            "--output-dir",
+            str(output),
+            "--ffmpeg-bin",
+            str(ffmpeg),
+        ]
+        if diagnosis_records_dir:
+            command.extend(["--diagnosis-records-dir", str(diagnosis_records_dir)])
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=90,
+        )
+
     def _write_series(self, path, seconds_and_values):
         path.write_text(
             json.dumps(
@@ -1548,7 +3391,1864 @@ class CliTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def test_local_cli_outputs_four_frames_and_two_summaries(self):
+    def _write_batch_result(self, output, material_id):
+        result_dir = Path(output) / material_id
+        result_dir.mkdir(parents=True, exist_ok=True)
+        frames = []
+        for index in range(4):
+            frame_path = result_dir / f"frame-{index}.jpg"
+            frame_path.write_bytes(DECODABLE_JPEG)
+            frames.append(
+                {
+                    "rankType": f"peak-{index}",
+                    "durationSec": float(index),
+                    "metricValue": float(index + 1),
+                    "framePath": frame_path.name,
+                }
+            )
+        summary_json = result_dir / "summary.json"
+        summary_md = result_dir / "summary.md"
+        summary_json.write_text(
+            json.dumps(
+                {
+                    "materialId": material_id,
+                    "frames": frames,
+                    "warnings": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        summary_md.write_text("# summary\n", encoding="utf-8")
+        return result_dir, summary_json, summary_md
+
+    def _batch_args(self, top_materials, output, *extra):
+        return [
+            "--source",
+            "rpa",
+            "--shop-id",
+            "shop-1",
+            "--top-materials-json",
+            str(top_materials),
+            "--params-json",
+            json.dumps(
+                {
+                    "date_range_type": "CUSTOM",
+                    "custom_start_date": "2026-06-01",
+                    "custom_end_date": "2026-06-02",
+                }
+            ),
+            "--output-dir",
+            str(output),
+            *extra,
+        ]
+
+    def _top_materials_payload(self, material_ids, **overrides):
+        payload = {
+            "actualStartDate": "2026-06-01",
+            "actualEndDate": "2026-06-02",
+            "materialCount": len(material_ids),
+            "materials": [
+                {"materialId": material_id} for material_id in material_ids
+            ],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_wave_batch_manifest_records_channel_configuration(self):
+        args = extract_peak_frames.build_parser().parse_args([])
+
+        self.assertEqual(args.rpa_concurrency, 3)
+        self.assertEqual(args.download_concurrency, 2)
+        self.assertEqual(args.postprocess_concurrency, 1)
+
+    def test_legacy_concurrency_override_updates_all_three_limits(self):
+        argv = ["--concurrency", "4"]
+        args = extract_peak_frames.build_parser().parse_args(argv)
+
+        extract_peak_frames.resolve_concurrency(args, argv)
+
+        self.assertEqual(args.rpa_concurrency, 4)
+        self.assertEqual(args.download_concurrency, 4)
+        self.assertEqual(args.postprocess_concurrency, 4)
+
+    def test_batch_run_lock_rejects_active_lock_and_releases(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = Path(temp_dir) / ".batch-run.lock"
+            manifest_path = Path(temp_dir) / "batch-manifest.json"
+            first = acquire_run_lock(lock_path, manifest_path)
+            try:
+                with self.assertRaises(BatchLockError) as raised:
+                    acquire_run_lock(lock_path, manifest_path)
+                self.assertFalse(raised.exception.stale)
+            finally:
+                first.release()
+            second = acquire_run_lock(lock_path, manifest_path)
+            second.release()
+
+    def test_batch_run_lock_reports_stale_lock_without_overwriting_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lock_path = Path(temp_dir) / ".batch-run.lock"
+            manifest_path = Path(temp_dir) / "batch-manifest.json"
+            lock_path.write_text(
+                json.dumps(
+                    {
+                        "runId": "old-run",
+                        "pid": 999999,
+                        "hostname": "test-host",
+                        "startedAt": 1,
+                        "manifestPath": str(manifest_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(BatchLockError) as raised:
+                acquire_run_lock(lock_path, manifest_path)
+            self.assertTrue(raised.exception.stale)
+            self.assertIn("old-run", lock_path.read_text(encoding="utf-8"))
+
+    def test_report_ready_is_marked_only_for_complete_report_artifacts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            manifest = root / "batch-manifest.json"
+            data = root / "final-report-data.json"
+            html = root / "final-report.html"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "runId": "run-1",
+                        "selectedMaterials": [
+                            {
+                                "materialId": "m-1",
+                                "postprocessStatus": "succeeded",
+                            }
+                        ],
+                        "stageCounts": {"reportReadyCount": 0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            data.write_text(json.dumps({"status": "partial"}), encoding="utf-8")
+            html.write_text("<html></html>", encoding="utf-8")
+            self.assertFalse(mark_report_ready(manifest, data, html))
+            report_data = {
+                "schemaVersion": 1,
+                "status": "complete",
+                "runId": "run-1",
+                "materials": [{"materialId": "m-1", "highlightFrames": []}],
+                "pipelineSummary": {"runId": "run-1"},
+            }
+            data.write_text(json.dumps(report_data), encoding="utf-8")
+            html.write_text(
+                '<script type="application/json" id="report-data">'
+                + json.dumps(report_data)
+                + "</script>",
+                encoding="utf-8",
+            )
+            self.assertTrue(mark_report_ready(manifest, data, html))
+            updated = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(updated["stageCounts"]["reportReadyCount"], 1)
+
+    def test_wave_batch_manifest_records_selected_materials(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1"])),
+                encoding="utf-8",
+            )
+            records = [
+                {
+                    "recordType": "material_info",
+                    "materialId": "m-1",
+                    "videoUrl": "https://video.example/m-1.mp4",
+                }
+            ]
+
+            def preflight_material(**kwargs):
+                material_id = kwargs["material_id"]
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                    "records": records,
+                    "diagnosisCsvPath": None,
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                side_effect=preflight_material,
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda _args, entry: {
+                    "result": self._write_batch_result(output, entry["materialId"]),
+                    "error": None,
+                    "timingsSec": entry["timingsSec"],
+                },
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--target-top-n", "1")
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(manifest["schemaVersion"], 2)
+        self.assertTrue(manifest["runId"])
+        self.assertEqual(manifest["targetTopN"], 1)
+        self.assertEqual(manifest["candidateLimit"], 1)
+        self.assertEqual(manifest["rpaConcurrency"], 3)
+        self.assertEqual(manifest["downloadConcurrency"], 2)
+        self.assertEqual(manifest["postprocessConcurrency"], 1)
+        timings = manifest["selectedMaterials"][0]["timingsSec"]
+        self.assertEqual(timings["videoProbeSec"], 0.0)
+        self.assertEqual(timings["ffmpegBatchSec"], 0.0)
+        self.assertEqual(timings["ffmpegFallbackSec"], 0.0)
+        self.assertEqual(timings["summaryWriteSec"], 0.0)
+        self.assertEqual(
+            [item["materialId"] for item in manifest["submittedMaterials"]], ["m-1"]
+        )
+        self.assertEqual(
+            [item["materialId"] for item in manifest["selectedMaterials"]], ["m-1"]
+        )
+        self.assertEqual(manifest["rejectedMaterials"], [])
+        self.assertEqual(manifest["cancelledMaterials"], [])
+        self.assertEqual(
+            manifest["stageCounts"],
+            {
+                "rpaRequestCount": 1,
+                "rpaAcceptedCount": 1,
+                "rpaSelectedCount": 1,
+                "recordsPersistedCount": 1,
+                "postprocessSucceededCount": 1,
+                "reportReadyCount": 0,
+            },
+        )
+
+    def _wave_outcome(self, material_id):
+        return {
+            "materialId": material_id,
+            "rpaAvailable": True,
+            "failureReason": None,
+            "videoUrl": f"https://video.example/{material_id}.mp4",
+            "records": [
+                {
+                    "recordType": "material_info",
+                    "materialId": material_id,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                }
+            ],
+            "diagnosisCsvPath": None,
+        }
+
+    def _write_wave_csv(self, diagnosis_csv_dir, material_id):
+        csv_path = Path(diagnosis_csv_dir) / f"{material_id}.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        csv_path.write_text(
+            "recordType\x01materialId\x01videoUrl\n"
+            f"material_info\x01{material_id}\x01"
+            f"https://video.example/{material_id}.mp4\n",
+            encoding="utf-8",
+        )
+        return csv_path
+
+    def _wave_postprocess(self, output, _args, entry):
+        return {
+            "result": self._write_batch_result(output, entry["materialId"]),
+            "error": None,
+            "timingsSec": entry["timingsSec"],
+        }
+
+    def test_wave_top9_all_success_submits_only_first_n(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = [f"m-{index}" for index in range(1, 28)]
+            top_materials.write_text(
+                json.dumps(
+                    self._top_materials_payload(
+                        material_ids,
+                        materials=[
+                            {"materialId": material_id, "totalCost": 28 - index}
+                            for index, material_id in enumerate(material_ids, start=1)
+                        ],
+                    )
+                ),
+                encoding="utf-8",
+            )
+            submitted = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                submitted.append(material_id)
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda args, entry: self._wave_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "9",
+                        "--candidate-top-n",
+                        "27",
+                    )
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(submitted), 9)
+        self.assertEqual(set(submitted), set(material_ids[:9]))
+        self.assertEqual(
+            [item["materialId"] for item in manifest["submittedMaterials"]],
+            material_ids[:9],
+        )
+        self.assertEqual(
+            [item["materialId"] for item in manifest["selectedMaterials"]],
+            material_ids[:9],
+        )
+
+    def test_wave_top9_does_not_retry_missing_video_url_before_using_rank10_and_rank11(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = [f"m-{index}" for index in range(1, 28)]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            submitted = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                submitted.append(material_id)
+                if material_id in {"m-8", "m-9"}:
+                    return {
+                        "materialId": material_id,
+                        "rpaAvailable": False,
+                        "failureReason": "missing_video_url",
+                        "videoUrl": None,
+                    }
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda args, entry: self._wave_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "9",
+                        "--candidate-top-n",
+                        "27",
+                    )
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(len(submitted), 11)
+        self.assertEqual(set(submitted), set(material_ids[:11]))
+        self.assertEqual(submitted.count("m-8"), 1)
+        self.assertEqual(submitted.count("m-9"), 1)
+        self.assertNotIn(material_ids[11], submitted)
+
+    def test_wave_rpa_channel_never_exceeds_three_in_flight(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = [f"m-{index}" for index in range(1, 10)]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            lock = threading.Lock()
+            active = 0
+            max_active = 0
+
+            def fetch(**kwargs):
+                nonlocal active, max_active
+                material_id = kwargs["material_id"]
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda args, entry: self._wave_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "9",
+                        "--rpa-concurrency",
+                        "3",
+                    )
+                )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(max_active, 3)
+        self.assertLessEqual(max_active, 3)
+
+    def test_wave_defaults_to_rpa_wave_barrier(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3", "m-4"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            lock = threading.Lock()
+            active = set()
+            starts = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                with lock:
+                    starts.append((material_id, set(active)))
+                    active.add(material_id)
+                time.sleep(0.03 if material_id in {"m-1", "m-3"} else 0.005)
+                with lock:
+                    active.remove(material_id)
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda args, entry: self._wave_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "4",
+                        "--candidate-top-n",
+                        "4",
+                        "--rpa-concurrency",
+                        "2",
+                    )
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        first_wave = [item for item in starts if item[0] in {"m-1", "m-2"}]
+        second_wave = [item for item in starts if item[0] in {"m-3", "m-4"}]
+        self.assertEqual({item[0] for item in first_wave}, {"m-1", "m-2"})
+        self.assertEqual({item[0] for item in second_wave}, {"m-3", "m-4"})
+        self.assertTrue(
+            all(not active & {"m-1", "m-2"} for _material_id, active in second_wave)
+        )
+        self.assertTrue(manifest["waveBarrier"])
+        self.assertEqual(
+            [item["waveIndex"] for item in manifest["selectedMaterials"]],
+            [0, 0, 1, 1],
+        )
+
+    def test_wave_waits_for_all_rpa_jobs_before_postprocess(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            postprocess_started = threading.Event()
+            release_rpa = threading.Event()
+            saw_postprocess_before_release = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                if material_id != "m-1":
+                    release_rpa.wait(timeout=1)
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            def postprocess(_args, entry):
+                postprocess_started.set()
+                return self._wave_postprocess(output, _args, entry)
+
+            def release_after_delay():
+                time.sleep(0.05)
+                saw_postprocess_before_release.append(postprocess_started.is_set())
+                release_rpa.set()
+
+            releaser = threading.Thread(target=release_after_delay)
+            releaser.start()
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=postprocess,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "3",
+                        "--rpa-concurrency",
+                        "3",
+                    )
+                )
+            releaser.join()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(saw_postprocess_before_release, [False])
+
+    def test_next_rpa_wave_finishes_before_postprocess_starts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            starts = []
+            lock = threading.Lock()
+            second_csv_release = threading.Event()
+            first_postprocess_started = threading.Event()
+            first_postprocess_release = threading.Event()
+            result = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                with lock:
+                    starts.append(material_id)
+                if material_id == "m-2":
+                    second_csv_release.wait(timeout=1)
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            def postprocess(args, entry):
+                if entry["materialId"] == "m-1":
+                    first_postprocess_started.set()
+                    first_postprocess_release.wait()
+                return self._wave_postprocess(output, args, entry)
+
+            def run_batch():
+                with patch.object(
+                    extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+                ), patch.object(
+                    extract_peak_frames,
+                    "_attempt_wave_postprocess",
+                    side_effect=postprocess,
+                ):
+                    result.append(
+                        extract_peak_frames.main(
+                            self._batch_args(
+                                top_materials,
+                                output,
+                                "--target-top-n",
+                                "3",
+                                "--candidate-top-n",
+                                "3",
+                                "--rpa-concurrency",
+                                "2",
+                            )
+                        )
+                    )
+
+            runner = threading.Thread(target=run_batch)
+            runner.start()
+            deadline = time.monotonic() + 1
+            while len(starts) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertEqual(set(starts), {"m-1", "m-2"})
+            self.assertFalse(first_postprocess_started.is_set())
+            second_csv_release.set()
+            self.assertTrue(first_postprocess_started.wait(timeout=1))
+            self.assertIn("m-3", starts)
+            self.assertFalse(first_postprocess_release.is_set())
+            first_postprocess_release.set()
+            runner.join(timeout=2)
+
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(result, [0])
+        self.assertIn("m-3", starts)
+
+    def test_wave_rebuilds_selected_order_after_out_of_order_rpa(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3", "m-4"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                if material_id == "m-1":
+                    time.sleep(0.03)
+                elif material_id == "m-2":
+                    time.sleep(0.01)
+                    return {
+                        "materialId": material_id,
+                        "rpaAvailable": False,
+                        "failureReason": "missing_material_info",
+                        "videoUrl": None,
+                    }
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda args, entry: self._wave_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "3",
+                        "--rpa-concurrency",
+                        "3",
+                    )
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+            ready = json.loads(
+                (output / "top_materials_rpa_ready.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            [item["materialId"] for item in manifest["selectedMaterials"]],
+            ["m-1", "m-3", "m-4"],
+        )
+        self.assertEqual(
+            [item["materialId"] for item in ready["materials"]],
+            ["m-1", "m-3", "m-4"],
+        )
+        self.assertEqual(
+            [item["materialId"] for item in manifest["rejectedMaterials"]], ["m-2"]
+        )
+
+    def test_wave_retains_partial_artifacts_when_candidate_pool_exhausts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            top_materials = root / "top_materials.json"
+            material_ids = [f"m-{index}" for index in range(1, 7)]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                if material_id in {"m-1", "m-3"}:
+                    self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                    return self._wave_outcome(material_id)
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": False,
+                    "failureReason": "missing_video_url",
+                    "videoUrl": None,
+                }
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda args, entry: self._wave_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "3",
+                        "--candidate-top-n",
+                        "6",
+                        "--diagnosis-records-dir",
+                        str(records_dir),
+                    )
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+            self.assertTrue((records_dir / "m-1.json").is_file())
+            self.assertTrue((records_dir / "m-3.json").is_file())
+
+        self.assertEqual(result, 5)
+        self.assertEqual(
+            [item["materialId"] for item in manifest["selectedMaterials"]],
+            ["m-1", "m-3"],
+        )
+        self.assertEqual(len(manifest["rejectedMaterials"]), 4)
+        self.assertEqual(manifest["cancelledMaterials"], [])
+
+    def test_wave_postprocess_failure_is_retried_and_backfilled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            submitted = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                submitted.append(material_id)
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            def postprocess(args, entry):
+                if entry["materialId"] == "m-1":
+                    return {
+                        "result": None,
+                        "error": InputDataError("video processing failed"),
+                        "timingsSec": entry["timingsSec"],
+                    }
+                return self._wave_postprocess(output, args, entry)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=postprocess,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--target-top-n", "2")
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(set(submitted), {"m-1", "m-2", "m-3"})
+        first = manifest["selectedMaterials"][0]
+        self.assertEqual(first["materialId"], "m-1")
+        self.assertEqual(first["rpaStatus"], "selected")
+        self.assertEqual(first["postprocessStatus"], "failed")
+        self.assertEqual(first["errorType"], "InputDataError")
+        self.assertEqual(manifest["rejectedMaterials"], [])
+        self.assertEqual(
+            [
+                item["materialId"]
+                for item in manifest["materials"]
+                if item["postprocessStatus"] == "succeeded"
+            ],
+            ["m-2", "m-3"],
+        )
+
+    def test_wave_resume_reuses_existing_records_and_summary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            records_dir.mkdir()
+            top_materials = root / "top_materials.json"
+            material_ids = ["m-1", "m-2", "m-3"]
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(material_ids)), encoding="utf-8"
+            )
+            records_dir.joinpath("m-1.json").write_text(
+                json.dumps(self._wave_outcome("m-1")["records"]),
+                encoding="utf-8",
+            )
+            _result_dir, summary_json, summary_md = self._write_batch_result(
+                output, "m-1"
+            )
+            output.mkdir(exist_ok=True)
+            (output / "batch-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "source": "rpa",
+                        "shopId": "shop-1",
+                        "targetTopN": 2,
+                        "candidateCount": 3,
+                        "candidateLimit": 3,
+                        "rpaConcurrency": 3,
+                        "postprocessConcurrency": 3,
+                        "dateRange": {
+                            "type": "CUSTOM",
+                            "customStartDate": "2026-06-01",
+                            "customEndDate": "2026-06-02",
+                        },
+                        "materialIds": material_ids,
+                        "materials": [
+                            {
+                                **extract_peak_frames._wave_entry(
+                                    {"materialId": "m-1"}, 1
+                                ),
+                                "rpaStatus": "submitted",
+                                "rpaCsvVerified": True,
+                                "status": "running",
+                            },
+                            extract_peak_frames._wave_entry({"materialId": "m-2"}, 2),
+                            extract_peak_frames._wave_entry({"materialId": "m-3"}, 3),
+                        ],
+                        "submittedMaterials": [],
+                        "selectedMaterials": [],
+                        "rejectedMaterials": [],
+                        "cancelledMaterials": [],
+                        "timingsSec": {"totalSec": 1.0},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fetched = []
+
+            def fetch(**kwargs):
+                material_id = kwargs["material_id"]
+                fetched.append(material_id)
+                self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
+                return self._wave_outcome(material_id)
+
+            with patch.object(
+                extract_peak_frames, "fetch_material_preflight", side_effect=fetch
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=lambda args, entry: self._wave_postprocess(
+                    output, args, entry
+                ),
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(
+                        top_materials,
+                        output,
+                        "--target-top-n",
+                        "2",
+                        "--candidate-top-n",
+                        "3",
+                        "--diagnosis-records-dir",
+                        str(records_dir),
+                        "--resume",
+                    )
+                )
+
+            resumed = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        self.assertNotIn("m-1", fetched)
+        self.assertEqual(fetched, ["m-2"])
+        self.assertEqual(
+            [item["materialId"] for item in resumed["selectedMaterials"]],
+            ["m-1", "m-2"],
+        )
+        first = resumed["selectedMaterials"][0]
+        self.assertEqual(first["diagnosisRecordsPath"], str(records_dir / "m-1.json"))
+        self.assertEqual(first["summaryJson"], str(summary_json))
+        self.assertEqual(first["summaryMd"], str(summary_md))
+
+    def test_wave_resume_repairs_pending_manifest_entry_from_valid_receipt(self):
+        material_id = "m-receipt-resume"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            receipts_dir = root / "rpa-receipts"
+            csv_dir.mkdir()
+            records_dir.mkdir()
+            csv_path = csv_dir / f"{material_id}.csv"
+            records_path = records_dir / f"{material_id}.json"
+            csv_path.write_text("diagnostic csv", encoding="utf-8")
+            records = [{"recordType": "material_info", "materialId": material_id}]
+            records_path.write_text(json.dumps(records), encoding="utf-8")
+            rpa_artifact_receipts.publish_receipt(
+                receipts_dir,
+                material_id=material_id,
+                client_attempt_id="attempt-resume",
+                state="records_persisted",
+                csv_path=csv_path,
+                records_path=records_path,
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(records_dir),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(entries[0], rpaStatus="pending", status="pending")
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ), patch.object(extract_peak_frames, "fetch_material_preflight") as fetch:
+                _submitted, selected, _rejected, _cancelled, postprocess_queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+        self.assertEqual(postprocess_queue, [0])
+        self.assertEqual(selected[0]["rpaStatus"], "selected")
+        self.assertTrue(selected[0]["rpaCsvVerified"])
+        self.assertEqual(selected[0]["rpaClientAttemptId"], "attempt-resume")
+        self.assertEqual(selected[0]["records"], records)
+        fetch.assert_not_called()
+
+    def test_wave_resume_materializes_records_from_downloaded_csv_receipt(self):
+        material_id = "m-csv-resume"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            csv_dir.mkdir()
+            records_dir.mkdir()
+            self._write_wave_csv(csv_dir, material_id)
+            rpa_artifact_receipts.publish_receipt(
+                root / "rpa-receipts",
+                material_id=material_id,
+                client_attempt_id="attempt-csv-resume",
+                state="artifact_downloaded",
+                csv_path=csv_dir / f"{material_id}.csv",
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(records_dir),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(entries[0], rpaStatus="submitted", status="running")
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                _submitted, selected, _rejected, _cancelled, postprocess_queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+            receipt = rpa_artifact_receipts.load_records_persisted_receipt(
+                root / "rpa-receipts", material_id=material_id
+            )
+            records_persisted = (records_dir / f"{material_id}.json").is_file()
+            selected_entry = dict(selected[0])
+
+        self.assertEqual(postprocess_queue, [0])
+        self.assertTrue(records_persisted)
+        self.assertEqual(selected_entry["records"], receipt["records"])
+        self.assertEqual(selected_entry["rpaClientAttemptId"], "attempt-csv-resume")
+
+    def test_wave_resume_finalizes_submitted_without_task_id_or_local_artifact(self):
+        material_id = "m-requeue-resume"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            rpa_artifact_receipts.publish_receipt(
+                root / "rpa-receipts",
+                material_id=material_id,
+                client_attempt_id="old-attempt",
+                state="submitted",
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(
+                        entries[0],
+                        rpaStatus="submitted",
+                        status="running",
+                        rpaClientAttemptId="old-attempt",
+                    )
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                submitted, selected, rejected, cancelled, postprocess_queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+            retained = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(set(submitted), {0})
+        self.assertEqual(selected, {})
+        self.assertEqual(set(rejected), {0})
+        self.assertEqual(cancelled, {})
+        self.assertEqual(postprocess_queue, [])
+        self.assertEqual(entries[0]["rpaStatus"], "rejected")
+        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
+        self.assertEqual(
+            entries[0]["resumeRecovery"],
+            {
+                "reason": "local_artifact_unavailable",
+                "previousClientAttemptId": "old-attempt",
+                "previousReceiptState": "submitted",
+            },
+        )
+        self.assertEqual(retained["clientAttemptId"], "old-attempt")
+
+    def test_wave_resume_finalizes_submitted_material_with_malformed_receipt(self):
+        material_id = "m-malformed-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            receipts_dir = root / "rpa-receipts"
+            receipts_dir.mkdir()
+            (receipts_dir / f"{material_id}.json").write_text(
+                "not json", encoding="utf-8"
+            )
+            args = type("Args", (), {
+                "resume": True,
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+            })()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(entries[0], rpaStatus="submitted", status="running")
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                submitted, selected, rejected, cancelled, postprocess_queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+        self.assertEqual(set(submitted), {0})
+        self.assertEqual(selected, {})
+        self.assertEqual(set(rejected), {0})
+        self.assertEqual(cancelled, {})
+        self.assertEqual(postprocess_queue, [])
+        self.assertEqual(entries[0]["rpaStatus"], "rejected")
+        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
+        self.assertEqual(
+            entries[0]["resumeRecovery"]["reason"], "local_artifact_unavailable"
+        )
+
+    def test_wave_resume_does_not_requeue_second_postprocess_failure(self):
+        args = type("Args", (), {"resume": True, "output_dir": "/tmp"})()
+        candidates = [
+            {"materialId": "m-1"},
+            {"materialId": "m-2"},
+            {"materialId": "m-3"},
+        ]
+        entries = {
+            index: extract_peak_frames._wave_entry(candidate, index + 1)
+            for index, candidate in enumerate(candidates)
+        }
+        manifest = {
+            "materials": [
+                {
+                    **entries[0],
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "succeeded",
+                    "postprocessSucceeded": True,
+                },
+                {
+                    **entries[1],
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "failed",
+                    "postprocessAttemptCount": 2,
+                    "status": "failed",
+                },
+                {
+                    **entries[2],
+                    "rpaStatus": "pending",
+                    "status": "pending",
+                },
+            ]
+        }
+
+        records = [{"recordType": "material_info", "materialId": "m-1"}]
+        with patch.object(
+            extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+        ), patch.object(
+            extract_peak_frames,
+            "_existing_wave_records",
+            side_effect=lambda _args, material_id, _entry: (
+                (records, Path(f"/tmp/{material_id}.json"))
+                if material_id in {"m-1", "m-2"}
+                else (None, None)
+            ),
+        ), patch.object(
+            extract_peak_frames,
+            "_existing_wave_summary_entry",
+            side_effect=lambda _args, entry: (
+                dict(
+                    entry,
+                    status="succeeded",
+                    postprocessStatus="succeeded",
+                    postprocessSucceeded=True,
+                )
+                if entry["materialId"] == "m-1"
+                else None
+            ),
+        ):
+            submitted, selected, _rejected, _cancelled, postprocess_queue = (
+                extract_peak_frames._resume_wave_state(args, candidates, entries)
+            )
+
+        self.assertEqual(postprocess_queue, [])
+        self.assertEqual(selected[1]["postprocessStatus"], "failed")
+        self.assertEqual(selected[1]["postprocessAttemptCount"], 2)
+        self.assertEqual(entries[2]["rpaStatus"], "pending")
+        self.assertEqual(set(submitted), {0, 1})
+
+    def test_wave_verification_accepts_historical_postprocess_failure_after_backfill(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            args = extract_peak_frames.build_parser().parse_args(
+                self._batch_args(
+                    root / "top_materials.json", output, "--target-top-n", "3"
+                )
+            )
+            selected = [
+                {
+                    "rank": 1,
+                    "materialId": "m-1",
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "failed",
+                    "status": "failed",
+                }
+            ]
+            for rank, material_id in enumerate(["m-2", "m-3", "m-4"], start=2):
+                _result_dir, summary_json, summary_md = self._write_batch_result(
+                    output, material_id
+                )
+                selected.append(
+                    {
+                        "rank": rank,
+                        "materialId": material_id,
+                        "rpaStatus": "selected",
+                        "postprocessStatus": "succeeded",
+                        "status": "succeeded",
+                        "summaryJson": str(summary_json),
+                        "summaryMd": str(summary_md),
+                    }
+                )
+            manifest = {
+                "targetTopN": 3,
+                "materialIds": ["m-1", "m-2", "m-3", "m-4"],
+                "selectedMaterials": selected,
+                "rejectedMaterials": [],
+                "cancelledMaterials": [],
+            }
+
+            _path, receipt = extract_peak_frames._verify_wave_rpa_batch(
+                args, manifest["materialIds"], manifest
+            )
+
+        self.assertTrue(receipt["valid"])
+        self.assertEqual(receipt["materialIds"], ["m-2", "m-3", "m-4"])
+
+    def test_wave_material_total_timing_includes_rpa_and_postprocess(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            top_materials = root / "top_materials.json"
+            top_materials.write_text(
+                json.dumps(self._top_materials_payload(["m-1"])), encoding="utf-8"
+            )
+
+            def rpa_attempt(_args, entry):
+                updated = dict(entry)
+                updated.update(
+                    {
+                        "rpaStatus": "selected",
+                        "rpaResultStatus": "available",
+                        "rpaCsvVerified": True,
+                        "diagnosisCsvPath": "diagnosis-csv/m-1.csv",
+                        "recordsPersisted": True,
+                        "diagnosisRecordsPath": "diagnosis-records/m-1.json",
+                        "postprocessStatus": "queued",
+                        "status": "running",
+                        "records": self._wave_outcome("m-1")["records"],
+                        "timingsSec": {
+                            "rpaFetchSec": 5.0,
+                            "diagnosisRecordWriteSec": 0.0,
+                            "videoDownloadSec": 0.0,
+                            "frameExtractionSec": 0.0,
+                            "totalSec": 5.0,
+                        },
+                    }
+                )
+                return updated
+
+            def postprocess_attempt(_args, entry):
+                timings = dict(entry["timingsSec"])
+                timings["videoDownloadSec"] = 0.75
+                timings["frameExtractionSec"] = 1.25
+                timings["totalSec"] = 2.0
+                return {
+                    "result": self._write_batch_result(output, entry["materialId"]),
+                    "error": None,
+                    "timingsSec": timings,
+                }
+
+            with patch.object(
+                extract_peak_frames, "_attempt_wave_rpa", side_effect=rpa_attempt
+            ), patch.object(
+                extract_peak_frames,
+                "_attempt_wave_postprocess",
+                side_effect=postprocess_attempt,
+            ):
+                result = extract_peak_frames.main(
+                    self._batch_args(top_materials, output, "--target-top-n", "1")
+                )
+
+            manifest = json.loads(
+                (output / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(result, 0)
+        timings = manifest["selectedMaterials"][0]["timingsSec"]
+        self.assertEqual(timings["postprocessSec"], 2.0)
+        self.assertEqual(timings["endToEndSec"], 7.0)
+        self.assertEqual(timings["totalSec"], 7.0)
+
+    def test_rpa_preflight_uses_one_eight_minute_timeout(self):
+        args = extract_peak_frames.build_parser().parse_args([])
+
+        self.assertEqual(args.rpa_preflight_timeout_sec, 4260)
+        self.assertFalse(hasattr(args, "rpa_preflight_soft_timeout_sec"))
+        self.assertEqual(args.rpa_late_artifact_grace_sec, 30)
+
+    def test_isolated_rpa_preflight_publishes_completed_artifact_receipt(self):
+        material_id = "m-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            receipts_dir = root / "rpa-receipts"
+
+            def worker(params):
+                csv_path = Path(params["diagnosis_csv_dir"]) / f"{material_id}.csv"
+                csv_path.parent.mkdir(parents=True, exist_ok=True)
+                csv_path.write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{material_id}\x01https://video.example/video.mp4\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "videoUrl": "https://video.example/video.mp4",
+                    "diagnosisCsvPath": str(csv_path),
+                    "records": [{"materialId": material_id}],
+                }
+
+            result = extract_peak_frames._fetch_material_preflight_isolated(
+                {
+                    "material_id": material_id,
+                    "diagnosis_csv_dir": csv_dir,
+                    "diagnosis_records_dir": records_dir,
+                    "rpa_receipts_dir": receipts_dir,
+                    "rpa_client_attempt_id": "attempt-receipt",
+                },
+                timeout_sec=1,
+                worker=worker,
+            )
+            receipt = json.loads(
+                (receipts_dir / f"{material_id}.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(result["rpaAvailable"])
+        self.assertEqual(result["diagnosisRecordsPath"], str(records_dir / f"{material_id}.json"))
+        self.assertEqual(receipt["state"], "records_persisted")
+        self.assertEqual(receipt["clientAttemptId"], "attempt-receipt")
+
+    def test_isolated_preflight_persists_task_group_id_before_polling_completes(self):
+        material_id = "m-worker-timeout"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            def submit_then_block(**kwargs):
+                kwargs["on_task_submitted"]("group-1")
+                time.sleep(1)
+
+            params = {
+                "shop_id": "shop-1",
+                "material_id": material_id,
+                "date_range_type": "LAST_7_DAYS",
+                "diagnosis_csv_dir": root / "diagnosis-csv",
+                "rpa_receipts_dir": root / "rpa-receipts",
+                "rpa_client_attempt_id": "attempt-1",
+            }
+            with patch.object(
+                extract_peak_frames,
+                "fetch_material_preflight",
+                side_effect=submit_then_block,
+            ):
+                result = extract_peak_frames._fetch_material_preflight_isolated(
+                    params,
+                    timeout_sec=0.05,
+                    worker=extract_peak_frames._fetch_material_preflight_worker,
+                )
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertTrue(result["timeoutExceeded"])
+        self.assertEqual(receipt["state"], "submitted")
+        self.assertEqual(receipt["remoteTaskGroupId"], "group-1")
+
+    def test_resume_polls_submitted_remote_task_without_second_submit(self):
+        material_id = "m-resume-remote"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            receipts_dir = root / "rpa-receipts"
+            rpa_artifact_receipts.publish_receipt(
+                receipts_dir,
+                material_id=material_id,
+                client_attempt_id="attempt-1",
+                state="submitted",
+                remote_task_group_id="group-1",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "resume": True,
+                    "output_dir": str(root / "peak-frames"),
+                    "diagnosis_records_dir": str(root / "diagnosis-records"),
+                },
+            )()
+            candidates = [{"materialId": material_id}]
+            entries = {0: extract_peak_frames._wave_entry(candidates[0], 1)}
+            manifest = {
+                "materials": [
+                    dict(
+                        entries[0],
+                        rpaStatus="submitted",
+                        status="running",
+                        rpaClientAttemptId="attempt-1",
+                    )
+                ]
+            }
+            with patch.object(
+                extract_peak_frames, "_load_wave_resume_manifest", return_value=manifest
+            ):
+                submitted, _selected, _rejected, _cancelled, _queue = (
+                    extract_peak_frames._resume_wave_state(args, candidates, entries)
+                )
+
+        self.assertEqual(submitted, {})
+        self.assertEqual(entries[0]["remoteTaskGroupId"], "group-1")
+        self.assertEqual(entries[0]["rpaClientAttemptId"], "attempt-1")
+
+    def test_wave_rpa_recovers_failed_request_from_late_csv(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            records_dir = root / "diagnosis-records"
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir(parents=True)
+            material_id = "m-late"
+            csv_path = csv_dir / f"{material_id}.csv"
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/{material_id}.mp4\n",
+                encoding="utf-8",
+            )
+            args = type("Args", (), {
+                "output_dir": str(output),
+                "diagnosis_records_dir": str(records_dir),
+            })()
+            args.rpa_late_artifact_grace_sec = 0
+            failed = {
+                "materialId": material_id,
+                "rpaAvailable": False,
+                "failureReason": "rpa_request_failed",
+                "videoUrl": None,
+            }
+
+            recovered = extract_peak_frames._recover_late_rpa_artifacts(
+                args, material_id, failed
+            )
+
+            self.assertTrue(recovered["rpaAvailable"])
+            self.assertTrue(recovered["lateArtifactRecovered"])
+            self.assertEqual(recovered["diagnosisCsvPath"], str(csv_path))
+            self.assertTrue((records_dir / f"{material_id}.json").is_file())
+
+    def test_wave_rpa_publishes_submitted_receipt_before_request(self):
+        material_id = "m-submitted-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            failure = {
+                "materialId": material_id,
+                "rpaAvailable": False,
+                "failureReason": "rpa_request_failed",
+                "rpaResultStatus": "pending",
+            }
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=failure,
+            ):
+                result = extract_peak_frames._attempt_wave_rpa(
+                    args, extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+                )
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(receipt["state"], "submitted")
+        self.assertEqual(receipt["clientAttemptId"], result["rpaClientAttemptId"])
+
+    def test_wave_rpa_refreshes_completed_receipt_after_records_persist(self):
+        material_id = "m-completed-receipt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir()
+            csv_path = csv_dir / f"{material_id}.csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            outcome = {
+                "materialId": material_id,
+                "rpaAvailable": True,
+                "videoUrl": "https://video.example/video.mp4",
+                "diagnosisCsvPath": str(csv_path),
+                "records": [{"materialId": material_id}],
+            }
+
+            def fetch(*_args, **_kwargs):
+                csv_path.write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{material_id}\x01https://video.example/video.mp4\n",
+                    encoding="utf-8",
+                )
+                return outcome
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ):
+                result = extract_peak_frames._attempt_wave_rpa(
+                    args, extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+                )
+            receipt = json.loads(
+                (root / "rpa-receipts" / f"{material_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(result["rpaStatus"], "selected")
+        self.assertEqual(receipt["state"], "records_persisted")
+        self.assertEqual(Path(receipt["recordsPath"]).name, Path(result["diagnosisRecordsPath"]).name)
+
+    def test_preflight_path_recovers_failed_request_from_late_csv(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            records_dir = root / "diagnosis-records"
+            csv_dir.mkdir(parents=True)
+            material_id = "m-preflight-late"
+            csv_path = csv_dir / f"{material_id}.csv"
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/{material_id}.mp4\n",
+                encoding="utf-8",
+            )
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(records_dir),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            failed = {
+                "materialId": material_id,
+                "rpaAvailable": False,
+                "failureReason": "rpa_request_failed",
+                "videoUrl": None,
+            }
+
+            def isolated_failure(_params, _timeout, **_kwargs):
+                csv_path.touch()
+                return failed
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_isolated",
+                side_effect=isolated_failure,
+            ):
+                args.shop_id = "shop"
+                args.rpa_business_params = {
+                    "date_range_type": "CUSTOM",
+                    "custom_start_date": "2026-07-25",
+                    "custom_end_date": "2026-07-31",
+                }
+                args.rpa_preflight_timeout_sec = 1
+                recovered = extract_peak_frames._fetch_material_preflight_for_cli(
+                    args, material_id
+                )
+
+        self.assertTrue(recovered["rpaAvailable"])
+        self.assertTrue(recovered["lateArtifactRecovered"])
+        self.assertEqual(recovered["videoUrl"], f"https://video.example/{material_id}.mp4")
+
+    def test_late_artifact_recovery_keeps_request_failure_when_csv_is_invalid(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            output = root / "peak-frames"
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir(parents=True)
+            material_id = "m-invalid-late"
+            (csv_dir / f"{material_id}.csv").write_text("not,a,diagnosis,csv\n", encoding="utf-8")
+            args = type("Args", (), {
+                "output_dir": str(output),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+            })()
+            args.rpa_late_artifact_grace_sec = 0
+
+            recovered = extract_peak_frames._recover_late_rpa_artifacts(
+                args, material_id, {"rpaAvailable": False, "failureReason": "rpa_request_failed"}
+            )
+
+        self.assertFalse(recovered["rpaAvailable"])
+        self.assertEqual(recovered["failureReason"], "rpa_request_failed")
+
+    def test_wave_attempt_selects_only_after_fresh_expected_csv_is_verified(self):
+        material_id = "m-csv-fresh"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+
+            def fetch(_args, requested_material_id, **_kwargs):
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                (csv_dir / f"{requested_material_id}.csv").write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{requested_material_id}\x01"
+                    f"https://video.example/{requested_material_id}.mp4\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "materialId": requested_material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{requested_material_id}.mp4",
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ), patch.object(
+                extract_peak_frames,
+                "preflight_material_availability",
+                return_value={
+                    "rpaAvailable": True,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                },
+            ) as preflight:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        self.assertEqual(result["rpaStatus"], "selected")
+        self.assertEqual(result["rpaResultStatus"], "available")
+        self.assertTrue(result.get("rpaCsvVerified"))
+        preflight.assert_called_once()
+
+    def test_wave_attempt_does_not_resubmit_when_csv_is_missing(self):
+        material_id = "m-csv-missing"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+            outcome = {
+                "materialId": material_id,
+                "rpaAvailable": True,
+                "failureReason": None,
+                "videoUrl": f"https://video.example/{material_id}.mp4",
+            }
+            def fetch(_args, requested_material_id, **_kwargs):
+                return outcome
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ) as fetch_mock:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        self.assertEqual(fetch_mock.call_count, 1)
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
+
+    def test_wave_attempt_waits_for_delayed_csv_within_grace_period(self):
+        material_id = "m-csv-grace"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 1,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+
+            def write_csv():
+                time.sleep(0.05)
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                (csv_dir / f"{material_id}.csv").write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{material_id}\x01"
+                    f"https://video.example/{material_id}.mp4\n",
+                    encoding="utf-8",
+                )
+
+            writer = threading.Thread(target=write_csv)
+            writer.start()
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value={
+                    "materialId": material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{material_id}.mp4",
+                },
+            ) as fetch:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+            writer.join(timeout=1)
+
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(result["rpaStatus"], "selected")
+        self.assertTrue(result["rpaCsvVerified"])
+
+    def test_wave_attempt_rejects_symlinked_expected_csv(self):
+        material_id = "m-csv-symlink"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+
+            def fetch(_args, requested_material_id, **_kwargs):
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                target = csv_dir / "rpa-source.csv"
+                target.write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{requested_material_id}\x01"
+                    f"https://video.example/{requested_material_id}.mp4\n",
+                    encoding="utf-8",
+                )
+                os.symlink(target, csv_dir / f"{requested_material_id}.csv")
+                return {
+                    "materialId": requested_material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{requested_material_id}.mp4",
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ), patch.object(
+                extract_peak_frames,
+                "preflight_material_availability",
+            ) as preflight:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        preflight.assert_not_called()
+
+    def test_wave_attempt_rejects_stale_expected_csv(self):
+        material_id = "m-csv-stale"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            csv_dir.mkdir(parents=True)
+            csv_path = csv_dir / f"{material_id}.csv"
+            csv_path.write_text(
+                "recordType\x01materialId\x01videoUrl\n"
+                f"material_info\x01{material_id}\x01https://video.example/{material_id}.mp4\n",
+                encoding="utf-8",
+            )
+            stale_at = time.time() - 60
+            os.utime(csv_path, (stale_at, stale_at))
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+            outcome = {
+                "materialId": material_id,
+                "rpaAvailable": True,
+                "failureReason": None,
+                "videoUrl": f"https://video.example/{material_id}.mp4",
+            }
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                return_value=outcome,
+            ), patch.object(
+                extract_peak_frames,
+                "preflight_material_availability",
+            ) as preflight:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        preflight.assert_not_called()
+
+    def test_wave_attempt_rejects_expected_csv_for_another_material(self):
+        material_id = "m-csv-expected"
+        other_material_id = "m-csv-other"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            csv_dir = root / "diagnosis-csv"
+            args = type("Args", (), {
+                "output_dir": str(root / "peak-frames"),
+                "diagnosis_records_dir": str(root / "diagnosis-records"),
+                "rpa_late_artifact_grace_sec": 0,
+            })()
+            entry = extract_peak_frames._wave_entry({"materialId": material_id}, 1)
+
+            def fetch(_args, requested_material_id, **_kwargs):
+                csv_dir.mkdir(parents=True, exist_ok=True)
+                (csv_dir / f"{requested_material_id}.csv").write_text(
+                    "recordType\x01materialId\x01videoUrl\n"
+                    f"material_info\x01{other_material_id}\x01"
+                    f"https://video.example/{other_material_id}.mp4\n",
+                    encoding="utf-8",
+                )
+                return {
+                    "materialId": requested_material_id,
+                    "rpaAvailable": True,
+                    "failureReason": None,
+                    "videoUrl": f"https://video.example/{requested_material_id}.mp4",
+                }
+
+            with patch.object(
+                extract_peak_frames,
+                "_fetch_material_preflight_for_cli",
+                side_effect=fetch,
+            ), patch.object(
+                extract_peak_frames,
+                "preflight_material_availability",
+                return_value={
+                    "rpaAvailable": False,
+                    "failureReason": "missing_material_info",
+                    "videoUrl": None,
+                },
+            ) as preflight:
+                result = extract_peak_frames._attempt_wave_rpa(args, entry)
+
+        self.assertEqual(result["rpaStatus"], "rejected")
+        self.assertEqual(result["failureReason"], "rpa_csv_artifact_unavailable")
+        self.assertEqual(result["rpaResultStatus"], "final_failed")
+        self.assertEqual(preflight.call_count, 2)
+
+    def test_local_cli_outputs_available_peaks_and_two_summaries(self):
         ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1565,7 +5265,7 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             result_dir = output / "m-123"
-            self.assertEqual(len(list(result_dir.glob("*.jpg"))), 4)
+            self.assertEqual(len(list(result_dir.glob("*.jpg"))), 5)
             summary_path = result_dir / "summary.json"
             self.assertTrue(summary_path.is_file())
             self.assertTrue((result_dir / "summary.md").is_file())
@@ -1573,14 +5273,84 @@ class CliTests(unittest.TestCase):
             self.assertEqual(
                 [frame["rankType"] for frame in summary["frames"]],
                 [
-                    "first_peak",
-                    "later_top_1",
-                    "later_top_2",
-                    "later_top_3",
+                    "zero_second",
+                    "peak_top_1",
+                    "peak_top_2",
+                    "peak_top_3",
+                    "peak_top_4",
                 ],
             )
-            self.assertEqual(summary["warnings"], [])
+            self.assertEqual(
+                summary["warnings"],
+                ["click curve has 4 local peak(s); up to 5 are targeted"],
+            )
             self.assertIn(f"result_dir={result_dir}", completed.stdout)
+
+    def test_local_csv_cli_reuses_peak_frame_pipeline(self):
+        ffmpeg = resolve_ffmpeg()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "video.mp4"
+            input_csv = root / "diagnosis.csv"
+            output = root / "output"
+            diagnosis_records = root / "diagnosis-records"
+            self._make_video(ffmpeg, video, duration=9)
+            rows = [
+                "recordType\x01materialId\x01interactionMetric\x01durationSec\x01metricValue",
+                *(
+                    f"\x02interaction_series\x01m-csv\x01CLICK_COUNT\x01{second}\x01{value}"
+                    for second, value in enumerate([0, 2, 0, 9, 0, 7, 0, 8, 0])
+                ),
+            ]
+            input_csv.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+            completed = self._run_local_csv(
+                input_csv,
+                video,
+                output,
+                ffmpeg,
+                diagnosis_records_dir=diagnosis_records,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(
+                (output / "m-csv" / "summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(summary["frames"]), 5)
+            saved_records = json.loads(
+                (diagnosis_records / "m-csv.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved_records[0]["durationSec"], 0.0)
+
+    def test_local_csv_cli_downloads_video_when_video_is_not_provided(self):
+        records = [
+            click_record(0, 0, material_id="m-csv"),
+            click_record(1, 2, material_id="m-csv"),
+            click_record(2, 0, material_id="m-csv"),
+            {
+                "recordType": "material_info",
+                "materialId": "m-csv",
+                "videoUrl": "https://video.example/material.mp4",
+            },
+        ]
+        output = Path(tempfile.gettempdir()) / "csv-output"
+        with patch.object(
+            extract_peak_frames, "parse_diagnosis_csv", return_value=records
+        ), patch.object(
+            extract_peak_frames,
+            "download_video",
+        ) as download_video, patch.object(
+            extract_peak_frames,
+            "process_records",
+            return_value=(output, output / "summary.json", output / "summary.md"),
+        ) as process_records:
+            result = extract_peak_frames.main(
+                ["--input-csv", "diagnosis.csv", "--output-dir", str(output)]
+            )
+
+        self.assertEqual(result, 0)
+        self.assertEqual(download_video.call_args.args[0], records[-1]["videoUrl"])
+        self.assertEqual(process_records.call_args.args[0], records)
 
     def test_local_cli_rerun_removes_only_owned_stale_frames(self):
         ffmpeg = resolve_ffmpeg()
@@ -1598,7 +5368,10 @@ class CliTests(unittest.TestCase):
             first_run = self._run_local(input_json, video, output, ffmpeg)
             self.assertEqual(first_run.returncode, 0, first_run.stderr)
             stale_owned_frames = set(result_dir.glob("*.jpg"))
-            self.assertEqual(len(stale_owned_frames), 4)
+            self.assertEqual(len(stale_owned_frames), 5)
+            stale_peak_frames = {
+                path for path in stale_owned_frames if not path.name.startswith("zero_second_")
+            }
             user_frame = result_dir / "user-reference.jpg"
             user_frame.write_bytes(DECODABLE_JPEG)
 
@@ -1609,11 +5382,11 @@ class CliTests(unittest.TestCase):
 
             self.assertEqual(second_run.returncode, 0, second_run.stderr)
             self.assertTrue(user_frame.is_file())
-            self.assertTrue(stale_owned_frames.isdisjoint(result_dir.glob("*.jpg")))
+            self.assertTrue(stale_peak_frames.isdisjoint(result_dir.glob("*.jpg")))
             summary = json.loads(
                 (result_dir / "summary.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(len(summary["frames"]), 2)
+            self.assertEqual(len(summary["frames"]), 3)
 
     def test_local_cli_rerun_ignores_non_object_previous_summary(self):
         ffmpeg = resolve_ffmpeg()
@@ -1637,7 +5410,7 @@ class CliTests(unittest.TestCase):
             summary = json.loads(
                 (result_dir / "summary.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(len(summary["frames"]), 2)
+            self.assertEqual(len(summary["frames"]), 3)
 
     def test_local_cli_outputs_available_peaks_with_warning(self):
         ffmpeg = resolve_ffmpeg()
@@ -1659,60 +5432,63 @@ class CliTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(len(summary["frames"]), 2)
+            self.assertEqual(len(summary["frames"]), 3)
             self.assertEqual(
                 summary["warnings"],
-                ["2 later peak frame(s) unavailable"],
+                ["click curve has 2 local peak(s); up to 5 are targeted"],
             )
 
-    def test_rpa_source_is_explicitly_unconfigured(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts" / "extract_peak_frames.py"),
-                    "--source",
-                    "rpa",
-                    "--material-id",
-                    "m-123",
-                    "--date-range-type",
-                    "LAST_7_DAYS",
-                    "--output-dir",
-                    temp_dir,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
-            )
-        self.assertEqual(completed.returncode, 4)
-        self.assertIn("RPA entry is not configured", completed.stderr)
+    def test_list_shop_accounts_prints_authorized_accounts(self):
+        import extract_peak_frames
 
-    def test_rpa_custom_range_requires_both_dates(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts" / "extract_peak_frames.py"),
-                    "--source",
-                    "rpa",
-                    "--material-id",
-                    "m-123",
-                    "--date-range-type",
-                    "CUSTOM",
-                    "--custom-start-date",
-                    "2026-07-01",
-                    "--output-dir",
-                    temp_dir,
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
+        stdout = io.StringIO()
+        with patch(
+            "extract_peak_frames.list_accounts",
+            return_value={
+                "data": [
+                    {"account": "first@example.com", "shop_id": "shop-1"},
+                    {"account": "ignored@example.com", "shop_id": ""},
+                    "invalid-row",
+                    {"account": "second@example.com", "shop_id": "shop-2"},
+                ]
+            },
+        ) as list_mock, patch("sys.stdout", stdout):
+            completed = extract_peak_frames.main(["--list-shop-accounts"])
+
+        self.assertEqual(completed, 0)
+        list_mock.assert_called_once()
+        self.assertIn("first@example.com", stdout.getvalue())
+        self.assertIn("shop-1", stdout.getvalue())
+        self.assertIn("second@example.com", stdout.getvalue())
+        self.assertIn("shop-2", stdout.getvalue())
+        self.assertNotIn("ignored@example.com", stdout.getvalue())
+
+    def test_rpa_batch_resolves_qianchuan_id_when_report_shop_id_is_not_passed(self):
+        import argparse
+
+        with patch(
+            "extract_peak_frames.list_accounts",
+            return_value={"data": [{"account": "1765875532@qq.com", "shop_id": "408IGuUKaf"}]},
+        ) as list_mock:
+            resolved = extract_peak_frames._resolve_shop_id(argparse.Namespace(shop_id=None))
+
+        self.assertEqual(resolved, "408IGuUKaf")
+        list_mock.assert_called_once()
+
+    def test_rpa_batch_rejects_explicit_shop_without_rpa_authorization(self):
+        import argparse
+
+        with patch(
+            "extract_peak_frames.list_accounts",
+            return_value={"data": [{"account": "bound@example.com", "shop_id": "shop-1"}]},
+        ) as list_mock, self.assertRaisesRegex(
+            rpa_adapter.RpaAdapterError, "not authorized"
+        ):
+            extract_peak_frames._resolve_shop_id(
+                argparse.Namespace(shop_id="shop-2")
             )
 
-        self.assertEqual(completed.returncode, 2)
-        self.assertIn("CUSTOM requires", completed.stderr)
+        list_mock.assert_called_once()
 
     def test_local_cli_rejects_malformed_json(self):
         ffmpeg = resolve_ffmpeg()
@@ -1746,12 +5522,12 @@ class CliTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2)
             self.assertIn("video does not exist", completed.stderr)
 
-    def test_local_cli_rejects_no_peaks(self):
+    def test_local_cli_accepts_no_peaks_with_cover_frame(self):
         ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             video = root / "video.mp4"
-            video.touch()
+            self._make_video(ffmpeg, video, duration=3)
             input_json = root / "input.json"
             self._write_series(
                 input_json, list(enumerate([1, 2, 3]))
@@ -1761,10 +5537,19 @@ class CliTests(unittest.TestCase):
                 input_json, video, root / "out", ffmpeg
             )
 
-            self.assertEqual(completed.returncode, 2)
-            self.assertIn("No local peaks", completed.stderr)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(
+                (root / "out" / "m-123" / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                [frame["rankType"] for frame in summary["frames"]],
+                ["zero_second"],
+            )
+            self.assertEqual(summary["missingFrames"], [])
 
-    def test_local_cli_rejects_peak_at_video_duration(self):
+    def test_local_cli_skips_peak_at_video_duration(self):
         ffmpeg = resolve_ffmpeg()
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1777,8 +5562,20 @@ class CliTests(unittest.TestCase):
                 input_json, video, root / "out", ffmpeg
             )
 
-            self.assertEqual(completed.returncode, 2)
-            self.assertIn("video duration", completed.stderr)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads(
+                (root / "out" / "m-123" / "summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                [frame["rankType"] for frame in summary["frames"]],
+                ["zero_second"],
+            )
+            self.assertIn(
+                "excluded 1 curve peak(s) outside video duration 2 seconds",
+                summary["warnings"],
+            )
 
 if __name__ == "__main__":
     unittest.main()

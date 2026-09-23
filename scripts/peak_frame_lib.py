@@ -7,7 +7,12 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 import uuid
+from typing import Optional
+
+
+DEFAULT_FFMPEG_TIMEOUT_SEC = 120.0
 
 
 class PeakFrameError(Exception):
@@ -38,7 +43,7 @@ class Peak:
 class SelectedPeak:
     rank_type: str
     duration_sec: float
-    metric_value: float
+    metric_value: Optional[float]
 
 
 def resolve_ffmpeg(
@@ -128,7 +133,9 @@ def resolve_ffmpeg(
     raise FfmpegError(message)
 
 
-def probe_video_duration(ffmpeg_bin, video_path, timeout_sec=30.0):
+def probe_video_duration(
+    ffmpeg_bin, video_path, timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC
+):
     video = Path(video_path)
     if not video.is_file():
         raise InputDataError(f"video does not exist or is not a file: {video}")
@@ -214,7 +221,7 @@ def extract_frame(
     video_path,
     timestamp_sec,
     output_path,
-    timeout_sec=30.0,
+    timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
 ):
     video = Path(video_path)
     output = Path(output_path)
@@ -276,6 +283,62 @@ def extract_frame(
             staging,
             exc,
         )
+
+    if process.returncode < 0:
+        retry_command = [
+            str(ffmpeg_bin),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
+            "-i",
+            str(video),
+            "-ss",
+            timestamp_text,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            "-y",
+            str(staging),
+        ]
+        first_return_code = process.returncode
+        try:
+            process = subprocess.run(
+                retry_command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            _raise_frame_error(
+                f"FFmpeg low-resource retry timed out after {timeout}s while "
+                f"extracting frame at {timestamp_text}s from {video}; first "
+                f"return code {first_return_code}",
+                staging,
+                cause=exc,
+            )
+        except OSError as exc:
+            _raise_frame_error(
+                f"Unable to start FFmpeg low-resource retry for frame at "
+                f"{timestamp_text}s from {video}; first return code "
+                f"{first_return_code}: {exc}",
+                staging,
+                cause=exc,
+            )
+        if process.returncode != 0:
+            _raise_frame_error(
+                f"FFmpeg low-resource retry failed to extract frame at "
+                f"{timestamp_text}s from {video} to {output}; first return "
+                f"code {first_return_code}; retry return code "
+                f"{process.returncode}; stderr excerpt: "
+                f"{_stderr_excerpt(process.stderr)}",
+                staging,
+            )
 
     if process.returncode != 0:
         _raise_frame_error(
@@ -387,6 +450,73 @@ def extract_frame(
     return output
 
 
+def extract_frames_batch(
+    ffmpeg_bin,
+    video_path,
+    targets,
+    timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+):
+    """Decode one video stream and emit exact requested timestamps together."""
+    if not targets:
+        return []
+    video = Path(video_path)
+    output_targets = [(float(timestamp), Path(output)) for timestamp, output in targets]
+    staging_paths = []
+    filter_parts = []
+    split_labels = [f"split_{index}" for index in range(len(output_targets))]
+    filter_parts.append(
+        f"[0:v]split={len(output_targets)}" + "".join(f"[{label}]" for label in split_labels)
+    )
+    for index, (timestamp, _output) in enumerate(output_targets):
+        filter_parts.append(
+            f"[{split_labels[index]}]trim=start={timestamp!r},setpts=PTS-STARTPTS[out_{index}]"
+        )
+    max_timestamp = max(timestamp for timestamp, _output in output_targets)
+    for index, (_timestamp, output) in enumerate(output_targets):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staging = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.stage{output.suffix or '.jpg'}")
+        staging_paths.append(staging)
+    command = [
+        str(ffmpeg_bin), "-hide_banner", "-loglevel", "error",
+        "-threads", "1", "-filter_threads", "1",
+        "-t", repr(max_timestamp + 1.0), "-i", str(video),
+        "-filter_complex", ";".join(filter_parts),
+    ]
+    for index, staging in enumerate(staging_paths):
+        command.extend(["-map", f"[out_{index}]", "-frames:v", "1", "-q:v", "2", "-y", str(staging)])
+    try:
+        process = subprocess.run(
+            command, capture_output=True, text=True, check=False, timeout=timeout_sec
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        for staging in staging_paths:
+            staging.unlink(missing_ok=True)
+        raise FfmpegError(f"FFmpeg batch extraction failed for {video}: {exc}") from exc
+    if process.returncode != 0:
+        for staging in staging_paths:
+            staging.unlink(missing_ok=True)
+        raise FfmpegError(
+            f"FFmpeg batch extraction failed for {video}; return code {process.returncode}; "
+            f"stderr excerpt: {_stderr_excerpt(process.stderr)}"
+        )
+    for staging, (_timestamp, output) in zip(staging_paths, output_targets):
+        try:
+            if staging.stat().st_size == 0:
+                raise OSError("empty JPEG")
+            with staging.open("rb") as frame_file:
+                if frame_file.read(2) != b"\xff\xd8":
+                    raise OSError("invalid JPEG start marker")
+                frame_file.seek(-2, os.SEEK_END)
+                if frame_file.read(2) != b"\xff\xd9":
+                    raise OSError("invalid JPEG end marker")
+            os.replace(staging, output)
+        except (OSError, ValueError) as exc:
+            for pending in staging_paths:
+                pending.unlink(missing_ok=True)
+            raise FfmpegError(f"FFmpeg batch output validation failed for {output}: {exc}") from exc
+    return [output for _timestamp, output in output_targets]
+
+
 def validate_timestamps(selected_peaks, video_duration):
     duration, duration_text = _canonical_seconds(
         video_duration, "video duration", InputDataError
@@ -436,12 +566,15 @@ def format_frame_filename(rank_type, duration_sec, metric_value):
         r"[A-Za-z0-9_-]+", rank_type
     ) is None:
         raise InputDataError(f"invalid frame rank type: {rank_type!r}")
-    _, metric_text = _canonical_seconds(
-        metric_value, "metric value", InputDataError
-    )
-    if "." in metric_text:
-        metric_text = metric_text.rstrip("0").rstrip(".")
-    metric_token = metric_text.replace("-", "m").replace(".", "p")
+    if metric_value is None:
+        metric_token = "na"
+    else:
+        _, metric_text = _canonical_seconds(
+            metric_value, "metric value", InputDataError
+        )
+        if "." in metric_text:
+            metric_text = metric_text.rstrip("0").rstrip(".")
+        metric_token = metric_text.replace("-", "m").replace(".", "p")
     return (
         f"{rank_type}_{format_seconds_token(duration_sec)}_"
         f"{metric_token}.jpg"
@@ -454,26 +587,30 @@ def build_summary(
     video_path,
     selected_peaks,
     frame_paths,
+    video_source=None,
+    expected_peaks=None,
+    missing_frames=None,
+    additional_warnings=None,
 ):
     """Build the JSON-compatible result shared by both summary formats."""
     if len(selected_peaks) != len(frame_paths):
         raise ValueError("selected_peaks and frame_paths must have equal length")
-    later_count = sum(
-        peak.rank_type.startswith("later_top_") for peak in selected_peaks
+    expected = list(selected_peaks if expected_peaks is None else expected_peaks)
+    missing = list(missing_frames or [])
+    peak_count = sum(
+        peak.rank_type.startswith("peak_top_") for peak in expected
     )
-    missing_later = max(0, 3 - later_count)
-    warnings = []
-    if missing_later:
+    warnings = list(additional_warnings or [])
+    if peak_count < 5:
         warnings.append(
-            f"{missing_later} later peak frame(s) unavailable"
+            f"click curve has {peak_count} local peak(s); up to 5 are targeted"
         )
-    return {
+    summary = {
         "materialId": str(material_id),
-        "inputJsonPath": str(Path(input_json_path)),
-        "videoPath": str(Path(video_path)),
+        "inputJsonPath": str(input_json_path),
         "selectionRule": {
-            "first": "earliest_local_peak",
-            "later": "top_3_by_metric_desc_then_time_asc_after_first",
+            "zero": "video_timestamp_0_seconds",
+            "peaks": "top_5_local_peaks_by_metric_desc_then_time_asc",
             "plateau": "collapse_to_earliest_second",
             "boundariesExcluded": True,
         },
@@ -487,8 +624,32 @@ def build_summary(
             }
             for peak, frame_path in zip(selected_peaks, frame_paths)
         ],
+        "expectedFrames": [
+            {
+                "rankType": peak.rank_type,
+                "durationSec": peak.duration_sec,
+                "metricValue": peak.metric_value,
+                "requestedTimestampSec": peak.duration_sec,
+            }
+            for peak in expected
+        ],
+        "missingFrames": missing,
+        "frameCoverage": {
+            "targetFrameCount": 6,
+            "expectedFrameCount": len(expected),
+            "succeededFrameCount": len(selected_peaks),
+            "expectedPeakCount": peak_count,
+            "availablePeakCount": sum(
+                peak.rank_type.startswith("peak_top_") for peak in selected_peaks
+            ),
+        },
         "warnings": warnings,
     }
+    if video_source is None:
+        summary["videoPath"] = str(Path(video_path))
+    else:
+        summary["videoSource"] = str(video_source)
+    return summary
 
 
 def _render_summary_markdown(summary):
@@ -497,12 +658,16 @@ def _render_summary_markdown(summary):
         f"# 千川点击峰值画面：{summary['materialId']}",
         "",
         f"- RPA JSON: {summary['inputJsonPath']}",
-        f"- 视频: {summary['videoPath']}",
+        (
+            f"- 视频来源: {summary['videoSource']}"
+            if "videoSource" in summary
+            else f"- 视频: {summary['videoPath']}"
+        ),
         "",
         "## 选择规则",
         "",
-        f"- first: {selection_rule['first']}",
-        f"- later: {selection_rule['later']}",
+        f"- zero: {selection_rule['zero']}",
+        f"- peaks: {selection_rule['peaks']}",
         f"- plateau: {selection_rule['plateau']}",
         "- boundariesExcluded: "
         f"{str(selection_rule['boundariesExcluded']).lower()}",
@@ -511,9 +676,14 @@ def _render_summary_markdown(summary):
         "| --- | ---: | ---: | ---: | --- |",
     ]
     for frame in summary["frames"]:
+        metric_value = (
+            f"{frame['metricValue']:g}"
+            if frame["metricValue"] is not None
+            else "-"
+        )
         lines.append(
             f"| {frame['rankType']} | {frame['durationSec']:g} | "
-            f"{frame['metricValue']:g} | "
+            f"{metric_value} | "
             f"{frame['requestedTimestampSec']:g} | {frame['framePath']} |"
         )
     if summary["warnings"]:
@@ -642,25 +812,70 @@ def process_local(
     video_path,
     output_dir,
     ffmpeg_bin=None,
+    ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
 ):
     """Run the complete local JSON/video peak-frame pipeline."""
     input_path = Path(input_json_path)
-    video = Path(video_path)
     if not input_path.is_file():
         raise InputDataError(f"input JSON does not exist: {input_path}")
-    if not video.is_file():
-        raise InputDataError(f"video does not exist or is not a file: {video}")
     try:
         records = json.loads(input_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise InputDataError(
             f"input must contain valid JSON: {input_path}"
         ) from exc
+    return process_records(
+        records,
+        input_path,
+        video_path,
+        output_dir,
+        ffmpeg_bin=ffmpeg_bin,
+        ffmpeg_timeout_sec=ffmpeg_timeout_sec,
+    )
 
+
+def process_records(
+    records,
+    input_label,
+    video_path,
+    output_dir,
+    ffmpeg_bin=None,
+    ffmpeg_timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    video_source=None,
+    timings=None,
+):
+    """Run the peak-frame pipeline with already-loaded RPA records."""
+    video = Path(video_path)
+    if not video.is_file():
+        raise InputDataError(f"video does not exist or is not a file: {video}")
     material_id, points = parse_click_series(records)
-    selected_peaks = select_peak_frames(find_local_peaks(points))
+    selected_peaks = select_peak_frames(points)
+    timeout_sec, _ = _canonical_seconds(
+        ffmpeg_timeout_sec, "FFmpeg timeout", FfmpegError
+    )
+    if timeout_sec <= 0:
+        raise FfmpegError(
+            f"FFmpeg timeout {ffmpeg_timeout_sec!r} must be greater than 0 seconds"
+        )
     ffmpeg = resolve_ffmpeg(explicit=ffmpeg_bin)
-    video_duration = probe_video_duration(ffmpeg, video)
+    probe_started = time.perf_counter()
+    try:
+        video_duration = probe_video_duration(
+            ffmpeg, video, timeout_sec=timeout_sec
+        )
+    finally:
+        if isinstance(timings, dict):
+            timings["videoProbeSec"] = round(
+                max(0.0, time.perf_counter() - probe_started), 6
+            )
+    out_of_range_peaks = [
+        peak for peak in selected_peaks
+        if peak.duration_sec < 0 or peak.duration_sec >= video_duration
+    ]
+    selected_peaks = [
+        peak for peak in selected_peaks
+        if 0 <= peak.duration_sec < video_duration
+    ]
     validate_timestamps(selected_peaks, video_duration)
 
     summary_material_id = material_id or video.stem
@@ -681,28 +896,128 @@ def process_local(
     )
     _remove_owned_paths(summary_markers, "summary")
 
+    successful_peaks = []
     frame_paths = []
-    for peak in selected_peaks:
-        frame_path = result_dir / format_frame_filename(
-            peak.rank_type,
-            peak.duration_sec,
-            peak.metric_value,
+    missing_frames = []
+    target_paths = [
+        (
+            peak,
+            result_dir / format_frame_filename(
+                peak.rank_type, peak.duration_sec, peak.metric_value
+            ),
         )
-        extract_frame(ffmpeg, video, peak.duration_sec, frame_path)
-        frame_paths.append(frame_path)
+        for peak in selected_peaks
+    ]
+    def extract_with_isolated_fallback(targets):
+        """Keep a failed timestamp from forcing the whole material to legacy mode."""
+        if not targets:
+            return
+        batch_started = time.perf_counter()
+        try:
+            extract_frames_batch(
+                ffmpeg,
+                video,
+                [(peak.duration_sec, path) for peak, path in targets],
+                timeout_sec=timeout_sec,
+            )
+        except FfmpegError as batch_error:
+            if isinstance(timings, dict):
+                timings["ffmpegBatchSec"] = round(
+                    timings.get("ffmpegBatchSec", 0.0)
+                    + max(0.0, time.perf_counter() - batch_started),
+                    6,
+                )
+            if len(targets) > 1:
+                midpoint = len(targets) // 2
+                extract_with_isolated_fallback(targets[:midpoint])
+                extract_with_isolated_fallback(targets[midpoint:])
+                return
+            peak, frame_path = targets[0]
+            fallback_started = time.perf_counter()
+            try:
+                extract_frame(
+                    ffmpeg,
+                    video,
+                    peak.duration_sec,
+                    frame_path,
+                    timeout_sec=timeout_sec,
+                )
+            except FfmpegError as exc:
+                missing_frames.append(
+                    {
+                        "rankType": peak.rank_type,
+                        "durationSec": peak.duration_sec,
+                        "metricValue": peak.metric_value,
+                        "requestedTimestampSec": peak.duration_sec,
+                        "errorType": type(exc).__name__,
+                        "errorMessage": _stderr_excerpt(str(exc)),
+                    }
+                )
+            else:
+                successful_peaks.append(peak)
+                frame_paths.append(frame_path)
+            finally:
+                if isinstance(timings, dict):
+                    timings["ffmpegFallbackSec"] = round(
+                        timings.get("ffmpegFallbackSec", 0.0)
+                        + max(0.0, time.perf_counter() - fallback_started),
+                        6,
+                    )
+            return
+        else:
+            if isinstance(timings, dict):
+                timings["ffmpegBatchSec"] = round(
+                    timings.get("ffmpegBatchSec", 0.0)
+                    + max(0.0, time.perf_counter() - batch_started),
+                    6,
+                )
+            successful_peaks.extend(peak for peak, _path in targets)
+            frame_paths.extend(path for _peak, path in targets)
+
+    extract_with_isolated_fallback(target_paths)
+
+    cover_succeeded = any(
+        peak.rank_type == "zero_second" for peak in successful_peaks
+    )
+    peak_expected = any(
+        peak.rank_type.startswith("peak_top_") for peak in selected_peaks
+    )
+    peak_succeeded = any(
+        peak.rank_type.startswith("peak_top_") for peak in successful_peaks
+    )
+    if not cover_succeeded or (peak_expected and not peak_succeeded):
+        raise FfmpegError(
+            "frame coverage does not meet material success rule: "
+            f"cover_succeeded={cover_succeeded}; "
+            f"peak_expected={peak_expected}; peak_succeeded={peak_succeeded}"
+        )
 
     current_frames = set(frame_paths)
     stale_frames = previously_owned_frames - current_frames
     _remove_owned_paths(stale_frames, "frame")
 
-    summary = build_summary(
-        summary_material_id,
-        input_path,
-        video,
-        selected_peaks,
-        frame_paths,
-    )
-    json_path, markdown_path = write_summaries(summary, result_dir)
+    summary_started = time.perf_counter()
+    try:
+        summary = build_summary(
+            summary_material_id,
+            input_label,
+            video,
+            successful_peaks,
+            frame_paths,
+            video_source=video_source,
+            expected_peaks=selected_peaks,
+            missing_frames=missing_frames,
+            additional_warnings=[
+                "excluded %s curve peak(s) outside video duration %.6g seconds"
+                % (len(out_of_range_peaks), video_duration)
+            ] if out_of_range_peaks else None,
+        )
+        json_path, markdown_path = write_summaries(summary, result_dir)
+    finally:
+        if isinstance(timings, dict):
+            timings["summaryWriteSec"] = round(
+                max(0.0, time.perf_counter() - summary_started), 6
+            )
     return result_dir, json_path, markdown_path
 
 
@@ -774,29 +1089,36 @@ def find_local_peaks(points):
     return peaks
 
 
-def select_peak_frames(peaks, later_limit=3):
-    if not peaks:
+def select_peak_frames(points, peak_limit=5):
+    if not points:
         raise InputDataError("No local peaks found")
+    zero_metric = next(
+        (
+            point.metric_value
+            for point in points
+            if point.duration_sec == 0
+        ),
+        None,
+    )
+    peaks = find_local_peaks(points)
 
-    first_peak = min(peaks, key=lambda peak: peak.duration_sec)
-    later_peaks = [
-        peak for peak in peaks if peak.duration_sec > first_peak.duration_sec
-    ]
-    later_peaks.sort(key=lambda peak: (-peak.metric_value, peak.duration_sec))
+    top_peaks = sorted(
+        peaks, key=lambda peak: (-peak.metric_value, peak.duration_sec)
+    )
 
     selected = [
         SelectedPeak(
-            "first_peak",
-            float(first_peak.duration_sec),
-            float(first_peak.metric_value),
+            "zero_second",
+            0.0,
+            float(zero_metric) if zero_metric is not None else None,
         )
     ]
     selected.extend(
         SelectedPeak(
-            f"later_top_{rank}",
+            f"peak_top_{rank}",
             float(peak.duration_sec),
             float(peak.metric_value),
         )
-        for rank, peak in enumerate(later_peaks[:later_limit], start=1)
+        for rank, peak in enumerate(top_peaks[:peak_limit], start=1)
     )
     return selected

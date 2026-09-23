@@ -1,20 +1,113 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
+import json
+import math
+import os
+import signal
+import stat
 import sys
+import tempfile
+import threading
+import time
+import uuid
+from contextlib import contextmanager
+from pathlib import Path
 
-from peak_frame_lib import FfmpegError, InputDataError, process_local
-from rpa_adapter import RpaNotConfiguredError, fetch_material_diagnosis
-
-
-DATE_RANGE_TYPES = (
-    "YESTERDAY",
-    "LAST_7_DAYS",
-    "LAST_15_DAYS",
-    "LAST_WEEK",
-    "THIS_MONTH",
-    "LAST_MONTH",
-    "CUSTOM",
+from peak_frame_lib import (
+    DEFAULT_FFMPEG_TIMEOUT_SEC,
+    FfmpegError,
+    InputDataError,
+    parse_click_series,
+    process_local,
+    process_records,
 )
+from rpa_adapter import (
+    RpaAdapterError,
+    download_video,
+    fetch_material_preflight,
+    find_material_video_url,
+    list_accounts,
+    preflight_material_availability,
+)
+from rpa_dynamic_client import (
+    CONNECTOR_CODE,
+    ContractError as DynamicContractError,
+    load_params as load_dynamic_params,
+)
+from rpa_csv_parser import RpaCsvError, parse_diagnosis_csv
+from rpa_artifact_receipts import (
+    RpaArtifactReceiptError,
+    load_artifact_receipt,
+    load_records_persisted_receipt,
+    publish_receipt,
+)
+from batch_runtime import (
+    BatchLockError,
+    acquire_run_lock,
+    read_json,
+    stage_counts,
+    write_json_atomically,
+)
+import batch_verification
+from batch_verification import material_output_issues
+import rpa_batch_runner
+from path_safety import artifact_path, validate_material_id
+from rpa_runtime import multiprocessing_context_name, run_isolated_preflight
+from schemas import SchemaError, validate_manifest
+import schemas
+
+_material_output_issues = material_output_issues
+
+
+BATCH_MANIFEST_NAME = "batch-manifest.json"
+BATCH_PROGRESS_NAME = "batch-progress.jsonl"
+BATCH_MANIFEST_VERSION = 2
+WAVE_BATCH_MANIFEST_VERSION = 2
+BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
+BATCH_VERIFICATION_NAME = "batch-verification.json"
+BATCH_VERIFICATION_FAILURE_EXIT_CODE = 6
+RPA_PREFLIGHT_NAME = "rpa-preflight.json"
+RPA_READY_TOP_MATERIALS_NAME = "top_materials_rpa_ready.json"
+MATERIAL_TIMING_FIELDS = (
+    "rpaFetchSec",
+    "diagnosisRecordWriteSec",
+    "videoDownloadSec",
+    "videoProbeSec",
+    "ffmpegBatchSec",
+    "ffmpegFallbackSec",
+    "summaryWriteSec",
+    "frameExtractionSec",
+    "totalSec",
+)
+HANDLED_MATERIAL_ERRORS = (InputDataError, FfmpegError, RpaAdapterError, RpaCsvError)
+_MATERIAL_TIMING_STATE = threading.local()
+
+
+def _positive_timeout(value):
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError(
+            "FFmpeg timeout must be a positive finite number"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise argparse.ArgumentTypeError(
+            "FFmpeg timeout must be a positive finite number"
+        )
+    return timeout
+
+
+def _positive_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "concurrency must be a positive integer"
+        ) from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError("concurrency must be a positive integer")
+    return number
 
 
 def build_parser():
@@ -22,61 +115,1562 @@ def build_parser():
         description="Extract video frames at Qianchuan CLICK_COUNT peaks."
     )
     parser.add_argument("--source", choices=("local", "rpa"), default="local")
-    parser.add_argument("--input-json")
+    input_group = parser.add_mutually_exclusive_group()
+    input_group.add_argument("--input-json")
+    input_group.add_argument("--input-csv")
     parser.add_argument("--video")
-    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-dir")
     parser.add_argument("--ffmpeg-bin")
-    parser.add_argument("--material-id")
-    parser.add_argument("--date-range-type", choices=DATE_RANGE_TYPES)
-    parser.add_argument("--custom-start-date")
-    parser.add_argument("--custom-end-date")
+    parser.add_argument("--ffmpeg-timeout-sec", type=_positive_timeout, default=DEFAULT_FFMPEG_TIMEOUT_SEC)
+    parser.add_argument("--shop-id")
+    parser.add_argument("--top-materials-json")
+    parser.add_argument("--diagnosis-records-dir")
+    parser.add_argument("--batch-manifest")
+    parser.add_argument("--target-top-n", type=_positive_int)
+    parser.add_argument("--candidate-top-n", type=_positive_int)
+    parser.add_argument("--rpa-preflight-timeout-sec", type=_positive_timeout, default=4260)
+    parser.add_argument("--rpa-late-artifact-grace-sec", type=_positive_timeout, default=30)
+    parser.add_argument("--rpa-ready-top-materials-json")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--concurrency", type=_positive_int)
+    parser.add_argument("--rpa-concurrency", type=_positive_int, default=3)
+    parser.add_argument("--download-concurrency", type=_positive_int, default=2)
+    parser.add_argument(
+        "--postprocess-concurrency",
+        type=_positive_int,
+        default=1,
+        help="Maximum concurrent FFmpeg/frame-extraction tasks.",
+    )
+    parser.set_defaults(
+        rpa_wave_barrier=True,
+    )
+    params_group = parser.add_mutually_exclusive_group()
+    params_group.add_argument("--params-json")
+    params_group.add_argument("--params-file")
+    parser.add_argument("--list-shop-accounts", action="store_true")
     return parser
+
+
+def resolve_concurrency(args, argv):
+    legacy = args.concurrency
+    if legacy is not None:
+        if not any(token == "--rpa-concurrency" or token.startswith("--rpa-concurrency=") for token in argv):
+            args.rpa_concurrency = legacy
+        if not any(token == "--download-concurrency" or token.startswith("--download-concurrency=") for token in argv):
+            args.download_concurrency = legacy
+        if not any(token == "--postprocess-concurrency" or token.startswith("--postprocess-concurrency=") for token in argv):
+            args.postprocess_concurrency = legacy
+    args.concurrency = legacy or 1
+
+
+def _normalize_account_rows(payload):
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise RpaAdapterError("RPA authorization list must contain a data array")
+    accounts = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        shop_id = str(row.get("shop_id") or "").strip()
+        account = str(row.get("account") or "").strip()
+        if shop_id:
+            accounts.append({"account": account, "shop_id": shop_id})
+    return accounts
+
+
+def _format_account_table(accounts):
+    return "\n".join(
+        f"{item['account'] or '<unknown-account>'}\t{item['shop_id']}"
+        for item in accounts
+    )
+
+
+def _load_top_materials_payload(path, business_params):
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(f"unable to read top materials JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RpaAdapterError("top materials JSON must be an object")
+    actual_start_date = payload.get("actualStartDate")
+    actual_end_date = payload.get("actualEndDate")
+    if not isinstance(actual_start_date, str) or not isinstance(actual_end_date, str):
+        raise RpaAdapterError("top materials JSON requires actualStartDate and actualEndDate")
+    period_type = business_params.get("date_type", business_params.get("date_range_type"))
+    if period_type == "CUSTOM" and (
+        actual_start_date != business_params.get("custom_start_date")
+        or actual_end_date != business_params.get("custom_end_date")
+    ):
+        raise RpaAdapterError(
+            "top materials JSON date range does not match the requested CUSTOM range"
+        )
+    materials = payload.get("materials")
+    if not isinstance(materials, list) or not materials:
+        raise RpaAdapterError("top materials JSON must contain a nonempty materials list")
+
+    material_ids = []
+    for material in materials:
+        if not isinstance(material, dict):
+            raise RpaAdapterError("top materials entries must be objects")
+        material_id = str(material.get("materialId") or "").strip()
+        if not material_id:
+            raise RpaAdapterError("top materials entries require materialId")
+        try:
+            validate_material_id(material_id)
+        except ValueError as exc:
+            raise RpaAdapterError(f"invalid top materials materialId {material_id!r}") from exc
+        if material_id in material_ids:
+            raise RpaAdapterError("top materials entries must not repeat materialId")
+        material_ids.append(material_id)
+    if payload.get("materialCount") != len(material_ids):
+        raise RpaAdapterError("top materials JSON materialCount does not match materials")
+    return payload, material_ids
+
+
+def _write_diagnosis_records_atomically(records, records_dir, material_id):
+    target_dir = Path(records_dir)
+    target = artifact_path(target_dir, material_id, ".json")
+    return write_json_atomically(target, records)
+
+
+class RpaPreflightDeadlineExceeded(TimeoutError):
+    """Raised when a single-material RPA preflight exceeds its wall-clock budget."""
+
+
+
+def _list_shop_accounts():
+    accounts = _normalize_account_rows(list_accounts())
+    print("account\tshop_id")
+    if accounts:
+        print(_format_account_table(accounts))
+    return 0
+
+
+def _resolve_shop_id(args):
+    explicit = str(args.shop_id or "").strip()
+    accounts = _normalize_account_rows(list_accounts())
+    if not accounts:
+        raise RpaAdapterError(
+            "no authorized RPA accounts are available for the current credentials"
+        )
+    if explicit:
+        authorized_shop_ids = {item["shop_id"] for item in accounts}
+        if explicit not in authorized_shop_ids:
+            raise RpaAdapterError(
+                "requested --shop-id is not authorized for RPA with the current "
+                "credentials:\n" + _format_account_table(accounts)
+            )
+        return explicit
+    if len(accounts) > 1:
+        raise RpaAdapterError(
+            "multiple authorized RPA accounts were found; pass --shop-id explicitly:\n"
+            + _format_account_table(accounts)
+        )
+    return accounts[0]["shop_id"]
+
+
+def _write_diagnosis_records(records, records_dir, material_id):
+    try:
+        return _write_diagnosis_records_atomically(records, records_dir, material_id)
+    except ValueError as exc:
+        raise RpaAdapterError(f"invalid material ID {material_id!r}: {exc}") from exc
+    except (OSError, TypeError) as exc:
+        raise RpaAdapterError(
+            f"unable to write diagnosis records for material {material_id}: {exc}"
+        ) from exc
+
+
+def _read_diagnosis_records(path, material_id):
+    source = Path(path)
+    try:
+        records = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RpaAdapterError(
+            f"unable to read diagnosis records for material {material_id}: {exc}"
+        ) from exc
+    if not isinstance(records, list):
+        raise RpaAdapterError(
+            f"diagnosis records for material {material_id} must be a list"
+        )
+    if not any(
+        isinstance(record, dict)
+        and str(record.get("materialId") or "").strip() == str(material_id).strip()
+        for record in records
+    ):
+        raise RpaAdapterError(
+            f"diagnosis records for material {material_id} do not match material ID"
+        )
+    return records
+
+
+def _diagnosis_csv_dir(args):
+    if args.diagnosis_records_dir:
+        return Path(args.diagnosis_records_dir).parent / "diagnosis-csv"
+    return Path(args.output_dir) / "diagnosis-csv"
+
+
+def _diagnosis_records_dir(args):
+    if args.diagnosis_records_dir:
+        return Path(args.diagnosis_records_dir)
+    return Path(args.output_dir).parent / "diagnosis-records"
+
+
+def _rpa_receipts_dir(args):
+    return Path(args.output_dir).parent / "rpa-receipts"
+
+
+def _run_relative_path(args, path):
+    return os.path.relpath(Path(path), Path(args.output_dir).parent)
+
+
+def _write_json_atomically(path, payload):
+    try:
+        return write_json_atomically(path, payload)
+    except (OSError, TypeError, ValueError) as exc:
+        raise RpaAdapterError(
+            f"unable to write batch manifest {path}: {exc}"
+        ) from exc
+
+
+def _ready_top_materials_path(args):
+    if args.rpa_ready_top_materials_json:
+        return Path(args.rpa_ready_top_materials_json)
+    return Path(args.output_dir) / RPA_READY_TOP_MATERIALS_NAME
+
+
+def _ready_top_materials_payload(candidate_payload, selected_materials):
+    ready_payload = dict(candidate_payload)
+    selected_ids = {str(material.get("materialId") or "") for material in selected_materials}
+    ready_payload["materials"] = [
+        dict(material)
+        for material in candidate_payload["materials"]
+        if str(material.get("materialId") or "") in selected_ids
+    ]
+    ready_payload["materialCount"] = len(ready_payload["materials"])
+    return ready_payload
+
+
+@contextmanager
+def _rpa_preflight_deadline(timeout_sec):
+    if (
+        not hasattr(signal, "SIGALRM")
+        or not hasattr(signal, "setitimer")
+        or threading.current_thread() is not threading.main_thread()
+    ):
+        yield
+        return
+
+    def _handle_timeout(_signum, _frame):
+        raise RpaPreflightDeadlineExceeded(
+            f"RPA preflight exceeded {timeout_sec} seconds"
+        )
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout_sec)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+
+
+def _preflight_failure(material_id, reason, error=None):
+    result = {
+        "materialId": str(material_id or "").strip(),
+        "rpaAvailable": False,
+        "failureReason": reason,
+        "videoUrl": None,
+    }
+    diagnostics = getattr(error, "diagnostics", {}) if error is not None else {}
+    result.update(
+        {
+            "rpaResultStatus": (
+                "pending" if reason == "rpa_request_failed" else "final_failed"
+            ),
+            "errorType": type(error).__name__ if error is not None else None,
+            "errorMessage": str(error) if error is not None else None,
+        }
+    )
+    result.update(diagnostics)
+    return result
+
+
+def _materialize_preflight_records(args, outcome, material_id, timings=None):
+    records = outcome.get("records")
+    records_path = outcome.get("diagnosisRecordsPath")
+    if isinstance(records, list):
+        if records_path:
+            return records, Path(records_path)
+        if timings is None:
+            return records, _write_diagnosis_records(
+                records, _diagnosis_records_dir(args), material_id
+            )
+        return records, _time_call(
+            timings,
+            "diagnosisRecordWriteSec",
+            _write_diagnosis_records,
+            records,
+            _diagnosis_records_dir(args),
+            material_id,
+        )
+    if records_path:
+        return _read_diagnosis_records(records_path, material_id), Path(records_path)
+    records = [
+        {
+            "recordType": "material_info",
+            "materialId": material_id,
+            "videoUrl": outcome.get("videoUrl"),
+        }
+    ]
+    if timings is None:
+        return records, _write_diagnosis_records(
+            records, _diagnosis_records_dir(args), material_id
+        )
+    return records, _time_call(
+        timings,
+        "diagnosisRecordWriteSec",
+        _write_diagnosis_records,
+        records,
+        _diagnosis_records_dir(args),
+        material_id,
+    )
+
+
+def _verify_current_rpa_csv_artifact(args, material_id, started_at_epoch):
+    """Return parsed data only for this attempt's expected RPA CSV artifact."""
+    try:
+        csv_path = artifact_path(_diagnosis_csv_dir(args), material_id, ".csv")
+        metadata = csv_path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_size <= 0
+            or (
+                started_at_epoch is not None
+                and metadata.st_mtime < started_at_epoch
+            )
+        ):
+            return None
+        records = parse_diagnosis_csv(csv_path)
+        availability = preflight_material_availability(records, material_id)
+        if not availability.get("rpaAvailable"):
+            return None
+        return {
+            "records": records,
+            "diagnosisCsvPath": str(csv_path),
+            "videoUrl": availability.get("videoUrl"),
+            "rpaCsvVerified": True,
+        }
+    except (OSError, RpaAdapterError, RpaCsvError, ValueError):
+        return None
+
+
+def _recover_late_rpa_artifacts(
+    args, material_id, failure, started_at_epoch=None, deadline=None
+):
+    """Recover a result that was written after the RPA watchdog fired."""
+    if failure.get("failureReason") not in (
+        "rpa_request_failed",
+        "rpa_csv_artifact_unavailable",
+    ):
+        return failure
+    records_dir = _diagnosis_records_dir(args)
+    try:
+        records_path = artifact_path(records_dir, material_id, ".json")
+    except ValueError:
+        return failure
+    if deadline is None:
+        deadline = time.monotonic() + max(
+            0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5))
+        )
+    while True:
+        try:
+            verified_csv = _verify_current_rpa_csv_artifact(
+                args, material_id, started_at_epoch
+            )
+            if verified_csv is not None:
+                records = verified_csv["records"]
+                records_path.parent.mkdir(parents=True, exist_ok=True)
+                _write_diagnosis_records(records, records_path.parent, material_id)
+                return {
+                    **failure,
+                    "rpaAvailable": True,
+                    **verified_csv,
+                    "diagnosisRecordsPath": str(records_path),
+                    "lateArtifactRecovered": True,
+                }
+        except (OSError, RpaAdapterError, RpaCsvError, ValueError):
+            pass
+        if time.monotonic() >= deadline:
+            return failure
+        time.sleep(0.25)
+
+
+def _rpa_multiprocessing_context_name():
+    return multiprocessing_context_name()
+
+
+def _fetch_material_preflight_worker(params):
+    adapter_params = {
+        key: value
+        for key, value in params.items()
+        if key
+        not in {
+            "diagnosis_records_dir",
+            "rpa_receipts_dir",
+            "rpa_client_attempt_id",
+        }
+    }
+    adapter_params["on_task_submitted"] = lambda task_group_id: _publish_worker_rpa_receipt(
+        params,
+        {"remoteTaskGroupId": task_group_id},
+        "submitted",
+    )
+    return fetch_material_preflight(**adapter_params)
+
+
+def _publish_worker_rpa_receipt(params, outcome, state, records_path=None):
+    publish_receipt(
+        params["rpa_receipts_dir"],
+        material_id=params["material_id"],
+        client_attempt_id=params["rpa_client_attempt_id"],
+        state=state,
+        csv_path=outcome.get("diagnosisCsvPath"),
+        records_path=records_path,
+        remote_task_group_id=outcome.get("remoteTaskGroupId"),
+    )
+
+
+def _fetch_material_preflight_isolated(
+    params,
+    timeout_sec,
+    worker=None,
+):
+    worker = _fetch_material_preflight_worker if worker is None else worker
+    return run_isolated_preflight(
+        params,
+        timeout_sec,
+        worker,
+        _preflight_failure,
+        persist_records=_write_diagnosis_records,
+        publish_receipt=_publish_worker_rpa_receipt,
+    )
+
+
+def _call_mock_preflight_with_timeout(params, timeout_sec):
+    outcome = []
+    error = []
+
+    def invoke():
+        try:
+            outcome.append(fetch_material_preflight(**params))
+        except BaseException as exc:
+            error.append(exc)
+
+    worker = threading.Thread(target=invoke, daemon=True)
+    worker.start()
+    worker.join(timeout_sec)
+    if worker.is_alive():
+        raise RpaPreflightDeadlineExceeded(
+            f"RPA preflight exceeded {timeout_sec} seconds"
+        )
+    if error:
+        raise error[0]
+    return outcome[0]
+
+
+def _fetch_material_preflight_for_cli(
+    args,
+    material_id,
+    *,
+    recover_late_artifacts=True,
+    client_attempt_id=None,
+    task_group_id=None,
+):
+    started_at_epoch = time.time()
+    params = {
+        "shop_id": args.shop_id,
+        "material_id": material_id,
+        "business_params": {**args.rpa_business_params, "material_id": material_id},
+        "diagnosis_csv_dir": _diagnosis_csv_dir(args),
+        "diagnosis_records_dir": _diagnosis_records_dir(args),
+        "rpa_receipts_dir": _rpa_receipts_dir(args),
+        "rpa_client_attempt_id": client_attempt_id or uuid.uuid4().hex,
+        "timeout_sec": args.rpa_preflight_timeout_sec,
+    }
+    if task_group_id:
+        params["task_group_id"] = task_group_id
+    if hasattr(fetch_material_preflight, "mock_calls"):
+        if threading.current_thread() is threading.main_thread():
+            with _rpa_preflight_deadline(args.rpa_preflight_timeout_sec):
+                outcome = fetch_material_preflight(**params)
+        else:
+            outcome = _call_mock_preflight_with_timeout(
+                params, args.rpa_preflight_timeout_sec
+            )
+    else:
+        outcome = _fetch_material_preflight_isolated(
+            params,
+            args.rpa_preflight_timeout_sec,
+        )
+    if recover_late_artifacts and not outcome.get("rpaAvailable"):
+        outcome = _recover_late_rpa_artifacts(
+            args, material_id, outcome, started_at_epoch=started_at_epoch
+        )
+    return outcome
+
+
+def _resolved_rpa_outcome(outcome):
+    result = dict(outcome)
+    result.update(
+        {
+            "rpaResultStatus": "available",
+            "errorType": None,
+            "errorMessage": None,
+        }
+    )
+    return result
+
+
+def _recover_wave_rpa_result(args, material_id, outcome, *, started_at_epoch):
+    """Resolve one submitted request without submitting the RPA again."""
+    deadline = time.monotonic() + max(
+        0.0, float(getattr(args, "rpa_late_artifact_grace_sec", 5))
+    )
+    outcome = dict(outcome)
+
+    if outcome.get("timeoutExceeded"):
+        outcome.update(
+            {
+                "rpaResultStatus": "final_failed",
+            }
+        )
+        return outcome
+
+    if outcome.get("rpaAvailable"):
+        verified_csv = _verify_current_rpa_csv_artifact(
+            args, material_id, started_at_epoch
+        )
+        if verified_csv is not None:
+            outcome.update(verified_csv)
+            return _resolved_rpa_outcome(outcome)
+        outcome.update(
+            {
+                "rpaAvailable": False,
+                "failureReason": "rpa_csv_artifact_unavailable",
+                "errorType": "RpaCsvArtifactUnavailable",
+                "errorMessage": (
+                    "RPA response did not produce a verified current CSV artifact"
+                ),
+            }
+        )
+
+    recovered = _recover_late_rpa_artifacts(
+        args,
+        material_id,
+        outcome,
+        started_at_epoch=started_at_epoch,
+        deadline=deadline,
+    )
+    if recovered.get("rpaAvailable"):
+        return _resolved_rpa_outcome(recovered)
+
+    outcome = dict(recovered)
+    outcome.update(
+        {
+            "rpaResultStatus": "final_failed",
+        }
+    )
+    return outcome
+
+
+def _wave_entry(material, rank):
+    return rpa_batch_runner.wave_entry(material, rank, _empty_material_timings)
+
+
+def _new_wave_batch_manifest(args, candidates, entries, submitted, selected, rejected, cancelled):
+    return schemas.wave_manifest(
+        args, candidates, entries, submitted, selected, rejected, cancelled,
+        public_entry=rpa_batch_runner.public_entry,
+        ordered=rpa_batch_runner.ordered,
+        stage_counts=stage_counts,
+    )
+
+
+def _resolve_run_retained_path(args, path):
+    retained_path = Path(path)
+    if retained_path.is_absolute():
+        return retained_path
+    output_parent = Path(args.output_dir).parent
+    run_relative = output_parent / retained_path
+    if run_relative.exists():
+        return run_relative
+    return retained_path
+
+
+def _load_wave_resume_manifest(args, candidates):
+    return schemas.load_wave_resume(
+        _batch_manifest_path(args), args, candidates, RpaAdapterError
+    )
+
+
+def _wave_entry_from_existing_manifest(manifest):
+    entries = {}
+    if not isinstance(manifest, dict):
+        return entries
+    materials = manifest.get("materials")
+    if not isinstance(materials, list):
+        return entries
+    for index, entry in enumerate(materials):
+        if isinstance(entry, dict):
+            entries[index] = dict(entry)
+    return entries
+
+
+def _existing_wave_records(args, material_id, entry):
+    candidates = []
+    records_path = entry.get("diagnosisRecordsPath") if isinstance(entry, dict) else None
+    if isinstance(records_path, str) and records_path.strip():
+        candidates.append(_resolve_run_retained_path(args, records_path))
+    candidates.append(_diagnosis_records_dir(args) / f"{material_id}.json")
+    seen = set()
+    for candidate in candidates:
+        candidate = Path(candidate)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if not candidate.is_file():
+            continue
+        try:
+            return _read_diagnosis_records(candidate, material_id), candidate
+        except RpaAdapterError:
+            continue
+    return None, None
+
+
+def _existing_wave_summary_entry(args, entry):
+    material_id = entry["materialId"]
+    candidates = []
+    summary_json = entry.get("summaryJson")
+    summary_md = entry.get("summaryMd")
+    if isinstance(summary_json, str) and isinstance(summary_md, str):
+        candidates.append(
+            (
+                _resolve_run_retained_path(args, summary_json),
+                _resolve_run_retained_path(args, summary_md),
+            )
+        )
+    candidates.append(
+        (
+            Path(args.output_dir) / material_id / "summary.json",
+            Path(args.output_dir) / material_id / "summary.md",
+        )
+    )
+    for json_path, markdown_path in candidates:
+        candidate = dict(entry)
+        candidate.update(
+            {
+                "status": "succeeded",
+                "postprocessStatus": "succeeded",
+                "postprocessSucceeded": True,
+                "summaryJson": str(json_path),
+                "summaryMd": str(markdown_path),
+            }
+        )
+        material_errors, _warnings = _material_output_issues(material_id, candidate)
+        if not material_errors:
+            return candidate
+    return None
+
+
+def _reconcile_submitted_wave_receipt(args, entry):
+    material_id = entry["materialId"]
+    receipt = None
+    try:
+        recovered = load_records_persisted_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            base_dir=Path(args.output_dir).parent,
+        )
+    except RpaArtifactReceiptError:
+        recovered = None
+    if recovered is not None:
+        receipt = recovered["receipt"]
+        reconciled = dict(entry)
+        reconciled.update(
+            {
+                "rpaStatus": "selected",
+                "postprocessStatus": "queued",
+                "status": "running",
+                "failureReason": None,
+                "errorType": None,
+                "errorMessage": None,
+                "diagnosisCsvPath": _run_relative_path(args, recovered["csvPath"]),
+                "diagnosisRecordsPath": _run_relative_path(
+                    args, recovered["recordsPath"]
+                ),
+                "recordsPersisted": True,
+                "rpaCsvVerified": True,
+                "rpaResultStatus": "available",
+                "rpaClientAttemptId": receipt["clientAttemptId"],
+                "records": recovered["records"],
+            }
+        )
+        return reconciled, receipt
+
+    try:
+        recovered = load_artifact_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            base_dir=Path(args.output_dir).parent,
+        )
+    except RpaArtifactReceiptError:
+        return None, None
+    receipt = recovered["receipt"]
+    if receipt["state"] != "artifact_downloaded":
+        return None, receipt
+    try:
+        records = parse_diagnosis_csv(recovered["csvPath"])
+        availability = preflight_material_availability(records, material_id)
+        if not availability.get("rpaAvailable"):
+            return None, receipt
+        records_path = _write_diagnosis_records(
+            records, _diagnosis_records_dir(args), material_id
+        )
+        publish_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            client_attempt_id=receipt["clientAttemptId"],
+            state="records_persisted",
+            csv_path=recovered["csvPath"],
+            records_path=records_path,
+        )
+    except (OSError, RpaAdapterError, RpaCsvError, RpaArtifactReceiptError, ValueError):
+        return None, receipt
+
+    receipt = recovered["receipt"]
+    reconciled = dict(entry)
+    reconciled.update(
+        {
+            "rpaStatus": "selected",
+            "postprocessStatus": "queued",
+            "status": "running",
+            "failureReason": None,
+            "errorType": None,
+            "errorMessage": None,
+            "diagnosisCsvPath": _run_relative_path(args, recovered["csvPath"]),
+            "diagnosisRecordsPath": _run_relative_path(args, records_path),
+            "recordsPersisted": True,
+            "rpaCsvVerified": True,
+            "rpaResultStatus": "available",
+            "rpaClientAttemptId": receipt["clientAttemptId"],
+            "records": records,
+        }
+    )
+    return reconciled, receipt
+
+
+def _resume_wave_state(args, candidates, entries):
+    if not args.resume:
+        return {}, {}, {}, {}, []
+    manifest = _load_wave_resume_manifest(args, candidates)
+    if manifest is not None:
+        for index, entry in _wave_entry_from_existing_manifest(manifest).items():
+            if index in entries:
+                entries[index].update(entry)
+
+    submitted = {}
+    selected = {}
+    rejected = {}
+    cancelled = {}
+    postprocess_queue = []
+    for index in sorted(entries):
+        entry = dict(entries[index])
+        material_id = entry["materialId"]
+        if entry.get("rpaStatus") == "rejected":
+            entry.update({"status": "failed", "postprocessStatus": "not_started"})
+            entries[index] = entry
+            submitted[index] = entry
+            rejected[index] = entry
+            continue
+
+        if entry.get("rpaStatus") == "cancelled" or entry.get("status") == "cancelled":
+            entries[index] = entry
+            cancelled[index] = entry
+            continue
+
+        recovered, receipt = _reconcile_submitted_wave_receipt(args, entry)
+        if recovered is not None:
+            entry = recovered
+            records = entry["records"]
+            records_path = Path(entry["diagnosisRecordsPath"])
+        else:
+            records, records_path = _existing_wave_records(args, material_id, entry)
+        if records is not None:
+            entry.update(
+                {
+                    "rpaStatus": "selected",
+                    "postprocessStatus": "queued",
+                    "status": "running",
+                    "failureReason": None,
+                    "errorType": None,
+                    "errorMessage": None,
+                    "diagnosisRecordsPath": str(records_path),
+                    "recordsPersisted": True,
+                    "records": records,
+                }
+            )
+            summary_entry = _existing_wave_summary_entry(args, entry)
+            if summary_entry is not None:
+                entry.update(summary_entry)
+            entries[index] = entry
+            submitted[index] = entry
+            selected[index] = entry
+            if entry["postprocessStatus"] != "succeeded":
+                if entry.get("postprocessAttemptCount", 0) < 2:
+                    postprocess_queue.append(index)
+                else:
+                    entry.update(
+                        {
+                            "postprocessStatus": "failed",
+                            "postprocessSucceeded": False,
+                            "status": "failed",
+                        }
+                    )
+            continue
+
+        restored = _wave_entry(candidates[index], index + 1)
+        if entry.get("rpaStatus") == "submitted":
+            if receipt and receipt.get("remoteTaskGroupId"):
+                restored.update(
+                    {
+                        "rpaClientAttemptId": receipt["clientAttemptId"],
+                        "remoteTaskGroupId": receipt["remoteTaskGroupId"],
+                    }
+                )
+            else:
+                restored.update(
+                    {
+                        "rpaStatus": "rejected",
+                        "rpaResultStatus": "final_failed",
+                        "postprocessStatus": "not_started",
+                        "status": "failed",
+                        "failureReason": "rpa_artifact_unavailable",
+                        "errorType": "RpaArtifactUnavailable",
+                        "errorMessage": (
+                            "submitted RPA has no reusable task ID or local artifact"
+                        ),
+                    }
+                )
+                submitted[index] = restored
+                rejected[index] = restored
+            restored["resumeRecovery"] = {
+                "reason": (
+                    "remote_task_pending"
+                    if receipt and receipt.get("remoteTaskGroupId")
+                    else "local_artifact_unavailable"
+                ),
+                "previousClientAttemptId": entry.get("rpaClientAttemptId"),
+                "previousReceiptState": receipt.get("state") if receipt else None,
+            }
+        entries[index] = restored
+    return submitted, selected, rejected, cancelled, postprocess_queue
+
+
+def _attempt_wave_rpa(args, entry):
+    started_at = time.perf_counter()
+    started_at_epoch = time.time()
+    timings = _empty_material_timings()
+    material_id = entry["materialId"]
+    client_attempt_id = str(entry.get("rpaClientAttemptId") or "").strip()
+    remote_task_group_id = str(entry.get("remoteTaskGroupId") or "").strip() or None
+    if not client_attempt_id:
+        client_attempt_id = uuid.uuid4().hex
+        publish_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            client_attempt_id=client_attempt_id,
+            state="submitted",
+        )
+
+    def fetch_once():
+        request_started_at = time.perf_counter()
+        try:
+            outcome = _fetch_material_preflight_for_cli(
+                args,
+                material_id,
+                recover_late_artifacts=False,
+                client_attempt_id=client_attempt_id,
+                task_group_id=remote_task_group_id,
+            )
+            if isinstance(outcome, dict):
+                outcome = dict(outcome)
+                outcome["rpaFetchSec"] = round(_elapsed_since(request_started_at), 6)
+            return outcome
+        except RpaPreflightDeadlineExceeded as exc:
+            return _preflight_failure(material_id, "rpa_request_failed", exc)
+        except RpaAdapterError as exc:
+            return _preflight_failure(material_id, "rpa_request_failed", exc)
+        except Exception as exc:
+            return _preflight_failure(material_id, "unknown_preflight_failure", exc)
+        finally:
+            timings["rpaFetchSec"] = round(
+                timings["rpaFetchSec"] + _elapsed_since(request_started_at), 6
+            )
+
+    outcome = _recover_wave_rpa_result(
+        args,
+        material_id,
+        fetch_once(),
+        started_at_epoch=started_at_epoch,
+    )
+
+    updated = dict(entry)
+    updated.update(
+        {"timingsSec": timings, "rpaClientAttemptId": client_attempt_id}
+    )
+    if not outcome.get("rpaAvailable"):
+        records = None
+        records_path = None
+        try:
+            if isinstance(outcome.get("records"), list) or outcome.get("diagnosisRecordsPath"):
+                records, records_path = _materialize_preflight_records(
+                    args, outcome, material_id, timings
+                )
+        except RpaAdapterError:
+            records = None
+            records_path = None
+        updated.update(
+            {
+                "rpaStatus": "rejected",
+                "status": "failed",
+                "failureReason": outcome.get("failureReason"),
+                "rpaResultStatus": outcome.get("rpaResultStatus"),
+                "errorType": outcome.get("errorType"),
+                "errorMessage": outcome.get("errorMessage"),
+                "errorTraceback": outcome.get("errorTraceback"),
+                "workerStage": outcome.get("workerStage"),
+                "childExitCode": outcome.get("childExitCode"),
+                "childSignal": outcome.get("childSignal"),
+                "resultQueueEmpty": outcome.get("resultQueueEmpty"),
+                "rpaFailureClass": outcome.get("rpaFailureClass"),
+                "httpStatus": outcome.get("httpStatus"),
+                "requestId": outcome.get("requestId"),
+                "responseSummary": outcome.get("responseSummary"),
+                "remoteTaskGroupId": outcome.get("remoteTaskGroupId") or remote_task_group_id,
+                "diagnosisRecordsPath": (
+                    _run_relative_path(args, records_path) if records_path else None
+                ),
+                "diagnosisCsvPath": (
+                    _run_relative_path(args, outcome["diagnosisCsvPath"])
+                    if outcome.get("diagnosisCsvPath")
+                    else None
+                ),
+                "recordsPersisted": bool(records_path),
+                "records": records,
+            }
+        )
+        if outcome.get("timeoutExceeded"):
+            updated.update(
+                {
+                    "rpaTimeoutExceeded": True,
+                    "rpaTimeoutSec": outcome.get("timeoutSec"),
+                }
+            )
+        timings["totalSec"] = _elapsed_since(started_at)
+        return updated
+
+    try:
+        records, records_path = _materialize_preflight_records(
+            args, outcome, material_id, timings
+        )
+    except RpaAdapterError as exc:
+        updated.update(
+            {
+                "rpaStatus": "rejected",
+                "status": "failed",
+                "failureReason": "rpa_payload_invalid",
+                "rpaResultStatus": "final_failed",
+                "errorType": type(exc).__name__,
+                "errorMessage": str(exc),
+            }
+        )
+        timings["totalSec"] = _elapsed_since(started_at)
+        return updated
+
+    if outcome.get("diagnosisCsvPath"):
+        publish_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            client_attempt_id=client_attempt_id,
+            state="artifact_downloaded",
+            csv_path=outcome["diagnosisCsvPath"],
+        )
+        publish_receipt(
+            _rpa_receipts_dir(args),
+            material_id=material_id,
+            client_attempt_id=client_attempt_id,
+            state="records_persisted",
+            csv_path=outcome["diagnosisCsvPath"],
+            records_path=records_path,
+        )
+
+    updated.update(
+        {
+            "rpaStatus": "selected",
+            "postprocessStatus": "queued",
+            "status": "running",
+            "diagnosisRecordsPath": _run_relative_path(args, records_path),
+            "diagnosisCsvPath": (
+                _run_relative_path(args, outcome["diagnosisCsvPath"])
+                if outcome.get("diagnosisCsvPath")
+                else None
+            ),
+            "records": records,
+            "recordsPersisted": True,
+            "rpaCsvVerified": bool(outcome.get("rpaCsvVerified")),
+            "lateArtifactRecovered": bool(outcome.get("lateArtifactRecovered")),
+            "rpaResultStatus": outcome.get("rpaResultStatus"),
+            "remoteTaskGroupId": outcome.get("remoteTaskGroupId") or remote_task_group_id,
+            "errorType": outcome.get("errorType"),
+            "errorMessage": outcome.get("errorMessage"),
+        }
+    )
+    timings["totalSec"] = _elapsed_since(started_at)
+    return updated
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _reusable_wave_video(entry, video_path):
+    expected_path = str(entry.get("videoPath") or "").strip()
+    expected_hash = str(entry.get("videoSha256") or "").strip()
+    expected_bytes = entry.get("videoBytes")
+    if not expected_path or not expected_hash or isinstance(expected_bytes, bool):
+        return None
+    try:
+        expected_size = int(expected_bytes)
+        candidate = Path(expected_path)
+        if candidate.resolve() != Path(video_path).resolve():
+            return None
+        if not candidate.is_file() or candidate.stat().st_size != expected_size:
+            return None
+        if _file_sha256(candidate) != expected_hash:
+            return None
+    except (OSError, TypeError, ValueError):
+        return None
+    return {
+        "source": entry.get("videoUrlSource") or "rpa",
+        "fallbackReason": entry.get("videoUrlFallbackReason"),
+        "videoBytes": expected_size,
+        "videoSha256": expected_hash,
+    }
+
+
+@contextmanager
+def _bounded_postprocess_stage(args, attribute):
+    semaphore = getattr(args, attribute, None)
+    if semaphore is None:
+        yield
+        return
+    with semaphore:
+        yield
+
+
+def _attempt_wave_postprocess(args, entry):
+    started_at = time.perf_counter()
+    timings = dict(entry["timingsSec"])
+    material_id = entry["materialId"]
+    substage = "records"
+    resolution = None
+    video_path = None
+    video_metadata = {}
+    try:
+        records = entry.get("records")
+        if records is None:
+            records, _records_path = _existing_wave_records(args, material_id, entry)
+        if records is None:
+            raise RpaAdapterError("persisted RPA diagnosis records are unavailable")
+        video_path = artifact_path(
+            Path(args.output_dir) / "video-assets", material_id, ".mp4"
+        )
+        substage = "download"
+        resolution = _reusable_wave_video(entry, video_path)
+        if resolution is None:
+            with _bounded_postprocess_stage(args, "_video_download_semaphore"):
+                resolution = _time_call(
+                    timings,
+                    "videoDownloadSec",
+                    _resolve_video_source,
+                    records,
+                    entry,
+                    video_path,
+                )
+            video_bytes = video_path.stat().st_size
+            video_sha256 = _file_sha256(video_path)
+        else:
+            video_bytes = resolution["videoBytes"]
+            video_sha256 = resolution["videoSha256"]
+        video_metadata = {
+            "videoUrlSource": resolution["source"],
+            "videoUrlFallbackReason": resolution.get("fallbackReason"),
+            "videoPath": str(video_path),
+            "videoBytes": video_bytes,
+            "videoSha256": video_sha256,
+        }
+        checkpoint = getattr(args, "_postprocess_checkpoint", None)
+        if callable(checkpoint):
+            checkpoint(
+                material_id,
+                {
+                    **video_metadata,
+                    "postprocessStatus": "running",
+                    "postprocessSubstage": "frame_extraction",
+                    "timingsSec": dict(timings),
+                },
+            )
+        substage = "frame_extraction"
+        with _bounded_postprocess_stage(args, "_ffmpeg_semaphore"):
+            result = _time_call(
+                timings,
+                "frameExtractionSec",
+                process_records,
+                records,
+                f"rpa://{CONNECTOR_CODE}/{material_id}",
+                video_path,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+                video_source="rpa-persistent-download",
+                timings=timings,
+            )
+    except HANDLED_MATERIAL_ERRORS as exc:
+        timings["totalSec"] = _elapsed_since(started_at)
+        failure = {
+            "result": None,
+            "error": exc,
+            "timingsSec": timings,
+            "substage": substage,
+            "failureReason": str(exc) if isinstance(exc, RpaAdapterError) else None,
+        }
+        failure.update(video_metadata)
+        return failure
+    timings["totalSec"] = _elapsed_since(started_at)
+    return {
+        "result": result,
+        "error": None,
+        "timingsSec": timings,
+        "substage": "completed",
+        **video_metadata,
+    }
+
+
+def _merge_wave_postprocess_timings(entry_timings, attempt_timings):
+    merged = dict(entry_timings)
+    merged.update(attempt_timings)
+    try:
+        rpa_total = float(entry_timings.get("totalSec") or 0.0)
+    except (TypeError, ValueError):
+        rpa_total = 0.0
+    try:
+        postprocess_total = float(
+            attempt_timings.get("postprocessSec", attempt_timings.get("totalSec", 0.0))
+            or 0.0
+        )
+    except (TypeError, ValueError):
+        postprocess_total = 0.0
+    end_to_end = round(rpa_total + postprocess_total, 6)
+    merged["postprocessSec"] = round(postprocess_total, 6)
+    merged["endToEndSec"] = end_to_end
+    merged["totalSec"] = end_to_end
+    return merged
+
+
+def _resolve_video_source(records, entry, target_path):
+    """Download the first usable RPA/API video URL for one material."""
+    material_id = str(entry.get("materialId") or "").strip()
+    rpa_url = None
+    try:
+        rpa_url = find_material_video_url(records, material_id)
+    except RpaAdapterError:
+        pass
+
+    candidates = []
+    if rpa_url:
+        candidates.append((rpa_url, "rpa", None))
+    for raw_url in entry.get("videoUrlCandidates") or ():
+        url = str(raw_url or "").strip()
+        if url and url.startswith(("http://", "https://")) and url not in {
+            item[0] for item in candidates
+        }:
+            candidates.append((url, "api_fallback", "missing_rpa_video_url" if not rpa_url else "rpa_video_url_invalid"))
+
+    if not candidates:
+        raise RpaAdapterError("missing_video_url")
+
+    last_error = None
+    for url, source, fallback_reason in candidates:
+        try:
+            download_video(url, target_path)
+            return {
+                "videoUrl": url,
+                "source": source,
+                "fallbackReason": fallback_reason,
+            }
+        except (RpaAdapterError, OSError) as exc:
+            last_error = exc
+    if any(source == "api_fallback" for _url, source, _reason in candidates):
+        raise RpaAdapterError("api_video_url_invalid") from last_error
+    raise RpaAdapterError("rpa_video_url_invalid") from last_error
+
+
+def _run_wave_rpa_batch(args, candidate_payload, *, is_interrupted=None):
+    manifest_path = _batch_manifest_path(args)
+    args._video_download_semaphore = threading.BoundedSemaphore(
+        args.download_concurrency
+    )
+    args._ffmpeg_semaphore = threading.BoundedSemaphore(
+        args.postprocess_concurrency
+    )
+    try:
+        manifest, failures, last_result = rpa_batch_runner.run_wave_batch(
+            args,
+            candidate_payload,
+            wave_entry=_wave_entry,
+            resume_state=_resume_wave_state,
+            attempt_rpa=_attempt_wave_rpa,
+            attempt_postprocess=_attempt_wave_postprocess,
+            merge_timings=_merge_wave_postprocess_timings,
+            new_manifest=_new_wave_batch_manifest,
+            write_json=_write_json_atomically,
+            manifest_path=manifest_path,
+            ready_payload=_ready_top_materials_payload,
+            ready_path=_ready_top_materials_path(args),
+            entry_result=_entry_result,
+            elapsed=_elapsed_since,
+            accounted_indices=rpa_batch_runner.accounted_indices,
+            ordered=rpa_batch_runner.ordered,
+            write_progress=lambda manifest: _append_batch_progress(
+                manifest_path, manifest
+            ),
+            is_interrupted=is_interrupted,
+        )
+    finally:
+        del args._video_download_semaphore
+        del args._ffmpeg_semaphore
+    return manifest_path, last_result, failures
+
+
+@contextmanager
+def _temporary_wave_signal_handlers():
+    """Convert an interactive stop signal into a wave-boundary checkpoint."""
+    interrupted = threading.Event()
+    previous = {}
+
+    def request_interruption(_signum, _frame):
+        interrupted.set()
+
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, request_interruption)
+    try:
+        yield interrupted
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def _batch_manifest_path(args):
+    if args.batch_manifest:
+        return Path(args.batch_manifest)
+    return Path(args.output_dir) / BATCH_MANIFEST_NAME
+
+
+def _wave_lock_path(args):
+    return Path(args.output_dir) / ".batch-run.lock"
+
+
+def _append_batch_progress(manifest_path, manifest):
+    """Append a compact durable checkpoint for operators and lost sessions."""
+    progress_path = Path(manifest_path).with_name(BATCH_PROGRESS_NAME)
+    event = {
+        "schemaVersion": 1,
+        "observedAtEpoch": time.time(),
+        "runId": manifest.get("runId"),
+        "rpaCollection": manifest.get("rpaCollection"),
+        "stageCounts": manifest.get("stageCounts", {}),
+        "interruption": manifest.get("interruption"),
+    }
+    progress_path.parent.mkdir(parents=True, exist_ok=True)
+    with progress_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return progress_path
+
+
+def _manifest_has_unfinished_wave_work(manifest):
+    if not isinstance(manifest, dict):
+        return False
+    for entry in manifest.get("materials", []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("status") == "running" or entry.get("rpaStatus") == "submitted":
+            return True
+    for key in ("submittedMaterials",):
+        for entry in manifest.get(key, []):
+            if isinstance(entry, dict) and (
+                entry.get("status") == "running"
+                or entry.get("rpaStatus") == "submitted"
+            ):
+                return True
+    return False
+
+
+def _acquire_wave_lock(args):
+    manifest_path = _batch_manifest_path(args)
+    existing = read_json(manifest_path)
+    requested_run_id = existing.get("runId") if args.resume and isinstance(existing, dict) else None
+    if _manifest_has_unfinished_wave_work(existing) and not args.resume:
+        raise RpaAdapterError(
+            "stale wave batch requires --resume or repair-manifest before retry"
+        )
+    try:
+        lock = acquire_run_lock(
+            _wave_lock_path(args),
+            manifest_path,
+            run_id=requested_run_id,
+            reclaim_stale=args.resume,
+        )
+    except BatchLockError as exc:
+        raise RpaAdapterError(str(exc)) from exc
+    args.run_id = lock.payload["runId"]
+    return lock
+
+
+def _entry_result(entry):
+    return (
+        Path(entry["summaryJson"]).parent,
+        Path(entry["summaryJson"]),
+        Path(entry["summaryMd"]),
+    )
+
+
+def _empty_material_timings():
+    return {field: 0.0 for field in MATERIAL_TIMING_FIELDS}
+
+
+def _elapsed_since(start_time):
+    return round(max(0.0, time.perf_counter() - start_time), 6)
+
+
+def _time_call(timing_state, field, function, *args, **kwargs):
+    started_at = time.perf_counter()
+    try:
+        return function(*args, **kwargs)
+    finally:
+        timing_state[field] = _elapsed_since(started_at)
+
+
+def _verify_wave_rpa_batch(args, material_ids, manifest):
+    return batch_verification.verify_wave_batch(
+        args,
+        material_ids,
+        manifest,
+        material_output_issues_fn=_material_output_issues,
+        write_json=_write_json_atomically,
+        verification_name=BATCH_VERIFICATION_NAME,
+    )
+
+
+WAVE_BATCH_RUNNING = "RUNNING"
+WAVE_BATCH_COMPLETED = "COMPLETED"
+WAVE_BATCH_INVALID_MANIFEST = "INVALID_MANIFEST"
+WAVE_BATCH_NOT_FOUND = "NOT_FOUND"
+
+
+def _wave_batch_status(args):
+    manifest_path = _batch_manifest_path(args)
+    try:
+        manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return WAVE_BATCH_NOT_FOUND, f"wave batch manifest is missing: {manifest_path}"
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return WAVE_BATCH_INVALID_MANIFEST, (
+            f"wave batch manifest is unreadable: {manifest_path}: {exc}"
+        )
+    try:
+        manifest = validate_manifest(manifest)
+    except SchemaError as exc:
+        return WAVE_BATCH_INVALID_MANIFEST, str(exc)
+    material_ids = manifest["materialIds"]
+    accounted_ids = {
+        str(entry.get("materialId") or "").strip()
+        for field in ("selectedMaterials", "rejectedMaterials", "cancelledMaterials")
+        for entry in manifest[field]
+        if isinstance(entry, dict) and str(entry.get("materialId") or "").strip()
+    }
+    if accounted_ids >= set(material_ids):
+        return WAVE_BATCH_COMPLETED, None
+    return WAVE_BATCH_RUNNING, None
+
+
+def process_local_input(args):
+    """Process local JSON/CSV input without entering the RPA workflow."""
+    if args.input_csv:
+        records = parse_diagnosis_csv(args.input_csv)
+        material_id = ""
+        if args.diagnosis_records_dir or not args.video:
+            material_id, _points = parse_click_series(records)
+        if args.diagnosis_records_dir:
+            _write_diagnosis_records(
+                records,
+                args.diagnosis_records_dir,
+                material_id or Path(args.video).stem,
+            )
+        if args.video:
+            return process_records(
+                records,
+                args.input_csv,
+                args.video,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+            )
+
+        video_url = find_material_video_url(records, material_id)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            video_path = Path(temp_dir) / (
+                f"{material_id or Path(args.input_csv).stem}.mp4"
+            )
+            download_video(video_url, video_path)
+            return process_records(
+                records,
+                args.input_csv,
+                video_path,
+                args.output_dir,
+                ffmpeg_bin=args.ffmpeg_bin,
+                ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+            )
+
+    return process_local(
+        args.input_json,
+        args.video,
+        args.output_dir,
+        ffmpeg_bin=args.ffmpeg_bin,
+        ffmpeg_timeout_sec=args.ffmpeg_timeout_sec,
+    )
 
 
 def main(argv=None):
     parser = build_parser()
-    args = parser.parse_args(argv)
+    parsed_argv = list(argv) if argv is not None else sys.argv[1:]
+    args = parser.parse_args(parsed_argv)
+    resolve_concurrency(args, parsed_argv)
     try:
+        if args.list_shop_accounts:
+            return _list_shop_accounts()
+        if (args.resume or args.batch_manifest or args.verify) and not (
+            args.source == "rpa" and args.top_materials_json
+        ):
+            parser.error(
+                "--resume, --batch-manifest, and --verify require --source rpa "
+                "with --top-materials-json"
+            )
+        if args.verify and args.resume:
+            parser.error("--verify and --resume cannot be used together")
         if args.source == "rpa":
-            if not args.material_id or not args.date_range_type:
+            if not args.output_dir:
+                parser.error("--output-dir is required")
+            if not args.top_materials_json or not args.target_top_n:
                 parser.error(
-                    "--material-id and --date-range-type are required "
-                    "for --source rpa"
+                    "--source rpa requires --top-materials-json and --target-top-n"
                 )
-            if args.date_range_type == "CUSTOM" and not (
-                args.custom_start_date and args.custom_end_date
+            try:
+                args.rpa_business_params = load_dynamic_params(args)
+            except DynamicContractError as exc:
+                parser.error(str(exc))
+            args.shop_id = _resolve_shop_id(args)
+            top_materials_payload, material_ids = _load_top_materials_payload(
+                args.top_materials_json,
+                args.rpa_business_params,
+            )
+            if args.verify:
+                wave_status, wave_error = _wave_batch_status(args)
+                if wave_status == WAVE_BATCH_RUNNING:
+                    parser.error("--verify is not available for a running wave batch")
+                if wave_status != WAVE_BATCH_COMPLETED:
+                    raise RpaAdapterError(wave_error)
+                manifest = read_json(_batch_manifest_path(args))
+                if not isinstance(manifest, dict):
+                    raise RpaAdapterError("wave batch manifest is unreadable")
+                verification_path, receipt = _verify_wave_rpa_batch(
+                    args, material_ids, manifest
+                )
+                print(f"batch_verification={verification_path}")
+                return 0 if receipt["valid"] else BATCH_VERIFICATION_FAILURE_EXIT_CODE
+            interrupted = False
+            with _acquire_wave_lock(args):
+                with _temporary_wave_signal_handlers() as signal_interrupted:
+                    try:
+                        manifest_path, result, failed = _run_wave_rpa_batch(
+                            args,
+                            top_materials_payload,
+                            is_interrupted=signal_interrupted.is_set,
+                        )
+                    except rpa_batch_runner.BatchInterrupted:
+                        manifest_path = _batch_manifest_path(args)
+                        result = None
+                        failed = True
+                        interrupted = True
+            manifest_snapshot = read_json(manifest_path) or {}
+            print(
+                "stage_counts="
+                + json.dumps(
+                    manifest_snapshot.get("stageCounts", {}),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            if failed:
+                print(f"batch_manifest={manifest_path}", file=sys.stderr)
+                return BATCH_PARTIAL_FAILURE_EXIT_CODE
+            result_dir, json_path, markdown_path = result
+
+        else:
+            if not args.output_dir:
+                parser.error("--output-dir is required")
+            if not (args.input_json or args.input_csv) or (
+                args.input_json and not args.video
             ):
                 parser.error(
-                    "CUSTOM requires --custom-start-date and "
-                    "--custom-end-date"
+                    "--input-json requires --video; --input-csv can use "
+                    "material_info.videoUrl when --video is omitted"
                 )
-            fetch_material_diagnosis(
-                material_id=args.material_id,
-                date_range_type=args.date_range_type,
-                custom_start_date=args.custom_start_date,
-                custom_end_date=args.custom_end_date,
-            )
-            return 0
-
-        if not args.input_json or not args.video:
-            parser.error(
-                "--input-json and --video are required for local source"
-            )
-        result_dir, json_path, markdown_path = process_local(
-            args.input_json,
-            args.video,
-            args.output_dir,
-            ffmpeg_bin=args.ffmpeg_bin,
-        )
+            result_dir, json_path, markdown_path = process_local_input(args)
     except InputDataError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     except FfmpegError as exc:
         print(str(exc), file=sys.stderr)
         return 3
-    except RpaNotConfiguredError as exc:
+    except RpaAdapterError as exc:
         print(str(exc), file=sys.stderr)
         return 4
+    except RpaCsvError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     print(f"result_dir={result_dir}")
     print(f"summary_json={json_path}")

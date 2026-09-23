@@ -1,0 +1,2780 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>千川 TOP 素材池商业诊断报告</title>
+  <link
+    rel="stylesheet"
+    href="../assets/report/unified-report.css"
+    data-template-preview-style="true"
+  />
+  <style data-unified-report-style="true">__REPORT_STYLE_CSS__</style>
+</head>
+<body class="unified-report unified-qianchuan" data-unified-report-version="2026-08-09">
+<a class="skip-link" href="#report-content">跳至报告正文</a>
+<script type="application/json" id="report-data">__REPORT_DATA_JSON__</script>
+<main class="page">
+  <header class="hero report-cover">
+    <div class="hero-copy">
+      <h1>千川 TOP 素材池商业诊断报告</h1>
+      <p class="subtitle" id="report-subtitle"></p>
+    </div>
+  </header>
+
+  <div class="report-shell">
+    <nav class="report-nav" aria-label="报告目录">
+      <small>报告目录</small>
+      <a href="#top-material-combination" aria-current="location">01｜素材榜单数据洞察</a>
+      <a href="#audience-insights">02｜人群洞察</a>
+      <a href="#script-insights">03｜脚本洞察</a>
+      <a href="#highlight-dashboard-section">04｜高光画面洞察</a>
+      <a href="#material-analysis">05｜单素材深度分析</a>
+    </nav>
+    <div class="report-content" id="report-content">
+
+  <section class="section" id="top-material-combination">
+    <header class="section-header"><h2>01｜素材榜单数据洞察</h2></header>
+    <div class="insight-layout">
+      <div class="primary-summary" id="overall-conclusion-card">
+        <p id="overall-conclusion"></p>
+      </div>
+      <div class="hot-material-panel" id="hot-material-panel"></div>
+      <div class="combination-conclusion" id="combination-conclusion"></div>
+    </div>
+  </section>
+
+  <section class="section" id="audience-insights">
+    <header class="section-header"><h2>02｜人群洞察</h2></header>
+    <div class="insight-layout">
+      <div class="primary-summary" id="audience-primary"></div>
+      <div class="data-dashboard" id="audience-dashboard"></div>
+    </div>
+  </section>
+
+  <section class="section" id="script-insights">
+    <header class="section-header"><h2>03｜脚本洞察</h2></header>
+    <div class="insight-layout">
+      <div class="primary-summary" id="script-primary"></div>
+      <div class="keyword-cloud-panel" id="keyword-cloud-panel"></div>
+      <div class="data-dashboard" id="script-dashboard"></div>
+    </div>
+  </section>
+
+  <section class="section" id="highlight-dashboard-section">
+    <header class="section-header">
+      <h2>04｜高光画面洞察</h2>
+      <a class="highlight-export-button" data-highlight-export href="highlight-frames.xlsx" download hidden>导出高光帧资产（Excel）</a>
+    </header>
+    <div class="highlight-dashboard" id="highlight-dashboard"></div>
+  </section>
+
+  <section class="section" id="material-analysis">
+    <header class="section-header"><h2>05｜单素材深度分析</h2></header>
+    <div class="material-tabs side-tabs" data-material-tabs>
+      <div class="tab-list" role="tablist" aria-label="素材选择" id="material-tab-list"></div>
+      <div class="material-panels" id="material-panels"></div>
+    </div>
+  </section>
+
+    </div>
+  </div>
+
+</main>
+<div class="frame-lightbox" id="frame-lightbox" role="dialog" aria-modal="true" aria-label="高光帧大图" hidden>
+  <div class="frame-lightbox-dialog">
+    <button class="frame-lightbox-close" type="button" aria-label="关闭大图">×</button>
+    <img alt="高光帧大图" id="frame-lightbox-image"/>
+    <p class="frame-lightbox-caption" id="frame-lightbox-caption"></p>
+  </div>
+</div>
+
+<script>
+const reportData = JSON.parse(document.getElementById("report-data").textContent);
+const presentation = reportData.presentation?.presentationSchemaVersion === 1
+  ? reportData.presentation
+  : null;
+
+function presentationChapter(id) {
+  const chapter = presentation?.chapters?.[id];
+  return ["available", "partial"].includes(chapter?.availability) ? chapter : null;
+}
+
+function chapter01Insights(topic) {
+  const insights = presentationChapter("chapter01")?.batchInsights;
+  if (Array.isArray(insights)) return insights.filter((item) => item.topic === topic);
+  return reportData.batchInsights?.[topic];
+}
+
+function chapter02Insights() {
+  const insights = presentationChapter("chapter02")?.insights;
+  return Array.isArray(insights) ? insights : [];
+}
+
+function chapter03Summary() {
+  const groups = presentationChapter("chapter03")?.groups;
+  if (!Array.isArray(groups)) return reportData.scripts?.labelSummary;
+  return groups.flatMap((group) => (group.labels || []).map((label) => ({ ...label, level1: group.level1 })));
+}
+
+function chapter03Insights() {
+  const insights = presentationChapter("chapter03")?.insights;
+  return Array.isArray(insights) ? insights : chapter01Insights("script");
+}
+
+function chapter03KeywordCloud() {
+  return presentationChapter("chapter03")?.keywordCloudPanel || null;
+}
+
+function stableKeywordOrder(items) {
+  return [...items].sort((a, b) => {
+    const score = (item) => Array.from(String(item.keyword || "")).reduce((sum, char) => ((sum * 31) + char.charCodeAt(0)) % 100003, 17);
+    return Number(b.frequency || 0) - Number(a.frequency || 0) || score(a) - score(b);
+  });
+}
+
+function chapter04Groups() {
+  const chapter = presentationChapter("chapter04");
+  if (chapter?.groups) {
+    return Object.values(chapter.groups);
+  }
+  const groups = reportData.conclusion?.highlightDashboard?.groups;
+  return Array.isArray(groups) ? groups : [];
+}
+
+function chapter04Conclusion() {
+  const chapter = presentationChapter("chapter04");
+  const projected = chapter?.conclusion;
+  if (projected && typeof projected === "object") {
+    return {
+      conclusion: projected.text,
+      evidenceRefs: projected.evidenceRefs,
+    };
+  }
+  return reportData.conclusion?.portfolioDimensionConclusions?.highlight || {};
+}
+
+function chapter05Materials() {
+  const chapter = presentationChapter("chapter05");
+  const projected = chapter?.materials;
+  if (!Array.isArray(projected)) {
+    return Array.isArray(reportData.materials) ? reportData.materials : [];
+  }
+  const catalog = new Map((presentation.materials || []).map((item) => [text(item.materialId), item]));
+  return projected.map((item) => {
+    const catalogItem = catalog.get(text(item.materialId)) || {};
+    return {
+      materialId: item.materialId,
+      materialName: item.materialName || catalogItem.materialName,
+      rank: catalogItem.rank,
+      materialRanking: item.materialRanking || {},
+      highlightFrames: item.highlight?.frames || [],
+      materialAudience: item.audience || {},
+      scriptAnalysis: item.script || {},
+      interactionTimeline: item.interaction || {},
+      analysis: { ...(item.analysis || {}), highlightAnalyses: item.highlight?.analyses || [] },
+      video: item.video || {},
+    };
+  });
+}
+
+function chapter05DefaultMaterialId() {
+  const chapter = presentationChapter("chapter05");
+  return text(chapter?.defaultMaterialId || reportData.defaultMaterialId);
+}
+
+function text(value, fallback = "") {
+  if (value === null || value === undefined) return fallback;
+  const result = String(value).trim();
+  return result || fallback;
+}
+
+function formatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "-";
+  if (Math.abs(number) >= 1000) return number.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+  if (Number.isInteger(number)) return String(number);
+  return number.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+}
+
+function safeId(value) {
+  return text(value, "unknown-material").replace(/[^a-zA-Z0-9_-]+/g, "_");
+}
+
+function element(tag, className, content) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (content !== undefined) node.textContent = content;
+  return node;
+}
+
+function createCollapseToggle(target, label = "数据", defaultExpanded = true) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "collapsible-toggle";
+  const action = element("span", "collapsible-toggle-action", "");
+  button.append(action);
+  let expanded = Boolean(defaultExpanded);
+  function sync() {
+    button.setAttribute("aria-expanded", String(expanded));
+    action.textContent = expanded ? `收起${label}` : `展开${label}`;
+    target.hidden = !expanded;
+  }
+  button.addEventListener("click", () => {
+    expanded = !expanded;
+    sync();
+  });
+  sync();
+  return button;
+}
+
+function appendCollapsibleHead(root, title, target, toggleLabel = "数据") {
+  const head = element("div", "collapsible-head");
+  if (title) target.prepend(element("b", "collapsible-body-title", title));
+  head.append(createCollapseToggle(target, toggleLabel));
+  root.append(head);
+}
+
+function createCollapsibleDataCard(title = "", toggleLabel = "数据") {
+  const card = element("div", "raw-fact-card dashboard-data-card");
+  const body = element("div", "collapsible-body");
+  appendCollapsibleHead(card, title, body, toggleLabel);
+  card.append(body);
+  return { card, body };
+}
+
+function resetCollapsibleBody(body, title, ...nodes) {
+  const titleNodes = title ? [element("b", "collapsible-body-title", title)] : [];
+  body.replaceChildren(...titleNodes, ...nodes);
+}
+
+function getScriptDashboardBody() {
+  const root = document.getElementById("script-dashboard");
+  let body = root.querySelector(":scope > .dashboard-data-card > .collapsible-body");
+  if (body) return body;
+  const { card, body: nextBody } = createCollapsibleDataCard("", "脚本汇总数据");
+  root.replaceChildren(card);
+  return nextBody;
+}
+
+const metricLabels = {
+  SHOW_COUNT: "展现次数",
+  CLICK_COUNT: "点击次数",
+  TRANSACTION_AMOUNT: "成交金额",
+};
+
+const dimensionLabels = {
+  user_group_label_name: "八大人群",
+  age: "年龄",
+  gender: "性别",
+  province_name: "省份",
+  city_name: "城市",
+};
+
+const frameLabels = {
+  zero_second: "视频第 0 秒画面",
+  peak_top_1: "点击 Top1 峰值画面",
+  peak_top_2: "点击 Top2 峰值画面",
+  peak_top_3: "点击 Top3 峰值画面",
+  peak_top_4: "点击 Top4 峰值画面",
+  peak_top_5: "点击 Top5 峰值画面",
+};
+
+const statusLabels = {
+  succeeded: "已完成",
+  missing_summary: "缺少摘要",
+  failed: "失败",
+  pending: "待处理",
+  not_started: "未开始",
+  unknown: "未知",
+};
+
+function displayStatus(value) {
+  const status = text(value, "unknown");
+  return statusLabels[status] || status;
+}
+
+function displayText(value) {
+  return text(value)
+    .replace(/\bSHOW_COUNT\b/g, "展现次数")
+    .replace(/\bCLICK_COUNT\b/g, "点击次数")
+    .replace(/\bTRANSACTION_AMOUNT\b/g, "成交金额")
+    .replace(/\b(?:audience|script|highlight):[^\s，。；、]+/g, "对应数据证据")
+    .replace(/对应数据证据([ ·、，,]\s*对应数据证据)+/g, "对应数据证据");
+}
+
+function knownMaterialIds() {
+  const materials = Array.isArray(reportData.materials) ? reportData.materials : [];
+  return new Set(materials.map((material) => text(material.materialId)).filter(Boolean));
+}
+
+function activateMaterialById(materialId) {
+  const targetId = text(materialId);
+  if (!targetId) return false;
+  const tabs = Array.from(document.querySelectorAll("#material-tab-list [data-material-id]"));
+  const tab = tabs.find((item) => item.dataset.materialId === targetId);
+  if (!tab) return false;
+  activateMaterialTab(tab);
+  const panel = document.getElementById(`panel-${safeId(targetId)}`);
+  if (panel) {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+  return true;
+}
+
+function navigateToMaterial(materialId) {
+  const section = document.getElementById("material-analysis");
+  if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+  return activateMaterialById(materialId);
+}
+
+function materialLink(materialId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "material-link";
+  button.setAttribute("data-material-link", materialId);
+  button.textContent = materialId;
+  button.title = "跳转到单素材深度分析";
+  button.addEventListener("click", () => activateMaterialById(materialId));
+  return button;
+}
+
+function renderTextWithMaterialLinks(value) {
+  const fragment = document.createDocumentFragment();
+  const content = displayText(value);
+  const ids = knownMaterialIds();
+  const pattern = /\b\d{15,}\b/g;
+  let cursor = 0;
+  let match;
+  while ((match = pattern.exec(content)) !== null) {
+    const materialId = match[0];
+    if (match.index > cursor) {
+      fragment.append(document.createTextNode(content.slice(cursor, match.index)));
+    }
+    fragment.append(ids.has(materialId) ? materialLink(materialId) : document.createTextNode(materialId));
+    cursor = match.index + materialId.length;
+  }
+  if (cursor < content.length) {
+    fragment.append(document.createTextNode(content.slice(cursor)));
+  }
+  return fragment;
+}
+
+function elementWithMaterialLinks(tag, className, value) {
+  const node = element(tag, className);
+  node.append(renderTextWithMaterialLinks(value));
+  return node;
+}
+
+function humanizeEvidenceRef(reference) {
+  const parts = text(reference).split(":");
+  if (parts[0] === "audience" && parts.length >= 4) {
+    const metric = metricLabels[parts[1]] || "人群数据";
+    const dimension = dimensionLabels[parts[2]] || parts[2];
+    return `${metric}：${dimension} ${parts.slice(3).join(":")}`;
+  }
+  if (parts[0] === "script" && parts.length >= 4) {
+    const labels = parts.slice(2).filter(Boolean);
+    const uniqueLabels = labels.filter((label, index) => labels.indexOf(label) === index);
+    return `脚本标签：${uniqueLabels.join(" / ")}`;
+  }
+  if (parts[0] === "highlight" && parts.length >= 3) {
+    return `高光帧：${frameLabels[parts[2]] || parts[2]}`;
+  }
+  return "结构化证据";
+}
+
+function renderInsightList(targetId, insightItems, emptyTitle) {
+  const target = document.getElementById(targetId);
+  target.replaceChildren();
+  const insights = Array.isArray(insightItems) ? insightItems.filter((insight) => {
+    return text(insight && insight.title) || text(insight && insight.conclusion);
+  }) : [];
+  if (insights.length === 0) {
+    const empty = element("article", "insight-card insight-card-primary");
+    empty.append(element("b", "", emptyTitle), element("p", "", "请补充结构化分析后重新渲染。"));
+    target.append(empty);
+    return;
+  }
+  insights.forEach((insight, index) => {
+    const card = element("article", `insight-card${index === 0 ? " insight-card-primary" : ""}`);
+    const title = text(insight.summary)
+      ? insight.title + "：" + text(insight.summary)
+      : insight.title || `洞察 ${index + 1}`;
+    card.append(
+      elementWithMaterialLinks("b", "", title),
+      elementWithMaterialLinks("p", "", insight.conclusion)
+    );
+    target.append(card);
+  });
+}
+
+function topBuckets(dimension, limit = 8) {
+  const buckets = Array.isArray(dimension?.buckets) ? dimension.buckets : [];
+  return buckets.slice(0, limit);
+}
+
+function appendTooltipLines(tooltip, title, lines) {
+  tooltip.replaceChildren();
+  tooltip.append(element("b", "", title));
+  (Array.isArray(lines) ? lines : [lines]).filter(Boolean).forEach((line) => {
+    tooltip.append(element("span", "chart-tooltip-line", line));
+  });
+}
+
+function renderColumnChart(title, buckets, valueFormatter, options = {}) {
+  const card = element("div", `chart-card chart-card-full column-chart-card${options.cardClass ? ` ${options.cardClass}` : ""}`);
+  if (!options.hideTitle) {
+    if (options.headerHint) {
+      const header = element("div", "chart-card-heading");
+      header.append(element("h3", "", title), element("p", "chart-card-hint", options.headerHint));
+      card.append(header);
+    } else {
+      card.append(element("h3", "", title));
+    }
+  }
+  if (!Array.isArray(buckets) || buckets.length === 0) {
+    card.append(element("p", "muted", "暂无可视化数据"));
+    return card;
+  }
+  const valueAccessor = options.valueAccessor || ((bucket) => Number(bucket.metricPercentage ?? bucket.value ?? 0));
+  const tooltipFormatter = options.tooltipFormatter || valueFormatter || ((bucket) => `${formatNumber(valueAccessor(bucket))}%`);
+  const tooltipLines = options.tooltipLines || ((bucket) => [tooltipFormatter(bucket)]);
+  const axisValueFormatter = options.axisValueFormatter || ((value) => valueFormatter ? valueFormatter({ value, metricPercentage: value }) : `${formatNumber(value)}%`);
+  const itemTitleFormatter = options.itemTitleFormatter || ((bucket) => `${text(bucket.bucket ?? bucket.label)}：${tooltipFormatter(bucket)}`);
+  const axisLabel = text(options.axisLabel);
+  const values = buckets.map((bucket) => valueAccessor(bucket));
+  const maxValue = Math.max(...values, 1);
+  const axisMax = Math.ceil(maxValue / 10) * 10 || 10;
+  const itemCount = buckets.length;
+  const labelStep = Math.max(1, Math.ceil(itemCount / (options.maxLabels || 12)));
+  const chart = element("div", "column-chart");
+  chart.style.setProperty("--column-count", String(itemCount));
+  const axis = element("div", "column-y-axis");
+  const axisTicks = Array.isArray(options.axisTicks) && options.axisTicks.length > 0
+    ? options.axisTicks
+    : [axisMax, axisMax * .75, axisMax * .5, axisMax * .25, 0];
+  if (axisLabel) {
+    axis.append(element("span", "column-axis-title", axisLabel));
+  }
+  axisTicks.forEach((value) => {
+    axis.append(element("span", "", axisValueFormatter(value)));
+  });
+  const plot = element("div", "column-plot");
+  plot.dataset.columnDensity = itemCount > 36 ? "dense" : itemCount > 18 ? "compact" : "normal";
+  plot.style.gridTemplateColumns = `repeat(${itemCount}, minmax(0, 1fr))`;
+  plot.style.setProperty("--column-gap", itemCount > 36 ? "0px" : itemCount > 24 ? "4px" : itemCount > 14 ? "8px" : "18px");
+  buckets.forEach((bucket, index) => {
+    const value = valueAccessor(bucket);
+    const item = options.onBucketClick
+      ? document.createElement("button")
+      : element("div", "column-item");
+    item.className = options.onBucketClick
+      ? "column-item column-item-interactive"
+      : "column-item";
+    if (options.onBucketClick) {
+      item.type = "button";
+      const dataKey = text(options.bucketDataKey);
+      if (dataKey) {
+        item.dataset[dataKey] = text(bucket.bucket ?? bucket.label);
+      }
+      item.setAttribute("aria-label", `查看 ${text(bucket.bucket ?? bucket.label)} 的明细`);
+      item.addEventListener("click", () => options.onBucketClick(bucket, item));
+    }
+    item.title = itemTitleFormatter(bucket);
+    item.style.minWidth = itemCount > 24 ? "0" : "46px";
+    const bar = element("div", "column-bar");
+    bar.style.height = `${Math.max(2, value / axisMax * 100)}%`;
+    bar.style.width = itemCount > 36 ? "10px" : itemCount > 24 ? "14px" : itemCount > 14 ? "22px" : "min(48px, 56%)";
+    const label = element("span", "column-label", index % labelStep === 0 || index === itemCount - 1 ? text(bucket.bucket ?? bucket.label) : "");
+    label.style.width = itemCount > 24 ? "48px" : itemCount > 14 ? "72px" : "92px";
+    const tooltip = element("div", "chart-tooltip");
+    appendTooltipLines(tooltip, text(bucket.bucket ?? bucket.label), tooltipLines(bucket));
+    item.append(bar, label, tooltip);
+    plot.append(item);
+  });
+  chart.append(axis, plot);
+  card.append(chart);
+  return card;
+}
+
+const chartColors = ["#9b6a37", "#d79a4b", "#6f7f5f", "#a14f38", "#6d5d4d", "#c7a36a", "#7d8f9a", "#b77d54"];
+
+function buildPieSliceTooltipMap(buckets) {
+  const total = buckets.reduce((sum, bucket) => sum + Number(bucket.metricPercentage || 0), 0) || 1;
+  let cursor = 0;
+  return buckets.map((bucket, index) => {
+    const percentage = Number(bucket.metricPercentage || 0);
+    const slice = {
+      bucket,
+      color: chartColors[index % chartColors.length],
+      startRatio: cursor / total,
+      endRatio: (cursor + percentage) / total,
+    };
+    cursor += percentage;
+    return slice;
+  });
+}
+
+function findPieBucketAtPosition(event, pie, slices) {
+  const rect = pie.getBoundingClientRect();
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  const dx = event.clientX - centerX;
+  const dy = event.clientY - centerY;
+  const radius = Math.min(rect.width, rect.height) / 2;
+  if (Math.sqrt(dx * dx + dy * dy) > radius) return null;
+  const angle = (Math.atan2(dy, dx) + Math.PI / 2 + Math.PI * 2) % (Math.PI * 2);
+  const ratio = angle / (Math.PI * 2);
+  return slices.find((slice) => ratio >= slice.startRatio && ratio < slice.endRatio) || slices[slices.length - 1] || null;
+}
+
+function renderPieChart(title, buckets, options = {}) {
+  const card = element("div", "chart-card");
+  card.append(element("h3", "", title));
+  if (!Array.isArray(buckets) || buckets.length === 0) {
+    card.append(element("p", "muted", "暂无可视化数据"));
+    return card;
+  }
+  const pieTooltipBuckets = buildPieSliceTooltipMap(buckets);
+  const stops = pieTooltipBuckets.map((slice) => `${slice.color} ${slice.startRatio * 360}deg ${slice.endRatio * 360}deg`);
+  const layout = element("div", "pie-layout");
+  const pie = element("div", "pie-chart");
+  pie.style.background = `conic-gradient(${stops.join(", ")})`;
+  const pieTooltip = element("div", "chart-tooltip");
+  pie.append(pieTooltip);
+  const tooltipLines = options.tooltipLines || ((bucket) => [
+    `占比 ${formatNumber(bucket.metricPercentage)}%`,
+  ]);
+  const legendValue = options.legendValue || ((bucket) => `${formatNumber(bucket.metricPercentage)}%`);
+  function showPieTooltip(bucket) {
+    appendTooltipLines(pieTooltip, text(bucket.bucket), tooltipLines(bucket));
+    pie.title = `${text(bucket.bucket)}：${tooltipLines(bucket).join(" · ")}`;
+    pieTooltip.classList.add("is-visible");
+  }
+  function syncPieTooltip(event) {
+    const activeBucket = findPieBucketAtPosition(event, pie, pieTooltipBuckets);
+    if (activeBucket) showPieTooltip(activeBucket.bucket);
+  }
+  pie.addEventListener("pointerenter", (event) => {
+    syncPieTooltip(event);
+  });
+  pie.addEventListener("pointermove", (event) => {
+    syncPieTooltip(event);
+  });
+  pie.addEventListener("pointerleave", () => {
+    pieTooltip.classList.remove("is-visible");
+  });
+  showPieTooltip(pieTooltipBuckets[0].bucket);
+  pieTooltip.classList.remove("is-visible");
+  const legend = element("ul", "pie-legend");
+  buckets.forEach((bucket, index) => {
+    const item = element("li", "legend-item");
+    item.title = `${text(bucket.bucket)}：${tooltipLines(bucket).join(" · ")}`;
+    const swatch = element("span", "legend-swatch");
+    swatch.style.background = chartColors[index % chartColors.length];
+    item.append(swatch, element("span", "", text(bucket.bucket)), element("span", "", legendValue(bucket)));
+    legend.append(item);
+  });
+  layout.append(pie, legend);
+  card.append(layout);
+  return card;
+}
+
+function createRegionScaleControl(state, onChange, totalCount) {
+  if (!state.control) {
+    const scale = element("div", "region-scale");
+    const head = element("div", "region-scale-head");
+    const title = element("span", "", "");
+    const detail = element("span", "", "");
+    head.append(title, detail);
+    const scaleInput = document.createElement("input");
+    scaleInput.type = "range";
+    scaleInput.max = "1";
+    scaleInput.step = "0.005";
+    scaleInput.addEventListener("input", () => {
+      state.ratio = Number(scaleInput.value);
+      if (state.metaTitle && state.metaDetail) {
+        const visibleRatio = Number(state.ratio || 0.35);
+        state.metaTitle.textContent = `柱状图展示比例 ${Math.round(visibleRatio * 100)}%`;
+        state.metaDetail.textContent = `当前显示 ${Math.max(1, Math.ceil(state.totalCount * visibleRatio))}/${state.totalCount}`;
+      }
+      onChange();
+    });
+    scale.append(head, scaleInput);
+    state.control = scaleInput;
+    state.metaTitle = title;
+    state.metaDetail = detail;
+    state.root = scale;
+  }
+  state.totalCount = totalCount;
+  state.control.min = String(state.minRatio || 0.02);
+  state.control.value = String(state.ratio || 0.35);
+  function syncScaleMeta() {
+    const visibleRatio = Number(state.ratio || 0.35);
+    state.metaTitle.textContent = `柱状图展示比例 ${Math.round(visibleRatio * 100)}%`;
+    state.metaDetail.textContent = `当前显示 ${Math.max(1, Math.ceil(totalCount * visibleRatio))}/${totalCount}`;
+  }
+  syncScaleMeta();
+  return state.root;
+}
+
+function renderRegionChart(card, dimensions) {
+  const regionHeader = element("div", "region-card-header");
+  const regionTabs = element("div", "metric-switch region-tabs");
+  regionTabs.append(element("span", "", "地域口径："));
+  const body = element("div", "");
+  regionHeader.append(element("h3", "", "地域分布"), regionTabs);
+  card.append(regionHeader, body);
+  const options = [
+    ["province_name", "省份"],
+    ["city_name", "城市"],
+  ];
+  const regionState = {
+    province_name: { ratio: 0.35, minRatio: 0.05, minVisible: 6 },
+    city_name: { ratio: 0.16, minRatio: 0.005, minVisible: 4 },
+  };
+  let activeDimensionKey = "province_name";
+  const chartMount = element("div", "");
+  const scaleMount = element("div", "");
+  body.append(chartMount, scaleMount);
+  function renderRegion(dimensionKey) {
+    activeDimensionKey = dimensionKey || activeDimensionKey;
+    regionTabs.querySelectorAll("button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.dimension === activeDimensionKey));
+    });
+    const allBuckets = Array.isArray(dimensions[activeDimensionKey]?.buckets) ? dimensions[activeDimensionKey].buckets : [];
+    const state = regionState[activeDimensionKey] || { ratio: 0.35 };
+    const visibleRatio = Number(state.ratio || 0.35);
+    const minVisible = state.minVisible || (activeDimensionKey === "city_name" ? 12 : 8);
+    const visibleCount = Math.max(minVisible, Math.ceil(allBuckets.length * visibleRatio));
+    const visibleBuckets = allBuckets.slice(0, Math.min(allBuckets.length, visibleCount));
+    const chart = renderColumnChart(`${dimensionLabels[activeDimensionKey]}分布`, visibleBuckets, null, {
+      cardClass: "chart-card-plain",
+      axisLabel: "人数",
+      valueAccessor: (bucket) => Number(bucket.metricValue ?? bucket.value ?? 0),
+      axisValueFormatter: (value) => formatNumber(value),
+      tooltipFormatter: (bucket) => `地域占比 ${formatNumber(bucket.metricPercentage ?? 0)}% · 人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)}`,
+      itemTitleFormatter: (bucket) => `${text(bucket.bucket ?? bucket.label)}：人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)} · 地域占比 ${formatNumber(bucket.metricPercentage ?? 0)}%`,
+      tooltipLines: (bucket) => [
+        `占比 ${formatNumber(bucket.metricPercentage ?? 0)}%`,
+        `人数 ${formatNumber(bucket.metricValue ?? bucket.value ?? 0)}`,
+      ],
+      maxLabels: activeDimensionKey === "city_name" ? 16 : 36,
+      hideTitle: true,
+    });
+    chartMount.replaceChildren(chart);
+    const scale = createRegionScaleControl(state, renderRegion, allBuckets.length);
+    if (scaleMount.firstChild !== scale) {
+      scaleMount.replaceChildren(scale);
+    }
+  }
+  options.forEach(([dimensionKey, label], index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.dimension = dimensionKey;
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.textContent = label;
+    button.addEventListener("click", () => renderRegion(dimensionKey));
+    regionTabs.append(button);
+  });
+  renderRegion(activeDimensionKey);
+}
+
+function renderAudiencePreferenceCard(audienceGroup, metricKey = "SHOW_COUNT") {
+  const chapter02 = presentationChapter("chapter02");
+  const displayAudience = reportData.displayFacts?.audience || {};
+  const preferencesByMetric = displayAudience.preferencesByMetric || chapter02?.preferencesByMetric || reportData.audience?.preferencesByMetric || {};
+  const preferences = Array.isArray(preferencesByMetric[metricKey])
+    ? preferencesByMetric[metricKey]
+    : Array.isArray(chapter02?.preferences)
+    ? chapter02.preferences
+    : Array.isArray(reportData.audience?.preferences)
+    ? reportData.audience.preferences : [];
+  const card = element("div", "preference-card");
+  const groupName = text(audienceGroup);
+  const preference = preferences.find((item) => text(item.audienceGroup) === groupName);
+  card.append(element("h3", "", "核心人群偏好 TOP3 素材"));
+  card.append(element(
+    "p",
+    "preference-rule-note",
+    "入选规则：先用本批素材整体人群占比作为基准；单个素材在该人群上的占比高于基准才进入候选池；候选素材再按素材总消耗从高到低取 TOP3，不做补位。"
+  ));
+  const group = element("section", "preference-group");
+  group.append(element("h4", "", groupName || "未选择人群"));
+  const materials = Array.isArray(preference?.topMaterials) ? preference.topMaterials : [];
+  if (materials.length === 0) {
+    group.append(element("p", "audience-drill-empty", "暂无该人群的 TOP3 素材偏好数据。"));
+    card.append(group);
+    return card;
+  }
+  const list = element("ol", "preference-list");
+  materials.forEach((item) => {
+    const row = element("li", "preference-item");
+    const materialButton = materialLink(text(item.materialId));
+    materialButton.textContent = text(item.materialName, item.materialId);
+    row.append(
+      element("span", "preference-rank", `TOP ${text(item.rank)}`),
+      materialButton,
+      element(
+        "span",
+        "preference-metric",
+        `${metricLabels[metricKey] || "人群"}占比 ${formatNumber(item.audiencePercentage)}%`
+      ),
+      element(
+        "span",
+        "preference-cost",
+        `素材消耗 ${formatNumber(item.totalCost)}`
+      )
+    );
+    list.append(row);
+  });
+  group.append(list);
+  card.append(group);
+  return card;
+}
+
+function renderAudienceGroupDrill(root, buckets, selectedBucket, metricKey, sourceItem) {
+  const selectedName = text(selectedBucket?.bucket ?? selectedBucket?.label ?? buckets[0]?.bucket);
+  const transition = captureScriptBarTransition(sourceItem);
+  const view = element("div", "script-drill-view");
+  const control = element("div", "script-dashboard-control");
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "script-drill-back";
+  back.textContent = "返回八大人群分布";
+  back.addEventListener("click", () => returnToAudienceOverview(root, buckets, selectedName, metricKey));
+  control.append(back);
+  const detail = element("div", "script-drill-detail is-entering");
+  const layout = element("div", "script-drill-layout");
+  const primary = element("section", "script-drill-primary");
+  const plot = element("div", "script-drill-primary-plot");
+  const bar = element("div", "script-drill-primary-bar");
+  const panel = element("aside", "audience-drill-panel");
+  bar.style.height = "100%";
+  plot.append(bar);
+  primary.append(
+    element("b", "", selectedName),
+    plot,
+    element("span", "muted", `${metricLabels[metricKey] || metricKey}占比 ${formatNumber(selectedBucket?.metricPercentage ?? selectedBucket?.value)}%`)
+  );
+  panel.append(renderAudiencePreferenceCard(selectedName, metricKey));
+  layout.append(primary, panel);
+  detail.append(layout);
+  view.append(control, detail);
+  root.replaceChildren(view);
+  window.setTimeout(() => detail.classList.add("is-visible"), 0);
+  animateScriptDrill(transition, bar);
+}
+
+function renderAudienceDashboardOverview(root, buckets, metricKey, options = {}) {
+  const view = element("div", "script-drill-view");
+  const chartGrid = element("div", "chart-grid script-dashboard-overview");
+  chartGrid.append(renderColumnChart("八大人群分布", buckets, null, {
+    tooltipFormatter: (bucket) => `占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`,
+    tooltipLines: (bucket) => [`占比 ${formatNumber(bucket.metricPercentage ?? bucket.value)}%`],
+    bucketDataKey: "audienceGroup",
+    onBucketClick: (bucket, item) => renderAudienceGroupDrill(root, buckets, bucket, metricKey, item),
+  }));
+  view.append(chartGrid);
+  root.replaceChildren(view);
+  if (options.selectedName) {
+    const targetItem = Array.from(chartGrid.querySelectorAll("[data-audience-group]")).find((item) => item.dataset.audienceGroup === options.selectedName);
+    const targetBar = targetItem?.querySelector(".column-bar");
+    chartGrid.classList.add("is-entering");
+    window.setTimeout(() => chartGrid.classList.add("is-visible"), 0);
+    animateScriptDrill(options.transition, targetBar);
+  }
+}
+
+function returnToAudienceOverview(root, buckets, selectedName, metricKey) {
+  const detail = root.querySelector(".script-drill-detail");
+  const transition = captureScriptBarTransition(root.querySelector(".script-drill-primary"));
+  if (!detail || prefersReducedMotion()) {
+    renderAudienceDashboardOverview(root, buckets, metricKey, { selectedName, transition });
+    return;
+  }
+  detail.classList.add("is-leaving");
+  window.setTimeout(() => renderAudienceDashboardOverview(root, buckets, metricKey, { selectedName, transition }), 260);
+}
+
+function renderAudienceDashboard() {
+  const root = document.getElementById("audience-dashboard");
+  const displayAudience = reportData.displayFacts?.audience || {};
+  const metrics = displayAudience.metrics || presentationChapter("chapter02")?.metrics || reportData.audience?.metrics || {};
+  const metricKeys = ["SHOW_COUNT", "TRANSACTION_AMOUNT", "CLICK_COUNT"].filter((key) => metrics[key]);
+  root.replaceChildren();
+  if (metricKeys.length === 0) {
+    root.append(element("p", "muted", "暂无人群汇总数据"));
+    return;
+  }
+  const { card, body } = createCollapsibleDataCard("", "人群汇总数据");
+  const switcher = element("div", "metric-switch");
+  switcher.append(element("span", "", "展示指标："));
+  const chartGrid = element("div", "chart-grid");
+  const controls = document.createElement("div");
+  controls.className = "audience-dashboard-controls";
+  const hint = element(
+    "p",
+    "script-dashboard-hint audience-dashboard-hint",
+    "点击八大人群柱可查看该人群 TOP3 素材"
+  );
+  controls.append(switcher, hint);
+  body.append(controls, chartGrid);
+  root.append(card);
+
+  function renderMetric(metricKey) {
+    switcher.querySelectorAll("button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.metric === metricKey));
+    });
+    chartGrid.replaceChildren();
+    const dimensions = metrics[metricKey]?.dimensions || {};
+    const regionCard = element("div", "chart-card chart-card-full region-card");
+    renderRegionChart(regionCard, dimensions);
+    const audienceBuckets = topBuckets(dimensions.user_group_label_name);
+    const audienceMount = element("div", "chart-card-full");
+    renderAudienceDashboardOverview(audienceMount, audienceBuckets, metricKey);
+    chartGrid.append(
+      audienceMount,
+      renderPieChart("年龄分布", topBuckets(dimensions.age, 6)),
+      renderPieChart("性别分布", topBuckets(dimensions.gender, 4)),
+      regionCard
+    );
+  }
+
+  metricKeys.forEach((metricKey, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.metric = metricKey;
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.textContent = metricLabels[metricKey] || metricKey;
+    button.addEventListener("click", () => renderMetric(metricKey));
+    switcher.append(button);
+  });
+  renderMetric(metricKeys[0]);
+}
+
+function sortScriptBuckets(buckets) {
+  return buckets.sort((left, right) => {
+    const valueDifference = Number(right.value || 0) - Number(left.value || 0);
+    return valueDifference || text(left.bucket).localeCompare(text(right.bucket), "zh-CN");
+  });
+}
+
+function captureScriptBarTransition(sourceItem) {
+  const sourceBar = sourceItem?.querySelector(".column-bar, .script-drill-primary-bar");
+  if (!sourceBar) return null;
+  const sourceRect = sourceBar.getBoundingClientRect();
+  if (!sourceRect.width || !sourceRect.height) return null;
+  return { clone: sourceBar.cloneNode(true), sourceRect };
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function animateScriptDrill(transition, targetBar) {
+  if (!transition || !targetBar || prefersReducedMotion()) {
+    return;
+  }
+  const sourceRect = transition.sourceRect;
+  const targetRect = targetBar.getBoundingClientRect();
+  if (!targetRect.width || !targetRect.height) return;
+
+  targetBar.classList.add("is-arriving");
+  const clone = transition.clone;
+  clone.classList.add("script-drill-moving-bar");
+  Object.assign(clone.style, {
+    left: `${sourceRect.left}px`,
+    top: `${sourceRect.top}px`,
+    width: `${sourceRect.width}px`,
+    height: `${sourceRect.height}px`,
+  });
+  document.body.append(clone);
+
+  let removed = false;
+  const removeClone = () => {
+    if (removed) return;
+    removed = true;
+    clone.remove();
+    targetBar.classList.remove("is-arriving");
+  };
+  clone.addEventListener("transitionend", removeClone, { once: true });
+  window.setTimeout(() => {
+    const translateX = targetRect.left + targetRect.width / 2 - (sourceRect.left + sourceRect.width / 2);
+    const translateY = targetRect.bottom - sourceRect.bottom;
+    const scaleX = targetRect.width / sourceRect.width;
+    const scaleY = targetRect.height / sourceRect.height;
+    clone.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleX}, ${scaleY})`;
+  }, 0);
+  window.setTimeout(removeClone, 360);
+}
+
+function renderScriptDrill(level1, summary, level1Bucket, sourceItem) {
+  const body = getScriptDashboardBody();
+  const transition = captureScriptBarTransition(sourceItem);
+  const level2 = {};
+  summary.forEach((item) => {
+    if (text(item.level1, "其他") !== level1) return;
+    const key = text(item.level2, "其他");
+    level2[key] = (level2[key] || 0) + Number(item.occurrenceCount || 0);
+  });
+  const total = Number(level1Bucket?.value || 0) || 1;
+  const level2Buckets = sortScriptBuckets(Object.entries(level2).map(([label, value]) => ({
+    bucket: label,
+    value,
+    metricPercentage: Number(value || 0) / total * 100,
+  })));
+
+  const view = element("div", "script-drill-view");
+  const control = element("div", "script-dashboard-control");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "script-drill-back";
+  button.textContent = "返回一级标签";
+  button.addEventListener("click", () => returnToScriptOverview(level1));
+  control.append(button);
+
+  const detail = element("div", "script-drill-detail is-entering");
+  const layout = element("div", "script-drill-layout");
+  const primary = element("section", "script-drill-primary");
+  const plot = element("div", "script-drill-primary-plot");
+  const bar = element("div", "script-drill-primary-bar");
+  bar.style.height = "100%";
+  plot.append(bar);
+  primary.append(
+    element("b", "", level1),
+    plot,
+    element("span", "muted", `出现次数 ${formatNumber(level1Bucket.value)} 次`)
+  );
+  layout.append(
+    primary,
+    renderPieChart(`${level1} 二级标签分布`, level2Buckets, {
+      tooltipLines: (bucket) => [
+        `出现次数 ${formatNumber(bucket.value)} 次`,
+        `占比 ${formatNumber(bucket.metricPercentage)}%`,
+      ],
+      legendValue: (bucket) => `${formatNumber(bucket.value)}次 · ${formatNumber(bucket.metricPercentage)}%`,
+    })
+  );
+  detail.append(layout);
+  view.append(control, detail);
+  resetCollapsibleBody(body, "", view);
+  window.setTimeout(() => detail.classList.add("is-visible"), 0);
+  animateScriptDrill(transition, bar);
+}
+
+function returnToScriptOverview(level1) {
+  const root = document.getElementById("script-dashboard");
+  const detail = root.querySelector(".script-drill-detail");
+  const transition = captureScriptBarTransition(root.querySelector(".script-drill-primary"));
+  if (!detail || prefersReducedMotion()) {
+    renderScriptDashboard({ level1, transition });
+    return;
+  }
+  detail.classList.add("is-leaving");
+  window.setTimeout(() => renderScriptDashboard({ level1, transition }), 260);
+}
+
+function buildScriptDashboard() {
+  const projectedSummary = chapter03Summary();
+  const summary = Array.isArray(projectedSummary)
+    ? projectedSummary
+    : [];
+  if (summary.length === 0) {
+    const chartGrid = element("div", "chart-grid script-dashboard-overview");
+    chartGrid.append(element("p", "muted", "暂无脚本标签数据"));
+    return {
+      chartGrid,
+    };
+  }
+  const level1 = {};
+  summary.forEach((item) => {
+    const key = text(item.level1, "其他");
+    level1[key] = (level1[key] || 0) + Number(item.occurrenceCount || 0);
+  });
+  const level1Buckets = sortScriptBuckets(Object.entries(level1).map(([label, value]) => ({ bucket: label, value })));
+  const totalOccurrences = level1Buckets.reduce((sum, bucket) => sum + Number(bucket.value || 0), 0) || 1;
+  const maxCount = Math.max(...level1Buckets.map((bucket) => Number(bucket.value || 0)), 0);
+  const chartGrid = element("div", "chart-grid script-dashboard-overview");
+  chartGrid.append(renderColumnChart("内容公式一级标签分布", level1Buckets, (bucket) => `${formatNumber(bucket.value ?? bucket.metricPercentage)} 次`, {
+    headerHint: "点击一级标签柱可查看二级标签分布",
+    axisTicks: [maxCount, Math.round(maxCount * 0.75), Math.round(maxCount * 0.5), Math.round(maxCount * 0.25), 0],
+    axisValueFormatter: (value) => `${Math.round(value)} 次`,
+    tooltipLines: (bucket) => [
+      `占比 ${formatNumber((Number(bucket.value || 0) / totalOccurrences) * 100)}%`,
+      `次数 ${formatNumber(bucket.value || 0)} 次`,
+    ],
+    bucketDataKey: "scriptLevel1",
+    onBucketClick: (bucket, item) => renderScriptDrill(bucket.bucket, summary, bucket, item),
+  }));
+  return { chartGrid };
+}
+
+function renderScriptDashboard(options = {}) {
+  const root = document.getElementById("script-dashboard");
+  const { chartGrid } = buildScriptDashboard();
+  const { card, body } = createCollapsibleDataCard("", "脚本汇总数据");
+  body.append(chartGrid);
+  root.replaceChildren(card);
+  if (options.level1) {
+    const targetItem = Array.from(chartGrid.querySelectorAll("[data-script-level1]")).find((item) => item.dataset.scriptLevel1 === options.level1);
+    const targetBar = targetItem?.querySelector(".column-bar");
+    chartGrid.classList.add("is-entering");
+    window.setTimeout(() => chartGrid.classList.add("is-visible"), 0);
+    animateScriptDrill(options.transition, targetBar);
+  }
+}
+
+function renderKeywordCloudPanel() {
+  const root = document.getElementById("keyword-cloud-panel");
+  const panel = chapter03KeywordCloud();
+  root.replaceChildren();
+  if (!panel) return;
+  const wrap = element("div", "keyword-cloud-layout");
+  const conclusion = element("article", "keyword-cloud-conclusion");
+  conclusion.append(element("small", "keyword-cloud-kicker", "一句话结论"), element("h3", "", panel.oneSentenceConclusion || "暂无分析"), element("p", "", panel.summary || ""));
+  const cloud = element("article", "keyword-cloud-summary");
+  cloud.append(element("small", "keyword-cloud-kicker", "高频关键词云"));
+  const words = element("div", "keyword-cloud-words");
+  const keywords = Array.isArray(panel.keywords) ? panel.keywords : [];
+  const max = Math.max(...keywords.map((item) => Number(item.frequency || 0)), 1);
+  stableKeywordOrder(keywords.slice(0, 24)).forEach((item, index) => {
+    const word = element("span", `keyword-cloud-word keyword-cloud-tone-${index % 6}`, item.keyword);
+    word.style.fontSize = `${0.95 + (Number(item.frequency || 0) / max) * 1.35}rem`;
+    word.title = `出现 ${formatNumber(item.frequency)} 次`;
+    words.append(word);
+  });
+  cloud.append(words);
+  const selling = element("article", "keyword-cloud-selling");
+  selling.append(element("small", "keyword-cloud-kicker", "从关键词云提炼的卖点"));
+  const cards = Array.isArray(panel.sellingPoints) ? panel.sellingPoints : [];
+  if (!cards.length) {
+    const warning = element("p", "analysis-warning", panel.warning || "AI 未提炼卖点");
+    warning.setAttribute("role", "alert");
+    selling.append(warning);
+  }
+  selling.append(element("p", "muted", `事实可用性：${panel.availability || "unavailable"} · 分析状态：${panel.analysisStatus || "missing"}`));
+  if (panel.limitation) selling.append(element("p", "analysis-warning", panel.limitation));
+  cards.forEach((card, index) => {
+    const item = element("div", "keyword-selling-card");
+    item.dataset.evidenceRefs = JSON.stringify(card.evidenceRefs || []);
+    item.append(element("b", "", `${index + 1}｜${card.title || "卖点"}`), element("p", "", card.description || ""));
+    selling.append(item);
+  });
+  wrap.append(conclusion, cloud, selling);
+  root.append(wrap);
+}
+
+function renderFrames(material, selection = null) {
+  const grid = element("div", "frame-grid");
+  const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
+  if (frames.length === 0) {
+    grid.append(element("p", "muted", "暂无高光帧"));
+    return grid;
+  }
+  frames.forEach((frame) => {
+    const figure = document.createElement("figure");
+    const button = document.createElement("button");
+    const image = document.createElement("img");
+    const captionText = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
+    button.type = "button";
+    button.className = "frame-preview-button";
+    button.setAttribute("aria-label", `查看大图：${captionText}`);
+    image.src = text(frame.framePath);
+    image.alt = "高光帧";
+    image.loading = "lazy";
+    image.decoding = "async";
+    button.append(image);
+    const reference = `highlight:${text(material.materialId)}:${text(frame.rankType)}`;
+    figure.dataset.frameRef = reference;
+    const caption = element("figcaption", "", captionText);
+    if (selection) {
+      const choice = element("label", "highlight-frame-choice");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.setAttribute("aria-label", `选择高光帧：${captionText}`);
+      input.addEventListener("change", () => selection.set(reference, input.checked));
+      choice.append(input);
+      figure._selectionInput = input;
+      caption.append(choice);
+      selection.register(figure, reference);
+      caption.addEventListener("click", (event) => {
+        if (event.target.closest(".highlight-frame-choice")) return;
+        selection.set(reference, !figure._selectionInput.checked);
+      });
+      button.addEventListener("click", () => openFrameLightbox(text(frame.framePath), captionText));
+    } else {
+      button.addEventListener("click", () => openFrameLightbox(text(frame.framePath), captionText));
+    }
+    figure.append(button, caption);
+    grid.append(figure);
+  });
+  return grid;
+}
+
+function openFrameLightbox(src, caption) {
+  const lightbox = document.getElementById("frame-lightbox");
+  const image = document.getElementById("frame-lightbox-image");
+  const captionNode = document.getElementById("frame-lightbox-caption");
+  image.src = src;
+  captionNode.textContent = caption;
+  lightbox.hidden = false;
+  document.body.style.overflow = "hidden";
+  lightbox.querySelector(".frame-lightbox-close").focus();
+}
+
+function closeFrameLightbox() {
+  const lightbox = document.getElementById("frame-lightbox");
+  const image = document.getElementById("frame-lightbox-image");
+  lightbox.hidden = true;
+  image.removeAttribute("src");
+  document.body.style.overflow = "";
+}
+
+function renderFormula(title, paragraphs) {
+  const card = element("div", "formula");
+  card.append(element("b", "", title));
+  paragraphs.forEach((paragraph) => card.append(elementWithMaterialLinks("p", "", paragraph)));
+  return card;
+}
+
+function formatTimelineSecond(second) {
+  const safeSecond = Math.max(0, Math.round(Number(second || 0)));
+  const minutes = Math.floor(safeSecond / 60);
+  const seconds = safeSecond % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function svgElement(tagName, attributes = {}) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tagName);
+  Object.entries(attributes).forEach(([key, value]) => {
+    node.setAttribute(key, String(value));
+  });
+  return node;
+}
+
+function updateTimelineScaleTrack(state) {
+  if (!state.control) return;
+  const min = Number(state.control.min || 0);
+  const max = Number(state.control.max || 1);
+  const value = Number(state.control.value || state.visibleRatio || 1);
+  const progress = max > min ? ((value - min) / (max - min)) * 100 : 100;
+  state.control.style.setProperty("--timeline-scale-progress", `${Math.max(0, Math.min(100, progress))}%`);
+}
+
+function createTimelineScaleControl(state, onChange) {
+  if (!state.control) {
+    const scale = element("div", "timeline-scale");
+    const head = element("div", "timeline-scale-head");
+    const title = element("span", "", "");
+    const detail = element("span", "", "");
+    head.append(title, detail);
+    const scaleInput = document.createElement("input");
+    scaleInput.type = "range";
+    scaleInput.min = "0.25";
+    scaleInput.max = "1";
+    scaleInput.step = "0.05";
+    scaleInput.addEventListener("input", () => {
+      state.visibleRatio = Number(scaleInput.value);
+      updateTimelineScaleTrack(state);
+      if (state.activeMetric) {
+        onChange(state.activeMetric);
+      }
+    });
+    scale.append(head, scaleInput);
+    state.control = scaleInput;
+    state.metaTitle = title;
+    state.metaDetail = detail;
+    state.root = scale;
+  }
+  const ratio = Number(state.visibleRatio || 1);
+  const maxSecond = Number(state.maxSecond || 0);
+  state.control.value = String(ratio);
+  updateTimelineScaleTrack(state);
+  state.metaTitle.textContent = `时间范围 ${Math.round(ratio * 100)}%`;
+  state.metaDetail.textContent = maxSecond > 0
+    ? `当前显示 00:00-${formatTimelineSecond(maxSecond * ratio)} / ${formatTimelineSecond(maxSecond)}`
+    : "暂无可缩放时长";
+  return state.root;
+}
+
+function renderTimelineChart(metric, visibleRatio = 1) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "timeline-chart");
+  svg.setAttribute("viewBox", "0 0 840 320");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${text(metric.label)}趋势图`);
+  const allPoints = Array.isArray(metric.points) ? metric.points : [];
+  const maxSecond = Math.max(...allPoints.map((point) => Number(point.second || 0)), 1);
+  const visibleMaxSecond = Math.max(1, maxSecond * Number(visibleRatio || 1));
+  const points = allPoints.filter((point) => Number(point.second || 0) <= visibleMaxSecond);
+  if (points.length === 0) {
+    return svg;
+  }
+  const bounds = {
+    left: 78,
+    right: 810,
+    top: 56,
+    bottom: 266,
+  };
+  const width = bounds.right - bounds.left;
+  const height = bounds.bottom - bounds.top;
+  const maxValue = Math.max(...points.map((point) => Number(point.value || 0)), 1);
+  const yTicks = [maxValue, maxValue * 0.75, maxValue * 0.5, maxValue * 0.25, 0];
+  yTicks.forEach((value) => {
+    const y = bounds.bottom - (Number(value || 0) / maxValue) * height;
+    svg.append(
+      svgElement("line", {
+        class: "timeline-grid-line",
+        x1: bounds.left,
+        x2: bounds.right,
+        y1: y.toFixed(2),
+        y2: y.toFixed(2),
+      }),
+      svgElement("text", {
+        class: "timeline-tick-label",
+        x: bounds.left - 12,
+        y: (y + 4).toFixed(2),
+        "text-anchor": "end",
+      })
+    );
+    svg.lastChild.textContent = formatNumber(value);
+  });
+  const xTicks = [0, 0.25, 0.5, 0.75, 1].map((ratio) => visibleMaxSecond * ratio);
+  xTicks.forEach((second) => {
+    const x = bounds.left + (Number(second || 0) / visibleMaxSecond) * width;
+    svg.append(
+      svgElement("line", {
+        class: "timeline-grid-line",
+        x1: x.toFixed(2),
+        x2: x.toFixed(2),
+        y1: bounds.top,
+        y2: bounds.bottom,
+      }),
+      svgElement("text", {
+        class: "timeline-tick-label",
+        x: x.toFixed(2),
+        y: bounds.bottom + 24,
+        "text-anchor": "middle",
+      })
+    );
+    svg.lastChild.textContent = formatTimelineSecond(second);
+  });
+  svg.append(
+    svgElement("line", {
+      class: "timeline-axis-line",
+      x1: bounds.left,
+      x2: bounds.left,
+      y1: bounds.top,
+      y2: bounds.bottom,
+    }),
+    svgElement("line", {
+      class: "timeline-axis-line",
+      x1: bounds.left,
+      x2: bounds.right,
+      y1: bounds.bottom,
+      y2: bounds.bottom,
+    })
+  );
+  const axisLabel = svgElement("text", {
+    class: "timeline-metric-label",
+    x: bounds.left,
+    y: 30,
+  });
+  axisLabel.textContent = text(metric.label);
+  svg.append(axisLabel);
+  const pathData = points.map((point, index) => {
+    const x = bounds.left + (Number(point.second || 0) / visibleMaxSecond) * width;
+    const y = bounds.bottom - (Number(point.value || 0) / maxValue) * height;
+    return `${index === 0 ? "M" : "L"}${x.toFixed(2)} ${y.toFixed(2)}`;
+  }).join(" ");
+  const path = svgElement("path", {
+    class: "timeline-line",
+    d: pathData,
+  });
+  svg.append(path);
+  const peak = metric.peak || {};
+  points.forEach((point) => {
+    const cx = bounds.left + (Number(point.second || 0) / visibleMaxSecond) * width;
+    const cy = bounds.bottom - (Number(point.value || 0) / maxValue) * height;
+    const group = svgElement("g", {
+      class: "timeline-point-hitbox",
+      tabindex: "0",
+    });
+    group.append(
+      svgElement("circle", {
+        cx: cx.toFixed(2),
+        cy: cy.toFixed(2),
+        r: "10",
+        fill: "transparent",
+      }),
+      svgElement("circle", {
+        cx: cx.toFixed(2),
+        cy: cy.toFixed(2),
+        r: "4",
+        class: "timeline-point-dot",
+      })
+    );
+    const tooltip = svgElement("g", {
+      class: "timeline-tooltip",
+      transform: `translate(${Math.min(bounds.right - 150, Math.max(bounds.left, cx - 74)).toFixed(2)} ${Math.max(bounds.top + 8, cy - 58).toFixed(2)})`,
+    });
+    tooltip.append(svgElement("rect", {
+      width: "148",
+      height: "46",
+      rx: "8",
+      fill: "rgba(255, 255, 255, .96)",
+      stroke: "rgba(82, 45, 24, .16)",
+    }));
+    const tooltipTime = svgElement("text", {
+      x: "12",
+      y: "18",
+      fill: "#2a170f",
+      "font-size": "12",
+      "font-weight": "800",
+    });
+    tooltipTime.textContent = formatTimelineSecond(point.second);
+    const tooltipValue = svgElement("text", {
+      x: "12",
+      y: "36",
+      fill: "#806758",
+      "font-size": "12",
+    });
+    tooltipValue.textContent = `${text(metric.label)}：${formatNumber(point.value)}`;
+    tooltip.append(tooltipTime, tooltipValue);
+    group.append(tooltip);
+    svg.append(group);
+  });
+  if (peak.second !== undefined && peak.value !== undefined && Number(peak.second || 0) <= visibleMaxSecond) {
+    const cx = bounds.left + (Number(peak.second || 0) / visibleMaxSecond) * width;
+    const cy = bounds.bottom - (Number(peak.value || 0) / maxValue) * height;
+    const dot = svgElement("circle", {
+      class: "timeline-peak-dot",
+      cx: cx.toFixed(2),
+      cy: cy.toFixed(2),
+      r: "6",
+    });
+    const label = svgElement("text", {
+      class: "timeline-axis-label",
+      x: Math.min(bounds.right - 34, cx + 10).toFixed(2),
+      y: Math.max(bounds.top + 12, cy - 10).toFixed(2),
+    });
+    label.textContent = "峰值";
+    svg.append(dot, label);
+  }
+  return svg;
+}
+
+function renderInteractionTimeline(material) {
+  const card = element("div", "raw-fact-card");
+  const metrics = Array.isArray(material.interactionTimeline?.metrics)
+    ? material.interactionTimeline.metrics
+    : [];
+  if (metrics.length === 0) {
+    card.append(element("b", "", "互动时序分析"));
+    card.append(element("p", "muted", "暂无互动时序数据"));
+    return card;
+  }
+  const body = element("div", "collapsible-body");
+  appendCollapsibleHead(card, "", body, "互动时序分析数据");
+  const switcher = element("div", "metric-switch interaction-timeline-switcher");
+  const chartMount = element("div", "");
+  const scaleMount = element("div", "");
+  const peakNote = element("p", "timeline-peak");
+  const state = { visibleRatio: 1, activeMetric: null };
+  card.dataset.timelineReady = "false";
+  card._timelineMetrics = metrics;
+  card._timelineRenderMetric = renderMetric;
+  body.append(switcher, chartMount, scaleMount, peakNote);
+  card.append(body);
+
+  function renderMetric(metric) {
+    state.activeMetric = metric;
+    state.maxSecond = Math.max(...(Array.isArray(metric.points) ? metric.points : []).map((point) => Number(point.second || 0)), 1);
+    switcher.querySelectorAll("button").forEach((button) => {
+      button.setAttribute("aria-pressed", String(button.dataset.metric === metric.metric));
+    });
+    chartMount.replaceChildren(renderTimelineChart(metric, state.visibleRatio));
+    const scale = createTimelineScaleControl(state, renderMetric);
+    if (scaleMount.firstChild !== scale) {
+      scaleMount.replaceChildren(scale);
+    }
+    const peak = metric.peak || {};
+    peakNote.textContent = `${text(metric.label)}峰值：${formatTimelineSecond(peak.second)}，${formatNumber(peak.value)} 次`;
+  }
+
+  metrics.forEach((metric, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.metric = text(metric.metric);
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.textContent = text(metric.label || metric.metric);
+    button.addEventListener("click", () => {
+      renderMetric(metric);
+      card.dataset.timelineReady = "true";
+    });
+    switcher.append(button);
+  });
+  return card;
+}
+
+function renderChipList(items) {
+  const list = element("div", "chip-list");
+  items.forEach((item) => {
+    const label = typeof item === "string" ? item : `${text(item.level1)} / ${text(item.level2)}`;
+    if (label.trim()) {
+      list.append(element("span", "chip", label));
+    }
+  });
+  return list;
+}
+
+function scriptFormulaLabel(item) {
+  if (typeof item === "string") return text(item);
+  return `${text(item.level1)} / ${text(item.level2)}`;
+}
+
+function formulaKey(item) {
+  if (typeof item === "string") return `formula:${text(item)}`;
+  const level1 = text(item && item.level1);
+  const level2 = text(item && item.level2);
+  const fallback = text(item && item.label, text(item && item.name, "unknown"));
+  return `formula:${level1 || fallback}:${level2 || fallback}`;
+}
+
+function formulaColorKey(item) {
+  if (typeof item === "string") return text(item, "内容公式");
+  return text(item && item.level1, text(item && item.label, text(item && item.name, "内容公式")));
+}
+
+function scriptFormulaColor(index) {
+  const palette = [
+    "#2f8f5b",
+    "#d5543f",
+    "#d98324",
+    "#3478c7",
+    "#169a9a",
+    "#c4477e",
+    "#7157c8",
+    "#6f7f2f",
+    "#b35d24",
+    "#4f7f96",
+    "#a64d79",
+    "#8a6f2a"
+  ];
+  if (index < palette.length) return palette[index];
+  const hue = (index * 47 + 19) % 360;
+  return `hsl(${hue} 64% 42%)`;
+}
+
+function buildFormulaColorMap(formula) {
+  const colorByFormula = new Map();
+  if (!Array.isArray(formula)) return colorByFormula;
+  formula.forEach((item) => {
+    const key = formulaColorKey(item);
+    if (key && !colorByFormula.has(key)) {
+      colorByFormula.set(key, scriptFormulaColor(colorByFormula.size));
+    }
+  });
+  return colorByFormula;
+}
+
+function colorSoftBackground(color, alpha) {
+  if (color.startsWith("#")) {
+    const raw = color.slice(1);
+    const normalized = raw.length === 3 ? raw.split("").map((part) => part + part).join("") : raw;
+    const red = parseInt(normalized.slice(0, 2), 16);
+    const green = parseInt(normalized.slice(2, 4), 16);
+    const blue = parseInt(normalized.slice(4, 6), 16);
+    if ([red, green, blue].every(Number.isFinite)) {
+      return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+    }
+  }
+  return `color-mix(in srgb, ${color} ${Math.round(alpha * 100)}%, transparent)`;
+}
+
+function formulaDisplayParts(item) {
+  if (typeof item === "string") {
+    return { title: "内容公式", content: text(item) };
+  }
+  const title = text(item && item.level1, "内容公式");
+  const content = text(item && item.level2, title);
+  return { title, content };
+}
+
+function formulaCopyText(formula) {
+  if (!Array.isArray(formula)) return "";
+  return formula.map((item) => {
+    if (typeof item === "string") return text(item);
+    const parts = formulaDisplayParts(item);
+    return parts.title === parts.content ? parts.title : `${parts.title}-${parts.content}`;
+  }).filter(Boolean).join(" + ");
+}
+
+function copyTextToClipboard(button, value) {
+  const copyValue = text(value);
+  if (!copyValue) return;
+  const defaultLabel = button.dataset.defaultLabel || button.textContent || "复制";
+  button.dataset.defaultLabel = defaultLabel;
+  function showStatus(label) {
+    button.textContent = label;
+    window.clearTimeout(button._copyStatusTimer);
+    button._copyStatusTimer = window.setTimeout(() => {
+      button.textContent = defaultLabel;
+    }, 1400);
+  }
+  const fallbackCopy = () => {
+    const textarea = document.createElement("textarea");
+    textarea.value = copyValue;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.append(textarea);
+    textarea.select();
+    try {
+      const copied = document.execCommand("copy");
+      showStatus(copied ? "已复制" : "复制失败");
+    } catch (error) {
+      showStatus("复制失败");
+    } finally {
+      textarea.remove();
+    }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(copyValue).then(() => showStatus("已复制")).catch(fallbackCopy);
+    return;
+  }
+  fallbackCopy();
+}
+
+function copyScriptFormula(button, formula) {
+  copyTextToClipboard(button, formulaCopyText(formula));
+}
+
+function copyScriptText(button, scriptText) {
+  copyTextToClipboard(button, scriptText);
+}
+
+function formulaMatchesEvidence(formulaItem, evidenceItem) {
+  return formulaEvidenceMatchScore(formulaItem, evidenceItem) > 0;
+}
+
+function formulaEvidenceMatchScore(formulaItem, evidenceItem) {
+  const formulaLevel1 = text(formulaItem.level1);
+  const formulaLevel2 = text(formulaItem.level2);
+  const evidenceLevel1 = text(evidenceItem.level1);
+  const evidenceLevel2 = text(evidenceItem.level2);
+  if (formulaLevel2 && (formulaLevel2 === evidenceLevel2 || formulaLevel2 === evidenceLevel1)) return 3;
+  if (formulaLevel1 && (formulaLevel1 === evidenceLevel1 || formulaLevel1 === evidenceLevel2)) return 1;
+  return 0;
+}
+
+function matchingEvidenceSentences(formulaItem, evidence) {
+  if (!formulaItem || !Array.isArray(evidence)) return [];
+  const sentences = [];
+  evidence.forEach((item) => {
+    const sentence = text(item.sentence);
+    if (sentence && formulaMatchesEvidence(formulaItem, item) && !sentences.includes(sentence)) {
+      sentences.push(sentence);
+    }
+  });
+  return sentences;
+}
+
+function evidenceFormulaMeta(evidenceItem, formula, colorByKey) {
+  let matchedIndex = -1;
+  let bestScore = 0;
+  formula.forEach((item, index) => {
+    const score = formulaEvidenceMatchScore(item, evidenceItem);
+    if (score > bestScore) {
+      bestScore = score;
+      matchedIndex = index;
+    }
+  });
+  if (matchedIndex < 0) return null;
+  const item = formula[matchedIndex];
+  const key = formulaKey(item);
+  const colorKey = formulaColorKey(item);
+  return {
+    key,
+    colorKey,
+    color: colorByKey.get(key) || scriptFormulaColor(matchedIndex),
+    title: scriptFormulaLabel(item)
+  };
+}
+
+function collectScriptEvidenceRanges(scriptText, evidence, formula, colorByKey) {
+  const fullText = text(scriptText);
+  if (!fullText || !Array.isArray(evidence) || !Array.isArray(formula)) return [];
+  const ranges = [];
+  evidence.forEach((item) => {
+    const sentence = text(item && item.sentence);
+    const meta = sentence ? evidenceFormulaMeta(item, formula, colorByKey) : null;
+    if (!sentence || !meta) return;
+    let cursor = 0;
+    while (cursor < fullText.length) {
+      const start = fullText.indexOf(sentence, cursor);
+      if (start < 0) break;
+      ranges.push({ start, end: start + sentence.length, ...meta });
+      cursor = start + sentence.length;
+    }
+  });
+  ranges.sort((left, right) => left.start - right.start || right.end - left.end);
+  const merged = [];
+  ranges.forEach((range) => {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.start >= previous.end) {
+      merged.push(range);
+    }
+  });
+  return merged;
+}
+
+function activateScriptFormula(container, activeKey) {
+  if (!container) return;
+  container.querySelectorAll("[data-formula-key]").forEach((node) => {
+    const isActive = Boolean(activeKey && node.dataset.formulaKey === activeKey);
+    if (node.classList.contains("script-formula-token")) {
+      node.setAttribute("aria-pressed", String(isActive));
+    }
+    if (node.classList.contains("script-segment")) {
+      node.classList.toggle("is-active", isActive);
+      node.classList.toggle("script-highlight", isActive);
+    }
+  });
+}
+
+function applyScriptFormulaState(root, activeKey) {
+  activateScriptFormula(root, activeKey);
+}
+
+function appendHighlightedTranscript(root, scriptText, highlightSentences) {
+  root.replaceChildren();
+  const fullText = text(scriptText);
+  const ranges = [];
+  highlightSentences.forEach((sentence) => {
+    const highlightText = text(sentence);
+    const start = fullText.indexOf(highlightText);
+    if (start >= 0) {
+      ranges.push({ start, end: start + highlightText.length });
+    }
+  });
+  ranges.sort((left, right) => left.start - right.start);
+  const merged = [];
+  ranges.forEach((range) => {
+    const previous = merged[merged.length - 1];
+    if (!previous || range.start >= previous.end) {
+      merged.push(range);
+    }
+  });
+  if (merged.length === 0) {
+    root.textContent = fullText;
+    return;
+  }
+  let cursor = 0;
+  merged.forEach((range) => {
+    if (range.start > cursor) {
+      root.append(document.createTextNode(fullText.slice(cursor, range.start)));
+    }
+    root.append(element("span", "script-highlight", fullText.slice(range.start, range.end)));
+    cursor = range.end;
+  });
+  if (cursor < fullText.length) {
+    root.append(document.createTextNode(fullText.slice(cursor)));
+  }
+}
+
+function renderScriptTranscript(scriptText, evidence, formula, activeKey, colorByKey) {
+  const transcript = element("div", "transcript script-text-body script-transcript");
+  const fullText = text(scriptText);
+  const ranges = collectScriptEvidenceRanges(fullText, evidence, formula, colorByKey);
+  if (ranges.length === 0) {
+    transcript.textContent = fullText;
+    return transcript;
+  }
+  let cursor = 0;
+  ranges.forEach((range) => {
+    if (range.start > cursor) {
+      transcript.append(document.createTextNode(fullText.slice(cursor, range.start)));
+    }
+    const segment = element("span", "script-segment", fullText.slice(range.start, range.end));
+    segment.dataset.formulaKey = range.key;
+    segment.setAttribute("data-formula-color-key", range.colorKey);
+    segment.title = range.title;
+    segment.style.setProperty("--script-color", range.color);
+    segment.style.setProperty("--script-soft", colorSoftBackground(range.color, .14));
+    segment.style.setProperty("--script-active-bg", colorSoftBackground(range.color, .28));
+    segment.addEventListener("click", () => {
+      const panel = segment.closest(".script-analysis-panel");
+      activateScriptFormula(panel, segment.dataset.formulaKey);
+    });
+    transcript.append(segment);
+    cursor = range.end;
+  });
+  if (cursor < fullText.length) {
+    transcript.append(document.createTextNode(fullText.slice(cursor)));
+  }
+  applyScriptFormulaState(transcript, activeKey);
+  return transcript;
+}
+
+function renderScriptFormulaChain(formula, evidence, transcriptMount, scriptText, colorByKey) {
+  const list = element("div", "script-formula-chain script-formula-text");
+  const activeKey = formula.length > 0 ? formulaKey(formula[0]) : "";
+  const colorByFormula = buildFormulaColorMap(formula);
+  formula.forEach((item, index) => {
+    const key = formulaKey(item);
+    const colorKey = formulaColorKey(item);
+    const color = colorByFormula.get(colorKey) || scriptFormulaColor(index);
+    colorByKey.set(key, color);
+    const parts = formulaDisplayParts(item);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "script-formula-item script-formula-token";
+    button.dataset.formulaKey = key;
+    button.setAttribute("data-formula-color-key", colorKey);
+    button.setAttribute("aria-pressed", String(key === activeKey));
+    button.style.setProperty("--script-color", color);
+    button.style.setProperty("--script-soft", colorSoftBackground(color, .1));
+    const titleLabel = element("span", "script-formula-title-label");
+    titleLabel.append(element("span", "script-formula-label"), element("span", "script-formula-title", parts.title));
+    button.append(
+      titleLabel,
+      document.createTextNode(" "),
+      element("span", "script-formula-token", parts.content)
+    );
+    button.addEventListener("click", () => {
+      const selectedKey = button.dataset.formulaKey;
+      const panel = button.closest(".script-analysis-panel");
+      activateScriptFormula(panel, selectedKey);
+    });
+    list.append(button);
+    if (index < formula.length - 1) {
+      list.append(element("span", "script-formula-connector", "+"));
+    }
+  });
+  return list;
+}
+
+function renderScriptAnalysis(material) {
+  const card = element("div", "raw-fact-card");
+  const script = material.scriptAnalysis || {};
+  const formula = Array.isArray(script.formula) ? script.formula : [];
+  const evidence = Array.isArray(script.evidence) ? script.evidence : [];
+  const scriptText = text(script.text);
+  if (formula.length === 0 && !scriptText) {
+    card.append(element("b", "", "脚本分析数据"));
+    card.append(element("p", "muted", "暂无脚本分析数据"));
+    return card;
+  }
+  const body = element("div", "collapsible-body");
+  appendCollapsibleHead(card, "脚本分析数据", body, "脚本数据");
+  const panel = element("div", "script-analysis-panel");
+  const colorByKey = new Map();
+  formula.forEach((item, index) => {
+    colorByKey.set(formulaKey(item), scriptFormulaColor(index));
+  });
+  const transcriptMount = scriptText ? element("div", "") : null;
+  if (formula.length > 0) {
+    const formulaSection = element("div", "script-analysis-section");
+    const formulaHeader = element("div", "script-analysis-section-header");
+    const formulaCopyButton = element("button", "copy-button", "复制内容公式");
+    formulaCopyButton.type = "button";
+    formulaCopyButton.addEventListener("click", () => copyScriptFormula(formulaCopyButton, formula));
+    formulaHeader.append(element("b", "", "本视频内容公式"), formulaCopyButton);
+    formulaSection.append(formulaHeader, renderScriptFormulaChain(formula, evidence, transcriptMount, scriptText, colorByKey));
+    panel.append(formulaSection);
+  }
+  if (scriptText) {
+    const scriptSection = element("div", "script-analysis-section");
+    const scriptHeader = element("div", "script-analysis-section-header");
+    const scriptCopyButton = element("button", "copy-button", "复制脚本");
+    const activeKey = formula.length > 0 ? formulaKey(formula[0]) : "";
+    scriptCopyButton.type = "button";
+    scriptCopyButton.addEventListener("click", () => copyScriptText(scriptCopyButton, scriptText));
+    scriptHeader.append(element("b", "", "本视频脚本"), scriptCopyButton);
+    transcriptMount.append(renderScriptTranscript(scriptText, evidence, formula, activeKey, colorByKey));
+    scriptSection.append(scriptHeader, transcriptMount);
+    panel.append(scriptSection);
+  }
+  body.append(panel);
+  card.append(body);
+  return card;
+}
+
+function renderVideoPreview(material) {
+  const videoData = material.video || {};
+  const src = text(videoData.src);
+  if (!src) {
+    return null;
+  }
+  const video = document.createElement("video");
+  video.className = "material-video";
+  video.controls = true;
+  video.preload = "none";
+  video.src = src;
+  const poster = text(videoData.poster);
+  if (poster) {
+    video.poster = poster;
+  }
+  return video;
+}
+
+function renderVisualStrip(material, selection = null) {
+  const strip = element("div", "visual-strip");
+  const videoPanel = element("div", "video-panel");
+  const videoPreview = renderVideoPreview(material);
+  if (videoPreview) {
+    videoPanel.append(videoPreview);
+  } else {
+    videoPanel.append(element("p", "muted", "暂无真实视频"));
+  }
+  strip.append(videoPanel, renderFrames(material, selection));
+  return strip;
+}
+
+function hydrateMaterialPanel(panel) {
+  const timeline = panel.querySelector(".material-workspace-panel:not([hidden]) [data-timeline-ready='false']");
+  if (!timeline || !Array.isArray(timeline._timelineMetrics) || timeline._timelineMetrics.length === 0) {
+    return;
+  }
+  timeline._timelineRenderMetric(timeline._timelineMetrics[0]);
+  timeline.dataset.timelineReady = "true";
+}
+
+function renderMaterialPanel(material, selected) {
+  const analysis = material.analysis || {};
+  const materialId = text(material.materialId);
+  const panel = element("article", "material-card");
+  panel.id = `panel-${safeId(material.materialId)}`;
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", `tab-${safeId(material.materialId)}`);
+  panel.dataset.materialId = text(material.materialId);
+  panel.hidden = !selected;
+
+  const head = element("div", "material-head");
+  const titleBlock = document.createElement("div");
+  titleBlock.append(
+    element("p", "eyebrow", `#${text(material.rank)}`),
+    element("h3", "", displayMaterialName(material.materialName, materialId)),
+    element("p", "material-id", `素材 ID：${text(material.materialId)}`)
+  );
+  head.append(titleBlock);
+
+  panel.append(head, renderMaterialWorkspace(material));
+  if (selected) {
+    hydrateMaterialPanel(panel);
+  }
+  return panel;
+}
+
+function materialWorkspacePanel(material, key, label, active) {
+  const panel = element("section", "material-workspace-panel");
+  const materialId = text(material.materialId);
+  panel.id = `workspace-${safeId(materialId)}-${key}`;
+  panel.dataset.workspacePanel = key;
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", `workspace-tab-${safeId(materialId)}-${key}`);
+  panel.hidden = !active;
+  return panel;
+}
+
+function renderHighlightWorkspace(material) {
+  const analysis = material.analysis || {};
+  const root = element("div", "material-highlight-workspace");
+  const observations = element("div", "material-highlight-observations");
+  const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
+  const selectedRefs = new Set(frames.map((frame) => `highlight:${text(material.materialId)}:${text(frame.rankType)}`));
+  const framesByReference = new Map(frames.map((frame) => [
+    `highlight:${text(material.materialId)}:${text(frame.rankType)}`,
+    frame,
+  ]));
+  const frameNodes = [];
+  const selectionActions = element("div", "highlight-selection-actions");
+  const selectionHint = element("p", "highlight-selection-hint", "被选中的高光帧对应的说明会出现在下方。");
+  const selectAll = element("button", "highlight-selection-button", "全选高光帧");
+  const selectNone = element("button", "highlight-selection-button", "全不选高光帧");
+  selectAll.type = "button";
+  selectNone.type = "button";
+
+  function renderObservations() {
+    observations.replaceChildren(renderHighlightFormula(
+      Array.isArray(analysis.highlightAnalyses)
+        ? analysis.highlightAnalyses.filter((item) => selectedRefs.has(text(item.frameRef)))
+        : [],
+      framesByReference,
+      analysis.highlightAnalyses || []
+    ));
+  }
+  function syncSelection() {
+    frameNodes.forEach(({ figure, reference }) => {
+      const selected = selectedRefs.has(reference);
+      figure.classList.toggle("is-selected", selected);
+      figure._selectionInput.checked = selected;
+    });
+    selectAll.disabled = selectedRefs.size === framesByReference.size;
+    selectNone.disabled = selectedRefs.size === 0;
+    renderObservations();
+  }
+  const selection = {
+    register: (figure, reference) => frameNodes.push({ figure, reference }),
+    set: (reference, selected) => {
+      if (selected) selectedRefs.add(reference);
+      else selectedRefs.delete(reference);
+      syncSelection();
+    }
+  };
+  selectAll.addEventListener("click", () => {
+    framesByReference.forEach((_, reference) => selectedRefs.add(reference));
+    syncSelection();
+  });
+  selectNone.addEventListener("click", () => {
+    selectedRefs.clear();
+    syncSelection();
+  });
+  selectionActions.append(selectionHint, selectAll, selectNone);
+  root.append(selectionActions, renderVisualStrip(material, selection), observations, renderFrameCoverageNote(analysis.frameCoverageNote));
+  renderObservations();
+  syncSelection();
+  return root;
+}
+
+function materialInteractionSummary(timeline) {
+  const metrics = Array.isArray(timeline?.metrics) ? timeline.metrics : [];
+  const clicks = metrics.find((metric) => text(metric.metric) === "CLICK_COUNT");
+  if (!clicks?.peak) return "暂无可用于判断的互动时序数据。";
+  const points = Array.isArray(clicks.points) ? clicks.points : [];
+  const first = points[0] || {};
+  const peak = clicks.peak;
+  const trend = Number(peak.value) > Number(first.value) ? "高于开场水平" : "未高于开场水平";
+  return `整体点击次数在 ${formatNumber(peak.second)} 秒达到 ${formatNumber(peak.value)} 次峰值，${trend}；建议重点复盘峰值前后的画面、利益点与行动引导，并用下方曲线验证后续素材的复现效果。`;
+}
+
+function renderMaterialAudienceDashboard(material) {
+  const root = element("div", "material-audience-dashboard");
+  const metrics = material.materialAudience?.metrics || {};
+  const metricKeys = ["SHOW_COUNT", "TRANSACTION_AMOUNT", "CLICK_COUNT"].filter((key) => metrics[key]?.dimensions && Object.keys(metrics[key].dimensions).length);
+  if (metricKeys.length === 0) {
+    root.append(element("p", "muted", "暂无该素材的人群数据"));
+    return root;
+  }
+  const { card, body } = createCollapsibleDataCard("", "人群数据");
+  const switcher = element("div", "metric-switch");
+  switcher.append(element("span", "", "展示指标："));
+  const chartGrid = element("div", "chart-grid");
+  body.append(switcher, chartGrid);
+  function renderMetric(metricKey) {
+    switcher.querySelectorAll("button").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.metric === metricKey)));
+    const dimensions = metrics[metricKey].dimensions || {};
+    const regionCard = element("div", "chart-card chart-card-full region-card");
+    renderRegionChart(regionCard, dimensions);
+    chartGrid.replaceChildren(
+      renderColumnChart("八大人群分布", topBuckets(dimensions.user_group_label_name), null, {
+        tooltipLines: (bucket) => [`占比 ${formatNumber(bucket.metricPercentage)}%`],
+      }),
+      renderPieChart("年龄分布", topBuckets(dimensions.age, 6)),
+      renderPieChart("性别分布", topBuckets(dimensions.gender, 4)),
+      regionCard
+    );
+  }
+  metricKeys.forEach((metricKey, index) => {
+    const button = element("button", "", metricLabels[metricKey] || metricKey);
+    button.type = "button";
+    button.dataset.metric = metricKey;
+    button.setAttribute("aria-pressed", String(index === 0));
+    button.addEventListener("click", () => renderMetric(metricKey));
+    switcher.append(button);
+  });
+  renderMetric(metricKeys[0]);
+  root.append(card);
+  return root;
+}
+
+function materialDecisionLabel(decision) {
+  return { scale: "建议放量", iterate: "建议迭代", hold: "建议观察", stop: "建议暂停" }[text(decision)] || "待判断";
+}
+
+function renderMaterialWorkspace(material) {
+  const analysis = material.analysis || {};
+  const root = element("div", "material-workspace");
+  const tabs = element("div", "material-workspace-tabs");
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "单素材分析维度");
+  const panels = element("div", "material-workspace-panels");
+  const definitions = [
+    ["highlight", "高光帧观察"], ["interaction", "互动时序分析"], ["audience", "人群分析"],
+    ["script", "脚本分析"], ["decision", "综合判断与下一步"]
+  ];
+  const workspacePanels = new Map();
+  definitions.forEach(([key, label], index) => {
+    const tab = element("button", "", label);
+    tab.type = "button";
+    tab.id = `workspace-tab-${safeId(material.materialId)}-${key}`;
+    tab.dataset.workspaceTab = key;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", `workspace-${safeId(material.materialId)}-${key}`);
+    tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    const workspacePanel = materialWorkspacePanel(material, key, label, index === 0);
+    workspacePanels.set(key, workspacePanel);
+    tab.addEventListener("click", () => activateMaterialWorkspace(tab));
+    tabs.append(tab);
+    panels.append(workspacePanel);
+  });
+  Array.from(tabs.querySelectorAll("[data-workspace-tab]")).forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateMaterialWorkspace(allTabs[nextIndex]);
+    });
+  });
+  workspacePanels.get("highlight").append(renderHighlightWorkspace(material));
+  workspacePanels.get("interaction").append(
+    renderFormula("互动时序分析", [
+      analysis.interactionConclusion
+        ? analysis.interactionConclusion
+        : "暂无 AI 二次分析结果，请重新生成该素材的分析。"
+    ]),
+    renderInteractionTimeline(material)
+  );
+  workspacePanels.get("audience").append(
+    renderFormula("人群分析", [analysis.audienceConclusion]),
+    renderMaterialAudienceDashboard(material)
+  );
+  workspacePanels.get("script").append(
+    renderFormula("脚本分析", [analysis.scriptConclusion]),
+    renderScriptAnalysis(material)
+  );
+  workspacePanels.get("decision").append(renderFormula("综合判断与下一步", [
+    analysis.integratedConclusion,
+    `素材决策：${materialDecisionLabel(analysis.decision)}`,
+    `下一步：${text(analysis.nextAction)}`
+  ]));
+  root.append(tabs, panels);
+  return root;
+}
+
+function activateMaterialWorkspace(tab) {
+  const workspace = tab.closest(".material-workspace");
+  workspace.querySelectorAll("[data-workspace-tab]").forEach((item) => {
+    const active = item === tab;
+    item.setAttribute("aria-selected", String(active));
+    item.tabIndex = active ? 0 : -1;
+  });
+  workspace.querySelectorAll("[data-workspace-panel]").forEach((panel) => {
+    const active = panel.dataset.workspacePanel === tab.dataset.workspaceTab;
+    panel.hidden = !active;
+    if (active && panel.dataset.workspacePanel === "interaction") hydrateMaterialPanel(panel.closest(".material-card"));
+  });
+  tab.focus();
+}
+
+function renderFrameCoverageNote(note) {
+  const coverageNote = text(note);
+  if (!coverageNote) return document.createDocumentFragment();
+  const card = element("div", "frame-coverage-note");
+  card.append(element("b", "", "高光帧说明"), element("p", "", coverageNote));
+  return card;
+}
+
+function renderHighlightFormula(highlights, framesByReference = new Map(), allHighlights = highlights) {
+  const card = element("div", "formula");
+  card.append(element("b", "", "高光帧观察"));
+  if (!Array.isArray(highlights) || highlights.length === 0) {
+    card.append(element("p", "", "暂无高光帧观察。"));
+    return card;
+  }
+  highlights.forEach((item) => {
+    const frame = framesByReference.get(text(item.frameRef)) || {};
+    const timingLabel = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
+    const paragraph = element("p", "highlight-note");
+    const shared = allHighlights.find((candidate) => candidate.frameRef === item.sharedInterpretationRef);
+    const interpretation = item.interpretationStatus === "insufficient_evidence"
+      ? `证据不足：${text(item.limitation)}`
+      : item.interpretationStatus === "shared"
+        ? `与本素材相同画面共用解释：${text(shared?.commercialInterpretation)}`
+        : text(item.commercialInterpretation);
+    paragraph.append(
+      element("b", "", `${timingLabel}：`),
+      renderTextWithMaterialLinks(item.visualObservation),
+      document.createElement("br"),
+      elementWithMaterialLinks("small", "", interpretation)
+    );
+    card.append(paragraph);
+  });
+  return card;
+}
+
+const highlightCategoryLabels = {
+  portrait: "人像画面",
+  product: "产品画面",
+  other: "其他画面",
+};
+const HIGHLIGHT_FRAMES_PER_PAGE = 12;
+
+function highFrameFactsByReference() {
+  const facts = new Map();
+  const materials = chapter05Materials();
+  materials.forEach((material) => {
+    const materialId = text(material.materialId);
+    const frames = Array.isArray(material.highlightFrames) ? material.highlightFrames : [];
+    frames.forEach((frame) => {
+      const reference = text(frame.frameRef) || `highlight:${materialId}:${text(frame.rankType)}`;
+      facts.set(reference, { material, frame });
+    });
+  });
+  return facts;
+}
+
+function displayMaterialName(value, fallback) {
+  return displayText(text(value, fallback).replace(/\.mp4$/i, ""));
+}
+
+function displayPeakRank(rankType) {
+  const match = /^peak_top_(\d+)$/.exec(text(rankType));
+  return match ? match[1] : "";
+}
+
+function renderDashboardFrame(reference, fact) {
+  const { material, frame } = fact;
+  const materialId = text(material.materialId);
+  const materialName = displayMaterialName(material.materialName, materialId);
+  const peakRank = displayPeakRank(frame.rankType);
+  const rankLabel = peakRank ? `点击 Top${peakRank} 波峰画面` : (frameLabels[text(frame.rankType)] || text(frame.rankType));
+  const timingLabel = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
+  const caption = `${rankLabel} · ${timingLabel}`;
+  const card = element("article", "highlight-frame-card");
+  card.dataset.frameRef = reference;
+  const figure = document.createElement("figure");
+  const preview = document.createElement("button");
+  const image = document.createElement("img");
+  preview.type = "button";
+  preview.className = "highlight-frame-preview";
+  preview.setAttribute("aria-label", `查看大图：${materialName}，${caption}`);
+  image.src = text(frame.framePath);
+  image.alt = `${materialName} 高光画面`;
+  image.loading = "lazy";
+  image.decoding = "async";
+  preview.append(image);
+  preview.addEventListener("click", () => openFrameLightbox(text(frame.framePath), caption));
+  figure.append(preview);
+
+  const meta = element("div", "highlight-frame-meta");
+  const source = element("button", "highlight-source-link", `查看素材：${materialName}`);
+  source.type = "button";
+  source.title = "跳转到单素材深度分析";
+  source.addEventListener("click", () => activateMaterialById(materialId));
+  meta.append(element("small", "", rankLabel), element("span", "highlight-frame-timing", timingLabel), source);
+  card.append(figure, meta);
+  return card;
+}
+
+function renderHighlightFramePage(panel, factsByReference = highFrameFactsByReference()) {
+  const refs = Array.isArray(panel._highlightFrameRefs) ? panel._highlightFrameRefs : [];
+  const pageCount = Math.max(1, Math.ceil(refs.length / HIGHLIGHT_FRAMES_PER_PAGE));
+  const page = Math.min(Math.max(0, Number(panel._highlightPage || 0)), pageCount - 1);
+  panel._highlightPage = page;
+  const grid = panel.querySelector(".highlight-frame-grid");
+  const status = panel.querySelector(".highlight-page-status");
+  const previous = panel.querySelector("[data-highlight-page='previous']");
+  const next = panel.querySelector("[data-highlight-page='next']");
+  if (!grid) return;
+  grid.replaceChildren();
+  const pageRefs = refs.slice(page * HIGHLIGHT_FRAMES_PER_PAGE, (page + 1) * HIGHLIGHT_FRAMES_PER_PAGE);
+  pageRefs.forEach((reference) => {
+    const fact = factsByReference.get(text(reference));
+    if (fact) grid.append(renderDashboardFrame(text(reference), fact));
+  });
+  for (let index = pageRefs.length; index < HIGHLIGHT_FRAMES_PER_PAGE; index += 1) {
+    const placeholder = element("div", "highlight-frame-card highlight-frame-placeholder");
+    placeholder.setAttribute("aria-hidden", "true");
+    grid.append(placeholder);
+  }
+  if (status) {
+    status.textContent = `${page + 1} / ${pageCount}`;
+  }
+  if (previous) previous.disabled = page <= 0;
+  if (next) next.disabled = page >= pageCount - 1;
+}
+
+function renderHighlightPagination(panel, frameCount) {
+  const pageCount = Math.max(1, Math.ceil(frameCount / HIGHLIGHT_FRAMES_PER_PAGE));
+  const pagination = element("div", "highlight-pagination");
+  const previous = document.createElement("button");
+  const status = element("span", "highlight-page-status");
+  const next = document.createElement("button");
+  previous.type = "button";
+  next.type = "button";
+  previous.dataset.highlightPage = "previous";
+  next.dataset.highlightPage = "next";
+  previous.textContent = "上一页";
+  next.textContent = "下一页";
+  previous.addEventListener("click", () => {
+    panel._highlightPage = Math.max(0, Number(panel._highlightPage || 0) - 1);
+    renderHighlightFramePage(panel);
+  });
+  next.addEventListener("click", () => {
+    panel._highlightPage = Math.min(pageCount - 1, Number(panel._highlightPage || 0) + 1);
+    renderHighlightFramePage(panel);
+  });
+  pagination.append(previous, status, next);
+  return pagination;
+}
+
+function createHighlightAssetsCard(panel, grid, frameRefs) {
+  const { card, body } = createCollapsibleDataCard("", "高光画面数据");
+  card.classList.add("highlight-assets-card");
+  body.append(grid);
+  if (frameRefs.length > 0) body.append(renderHighlightPagination(panel, frameRefs.length));
+  return card;
+}
+
+function activateHighlightCategoryTab(tab) {
+  const dashboard = tab.closest(".highlight-dashboard");
+  const categoryTabList = tab.closest(".highlight-dashboard-tabs");
+  if (!dashboard || !categoryTabList) return;
+  categoryTabList.querySelectorAll("[role='tab']").forEach((item) => {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  dashboard.querySelectorAll(".highlight-category-panel[role='tabpanel']").forEach((panel) => {
+    const selected = panel.id === tab.getAttribute("aria-controls");
+    panel.hidden = !selected;
+    if (selected) renderHighlightFramePage(panel);
+  });
+  tab.focus();
+}
+
+function activateHighlightBatchTab(tab) {
+  const batchContent = tab.closest(".highlight-batch-content");
+  if (!batchContent) return;
+  batchContent.querySelectorAll(".highlight-batch-tabs [role='tab']").forEach((item) => {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  batchContent.querySelectorAll(".highlight-batch-category-panel[role='tabpanel']").forEach((panel) => {
+    const selected = panel.id === tab.getAttribute("aria-controls");
+    panel.hidden = !selected;
+  });
+  tab.focus();
+}
+
+function activateHighlightModeTab(tab) {
+  const dashboard = tab.closest(".highlight-dashboard");
+  if (!dashboard) return;
+  dashboard.querySelectorAll(".highlight-mode-tabs [role='tab']").forEach((item) => {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  dashboard.querySelectorAll(".highlight-mode-panel[role='tabpanel']").forEach((panel) => {
+    const selected = panel.id === tab.getAttribute("aria-controls");
+    panel.hidden = !selected;
+  });
+  tab.focus();
+}
+
+function renderHighlightInsightColumns(group) {
+  const common = element("div", "highlight-analysis-copy highlight-insight-column");
+  common.append(element("b", "", "共性结论"));
+  if (group.contentLimitation) common.append(element("p", "analysis-warning", `分析边界：${group.contentLimitation}`));
+  const commonItems = Array.isArray(group.commonConclusion) ? group.commonConclusion : [];
+  commonItems.forEach((item) => {
+    const insight = element("article", "highlight-insight");
+    insight.dataset.evidenceRefs = JSON.stringify(item.evidenceRefs || []);
+    if (item.title && item.title !== "共性结论") {
+      insight.append(elementWithMaterialLinks("h5", "", item.title));
+    }
+    insight.append(elementWithMaterialLinks("p", "", item.body || item.conclusion || ""));
+    common.append(insight);
+  });
+  const directionCopy = element("div", "highlight-analysis-copy highlight-insight-column");
+  const directionList = element("ul", "highlight-direction-list");
+  (Array.isArray(group.derivativeDirections) ? group.derivativeDirections : []).forEach((direction) => {
+    const item = element("li", "highlight-insight");
+    item.dataset.evidenceRefs = JSON.stringify(direction.evidenceRefs || []);
+    item.append(elementWithMaterialLinks("h5", "", direction.title));
+    item.append(elementWithMaterialLinks("p", "", direction.body));
+    directionList.append(item);
+  });
+  directionCopy.append(element("b", "", "裂变方向"), directionList);
+  const pair = element("div", "highlight-analysis-pair");
+  pair.append(common, directionCopy);
+  return pair;
+}
+
+function batchClassificationDistribution(batchClassification, factsByReference) {
+  const rawDistribution = batchClassification?.distribution;
+  if (Array.isArray(rawDistribution)) {
+    return rawDistribution
+      .filter((item) => Number(item?.frameCount || 0) > 0)
+      .map((item) => ({
+        ...item,
+        bucket: text(item.groupName, item.groupId),
+        frameCount: Number(item.frameCount || 0),
+        percentage: Number(item.percentage || 0),
+      }));
+  }
+  const groups = Array.isArray(batchClassification?.groups) ? batchClassification.groups : [];
+  const isKnownFrame = (reference) => !factsByReference || factsByReference.has(text(reference));
+  const items = groups.map((group) => {
+    const refs = Array.isArray(group.frameRefs) ? group.frameRefs.filter(isKnownFrame) : [];
+    return {
+      groupId: text(group.groupId),
+      groupName: text(group.groupName, "未命名分类"),
+      frameCount: Number(group.frameCount ?? refs.length),
+    };
+  }).filter((item) => item.frameCount > 0);
+  const unclassifiedRefs = Array.isArray(batchClassification?.unclassifiedFrameRefs)
+    ? batchClassification.unclassifiedFrameRefs.filter(isKnownFrame)
+    : [];
+  if (unclassifiedRefs.length > 0) {
+    items.push({ groupId: "unclassified", groupName: "未归类", frameCount: unclassifiedRefs.length });
+  }
+  const total = items.reduce((sum, item) => sum + item.frameCount, 0);
+  return items.map((item) => ({
+    ...item,
+    bucket: item.groupName,
+    percentage: total ? Math.round(item.frameCount / total * 10000) / 100 : 0,
+  }));
+}
+
+function renderBatchClassificationPanel(batchClassification, factsByReference) {
+  const root = element("div", "highlight-batch-content");
+  if (!batchClassification || typeof batchClassification !== "object") {
+    root.append(element("p", "muted", "本批次未生成分类"));
+    return root;
+  }
+  root.append(element("p", "highlight-batch-rule", text(batchClassification.ruleDescription, "本批次成功高光帧的视觉机制分类")));
+  if (batchClassification.classificationLimitation) root.append(element("p", "analysis-warning", `分类边界：${batchClassification.classificationLimitation}`));
+  const groups = Array.isArray(batchClassification.groups) ? batchClassification.groups : [];
+  if (groups.length === 0) {
+    root.append(element("p", "muted", "本批次未生成分类"));
+    return root;
+  }
+  const distribution = batchClassificationDistribution(batchClassification, factsByReference);
+  if (distribution.length > 0) {
+    root.append(renderColumnChart("本批次分类分布", distribution, null, {
+      cardClass: "batch-classification-distribution",
+      axisLabel: "帧数",
+      valueAccessor: (bucket) => Number(bucket.frameCount || 0),
+      axisValueFormatter: (value) => `${formatNumber(value)} 帧`,
+      tooltipLines: (bucket) => [
+        `帧数 ${formatNumber(bucket.frameCount)}`,
+        `占比 ${formatNumber(bucket.percentage)}%`,
+      ],
+      itemTitleFormatter: (bucket) => `${text(bucket.groupName)}：${formatNumber(bucket.frameCount)} 帧 · ${formatNumber(bucket.percentage)}%`,
+    }));
+  }
+  const batchTabList = element("div", "highlight-dashboard-tabs highlight-batch-tabs");
+  batchTabList.setAttribute("role", "tablist");
+  batchTabList.setAttribute("aria-label", "本批次分类");
+  const batchPanelRoot = element("div", "highlight-dashboard-panels highlight-batch-panels");
+  groups.forEach((group, index) => {
+    const groupKey = safeId(group.groupId || index);
+    const tabId = `highlight-batch-tab-${groupKey}`;
+    const panelId = `highlight-batch-panel-${groupKey}`;
+    const frameRefs = Array.isArray(group.frameRefs) ? group.frameRefs.map(text).filter(Boolean) : [];
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = tabId;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", panelId);
+    tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    tab.textContent = `${text(group.groupName, `本批次分组 ${index + 1}`)} · ${frameRefs.length} 帧`;
+    tab.addEventListener("click", () => activateHighlightBatchTab(tab));
+    batchTabList.append(tab);
+
+    const batchCategoryPanel = element("section", "highlight-batch-category-panel");
+    batchCategoryPanel.id = panelId;
+    batchCategoryPanel.setAttribute("role", "tabpanel");
+    batchCategoryPanel.setAttribute("aria-labelledby", tabId);
+    batchCategoryPanel.hidden = index !== 0;
+    const groupRoot = element("section", "highlight-batch-group");
+    groupRoot.id = `highlight-batch-group-${groupKey}`;
+    const head = element("div", "highlight-batch-group-head");
+    head.append(
+      element("h3", "", text(group.groupName, `本批次分组 ${index + 1}`)),
+      element("span", "highlight-category-count", `${formatNumber(group.frameCount)} 帧 · ${formatNumber(group.percentage)}%`),
+    );
+    groupRoot.append(head);
+    if (text(group.description)) groupRoot.append(element("p", "highlight-batch-description", group.description));
+    groupRoot.append(renderHighlightInsightColumns(group));
+    const grid = element("div", "highlight-frame-grid");
+    groupRoot._highlightFrameRefs = frameRefs;
+    groupRoot._highlightPage = 0;
+    groupRoot.append(createHighlightAssetsCard(groupRoot, grid, frameRefs));
+    batchCategoryPanel.append(groupRoot);
+    batchPanelRoot.append(batchCategoryPanel);
+    renderHighlightFramePage(groupRoot, factsByReference);
+  });
+  batchTabList.querySelectorAll('[role="tab"]').forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateHighlightBatchTab(allTabs[nextIndex]);
+    });
+  });
+  root.append(batchTabList, batchPanelRoot);
+  return root;
+}
+
+function renderHighlightDashboard() {
+  const root = document.getElementById("highlight-dashboard");
+  if (root) root.replaceChildren();
+  const headerExport = document.querySelector("[data-highlight-export]");
+  if (headerExport) {
+    const exportHref = text(reportData.highlightExportHref);
+    headerExport.hidden = !exportHref;
+    if (exportHref) headerExport.href = exportHref;
+  }
+  const legacyConclusion = reportData.conclusion || {};
+  const groups = chapter04Groups();
+  if ((!presentation && ![3, 4, 5].includes(legacyConclusion.schemaVersion)) || groups.length === 0) {
+    root.append(element("p", "muted", "暂无可用的高光画面分类汇总。"));
+    return;
+  }
+
+  const dimensionHighlight = chapter04Conclusion();
+  if (!presentation && legacyConclusion.schemaVersion === 3 && dimensionHighlight?.conclusion) {
+    const factsByReference = highFrameFactsByReference();
+    const refs = Array.isArray(dimensionHighlight.evidenceRefs)
+      ? dimensionHighlight.evidenceRefs
+      : [];
+    const categoryRoot = element("section", "highlight-category");
+    const grid = element("div", "highlight-frame-grid");
+    refs.forEach((reference) => {
+      const fact = factsByReference.get(text(reference));
+      if (fact) grid.append(renderDashboardFrame(text(reference), fact));
+    });
+    const common = element("div", "highlight-analysis-copy");
+    common.append(element("b", "", "共性结论"), elementWithMaterialLinks("p", "", dimensionHighlight.conclusion));
+    categoryRoot.append(common, createHighlightAssetsCard(categoryRoot, grid, []));
+    root.append(categoryRoot);
+    return;
+  }
+
+  const factsByReference = highFrameFactsByReference();
+  const orderedGroups = ["portrait", "product", "other"].map((category) => groups.find((item) => text(item.category) === category)).filter(Boolean);
+  const categoryTabList = element("div", "highlight-dashboard-tabs");
+  categoryTabList.setAttribute("role", "tablist");
+  categoryTabList.setAttribute("aria-label", "标准分类");
+  const panelRoot = element("div", "highlight-dashboard-panels");
+  orderedGroups.forEach((group, index) => {
+    const category = text(group.category);
+    const frameRefs = Array.isArray(group.frameRefs) ? group.frameRefs : [];
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = `highlight-tab-${category}`;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", `highlight-panel-${category}`);
+    tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    tab.textContent = `${highlightCategoryLabels[category]} · ${frameRefs.length} 帧`;
+    tab.addEventListener("click", () => activateHighlightCategoryTab(tab));
+    categoryTabList.append(tab);
+
+    const categoryRoot = element("section", "highlight-category");
+    categoryRoot.id = `highlight-panel-${category}`;
+    categoryRoot.classList.add("highlight-category-panel");
+    categoryRoot.setAttribute("role", "tabpanel");
+    categoryRoot.setAttribute("aria-labelledby", tab.id);
+    categoryRoot.hidden = index !== 0;
+    const grid = element("div", "highlight-frame-grid");
+    const common = element("div", "highlight-analysis-copy highlight-insight-column");
+    common.append(element("b", "", "共性结论"));
+    if (group.contentLimitation) common.append(element("p", "analysis-warning", `分析边界：${group.contentLimitation}`));
+    const commonItems = Array.isArray(group.commonConclusion)
+      ? group.commonConclusion
+      : [{ title: "共性结论", body: group.commonConclusion }];
+    commonItems.forEach((item) => {
+      const insight = element("article", "highlight-insight");
+      if (item.title && item.title !== "共性结论") {
+        insight.append(elementWithMaterialLinks("h5", "", item.title));
+      }
+      insight.append(elementWithMaterialLinks("p", "", item.body || item.conclusion || ""));
+      common.append(insight);
+    });
+    const directions = Array.isArray(group.derivativeDirections)
+      ? group.derivativeDirections
+      : [];
+    if (directions.length === 0) {
+      categoryRoot.append(common, createHighlightAssetsCard(categoryRoot, grid, frameRefs));
+      categoryRoot._highlightFrameRefs = frameRefs.map(text);
+      categoryRoot._highlightPage = 0;
+      renderHighlightFramePage(categoryRoot);
+      panelRoot.append(categoryRoot);
+      return;
+    }
+    const directionCopy = element("div", "highlight-analysis-copy highlight-insight-column");
+    const directionList = element("ul", "highlight-direction-list");
+    directions.forEach((direction) => {
+      const item = element("li", "highlight-insight");
+      item.append(elementWithMaterialLinks("h5", "", direction.title));
+      item.append(elementWithMaterialLinks("p", "", direction.body));
+      directionList.append(item);
+    });
+    directionCopy.append(element("b", "", "裂变方向"), directionList);
+    const analysisPair = element("div", "highlight-analysis-pair");
+    analysisPair.append(common, directionCopy);
+    categoryRoot.append(analysisPair, createHighlightAssetsCard(categoryRoot, grid, frameRefs));
+    categoryRoot._highlightFrameRefs = frameRefs.map(text);
+    categoryRoot._highlightPage = 0;
+    renderHighlightFramePage(categoryRoot);
+    panelRoot.append(categoryRoot);
+  });
+  categoryTabList.querySelectorAll('[role="tab"]').forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateHighlightCategoryTab(allTabs[nextIndex]);
+    });
+  });
+  const standardPanel = element("section", "highlight-mode-panel");
+  standardPanel.id = "highlight-standard-panel";
+  standardPanel.setAttribute("role", "tabpanel");
+  standardPanel.append(categoryTabList, panelRoot);
+  const batchClassification = presentationChapter("chapter04")?.batchClassification || reportData.conclusion?.customClassification;
+  const batchPanel = element("section", "highlight-mode-panel highlight-batch-panel");
+  batchPanel.id = "highlight-batch-panel";
+  batchPanel.setAttribute("role", "tabpanel");
+  batchPanel.hidden = true;
+  batchPanel.append(renderBatchClassificationPanel(batchClassification, factsByReference));
+  const modeTabList = element("div", "highlight-mode-tabs");
+  modeTabList.setAttribute("role", "tablist");
+  modeTabList.setAttribute("aria-label", "高光画面分类模式");
+  [
+    ["highlight-mode-standard", "highlight-standard-panel", "标准分类"],
+    ["highlight-mode-batch", "highlight-batch-panel", "本批次分类"],
+  ].forEach(([id, panelId, label], index) => {
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", panelId);
+    tab.setAttribute("aria-selected", String(index === 0));
+    tab.tabIndex = index === 0 ? 0 : -1;
+    tab.textContent = label;
+    tab.addEventListener("click", () => activateHighlightModeTab(tab));
+    tab.addEventListener("keydown", (event) => {
+      const allTabs = Array.from(modeTabList.querySelectorAll('[role="tab"]'));
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateHighlightModeTab(allTabs[nextIndex]);
+    });
+    modeTabList.append(tab);
+  });
+  root.append(modeTabList, standardPanel, batchPanel);
+}
+
+function activateMaterialTab(tab) {
+  const container = tab.closest("[data-material-tabs]");
+  container.querySelectorAll("#material-tab-list [role='tab']").forEach((item) => {
+    const selected = item === tab;
+    item.setAttribute("aria-selected", String(selected));
+    item.tabIndex = selected ? 0 : -1;
+  });
+  container.querySelectorAll(".material-panels > [role='tabpanel']").forEach((panel) => {
+    const selected = panel.dataset.materialId === tab.dataset.materialId;
+    panel.hidden = !selected;
+    if (selected) {
+      hydrateMaterialPanel(panel);
+    }
+  });
+  tab.focus();
+}
+
+function renderMaterialTabs() {
+  const tabs = document.getElementById("material-tab-list");
+  const panels = document.getElementById("material-panels");
+  const materials = chapter05Materials();
+  const defaultMaterialId = chapter05DefaultMaterialId();
+  tabs.replaceChildren();
+  panels.replaceChildren();
+  materials.forEach((material, index) => {
+    const materialId = text(material.materialId);
+    const selected = materialId === defaultMaterialId || (!defaultMaterialId && index === 0);
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = `tab-${safeId(materialId)}`;
+    tab.dataset.materialId = materialId;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", String(selected));
+    tab.setAttribute("aria-controls", `panel-${safeId(materialId)}`);
+    tab.tabIndex = selected ? 0 : -1;
+    tab.textContent = `#${text(material.rank)} ${displayMaterialName(material.materialName, materialId)}`;
+    tab.addEventListener("click", () => activateMaterialTab(tab));
+    tabs.append(tab);
+    panels.append(renderMaterialPanel(material, selected));
+  });
+  Array.from(tabs.querySelectorAll('[role="tab"]')).forEach((tab, index, allTabs) => {
+    tab.addEventListener("keydown", (event) => {
+      let nextIndex = index;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % allTabs.length;
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + allTabs.length) % allTabs.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = allTabs.length - 1;
+      else return;
+      event.preventDefault();
+      activateMaterialTab(allTabs[nextIndex]);
+    });
+  });
+}
+
+function renderCombinationConclusion() {
+  const root = document.getElementById("combination-conclusion");
+  const fallback = document.getElementById("overall-conclusion-card");
+  const conclusion = reportData.conclusion || {};
+  const chapter01 = presentationChapter("chapter01");
+  const points = Array.isArray(chapter01?.points)
+    ? chapter01.points
+    : [
+      ["commercial", ""],
+    ].map(([id, leadIn]) => ({
+      id,
+      leadIn,
+      conclusion: conclusion.portfolioDimensionConclusions?.[id]?.conclusion,
+    }));
+  root.replaceChildren();
+  if (!chapter01 && (conclusion.schemaVersion !== 5 || !points.every((point) => point.conclusion))) {
+    root.hidden = true;
+    fallback.hidden = false;
+    document.getElementById("overall-conclusion").replaceChildren(
+    renderTextWithMaterialLinks((chapter01?.overallConclusion || conclusion.overallConclusion) || "结论待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。")
+    );
+    return;
+  }
+  root.hidden = true;
+  fallback.hidden = false;
+  const aiConclusion = chapter01?.aiConclusion;
+  const aiParagraphs = Array.isArray(aiConclusion?.paragraphs)
+    ? aiConclusion.paragraphs.map((paragraph) => text(paragraph)).filter(Boolean)
+    : [];
+  const paragraphText = chapter01?.overallConclusion
+    || conclusion.overallConclusion
+    || points.find((point) => text(point?.conclusion))?.conclusion;
+  const paragraphs = aiParagraphs.length
+    ? aiParagraphs
+    : [paragraphText || "素材榜单数据洞察待补充：请提供 diagnostic-ai-analysis.json 后重新渲染。"];
+  const summary = document.getElementById("overall-conclusion");
+  summary.replaceChildren();
+  paragraphs.forEach((paragraph, index) => {
+    if (index) summary.append(document.createElement("br"), document.createElement("br"));
+    summary.append(renderTextWithMaterialLinks(paragraph));
+  });
+}
+
+function renderHotMaterialPanel() {
+  const root = document.getElementById("hot-material-panel");
+  if (!root) return;
+  const panel = presentationChapter("chapter01")?.hotMaterialPanel;
+  root.replaceChildren();
+  if (!panel) return;
+
+  const heading = element("h3", "hot-material-title", "爆款素材");
+  const comparison = panel.comparison === "gte" ? "≥" : panel.comparison || "";
+  const scope = element(
+    "p",
+    "hot-material-scope",
+    `规则：消耗 ${comparison} ${formatNumber(panel.thresholdCost)} 元｜命中 ${formatNumber(panel.qualifyingCount)} 条`
+  );
+
+  const materials = Array.isArray(panel.materials) ? panel.materials : [];
+  const summaryBody = element("div", "hot-material-summary-body");
+  summaryBody.append(heading, scope);
+  if (!materials.length) {
+    summaryBody.append(element("p", "hot-material-empty", "当前统计周期暂无达到规则阈值的素材。"));
+  } else {
+    const list = element("div", "hot-material-list");
+    const metricLabels = {
+      roi: "ROI",
+      ctr: "点击率",
+      conversionRate: "转化率",
+      threeSecondCompletionRate: "3 秒完播率",
+      cpm: "CPM",
+    };
+    materials.forEach((material) => {
+      const card = element("article", "hot-material-card");
+      const name = element("button", "hot-material-name", text(material.materialName, material.materialId));
+      name.type = "button";
+      name.dataset.materialId = text(material.materialId);
+      name.title = "跳转到第五部分单素材深度分析";
+      name.addEventListener("click", () => navigateToMaterial(material.materialId));
+      const id = element("small", "hot-material-id", `素材 ID：${text(material.materialId)}`);
+      const spend = element("p", "hot-material-spend", `消耗 ${formatNumber(material.totalCost)} 元`);
+      card.append(name, id, spend);
+      const metrics = element("div", "hot-material-metrics");
+      Object.entries(metricLabels).forEach(([key, label]) => {
+        const value = material.metrics?.[key];
+        if (value === null || value === undefined || text(value) === "") return;
+        metrics.append(element("span", "hot-material-metric", `${label} ${formatNumber(value)}`));
+      });
+      if (metrics.childElementCount) card.append(metrics);
+      list.append(card);
+    });
+    summaryBody.append(list);
+  }
+  root.append(createCollapseToggle(summaryBody, "爆款素材汇总数据"), summaryBody);
+}
+
+document.querySelector(".frame-lightbox-close").addEventListener("click", closeFrameLightbox);
+document.getElementById("frame-lightbox").addEventListener("click", (event) => {
+  if (event.target.id === "frame-lightbox") {
+    closeFrameLightbox();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !document.getElementById("frame-lightbox").hidden) {
+    closeFrameLightbox();
+  }
+});
+
+function renderReport() {
+  const period = reportData.period || {};
+  document.getElementById("report-subtitle").textContent = `统计周期 ${text(period.actualStartDate)} - ${text(period.actualEndDate)}`;
+  // Quality evidence remains in JSON artifacts; the cover presents business content.
+  const exportLink = document.querySelector("[data-highlight-export]");
+  if (exportLink && text(reportData.highlightExportHref)) {
+    exportLink.href = text(reportData.highlightExportHref);
+    exportLink.hidden = false;
+  }
+  renderCombinationConclusion();
+  renderHotMaterialPanel();
+  renderInsightList("audience-primary", chapter02Insights(), "暂无人群洞察");
+  renderAudienceDashboard();
+  renderInsightList("script-primary", chapter03Insights(), "暂无脚本洞察");
+  renderKeywordCloudPanel();
+  renderScriptDashboard();
+  renderHighlightDashboard();
+  renderMaterialTabs();
+}
+
+renderReport();
+</script>
+<script data-unified-report-script="true">__REPORT_SCRIPT_JS__</script>
+</body>
+</html>

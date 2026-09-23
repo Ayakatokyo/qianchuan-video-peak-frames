@@ -1,1 +1,6 @@
 imageio-ffmpeg>=0.5.1,<1
+requests>=2.31,<3
+jsonschema>=4.18,<5
+jieba>=0.42.1,<1
+openpyxl>=3.1,<4
+Pillow>=10,<13
