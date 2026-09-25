@@ -458,13 +458,15 @@ def _verify_current_rpa_csv_artifact(args, material_id, started_at_epoch):
             return None
         records = parse_diagnosis_csv(csv_path)
         availability = preflight_material_availability(records, material_id)
-        if not availability.get("rpaAvailable"):
+        if not availability.get("rpaAvailable") and availability.get("failureReason") != "missing_video_url":
             return None
         return {
             "records": records,
             "diagnosisCsvPath": str(csv_path),
             "videoUrl": availability.get("videoUrl"),
             "rpaCsvVerified": True,
+            "rpaAvailable": bool(availability.get("rpaAvailable")),
+            "failureReason": availability.get("failureReason"),
         }
     except (OSError, RpaAdapterError, RpaCsvError, ValueError):
         return None
@@ -499,7 +501,7 @@ def _recover_late_rpa_artifacts(
                 _write_diagnosis_records(records, records_path.parent, material_id)
                 return {
                     **failure,
-                    "rpaAvailable": True,
+                    "rpaAvailable": bool(verified_csv.get("rpaAvailable")),
                     **verified_csv,
                     "diagnosisRecordsPath": str(records_path),
                     "lateArtifactRecovered": True,
@@ -647,18 +649,21 @@ def _recover_wave_rpa_result(args, material_id, outcome, *, started_at_epoch):
     if outcome.get("timeoutExceeded"):
         outcome.update(
             {
-                "rpaResultStatus": "final_failed",
+                "rpaResultStatus": "unknown",
             }
         )
         return outcome
 
-    if outcome.get("rpaAvailable"):
+    if outcome.get("rpaAvailable") or outcome.get("failureReason") == "missing_video_url":
         verified_csv = _verify_current_rpa_csv_artifact(
             args, material_id, started_at_epoch
         )
         if verified_csv is not None:
             outcome.update(verified_csv)
             return _resolved_rpa_outcome(outcome)
+        if outcome.get("failureReason") == "missing_video_url":
+            outcome["rpaResultStatus"] = "final_failed"
+            return outcome
         outcome.update(
             {
                 "rpaAvailable": False,
@@ -677,13 +682,16 @@ def _recover_wave_rpa_result(args, material_id, outcome, *, started_at_epoch):
         started_at_epoch=started_at_epoch,
         deadline=deadline,
     )
-    if recovered.get("rpaAvailable"):
+    if recovered.get("rpaCsvVerified"):
         return _resolved_rpa_outcome(recovered)
 
     outcome = dict(recovered)
     outcome.update(
         {
-            "rpaResultStatus": "final_failed",
+            "rpaResultStatus": (
+                "unknown" if outcome.get("failureReason") in {"rpa_request_failed", "unknown_preflight_failure"}
+                and outcome.get("remoteTaskTerminal") is not True else "final_failed"
+            ),
         }
     )
     return outcome
@@ -900,7 +908,7 @@ def _resume_wave_state(args, candidates, entries):
             else dict(attempt)
             for attempt in entry.get("postprocessAttempts", [])
         ]
-        if entry.get("rpaStatus") == "rejected":
+        if entry.get("rpaStatus") == "rejected" and entry.get("rpaResultStatus") not in {"unknown", "pending"}:
             entry.update({"status": "failed", "postprocessStatus": "not_started"})
             entries[index] = entry
             submitted[index] = entry
@@ -978,7 +986,7 @@ def _resume_wave_state(args, candidates, entries):
                 restored.update(
                     {
                         "rpaStatus": "rejected",
-                        "rpaResultStatus": "final_failed",
+                        "rpaResultStatus": "unknown",
                         "postprocessStatus": "not_started",
                         "status": "failed",
                         "failureReason": "rpa_artifact_unavailable",
@@ -1000,6 +1008,9 @@ def _resume_wave_state(args, candidates, entries):
                 "previousReceiptState": receipt.get("state") if receipt else None,
             }
         entries[index] = restored
+        for key in ("waveIndex", "waveSize", "waveStartedAtSec"):
+            if key in entry:
+                restored[key] = entry[key]
     return submitted, selected, rejected, cancelled, postprocess_queue
 
 
@@ -1072,6 +1083,7 @@ def _attempt_wave_rpa(args, entry):
                 "status": "failed",
                 "failureReason": outcome.get("failureReason"),
                 "rpaResultStatus": outcome.get("rpaResultStatus"),
+                "rpaCsvVerified": bool(outcome.get("rpaCsvVerified")),
                 "errorType": outcome.get("errorType"),
                 "errorMessage": outcome.get("errorMessage"),
                 "errorTraceback": outcome.get("errorTraceback"),
@@ -1433,6 +1445,7 @@ def _append_batch_progress(manifest_path, manifest):
         "rpaCollection": manifest.get("rpaCollection"),
         "stageCounts": manifest.get("stageCounts", {}),
         "interruption": manifest.get("interruption"),
+        "firstBatchCsvGate": manifest.get("firstBatchCsvGate"),
     }
     progress_path.parent.mkdir(parents=True, exist_ok=True)
     with progress_path.open("a", encoding="utf-8") as stream:
@@ -1463,6 +1476,12 @@ def _manifest_has_unfinished_wave_work(manifest):
 def _acquire_wave_lock(args):
     manifest_path = _batch_manifest_path(args)
     existing = read_json(manifest_path)
+    try:
+        gate = rpa_batch_runner.require_unblocked_first_batch(manifest_path)
+        if gate and gate.get("status") in {"pending", "unconfirmed"} and not args.resume:
+            raise RuntimeError("首批 RPA 尚未确认；仅允许 resume 续查已有任务，不能重新 prepare。")
+    except RuntimeError as exc:
+        raise RpaAdapterError(str(exc)) from exc
     requested_run_id = existing.get("runId") if args.resume and isinstance(existing, dict) else None
     if _manifest_has_unfinished_wave_work(existing) and not args.resume:
         raise RpaAdapterError(
@@ -1666,6 +1685,9 @@ def main(argv=None):
                 )
             )
             if failed:
+                gate = manifest_snapshot.get("firstBatchCsvGate") or {}
+                if gate.get("status") in {"blocked", "unconfirmed"}:
+                    print(gate.get("message"), file=sys.stderr)
                 print(f"batch_manifest={manifest_path}", file=sys.stderr)
                 return BATCH_INTERRUPTED_EXIT_CODE if interrupted else BATCH_PARTIAL_FAILURE_EXIT_CODE
             result_dir, json_path, markdown_path = result

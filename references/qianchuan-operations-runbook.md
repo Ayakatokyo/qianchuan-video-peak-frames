@@ -1,5 +1,9 @@
 # 千川素材分析运维手册
 
+首批素材详情的 `firstBatchCsvGate` 为运行级门禁。首批（默认最多 3 条）全部终态且有效 CSV 数为 0 时，`workflowStatus=paused` / `nextAction=check_parameters`，提示当前入参可能有问题；停止本次运行全部后续 RPA，包括自动补位、重试和恢复提交。保留原 CSV、records、任务号及失败明细，核对账号、日期、业务参数后使用新运行目录重新执行首批；同目录 `prepare` 和普通 `resume` 都不能解除 blocked，也不能删除或改写门禁。
+
+`firstBatchCsvGate.status=unconfirmed` / `nextAction=check_remote_status` 表示首批异步结果尚未知，只能通过 `resume` 续查已保存的远端任务号；没有任务号则保持暂停并核对平台记录，不能猜测未提交后重发。首批未全部终态前不补位；至少一个有效 CSV 且全员已终态才放行。有效 CSV 需非空可解析且素材身份正确；CSV 中缺视频地址或后续下载/抽帧失败不等于无 CSV。详情见 [RPA 输出契约](rpa-output-contract.md)。
+
 首次采集从 `scripts/run_standard_analysis.py prepare` 开始；用户要求复用落盘数据时，直接按“已落盘分析接续”处理。失败排障与接续均以经过质量校验的 `finalize` 收口。
 
 ## 运行目录

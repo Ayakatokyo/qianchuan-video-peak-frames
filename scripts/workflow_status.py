@@ -84,8 +84,13 @@ def standard_run_status(output_dir):
     accepted = stage_counts.get("rpaAcceptedCount")
     remaining = max(0, target - accepted) if target and type(accepted) is int else None
     active_stage = summary.get("activeStage")
+    first_gate = manifest.get("firstBatchCsvGate", {}) if isinstance(manifest, dict) else {}
+    if first_gate.get("status") in {"blocked", "unconfirmed"} and observed_lock_state != "active":
+        workflow_status = "paused"
     next_action = (
         "wait" if observed_lock_state == "active" else
+        "check_parameters" if first_gate.get("status") == "blocked" else
+        "check_remote_status" if first_gate.get("status") == "unconfirmed" else
         "finalize" if workflow_status == "interrupted" and active_stage == "report" else
         "resume" if workflow_status == "interrupted" else
         "analyze" if workflow_status == "analysis_pending" else
@@ -115,6 +120,7 @@ def standard_run_status(output_dir):
         "batchLockState": batch_lock_state,
         "recoveryRequired": workflow_status == "interrupted",
         "nextAction": next_action,
+        "firstBatchCsvGate": first_gate,
         "recoveryStage": recovery_stage,
         "targetTopN": target,
         "rpaRemainingCount": remaining,

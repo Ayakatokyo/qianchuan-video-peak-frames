@@ -528,29 +528,10 @@ def cmd_list_accounts(_args: argparse.Namespace) -> None:
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
-    detail = fetch_connector_detail()
-    params = validate_business_params(detail, load_params(args))
-    result = invoke(detail, args.shop_id, params)
-    output_dir = (
-        resolve_workspace_path(args.output_dir, "输出目录")
-        if args.output_dir
-        else default_output_dir()
-    )
-    file_summaries = [] if args.no_download else download_and_parse_files(detail, result, output_dir, args.preview_limit)
-    print(
-        json.dumps(
-            {
-                "connectorCode": _connector_code(),
-                "connectorName": detail.get("name"),
-                "status": result.get("status"),
-                "taskGroupId": result.get("task_group_id"),
-                "errors": result.get("errors") or [],
-                "files": file_summaries,
-                "rawResult": result if args.include_raw_result else None,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+    raise ContractError(
+        "素材详情 fetch（含 --no-download）不能绕过首批 CSV 门禁；"
+        "请使用 scripts/run_standard_analysis.py prepare，或 "
+        "scripts/extract_peak_frames.py --source rpa --top-materials-json <候选文件> --target-top-n <数量>。"
     )
 
 

@@ -268,6 +268,11 @@ def _run_stage(stage, entrypoint, arguments):
 
 
 def _write_failure(request, paths, stage, message, *, status="failed"):
+    gate = extract_peak_frames.rpa_batch_runner.read_first_batch_gate(
+        paths["peak_frames"] / "batch-manifest.json")
+    if gate and gate.get("status") in {"blocked", "unconfirmed"}:
+        status = "paused"
+        message = gate.get("message") or message
     summary = _summary(
         request,
         paths,
@@ -275,6 +280,8 @@ def _write_failure(request, paths, stage, message, *, status="failed"):
         active_stage=stage,
         failure={"stage": stage, "message": message},
     )
+    if gate:
+        summary["firstBatchCsvGate"] = gate
     write_run_summary(paths["summary"], summary)
 
 
@@ -378,6 +385,14 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
         worker_arguments = _local_worker_arguments(download_concurrency, postprocess_concurrency)
         candidate_top_n = request.top_n * 3
         with nullcontext(lock_stack.enter_context(acquire_workflow_lock(request, output_dir))):
+            try:
+                gate = extract_peak_frames.rpa_batch_runner.read_first_batch_gate(
+                    paths["peak_frames"] / "batch-manifest.json")
+            except RuntimeError as exc:
+                raise StandardWorkflowError("selection", str(exc)) from exc
+            if gate and gate.get("status") in {"pending", "blocked", "unconfirmed"}:
+                raise StandardWorkflowError("selection", gate.get("message") or
+                    "首批 RPA 尚未确认；请使用 resume 续查已有任务，不能用 prepare 重启。")
             workflow_started = True
             _write_running(request, paths, "selection")
             _run_stage("selection", export_main, [
@@ -490,6 +505,11 @@ def resume_standard_run(
             raise StandardWorkflowError(
                 "recovery", f"run is already {old.get('status')}; collection resume is not needed"
             )
+        try:
+            extract_peak_frames.rpa_batch_runner.require_unblocked_first_batch(
+                paths["peak_frames"] / "batch-manifest.json")
+        except RuntimeError as exc:
+            raise StandardWorkflowError("recovery", str(exc)) from exc
         if not paths["top_materials"].is_file():
             raise StandardWorkflowError(
                 "recovery", "top_materials.json is missing; interrupted selection cannot be resumed"

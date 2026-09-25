@@ -45,6 +45,7 @@ POLL_INTERVAL_SECONDS = 10
 POLL_TIMEOUT_SECONDS = 3600
 RUNNING_TASK_STATUSES = {"pending", "running"}
 SUCCESS_TASK_STATUSES = {"completed", "partial_success"}
+FAILED_TASK_STATUSES = {"failed", "failure", "error", "cancelled", "canceled"}
 
 
 def _default_session():
@@ -496,7 +497,7 @@ def fetch_material_diagnosis(
         if time.monotonic() >= deadline:
             raise RpaAdapterError(
                 "RPA material diagnosis task polling timed out",
-                {"remoteTaskGroupId": remote_task_group_id},
+                {"remoteTaskGroupId": remote_task_group_id, "remoteTaskTerminal": False},
             )
         try:
             response = session.post(
@@ -511,6 +512,7 @@ def fetch_material_diagnosis(
         except RpaAdapterError as exc:
             diagnostics = dict(exc.diagnostics)
             diagnostics["remoteTaskGroupId"] = remote_task_group_id
+            diagnostics["remoteTaskTerminal"] = False
             raise RpaAdapterError(str(exc), diagnostics) from exc
         except Exception as exc:
             raise RpaAdapterError(
@@ -520,6 +522,7 @@ def fetch_material_diagnosis(
                     "rpaFailureClass": "transport_error",
                     "transportErrorType": type(exc).__name__,
                     "remoteTaskGroupId": remote_task_group_id,
+                    "remoteTaskTerminal": False,
                 },
             ) from exc
 
@@ -534,7 +537,8 @@ def fetch_material_diagnosis(
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
         if status not in SUCCESS_TASK_STATUSES:
-            diagnostics = {"remoteTaskGroupId": remote_task_group_id}
+            diagnostics = {"remoteTaskGroupId": remote_task_group_id,
+                           "remoteTaskTerminal": status in FAILED_TASK_STATUSES}
             if isinstance(status_data, dict):
                 errors = status_data.get("errors")
                 if not isinstance(errors, list):
@@ -561,6 +565,7 @@ def fetch_material_diagnosis(
     except RpaAdapterError as exc:
         diagnostics = dict(exc.diagnostics)
         diagnostics["remoteTaskGroupId"] = remote_task_group_id
+        diagnostics["remoteTaskTerminal"] = True
         if isinstance(status_data, dict):
             errors = status_data.get("errors")
             if not isinstance(errors, list):
@@ -570,7 +575,7 @@ def fetch_material_diagnosis(
             if isinstance(errors, list):
                 diagnostics["rpaErrors"] = errors
         raise RpaAdapterError(str(exc), diagnostics) from exc
-    metadata = {"remoteTaskGroupId": remote_task_group_id}
+    metadata = {"remoteTaskGroupId": remote_task_group_id, "remoteTaskTerminal": True}
     if isinstance(gateway_result, GatewayFile) and gateway_result.partial_errors:
         metadata["rpaPartialErrors"] = list(gateway_result.partial_errors)
     if isinstance(gateway_result, list):
@@ -590,11 +595,13 @@ def fetch_material_diagnosis(
         except RpaAdapterError as exc:
             diagnostics = dict(exc.diagnostics)
             diagnostics["remoteTaskGroupId"] = remote_task_group_id
+            diagnostics["remoteTaskTerminal"] = True
             raise RpaAdapterError(str(exc), diagnostics) from exc
         try:
             records = parse_diagnosis_csv(target)
         except RpaCsvError as exc:
-            raise RpaAdapterError(str(exc)) from exc
+            raise RpaAdapterError(str(exc), {"remoteTaskGroupId": remote_task_group_id,
+                                           "remoteTaskTerminal": True}) from exc
         diagnosis_csv_path = str(target)
 
     if return_metadata:

@@ -14,6 +14,36 @@ import threading
 import time
 
 
+FIRST_BATCH_MESSAGE = (
+    "首批素材详情 RPA 未返回任何有效 CSV，当前入参可能有问题；"
+    "已暂停本次运行后续所有 RPA 提交、重试和补位。请核对授权账号、日期及业务参数，"
+    "修正后使用新运行目录重新执行首批；普通 resume 不会解除暂停。"
+)
+
+
+def read_first_batch_gate(manifest_path):
+    try:
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("cannot verify persisted first-batch CSV gate") from exc
+    gate = payload.get("firstBatchCsvGate") if isinstance(payload, dict) else None
+    if gate is not None and (
+        not isinstance(gate, dict)
+        or gate.get("status") not in {"pending", "passed", "blocked", "unconfirmed"}
+    ):
+        raise RuntimeError("invalid persisted first-batch CSV gate")
+    return gate
+
+
+def require_unblocked_first_batch(manifest_path):
+    gate = read_first_batch_gate(manifest_path)
+    if gate and gate["status"] == "blocked":
+        raise RuntimeError(gate.get("message") or FIRST_BATCH_MESSAGE)
+    return gate
+
+
 class BatchInterrupted(RuntimeError):
     """Raised after a requested stop has been checkpointed safely."""
 
@@ -143,6 +173,7 @@ def run_wave_batch(
     poll_interval_sec=0.1,
     is_interrupted=None,
 ):
+    saved_gate = require_unblocked_first_batch(manifest_path)
     candidate_limit = args.candidate_top_n or args.target_top_n * 3
     candidates = candidate_payload["materials"][:candidate_limit]
     entries = {
@@ -159,6 +190,42 @@ def run_wave_batch(
     records_base_dir = Path(getattr(args, "output_dir", ".")).parent
     interruption = None
     state_lock = threading.RLock()
+    first_ids = (saved_gate or {}).get("materialIds") or [
+        entries[index]["materialId"]
+        for index in range(min(len(entries), args.rpa_concurrency, args.target_top_n))
+    ]
+    if not set(first_ids).issubset({entry["materialId"] for entry in entries.values()}):
+        raise RuntimeError("first-batch materials do not match the saved run")
+    first_gate = dict(saved_gate or {}, materialIds=list(first_ids))
+    first_gate.setdefault("status", "pending")
+
+    def evaluate_first_batch(*, finished=False):
+        if first_gate["status"] in {"passed", "blocked"}:
+            return first_gate["status"]
+        cohort = [entry for entry in entries.values() if entry["materialId"] in first_ids]
+        valid_count = sum(has_verified_rpa_csv(entry) for entry in cohort)
+        terminal_count = sum(has_terminal_rpa_csv(entry) for entry in cohort)
+        first_gate.update(validCsvCount=valid_count, completedCount=terminal_count,
+                          connectorCode="rpa_rpa.conn.juliang.qc.material.analysis.video.live.diagnosis")
+        if cohort and terminal_count == len(cohort):
+            first_gate["status"] = "passed" if valid_count else "blocked"
+            if not valid_count:
+                first_gate.update(errorCode="first_batch_no_valid_csv", message=FIRST_BATCH_MESSAGE)
+            else:
+                first_gate.pop("errorCode", None)
+                first_gate.pop("message", None)
+        elif finished:
+            first_gate.update(status="unconfirmed", errorCode="first_batch_status_unconfirmed",
+                              message="首批素材详情 RPA 状态尚未确认，已暂停后续提交；请续查已有任务，不要重提或判定入参错误。")
+        else:
+            first_gate["status"] = "pending"
+        return first_gate["status"]
+
+    def submission_allowed(index):
+        status = evaluate_first_batch()
+        return status == "passed" or (
+            status == "pending" and entries[index]["materialId"] in first_ids
+        )
 
     def synchronized(function):
         @wraps(function)
@@ -203,6 +270,7 @@ def run_wave_batch(
             "targetCount": args.target_top_n,
             "acceptedCount": accepted_count,
         }
+        manifest["firstBatchCsvGate"] = dict(first_gate)
         if interruption is not None:
             manifest["interruption"] = interruption
         write_json(manifest_path, manifest)
@@ -264,6 +332,8 @@ def run_wave_batch(
         wave_started_at=None,
         backfill_reason=None,
     ):
+        if not submission_allowed(index):
+            raise RuntimeError(first_gate.get("message") or "first batch CSV validation is pending")
         entry = entries[index]
         state_changed_at = elapsed(batch_started_at)
         entry.update(
@@ -305,7 +375,7 @@ def run_wave_batch(
                     "rpaStatus": "rejected",
                     "status": "failed",
                     "failureReason": "rpa_request_failed",
-                    "rpaResultStatus": "final_failed",
+                    "rpaResultStatus": "unknown",
                     "errorType": type(exc).__name__,
                     "errorMessage": str(exc),
                 }
@@ -326,9 +396,7 @@ def run_wave_batch(
         entry["lastProgressAtSec"] = state_changed_at
         entries[index] = entry
         submitted[index] = entry
-        if not has_terminal_rpa_csv(entry) or (
-            entry.get("rpaStatus") == "selected" and not has_verified_rpa_csv(entry)
-        ):
+        if (entry.get("rpaResultStatus") == "available" or entry.get("rpaStatus") == "selected") and not has_verified_rpa_csv(entry):
             entry.update(
                 {
                     "rpaStatus": "rejected",
@@ -563,6 +631,7 @@ def run_wave_batch(
 
     # Phase 1: collect and persist all required RPA records. Video download
     # and FFmpeg are deliberately excluded from this phase.
+    evaluate_first_batch()
     with ThreadPoolExecutor(max_workers=args.rpa_concurrency) as rpa_executor:
         next_index = next_unaccounted_index(next_index)
         if getattr(args, "rpa_wave_barrier", True):
@@ -577,11 +646,12 @@ def run_wave_batch(
                     and interruption is None
                 ):
                     capacity = min(args.rpa_concurrency, primary_collection_slots())
-                    if capacity and next_index < len(candidates):
+                    if capacity and next_index < len(candidates) and submission_allowed(next_index):
                         wave_started_at = elapsed(batch_started_at)
                         wave = {}
                         wave_indices = []
-                        while next_index < len(candidates) and len(wave_indices) < capacity:
+                        while (next_index < len(candidates) and len(wave_indices) < capacity
+                               and submission_allowed(next_index)):
                             wave_indices.append(next_index)
                             next_index = next_unaccounted_index(next_index + 1)
                         wave_size = len(wave_indices)
@@ -623,6 +693,7 @@ def run_wave_batch(
                         )
                     wave = {}
                     wave_index += 1
+                    evaluate_first_batch(finished=True)
                     changed = True
                 if changed:
                     persist()
@@ -634,6 +705,7 @@ def run_wave_batch(
                     and next_index < len(candidates)
                     and len(rpa_futures) < args.rpa_concurrency
                     and primary_collection_slots(len(rpa_futures))
+                    and submission_allowed(next_index)
                 ):
                     submit_rpa(
                         rpa_executor,
@@ -646,16 +718,24 @@ def run_wave_batch(
                     next_index = next_unaccounted_index(next_index + 1)
                 wait_for = set(rpa_futures)
                 if not wait_for:
+                    evaluate_first_batch(finished=True)
                     break
                 done, _pending = wait(
                     wait_for, timeout=poll_interval_sec, return_when=FIRST_COMPLETED
                 )
                 changed = collect_rpa_done(done)
+                if not rpa_futures:
+                    evaluate_first_batch(finished=True)
                 if changed:
                     persist()
 
     if interruption is not None:
         raise BatchInterrupted(persist())
+
+    evaluate_first_batch(finished=True)
+    if first_gate["status"] in {"blocked", "unconfirmed"}:
+        Path(ready_path).unlink(missing_ok=True)
+        return persist(), True, None
 
     # Persist the RPA/postprocess boundary before any network video download
     # or FFmpeg work begins, then process every accepted material locally.

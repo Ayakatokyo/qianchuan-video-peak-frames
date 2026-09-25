@@ -29,11 +29,15 @@ metadata:
 
 ## RPA 动态参数契约
 
+素材详情连接器 `rpa_rpa.conn.juliang.qc.material.analysis.video.live.diagnosis` 必须先完成首批 CSV 门禁：首批为本运行前 `min(RPA并发数, 目标素材数, 候选数)` 条，默认并发 3；即使非波次调度也不得在首批判定前补位。首批全部已终态且没有任何正确 CSV 时，持久化 `firstBatchCsvGate.status=blocked` / `errorCode=first_batch_no_valid_csv`，暂停本次运行后续所有 RPA 提交、重试、补位与自动接续，并提示“当前入参可能有问题”，核对授权账号、日期和业务参数。有效 CSV 须为本次请求落盘、非空可解析、含身份匹配的 `material_info`；只有下载链接、空表、解析失败或其他素材的数据均不算。缺视频 URL、视频下载或抽帧失败单独处理，不等于没有 CSV。
+
+首批任一 CSV 有效且全员已终态时放行；异步 pending/running、轮询失败、超时或中断不能认定远端失败，首批结果未确认时持久化 `unconfirmed`，暂停后续提交并保留远端任务号。`status` 对暂停返回 `workflowStatus=paused`；`nextAction=check_parameters` 要求核对修正入参并新建运行目录重新执行首批，普通 `resume` 或同目录 `prepare` 均不能解除 blocked。`nextAction=check_remote_status` 时只允许 `resume` 续查已有任务号；没有可确认任务号则保持暂停，不重提。不得删改门禁或通过新循环、补位入口绕过。
+
 标准 `prepare` 已自动完成授权列表检查、实时 connector 详情反查和业务参数校验，再走异步 fetch、轮询、CSV 落盘与后处理；表单参数齐全时直接执行，不再单独调用 detail、schema、list-accounts、validate。逐素材诊断只静态保留 connector code，不把详情返回的 `id` 当 connector code，不拼接或改写 `platformCode`。
 
 只有排查连接器契约或独立单条取数时，才运行 `python scripts/rpa_dynamic_client.py detail`、`python scripts/rpa_dynamic_client.py schema`；需要选账号时运行 `python scripts/rpa_dynamic_client.py list-accounts`。从实时详情读取 `platformCode`、`inParamJsonSchemaText` / `inParamList` 与输出字段，使用 `python scripts/rpa_dynamic_client.py validate --params-json '<JSON对象>'`（长参数用 `--params-file`）校验。
 
-只有需要单独取一条诊断数据时才直接运行 `python scripts/rpa_dynamic_client.py fetch --shop-id <RPA授权ID> --params-json '<JSON对象>' --output-dir '千川数据资源/<run-id>/diagnosis-source'`；执行工具显式设置 3600 秒超时。标准 `prepare` 已包含取数，不要在它之前额外执行一次 `fetch`，避免重复提交。
+详情采集统一使用受首批 CSV 门禁保护的 `run_standard_analysis.py prepare`，或 `extract_peak_frames.py --source rpa --top-materials-json <候选文件> --target-top-n <数量>`；只取一条时目标数设为 1。动态客户端的直接 `fetch`（含 `--no-download`）会在网络请求前拒绝，不能用它绕过已暂停的批次；detail/schema/list-accounts/validate 保留排查用途。
 
 ## 已落盘数据接续
 

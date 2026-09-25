@@ -4218,6 +4218,7 @@ class CliTests(unittest.TestCase):
                 json.dumps(self._wave_outcome("m-1")["records"]),
                 encoding="utf-8",
             )
+            self._write_wave_csv(root / "diagnosis-csv", "m-1")
             _result_dir, summary_json, summary_md = self._write_batch_result(
                 output, "m-1"
             )
@@ -4246,6 +4247,8 @@ class CliTests(unittest.TestCase):
                                 ),
                                 "rpaStatus": "submitted",
                                 "rpaCsvVerified": True,
+                                "rpaResultStatus": "available",
+                                "diagnosisCsvPath": "diagnosis-csv/m-1.csv",
                                 "status": "running",
                             },
                             extract_peak_frames._wave_entry({"materialId": "m-2"}, 2),
@@ -4447,7 +4450,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(cancelled, {})
         self.assertEqual(postprocess_queue, [])
         self.assertEqual(entries[0]["rpaStatus"], "rejected")
-        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
+        self.assertEqual(entries[0]["rpaResultStatus"], "unknown")
         self.assertEqual(
             entries[0]["resumeRecovery"],
             {
@@ -4458,7 +4461,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(retained["clientAttemptId"], "old-attempt")
 
-    def test_wave_resume_finalizes_submitted_material_with_malformed_receipt(self):
+    def test_wave_resume_preserves_unknown_submitted_material_with_malformed_receipt(self):
         material_id = "m-malformed-receipt"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4492,7 +4495,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(cancelled, {})
         self.assertEqual(postprocess_queue, [])
         self.assertEqual(entries[0]["rpaStatus"], "rejected")
-        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
+        self.assertEqual(entries[0]["rpaResultStatus"], "unknown")
         self.assertEqual(
             entries[0]["resumeRecovery"]["reason"], "local_artifact_unavailable"
         )

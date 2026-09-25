@@ -281,7 +281,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
         self.assertTrue(timeout_entry["rpaTimeoutExceeded"])
         self.assertEqual(timeout_entry["rpaTimeoutSec"], 480)
 
-    def test_nonterminal_rpa_result_is_finalized_before_next_wave(self):
+    def test_nonterminal_first_rpa_result_pauses_before_next_wave(self):
         starts = []
 
         def attempt_rpa(_args, entry):
@@ -302,11 +302,11 @@ class WaveBatchRunnerTests(unittest.TestCase):
             args={"target_top_n": 2, "rpa_concurrency": 2},
         )
 
-        self.assertEqual(starts, ["m-1", "m-2", "m-3"])
+        self.assertEqual(starts, ["m-1", "m-2"])
         rejected = manifest["rejectedMaterials"][0]
         self.assertEqual(rejected["materialId"], "m-2")
-        self.assertEqual(rejected["rpaResultStatus"], "final_failed")
-        self.assertEqual(rejected["failureReason"], "rpa_csv_artifact_unavailable")
+        self.assertEqual(rejected["rpaResultStatus"], "pending")
+        self.assertEqual(manifest["firstBatchCsvGate"]["status"], "unconfirmed")
 
     def test_selected_final_failure_does_not_enter_postprocess(self):
         postprocess_calls = []
@@ -552,7 +552,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
             <= {"m-1", "m-2", "m-3"}
         )
 
-    def test_rpa_future_exception_records_final_diagnostics(self):
+    def test_rpa_future_exception_records_unconfirmed_diagnostics(self):
         def attempt_rpa(_args, _entry):
             raise RuntimeError("worker process exited")
 
@@ -563,7 +563,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
         rejected = manifest["rejectedMaterials"][0]
         self.assertTrue(failures)
         self.assertEqual(rejected["rpaStatus"], "rejected")
-        self.assertEqual(rejected.get("rpaResultStatus"), "final_failed")
+        self.assertEqual(rejected.get("rpaResultStatus"), "unknown")
         self.assertEqual(rejected["errorType"], "RuntimeError")
         self.assertEqual(rejected["errorMessage"], "worker process exited")
 
