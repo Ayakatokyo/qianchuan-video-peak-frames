@@ -56,7 +56,7 @@ def pages(entries):
 
 
 def advance(run, flag=None, payload=None):
-    args = ['analysis-session', '--output-dir', str(run)]
+    args = ['analysis-session', '--output-dir', str(run), '--legacy-work-item']
     if flag:
         request = run / 'diagnostic-analysis' / 'current-request.json'
         request.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')

@@ -14,6 +14,8 @@ from analysis_task_io import pretty_json
 from analysis_tasks import _packets, _pages
 from batch_runtime import acquire_run_lock, write_json_atomically
 import frame_review
+import analysis_visuals
+import analysis_navigation
 
 
 def _digest(value):
@@ -107,8 +109,8 @@ def _is_saved_batch(index, state, batch, mid):
         return False
     seen = set()
     for entry in batch['observations']:
-        if (not isinstance(entry, dict) or set(entry) != {'sourceFrameRef', 'visualObservation'}
-                or not isinstance(entry['sourceFrameRef'], str)
+        frame_review._validate_observation_fields(entry)
+        if (not isinstance(entry['sourceFrameRef'], str)
                 or entry['sourceFrameRef'] not in batch['frameRefs']):
             raise ValueError('invalid replayed frame observation')
         sha = expected[entry['sourceFrameRef']]['sha256']
@@ -138,12 +140,8 @@ def _commit(root, directory, state, packets, context, payload):
         raise ValueError('model-authored part must be an object')
     _check_slot(task, part)
     path = directory / 'parts' / f"{task['taskId']}.json"
-    # The preflight's public contract hashes a real file. Stage only the supplied
-    # JSON; it is not accepted or made visible as a completed task on failure.
-    staging = directory / 'pending-part.json'
-    write_json_atomically(staging, part)
-    check_analysis_part(root, staging, _context=context, _part=part)
     mid = task.get('materialId')
+    visual_receipt = None
     if mid is None and 'frameObservations' in payload:
         raise ValueError('chapter submissions cannot add frame observations')
     if mid is not None:
@@ -159,8 +157,18 @@ def _commit(root, directory, state, packets, context, payload):
         hashes = {f['frameRef']: f['sha256'] for f in index['frames']}
         if any(hashes[ref] not in proposed['visualObservationCache'] for ref in expected):
             raise ValueError('material has unreviewed images; stash real observations before submitting')
-        # Validate everything above before any completion mutation. If the OS
-        # exits between the following writes, an identical submission resumes.
+        part, visual_receipt = analysis_visuals.material_observations(part, index, proposed)
+    elif task['taskId'] == 'chapter04':
+        index, ledger = frame_review._load(root, _context=context)
+        if ledger['status'] != 'complete':
+            raise ValueError('visual synthesis requires complete frame review')
+        part, visual_receipt = analysis_visuals.chapter_categories(part, index, ledger)
+    # Validate the fully expanded part before saving observations or completion.
+    # Expansion only copies durable or proposed model words and model labels.
+    staging = directory / 'pending-part.json'
+    write_json_atomically(staging, part)
+    check_analysis_part(root, staging, _context=context, _part=part)
+    if mid is not None:
         _publish(path, part)
         if batch is not None and proposed is not original:
             frame_review.stash_frame_observations(root, batch, _context=context)
@@ -175,6 +183,8 @@ def _commit(root, directory, state, packets, context, payload):
         'partSha256': file_hash(path), 'submissionSha256': submission_sha,
         'completedAtSec': finished, 'elapsedSeconds': round(max(0, finished - state['taskStartedAtSec']), 3),
         'measurement': 'wall-clock from task activation to accepted submission; includes idle time'})
+    if visual_receipt is not None:
+        state['completed'][-1]['visualAssembly'] = visual_receipt
     state['taskStartedAtSec'] = finished
     write_json_atomically(directory / 'state.json', state)
 
@@ -239,14 +249,43 @@ def _work_item(root, directory, state, packets, context):
     contract = {k: deepcopy(v) for k, v in packet.items() if k not in {'scopedFacts', 'allowedEvidenceRefs'}}
     if task_id == 'chapter04':
         facts['reviewedVisuals'] = _visual_digest(root, context)
-    result.update(taskId=task_id,
-        factsPages=_write_pages(directory, task_id, 'facts', facts, state['inputSha256']),
-        contractPages=_write_pages(directory, task_id, 'contract', contract, state['inputSha256']))
     # Chapter 01 has aggregate refs not all embedded in its projected facts.
     if task_id == 'chapter01':
         result['referencePages'] = _write_pages(directory, task_id, 'references',
             {'allowedEvidenceRefs': packet['allowedEvidenceRefs']}, state['inputSha256'])
-    template = {'inputSha256': state['inputSha256'], 'taskId': task_id, 'part': packet['outputSkeleton']}
+    skeleton = deepcopy(packet['outputSkeleton'])
+    if task_id == 'chapter04':
+        index, ledger = frame_review._load(root, _context=context)
+        groups = analysis_visuals.standard_groups(index, ledger)
+        if groups is not None:
+            prototype = skeleton['highlightDashboard']['groups'][0]
+            skeleton['highlightDashboard']['groups'] = [
+                {**{key: deepcopy(value) for key, value in prototype.items() if key != 'frameRefs'},
+                 'category': group['category']} for group in groups]
+            result['visualAssemblyRule'] = ('Standard categories were authored while viewing images. '
+                'Omit highlightDashboard group frameRefs; the session expands the saved labels. '
+                'Author group conclusions and evidenceRefs; customClassification still needs complete explicit frameRefs.')
+        else:
+            result['visualAssemblyRule'] = ('Legacy image observations lack standardCategory. '
+                'Classify from reviewedVisuals and supply complete explicit frameRefs for both classifications.')
+    if task_id.startswith('material-'):
+        for item in skeleton['materialAnalyses']:
+            for frame in item['highlightAnalyses']:
+                frame.pop('visualObservation', None)
+        result['visualAssemblyRule'] = ('Omit visualObservation in the material part. The session copies exact '
+            'saved image observations by SHA; author every commercial interpretation for this material.')
+        facts['frameWritingRule'] = contract['frameWritingRule'] = (
+            '图片观察只在 frameObservations/observations 中写一次。part.highlightAnalyses 省略 visualObservation，'
+            '会话从已观察的相同 JPEG SHA 缓存逐字装配；不能省商业解释。'
+            '不足时用 interpretationStatus=insufficient_evidence + limitation；'
+            '同素材同图可用 shared + sharedInterpretationRef 指向直接 supported 帧。')
+    contract['outputSkeleton'] = skeleton
+    if 'visualAssemblyRule' in result:
+        facts['visualAssemblyRule'] = contract['visualAssemblyRule'] = result['visualAssemblyRule']
+    result.update(taskId=task_id,
+        factsPages=_write_pages(directory, task_id, 'facts', facts, state['inputSha256']),
+        contractPages=_write_pages(directory, task_id, 'contract', contract, state['inputSha256']))
+    template = {'inputSha256': state['inputSha256'], 'taskId': task_id, 'part': skeleton}
     template_path = directory / 'work' / task_id / 'submission-template.json'
     _publish(template_path, template)
     result['submissionTemplatePath'] = str(template_path)
@@ -265,6 +304,11 @@ def _work_item(root, directory, state, packets, context):
                 'cachedObservations': {sha: ledger['visualObservationCache'][sha] for sha in hashes}}
         else:
             raise ValueError('frame ledger is behind current material; finish its earlier pending batch first')
+        current_refs = {}
+        for frame in index['frames']:
+            if frame['materialId'] == mid:
+                current_refs.setdefault(frame['sha256'], []).append(frame['frameRef'])
+        result['frameReview']['frameRefsBySha256'] = current_refs
     return result
 
 
@@ -282,7 +326,7 @@ def _bounded_work_item(directory, result):
     return compact
 
 
-def advance_session(analysis_dir, *, session_dir=None, submission_json=None, observations_json=None):
+def advance_session(analysis_dir, *, session_dir=None, submission_json=None, observations_json=None, navigation=False):
     """Resume, stash at most one viewed image group, or accept one authored part."""
     root = Path(analysis_dir).resolve()
     directory = Path(session_dir).absolute() if session_dir else root / 'analysis-session'
@@ -294,7 +338,10 @@ def advance_session(analysis_dir, *, session_dir=None, submission_json=None, obs
     with acquire_run_lock(root / '.analysis-session.lock', root / 'analysis-input-index.json', reclaim_stale=True):
         units = {}
         inputs, binding, packets = _packets(root, section='all', loaded_units=units)
-        binding = _digest({'tasks': binding, 'sessionImplementation': file_hash(Path(__file__))})
+        binding = _digest({'tasks': binding, 'sessionImplementation': file_hash(Path(__file__)),
+                           'visualAssemblyImplementation': file_hash(Path(analysis_visuals.__file__)),
+                           'navigationImplementation': file_hash(Path(analysis_navigation.__file__)),
+                           'frameReviewImplementation': file_hash(Path(frame_review.__file__))})
         context = (inputs, units)
         state = _load_state(directory, binding, packets)
         directory.mkdir(parents=True, exist_ok=True)
@@ -313,7 +360,18 @@ def advance_session(analysis_dir, *, session_dir=None, submission_json=None, obs
                     raise ValueError('observations must belong to the current material')
                 frame_review.stash_frame_observations(root, batch, _context=context)
                 _finish_cached_batches(root, mid, context)
-        result = _bounded_work_item(directory, _work_item(root, directory, state, packets, context))
+        work = _work_item(root, directory, state, packets, context)
+        try:
+            result = (analysis_navigation.publish_navigation(directory, work) if navigation
+                      else _bounded_work_item(directory, work))
+        except analysis_navigation.NavigationCapacityError as exc:
+            # A submission is already durable. Publish the actual current task
+            # before reporting a presentation-only capacity failure; do not leave
+            # resume.json pointing to an accepted/obsolete authoring slot.
+            result = _bounded_work_item(directory, work)
+            write_json_atomically(directory / 'state.json', state)
+            write_json_atomically(directory / 'resume.json', result)
+            raise ValueError(f'{exc}; accepted submissions are preserved; resume with --legacy-work-item') from exc
         write_json_atomically(directory / 'state.json', state)
         write_json_atomically(directory / 'resume.json', result)
         return result

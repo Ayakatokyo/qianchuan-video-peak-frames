@@ -257,6 +257,11 @@ def check_analysis_part(analysis_dir, part_path, *, _context=None, _part=None):
         else:
             from final_report_lib import _validate_highlight_dashboard_group, HIGHLIGHT_DASHBOARD_CATEGORIES
             groups = [_validate_highlight_dashboard_group(g, i) for i, g in enumerate(raw['groups'])]
+            for group in groups:
+                for field_name in ('commonConclusion', 'derivativeDirections'):
+                    for point in group[field_name]:
+                        if not set(point['evidenceRefs']) <= set(group['frameRefs']):
+                            raise ValueError(f'highlightDashboard {field_name} must reference its group')
             categories = [g['category'] for g in groups]
             if categories != [c for c in HIGHLIGHT_DASHBOARD_CATEGORIES if c in categories]:
                 raise ValueError('highlightDashboard requires unique categories in portrait, product, other order')

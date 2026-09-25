@@ -26,15 +26,17 @@
 
 禁止随机标记、同义改写和关闭门禁来消除校验告警；只修正有证据支持的字段，不补长正文求通过。
 
-默认使用 `analysis-session --output-dir <run>`，固定按 Chapter 01 → Chapter 02 → Chapter 03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读当前 factsPages；每种结构首次读 contractPages，引用不清时读 referencePages 或按需使用兼容的 analysis-task references 视图。若返回 workItemPages，先完整读这些页恢复工作项，再读它指向的事实和当前图片组。各页含封套不超过 8000 UTF-8 字节，按 nextPage 读到 null；截断不算已读，不反复加载已完成章节、素材或全部 Prompt。
+默认使用 `analysis-session --output-dir <run>`，固定按 Chapter 01 → Chapter 02 → Chapter 03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。CLI 返回固定 navigation：basePath、facts、contract、references、submissionTemplate、currentImages、cachedObservations；所有相对路径以 navigation.basePath 为基准。完整读 facts 索引列出的当前事实页；每种结构首次读 contract，引用不清时读 references 或兼容的 analysis-task references 视图。索引固定为普通 entries 数组，沿 nextPage 读到 null，原事实页保留无损编码。各页含封套不超过 8000 UTF-8 字节；截断不算已读，不反复加载已完成章节、素材或全部 Prompt。同一任务暂存图片后事实索引不变，已读事实不重读，只读下一图片组。超长提交模板明确报错，可用 --legacy-work-item 无损读取；该选项保留旧 factsPages/contractPages/referencePages，旧长工作项先完整读 workItemPages，不截断。
 
 新页首条 record 的 `lossless-tables-v1`/readingGuide 说明解码：先还原 path/value、container/start/items/text 记录树，再按 $table.columns 的嵌套路径与顺序读取列，common 还原从零起的共同列，每行提供其余值；kind=array 保留行顺序，kind=object 对齐 keys/rows，$literal 保留原保留键对象。编码无损保留原 model_view 全部事实、类型、顺序和证据，不采样。旧无编码页、analysis-task 导出及 analysis-plan/read-analysis 仍兼容，仅用于既有流程或定向溯源，不重复全文读取原包。
 
-Chapter 01 聚合引用以 referencePages 为准；Chapter 03 的 batchInsights 只用 evidenceRules 中的标签型引用，关键词文本引用只用于关键词自身卖点，不能把总 allowedEvidenceRefs 当成所有字段白名单。当前任务只写负责的字段，按 submissionTemplatePath 的 `inputSha256/taskId/part` 外壳直接撰写 JSON。使用正式 `--submission-json` 一次完成片段预检、帧 checkpoint 和下一任务导航，不能用临时脚本、循环或模板代写正文。
+Chapter 01 聚合引用以 navigation.references 为准；Chapter 03 的 batchInsights 只用 evidenceRules 中的标签型引用，关键词文本引用只用于关键词自身卖点，不能把总 allowedEvidenceRefs 当成所有字段白名单。navigation.submissionTemplate 是只读模板，将其复制到独立 submission.json 后，按 `inputSha256/taskId/part` 外壳只写当前任务负责的字段。导航、事实页、图片组和模板发布后不可变，不原地修改。使用正式 `--submission-json` 一次完成已存视觉事实展开、片段预检、帧 checkpoint 和下一任务导航，不能用临时脚本、循环或模板代写正文。若已接受提交后下一导航超预算，成功提交保留，用无提交参数的 analysis-session --legacy-work-item 接续，不撤回或重复业务工作。
 
-素材按 `frameReview.visionBatches` 每组最多 3 张实际看图，每完成一组就用 `--observations-json` 保存 stashTemplate 中的非空真实观察，不等待整条素材留在内存。观察文件包含 inputIndexSha256、当前账本批次全部 frameRefs、observations（每条 sourceFrameRef/visualObservation）；只填本组实际看的唯一 SHA。最后一组可与 part 一同作为提交外壳的 frameObservations；不能同时使用两个提交选项。每图默认 25–60 字足够的主体、动作/状态和信息层要点，不写长篇服饰环境报告后再抄成 JSON。商业解释按本素材事实撰写，不能跨素材照抄。
+素材按 `navigation.currentImages` 文件的 entries 每组最多 3 张实际看图，每完成一组就将其 observationsTemplate 复制到独立观察文件后填写，用 `--observations-json` 保存，不等待整条素材留在内存。观察文件包含 inputIndexSha256、当前账本批次全部 frameRefs、observations；每条填 sourceFrameRef、非空 visualObservation 和模型看图判断的 standardCategory（portrait/product/other），只填本组实际看的唯一 SHA，不能提交模板 null。标签在协议上可省略以兼容旧账本，新模板首次看图须填写。顶层 images 是本组数量，remainingImages 是当前冻结账本批次尚未观察的唯一图片数（含本组），不是整个素材或运行的剩余数；有后续账本批次时继续依导航处理。全缓存时 currentImages=null/images=0，从 navigation.cachedObservations 复用已存观察，不重复看图。legacy 的 frameReview.visionBatches/stashTemplate 继续兼容。最后一组可与 part 一同作为提交外壳的 frameObservations；不能同时使用两个提交选项。每图默认 25–60 字足够的主体、动作/状态和信息层要点，不写长篇服饰环境报告后再抄成 JSON。
 
-Chapter 04 的 reviewedVisuals 提供完整 SHA 观察及对应全部 frameRefs，结合本章事实完成两套分类；不重新打开整批图片，只有机制不清、具体疑义或复核命中时定向看图。category 只允许 portrait、product、other；机制分类仍遵循下方内容契约。
+素材 part 保留全部成功帧条目和 frameRef，可省略 highlightAnalyses[*].visualObservation 字段；session 按冻结 SHA 从模型账本逐字回填，最终候选仍有完整观察。省略与 null 不同，不重复抄写已存文字，也不删帧。商业解释、evidenceRefs 和具体限制仍按本素材事实撰写，不能跨素材照抄。程序只复制已由模型写出的观察，并在会话 visualAssembly 收据记录来源与哈希，不生成分析正文。
+
+Chapter 04 的 reviewedVisuals 提供完整 SHA 观察、已存标准分类及对应全部 frameRefs，结合本章事实完成两套分类；不重新打开整批图片，只有机制不清、具体疑义或复核命中时定向看图。全部成功帧已有模型 standardCategory 时，提交模板按 portrait/product/other 顺序预置实际非空标准类别并省略各组 frameRefs；保持该类别集合，由 session 按账本展开成员。各组正文和组内 evidenceRefs 仍由模型写；customClassification 的全部显式 frameRefs、边界、正文和引用仍由模型填写。旧账本缺标签时保留两套分类手写完整 frameRefs 的兼容路径，已有标准类别须保持，只对缺标签帧补充分类判断；程序不猜图、不补标签。category 只允许 portrait、product、other；机制分类仍遵循下方内容契约。
 
 ## 接续、读取与真实重复画面
 
@@ -105,7 +107,7 @@ highlightDashboard 与 customClassification 每个非空组默认一条 commonCo
 
 - 按事实包的 evidenceIndex/evidenceRef 建立合法 frameRef/evidenceRefs 白名单，不为抄枚举或字数建议读取实现源码。枚举和引用属于硬契约，字符数仅为表达建议，不能为凑字数生成正文；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
 - 从 manifest 和五个章节事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
-- 按当前 visionBatches 每组最多 3 张看图并立即暂存真实观察，账本六帧（旧四帧兼容）完整覆盖后提交本素材片段，再由会话组装候选；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。候选组装后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/千川数据资源/<run-id>" --analysis-json <会话返回的analysisJson> --review-template <新复核文件>`，结构/引用等硬错误先修正并重新校验；结构通过而只需内容复核时，填写正式模板的 decision/reason，直接使用 `finalize --quality-review <文件>` 完成同一门禁，不额外重复成功的校验调用。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
+- 按当前 navigation.currentImages（legacy 为 visionBatches）每组最多 3 张看图并立即暂存真实观察和模型标准分类，账本六帧（旧四帧兼容）完整覆盖后提交本素材片段，再由会话组装候选；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。候选组装后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/千川数据资源/<run-id>" --analysis-json <会话返回的analysisJson> --review-template <新复核文件>`，结构/引用等硬错误先修正并重新校验；结构通过而只需内容复核时，填写正式模板的 decision/reason，直接使用 `finalize --quality-review <文件>` 完成同一门禁，不额外重复成功的校验调用。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
 
 ## 证据与归因规则
 
@@ -150,7 +152,7 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
 
 ## 输出契约
 
-以下为字段形状，尖括号是占位符，不能提交。示例仅说明结构，实际分类及数组覆盖依据当前证据和上述规则。标准分类每个非空组、机制分类每组的 commonConclusion / derivativeDirections 默认各一条（结构兼容 1–3 条）；机制分类通常 3–5 组；supported 卖点至少 3 条、2 个维度。
+以下为最终完整候选的字段形状，尖括号是占位符，不能提交。analysis-session 的素材提交模板可以省略 visualObservation，标准组在全标签齐备时可以省略 frameRefs，由正式入口按模型账本展开为下列完整结构；直接撰写完整候选或使用旧分片入口时仍须提供完整字段。示例仅说明结构，实际分类及数组覆盖依据当前证据和上述规则。标准分类每个非空组、机制分类每组的 commonConclusion / derivativeDirections 默认各一条（结构兼容 1–3 条）；机制分类通常 3–5 组；supported 卖点至少 3 条、2 个维度。
 
 ```json
 {

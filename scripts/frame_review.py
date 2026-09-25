@@ -12,6 +12,16 @@ from batch_runtime import acquire_run_lock, write_json_atomically
 DEFAULT_REVIEW_BATCH_SIZE = 6
 LEGACY_REVIEW_BATCH_SIZE = 6
 VISION_BATCH_SIZE = 3
+STANDARD_CATEGORIES = ('portrait', 'product', 'other')
+
+
+def _validate_observation_fields(entry):
+    required = {'sourceFrameRef', 'visualObservation'}
+    if (not isinstance(entry, dict) or not required <= set(entry)
+            or set(entry) - required - {'standardCategory'}):
+        raise ValueError('only sourceFrameRef, visualObservation and optional standardCategory may be cached')
+    if 'standardCategory' in entry and entry['standardCategory'] not in STANDARD_CATEGORIES:
+        raise ValueError('standardCategory must be portrait, product or other')
 
 
 def now():
@@ -84,11 +94,10 @@ def _validate_state(index, state):
         raise ValueError('frame review batch plan mismatch')
     cache = state.get('visualObservationCache', {})
     for sha, entry in cache.items():
+        _validate_observation_fields(entry)
         source = refs.get(entry.get('sourceFrameRef')) if isinstance(entry, dict) else None
         if not source or source['sha256'] != sha or not isinstance(entry.get('visualObservation'), str) or not entry['visualObservation'].strip():
             raise ValueError('invalid cached visual observation')
-        if set(entry) != {'sourceFrameRef', 'visualObservation'}:
-            raise ValueError('cache only supports visual observations')
     mapping = {}
     for ref in completed:
         sha = refs[ref]['sha256']
@@ -215,8 +224,7 @@ def _prepare_frame_observations(index, original, batch, *, complete=False):
     frames = {f['frameRef']: f for f in index['frames']}
     stashed = state.setdefault('stashedFrameRefs', [])
     for entry in observations:
-        if not isinstance(entry, dict) or set(entry) != {'sourceFrameRef', 'visualObservation'}:
-            raise ValueError('only sourceFrameRef and visualObservation may be cached')
+        _validate_observation_fields(entry)
         ref, observation = entry['sourceFrameRef'], entry['visualObservation']
         if not isinstance(ref, str) or ref not in state['currentBatchFrameRefs']:
             raise ValueError('observation must belong to the current material batch')
