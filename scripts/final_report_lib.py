@@ -441,7 +441,8 @@ def _validate_highlight_dashboard_group(raw, index):
     category = _text(raw.get("category"))
     if category not in HIGHLIGHT_DASHBOARD_CATEGORIES:
         raise FinalReportError(
-            f"highlightDashboard.groups[{index}].category is unsupported"
+            f"highlightDashboard.groups[{index}].category is unsupported; allowed: "
+            + ", ".join(HIGHLIGHT_DASHBOARD_CATEGORIES)
         )
     frame_refs = _string_list(
         raw.get("frameRefs"), f"highlightDashboard.groups[{index}].frameRefs"

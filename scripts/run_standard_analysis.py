@@ -26,6 +26,16 @@ def _positive_int(value):
     return number
 
 
+def _worker_count(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("concurrency must be a positive integer") from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError("concurrency must be a positive integer")
+    return number
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Run the standard Qianchuan analysis workflow."
@@ -49,6 +59,11 @@ def build_parser():
     resume.add_argument("--shop-id", required=True, help="api_shop 的 API 报表授权店铺 ID")
     resume.add_argument("--rpa-shop-id", help="rpa_shop 的素材诊断授权账号 ID")
     resume.add_argument("--output-dir", required=True)
+    for command in (prepare, resume):
+        command.add_argument("--download-concurrency", type=_worker_count,
+                             help="Maximum simultaneous video downloads (default: 2)")
+        command.add_argument("--postprocess-concurrency", type=_worker_count,
+                             help="Maximum simultaneous FFmpeg tasks (default: 2; use 1 on constrained hosts)")
 
     local = commands.add_parser("prepare-local", parents=[], help="Build missing facts from landed data only")
     local.add_argument("--start-date", required=True)
@@ -83,6 +98,13 @@ def build_parser():
     task.add_argument("--section", choices=("all", "facts", "contract", "references"), default="all",
                       help="Read facts without repeating the contract and reference table")
 
+    session = commands.add_parser("analysis-session", help="Resume a small authoring work item, stash observations or submit a model-authored part")
+    session.add_argument("--output-dir", required=True)
+    session.add_argument("--session-dir", help="Session subdirectory within diagnostic-analysis; default analysis-session")
+    submission = session.add_mutually_exclusive_group()
+    submission.add_argument("--submission-json", help="Bound taskId/inputSha256, model-authored part, optional frameObservations")
+    submission.add_argument("--observations-json", help="Persist the current small group of actual image observations immediately")
+
     check_part = commands.add_parser("check-analysis-part", help="Check a model-authored chapter or material part before assembly")
     check_part.add_argument("--output-dir", required=True)
     check_part.add_argument("--part", action="append", required=True)
@@ -90,6 +112,7 @@ def build_parser():
     review = commands.add_parser("frame-review", help="Freeze, resume or checkpoint actual JPEG observations")
     review.add_argument("--output-dir", required=True)
     review.add_argument("--batch-json")
+    review.add_argument("--stash-json", help="Persist partial observations without completing unviewed frames")
     review.add_argument("--rebuild", action="store_true")
 
     cleanup = commands.add_parser("cleanup-videos", help="Verify delivery and plan/apply original MP4 cleanup")
@@ -129,6 +152,7 @@ def build_parser():
     status = commands.add_parser("status")
     status.add_argument("--output-dir", required=True)
     status.add_argument("--wait-seconds", type=int, default=0, choices=range(61), metavar="0..60")
+    commands.add_parser("version", help="Print portable runtime source identity without loading dependencies")
     return parser
 
 
@@ -189,6 +213,18 @@ def main(argv=None):
         return exc.code
     workflow = None
     try:
+        if args.command == "version":
+            from runtime_identity import runtime_identity
+            print(json.dumps(runtime_identity(), ensure_ascii=False))
+            return 0
+        if args.command == 'analysis-session':
+            from analysis_session import advance_session
+            from analysis_task_io import pretty_json
+            result = advance_session(Path(args.output_dir) / 'diagnostic-analysis',
+                session_dir=args.session_dir, submission_json=args.submission_json,
+                observations_json=args.observations_json)
+            print(pretty_json(result))
+            return 0
         if args.command == 'analysis-task':
             from analysis_tasks import task_plan, read_task, export_tasks
             from analysis_task_io import pretty_json
@@ -224,13 +260,14 @@ def main(argv=None):
             print(json_text(result))
             return 0
         if args.command == "frame-review":
-            from frame_review import start_frame_review, checkpoint_frame_review
+            from frame_review import start_frame_review, checkpoint_frame_review, stash_frame_observations
             from analysis_handoff import read_object
             from analysis_task_io import pretty_json
             root = Path(args.output_dir) / "diagnostic-analysis"
-            if args.batch_json and args.rebuild:
-                raise ValueError("rebuild and batch checkpoint must be separate commands")
+            if sum(bool(x) for x in (args.batch_json, args.stash_json, args.rebuild)) > 1:
+                raise ValueError("rebuild, stash and batch checkpoint must be separate commands")
             result = (checkpoint_frame_review(root, read_object(args.batch_json)) if args.batch_json
+                      else stash_frame_observations(root, read_object(args.stash_json)) if args.stash_json
                       else start_frame_review(root, rebuild=args.rebuild))
             print(pretty_json(result))
             return 0
@@ -243,6 +280,10 @@ def main(argv=None):
             from workflow_status import wait_standard_run_status
             print(json.dumps(wait_standard_run_status(args.output_dir, wait_seconds=args.wait_seconds), ensure_ascii=False))
             return 0
+        if args.command in {"prepare", "resume", "prepare-local", "fetch-metadata", "finalize"}:
+            from workflow_status import standard_run_status
+            if standard_run_status(args.output_dir)["lockState"] == "active":
+                raise ValueError("run is already active; use status --wait-seconds 60 before resuming")
         if args.command == "prepare-local":
             ensure_prepare_dependencies(allow_install=False)
         elif args.command == "finalize" and args.include_workbook:
@@ -258,6 +299,10 @@ def main(argv=None):
                 prepare_run = workflow.prepare_local_run
             else:
                 prepare_run = workflow.resume_standard_run
+            options = {}
+            if args.command in {"prepare", "resume"}:
+                options = {key: getattr(args, key) for key in ("download_concurrency", "postprocess_concurrency")
+                           if getattr(args, key) is not None}
             summary = prepare_run(
                 workflow.WorkflowRequest(
                     start_date=args.start_date,
@@ -268,6 +313,7 @@ def main(argv=None):
                     rpa_shop_id=args.rpa_shop_id,
                 ),
                 args.output_dir,
+                **options,
             )
             artifacts = summary["artifacts"]
             print(f"run_summary={Path(args.output_dir) / 'run-summary.json'}")
@@ -337,6 +383,8 @@ def main(argv=None):
     except Exception as exc:
         if workflow is not None and isinstance(exc, workflow.StandardWorkflowError):
             print(f"{exc.stage}: {exc}", file=sys.stderr)
+            if isinstance(exc, getattr(workflow, "WorkflowInterruptedError", ())):
+                return 130
         else:
             print(f"workflow: {exc}", file=sys.stderr)
         return 2

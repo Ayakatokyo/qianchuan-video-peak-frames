@@ -1,11 +1,16 @@
 """Shared batch lifecycle state and runtime protection helpers."""
 
+import fcntl
 import json
 import os
 import socket
+import subprocess
 import tempfile
+import threading
 import time
 import uuid
+import weakref
+from contextlib import contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -303,6 +308,8 @@ def new_run_id():
 
 def lock_payload(run_id, manifest_path):
     return {
+        "lockProtocol": "flock-v1",
+        "ownerToken": uuid.uuid4().hex,
         "runId": run_id,
         "pid": os.getpid(),
         "hostname": socket.gethostname(),
@@ -352,6 +359,22 @@ def _pid_is_alive(pid, hostname, process_start=None):
         return True
     except OSError:
         return False
+    # kill(pid, 0) also succeeds for zombies. They cannot finish or release a
+    # legacy lock, so treating them as active permanently blocks recovery.
+    try:
+        stat = Path(f"/proc/{pid_value}/stat").read_text(encoding="utf-8")
+        state = stat.rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError, ValueError):
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid_value), "-o", "stat="],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            state = result.stdout.strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            state = ""
+    if state.startswith(("Z", "X")):
+        return False
     if process_start is not None:
         observed_start = _process_start(pid_value)
         if observed_start is not None and str(observed_start) != str(process_start):
@@ -359,14 +382,26 @@ def _pid_is_alive(pid, hostname, process_start=None):
     return True
 
 
-def run_lock_state(path):
-    """Return the persisted lock payload and its observed owner state."""
-    lock_path = Path(path)
-    if not lock_path.exists():
+def _read_lock_descriptor(descriptor):
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    with os.fdopen(os.dup(descriptor), "r", encoding="utf-8") as stream:
+        try:
+            raw = stream.read()
+            payload = json.loads(raw) if raw else None
+        except (UnicodeError, json.JSONDecodeError):
+            return False, None
+    return not raw, payload if isinstance(payload, dict) else None
+
+
+def _unlocked_lock_state(empty, payload):
+    if empty:
         return "missing", None
-    payload = read_json(lock_path)
     if not isinstance(payload, dict):
         return "invalid", None
+    # For new locks the kernel lock is authoritative, including after SIGKILL
+    # and PID reuse. Only legacy payloads need a process-liveness fallback.
+    if payload.get("lockProtocol") == "flock-v1":
+        return "stale", payload
     alive = _pid_is_alive(
         payload.get("pid"),
         payload.get("hostname"),
@@ -375,22 +410,79 @@ def run_lock_state(path):
     return ("active" if alive else "stale"), payload
 
 
+def run_lock_state(path):
+    """Observe a lock without creating, replacing, truncating or deleting it."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return "missing", None
+    except OSError:
+        return "invalid", None
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            _empty, payload = _read_lock_descriptor(descriptor)
+            # The owner may still be publishing its initial JSON payload.
+            return "active", payload
+        return _unlocked_lock_state(*_read_lock_descriptor(descriptor))
+    finally:
+        os.close(descriptor)
+
+
+_run_locks = weakref.WeakSet()
+_run_lock_fork_state = threading.local()
+
+
+@contextmanager
+def inherit_run_locks():
+    """Keep run leases in a forked writer until that child process exits.
+
+    Only the thread starting a bounded artifact-writing worker opts in; other
+    forks must not prolong the owner lock merely by inheriting its descriptor.
+    """
+    previous = getattr(_run_lock_fork_state, "inherit", False)
+    _run_lock_fork_state.inherit = True
+    try:
+        yield
+    finally:
+        _run_lock_fork_state.inherit = previous
+
+
 class BatchRunLock:
-    def __init__(self, path, payload):
+    def __init__(self, path, payload, descriptor=None):
         self.path = Path(path)
         self.payload = payload
+        self._descriptor = descriptor
+        self._owner_pid = os.getpid()
         self._released = False
+        if descriptor is not None:
+            _run_locks.add(self)
 
     def release(self):
         if self._released:
             return
-        current = read_json(self.path)
-        if isinstance(current, dict) and current.get("runId") == self.payload.get("runId"):
-            try:
-                self.path.unlink()
-            except FileNotFoundError:
-                pass
         self._released = True
+        _run_locks.discard(self)
+        descriptor, self._descriptor = self._descriptor, None
+        if descriptor is None:
+            return
+        try:
+            if self._owner_pid != os.getpid():
+                return
+            _empty, current = _read_lock_descriptor(descriptor)
+            if (
+                isinstance(current, dict)
+                and current.get("ownerToken") == self.payload.get("ownerToken")
+            ):
+                # Retain the inode: unlinking lets a competing opener acquire
+                # a different inode while another process still holds this one.
+                os.ftruncate(descriptor, 0)
+                os.fsync(descriptor)
+        finally:
+            # close (not LOCK_UN) also leaves a parent's lock intact if an
+            # inherited handle is released in a forked child.
+            os.close(descriptor)
 
     def __enter__(self):
         return self
@@ -399,48 +491,54 @@ class BatchRunLock:
         self.release()
 
 
+def _close_inherited_run_locks():
+    if getattr(_run_lock_fork_state, "inherit", False):
+        # RPA workers publish artifacts themselves and remain writers even if
+        # their parent dies. Their watchdog ends the lease by exiting the child.
+        # Do not implicitly transfer it to any grandchildren they may create.
+        _run_lock_fork_state.inherit = False
+        return
+    # A forked child must not prolong the parent's flock after the parent dies.
+    # release() detects the PID change and only closes the inherited descriptor.
+    for lock in list(_run_locks):
+        lock.release()
+
+
+os.register_at_fork(after_in_child=_close_inherited_run_locks)
+
+
 def acquire_run_lock(path, manifest_path, run_id=None, *, reclaim_stale=False):
     lock_path = Path(path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = lock_payload(run_id or new_run_id(), manifest_path)
-    encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-    descriptor = None
-    for _attempt in range(2):
+    descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
         try:
-            descriptor = os.open(
-                lock_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o644,
-            )
-            break
-        except FileExistsError as exc:
-            state, existing = run_lock_state(lock_path)
-            stale = state in {"stale", "invalid"}
-            if stale and reclaim_stale:
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            _empty, existing = _read_lock_descriptor(descriptor)
+            raise BatchLockError(
+                f"batch run lock is active: {lock_path}",
+                payload=existing or {},
+            ) from exc
+        state, existing = _unlocked_lock_state(*_read_lock_descriptor(descriptor))
+        stale = state in {"stale", "invalid"}
+        if state == "active" or (stale and not reclaim_stale):
             raise BatchLockError(
                 f"batch run lock is {state}: {lock_path}",
                 stale=stale,
                 payload=existing or {},
-            ) from exc
-    if descriptor is None:
-        state, existing = run_lock_state(lock_path)
-        raise BatchLockError(
-            f"batch run lock is {state}: {lock_path}",
-            stale=state in {"stale", "invalid"},
-            payload=existing or {},
-        )
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(encoded)
-    except Exception:
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
+            )
+        payload = lock_payload(run_id or new_run_id(), manifest_path)
+        encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+        os.ftruncate(descriptor, 0)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        while encoded:
+            written = os.write(descriptor, encoded)
+            if written <= 0:
+                raise OSError("could not write batch run lock")
+            encoded = encoded[written:]
+        os.fsync(descriptor)
+        return BatchRunLock(lock_path, payload, descriptor)
+    except BaseException:
+        os.close(descriptor)
         raise
-    return BatchRunLock(lock_path, payload)

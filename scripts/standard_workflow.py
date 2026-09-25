@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from datetime import date
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 import tempfile
+import time
 
 from analysis_handoff import assemble_analysis, file_hash, inspect_inputs, read_object
 from analysis_quality import finding
@@ -37,6 +41,7 @@ from repair_manifest import repair_batch as repair_retained_batch
 from top_material_roi_lib import write_top_material_roi_facts
 from top_material_roi_lib import build_top_material_roi_payload
 from workflow_status import standard_run_status
+from runtime_identity import runtime_identity
 
 
 SUMMARY_NAME = "run-summary.json"
@@ -61,6 +66,33 @@ class StandardWorkflowError(RuntimeError):
 
 class WorkflowLockError(StandardWorkflowError):
     pass
+
+
+class WorkflowInterruptedError(StandardWorkflowError):
+    """Work stopped at a durable checkpoint and can be resumed."""
+
+
+class _WorkflowLocks:
+    """Protect both a business request and its mutable output directory."""
+    def __init__(self, locks):
+        self.locks = locks
+
+    def release(self):
+        first_error = None
+        for lock in reversed(self.locks):
+            try:
+                lock.release()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+        if first_error is not None:
+            raise first_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
 
 
 def workflow_paths(output_dir):
@@ -102,14 +134,26 @@ def acquire_workflow_lock(
 ):
     resolved_shop_id = request.shop_id if shop_id is None else shop_id
     paths = workflow_paths(output_dir)
+    locks = []
     try:
-        return acquire_run_lock(
+        locks.append(acquire_run_lock(
             workflow_lock_path(request, output_dir, resolved_shop_id),
             paths["summary"],
             reclaim_stale=reclaim_stale,
-        )
+        ))
+        locks.append(acquire_run_lock(
+            paths["root"] / ".workflow-run.lock", paths["summary"],
+            reclaim_stale=reclaim_stale,
+        ))
+        return _WorkflowLocks(locks)
     except BatchLockError as exc:
+        for lock in reversed(locks):
+            lock.release()
         raise WorkflowLockError("workflow", f"workflow already running: {exc}") from exc
+    except BaseException:
+        for lock in reversed(locks):
+            lock.release()
+        raise
 
 
 write_run_summary = write_json_atomically
@@ -159,6 +203,8 @@ def _summary(request, paths, *, status, diagnostic_prompt=None,
         "schemaVersion": 2,
         "status": status,
         "activeStage": active_stage,
+        "runtime": {**runtime_identity(), "pid": os.getpid()},
+        "updatedAtEpoch": time.time(),
         "request": request_summary,
         "artifacts": {
             "sourceData": _relative(root, paths["source_data"]),
@@ -216,6 +262,8 @@ def _run_stage(stage, entrypoint, arguments):
     except Exception as exc:
         raise StandardWorkflowError(stage, str(exc)) from exc
     if status != 0:
+        if status == extract_peak_frames.BATCH_INTERRUPTED_EXIT_CODE:
+            raise WorkflowInterruptedError(stage, f"{stage} interrupted at a saved checkpoint")
         raise StandardWorkflowError(stage, f"{stage} command exited with status {status}")
 
 
@@ -224,6 +272,7 @@ def _write_failure(request, paths, stage, message, *, status="failed"):
         request,
         paths,
         status=status,
+        active_stage=stage,
         failure={"stage": stage, "message": message},
     )
     write_run_summary(paths["summary"], summary)
@@ -236,6 +285,31 @@ def _write_running(request, paths, stage):
         status="running",
         active_stage=stage,
     ))
+    print(json.dumps({"event": "workflow_stage", "stage": stage,
+                      "pid": os.getpid(), "observedAtEpoch": time.time()},
+                     ensure_ascii=False), file=sys.stderr, flush=True)
+
+
+def _write_initial_failure(request, paths, stage, message):
+    """An invalid invocation must not replace an existing run's summary."""
+    try:
+        with acquire_run_lock(paths["root"] / ".workflow-run.lock", paths["summary"]):
+            if not paths["summary"].exists():
+                _write_failure(request, paths, stage, message)
+    except BatchLockError:
+        pass
+
+
+def _local_worker_arguments(download_concurrency, postprocess_concurrency):
+    result = []
+    for flag, value in (("--download-concurrency", download_concurrency),
+                        ("--postprocess-concurrency", postprocess_concurrency)):
+        if value is None:
+            continue
+        if type(value) is not int or value <= 0:
+            raise StandardWorkflowError("request", f"{flag} must be a positive integer")
+        result.extend([flag, str(value)])
+    return result
 
 
 def validate_ready_materials(paths, top_n):
@@ -293,12 +367,18 @@ def validate_ready_materials(paths, top_n):
 
 def prepare_standard_run(request, output_dir, *, export_main=export_top_materials.main,
                          extract_main=extract_peak_frames.main,
-                         prepare_facts=prepare_diagnostic_analysis):
+                         prepare_facts=prepare_diagnostic_analysis,
+                         download_concurrency=None, postprocess_concurrency=None):
     paths = workflow_paths(output_dir)
+    # Retain ownership through failure checkpointing in the outer handlers.
+    lock_stack = ExitStack()
+    workflow_started = False
     try:
         _validate_request(request)
+        worker_arguments = _local_worker_arguments(download_concurrency, postprocess_concurrency)
         candidate_top_n = request.top_n * 3
-        with acquire_workflow_lock(request, output_dir):
+        with nullcontext(lock_stack.enter_context(acquire_workflow_lock(request, output_dir))):
+            workflow_started = True
             _write_running(request, paths, "selection")
             _run_stage("selection", export_main, [
                 "--shop-id", request.shop_id,
@@ -323,6 +403,7 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
                 "--diagnosis-records-dir", str(paths["records"]),
                 "--output-dir", str(paths["peak_frames"]),
             ]
+            batch_arguments.extend(worker_arguments)
             if request.rpa_shop_id:
                 batch_arguments.extend(["--shop-id", request.rpa_shop_id])
             _write_running(request, paths, "diagnosis_batch")
@@ -361,11 +442,17 @@ def prepare_standard_run(request, output_dir, *, export_main=export_top_material
     except WorkflowLockError:
         raise
     except StandardWorkflowError as exc:
-        _write_failure(request, paths, exc.stage, str(exc))
+        if workflow_started:
+            _write_failure(request, paths, exc.stage, str(exc),
+                           status="interrupted" if isinstance(exc, WorkflowInterruptedError) else "failed")
+        else:
+            _write_initial_failure(request, paths, exc.stage, str(exc))
         raise
     except Exception as exc:
-        _write_failure(request, paths, "facts", str(exc))
+        (_write_failure if workflow_started else _write_initial_failure)(request, paths, "facts", str(exc))
         raise StandardWorkflowError("facts", str(exc)) from exc
+    finally:
+        lock_stack.close()
 
 
 def resume_standard_run(
@@ -375,12 +462,18 @@ def resume_standard_run(
     extract_main=extract_peak_frames.main,
     repair_batch=repair_retained_batch,
     prepare_facts=prepare_diagnostic_analysis,
+    download_concurrency=None,
+    postprocess_concurrency=None,
 ):
     """Resume an interrupted standard run without repeating report selection."""
     paths = workflow_paths(output_dir)
     recovery_started = False
+    # Retain ownership through failure checkpointing in the outer handlers.
+    lock_stack = ExitStack()
+    workflow_started = False
     try:
         _validate_request(request)
+        worker_arguments = _local_worker_arguments(download_concurrency, postprocess_concurrency)
         expected_request = _summary(request, paths, status="")["request"]
         old = read_json(paths["summary"])
         saved_request = old.get("request") if isinstance(old, dict) else None
@@ -410,7 +503,8 @@ def resume_standard_run(
             )
 
         candidate_top_n = request.top_n * 3
-        with acquire_workflow_lock(request, output_dir, reclaim_stale=True):
+        with nullcontext(lock_stack.enter_context(acquire_workflow_lock(request, output_dir, reclaim_stale=True))):
+            workflow_started = True
             recovery_started = True
             _write_running(request, paths, "recovery")
             # Reconcile CSV/records and paths once. The batch engine owns both
@@ -447,6 +541,7 @@ def resume_standard_run(
                 "--diagnosis-records-dir", str(paths["records"]),
                 "--output-dir", str(paths["peak_frames"]),
             ]
+            batch_arguments.extend(worker_arguments)
             if request.rpa_shop_id:
                 batch_arguments.extend(["--shop-id", request.rpa_shop_id])
             _write_running(request, paths, "diagnosis_batch")
@@ -497,6 +592,8 @@ def resume_standard_run(
         if recovery_started:
             _write_failure(request, paths, "recovery", str(exc), status="interrupted")
         raise StandardWorkflowError("recovery", str(exc)) from exc
+    finally:
+        lock_stack.close()
 
 
 def fetch_report_metadata(
@@ -506,9 +603,13 @@ def fetch_report_metadata(
     fetch_metadata=fetch_material_report_metadata,
 ):
     paths = workflow_paths(output_dir)
+    # Retain ownership through failure checkpointing in the outer handlers.
+    lock_stack = ExitStack()
+    workflow_started = False
     try:
         _validate_request(request, require_top_n=False)
-        with acquire_workflow_lock(request, output_dir):
+        with nullcontext(lock_stack.enter_context(acquire_workflow_lock(request, output_dir))):
+            workflow_started = True
             _write_running(request, paths, "metadata")
             try:
                 fetch_metadata(
@@ -526,11 +627,13 @@ def fetch_report_metadata(
     except WorkflowLockError:
         raise
     except StandardWorkflowError as exc:
-        _write_failure(request, paths, exc.stage, str(exc))
+        (_write_failure if workflow_started else _write_initial_failure)(request, paths, exc.stage, str(exc))
         raise
     except Exception as exc:
-        _write_failure(request, paths, "metadata", str(exc))
+        (_write_failure if workflow_started else _write_initial_failure)(request, paths, "metadata", str(exc))
         raise StandardWorkflowError("metadata", str(exc)) from exc
+    finally:
+        lock_stack.close()
 
 
 def _read_summary(path):
@@ -704,6 +807,9 @@ def finalize_standard_run(
         )
     )
     report_started = False
+    # Retain ownership through failure checkpointing in the outer handlers.
+    lock_stack = ExitStack()
+    workflow_started = False
     try:
         _validate_request(request)
         if video_cleanup in {"dry-run", "delete"} and not archive:
@@ -716,9 +822,10 @@ def finalize_standard_run(
         analysis_path = Path(analysis_json)
         if not analysis_path.is_file():
             raise StandardWorkflowError("report", "analysis JSON is missing")
-        with acquire_workflow_lock(
+        with nullcontext(lock_stack.enter_context(acquire_workflow_lock(
             request, output_dir, reclaim_stale=resumable_report
-        ):
+        ))):
+            workflow_started = True
             # The production path binds validation and rendering to the same bytes.
             candidate_hash = file_hash(analysis_path)
             frozen_inputs = None
@@ -831,8 +938,12 @@ def finalize_standard_run(
             (summary.get("status") == "analysis_pending" or resumable_report)
             and exc.stage in {"analysis", "report"}
         ) else "failed"
-        _write_failure(request, paths, exc.stage, str(exc), status=status)
+        if workflow_started:
+            _write_failure(request, paths, exc.stage, str(exc), status=status)
         raise
     except Exception as exc:
-        _write_failure(request, paths, "report", str(exc), status="analysis_pending")
+        if workflow_started:
+            _write_failure(request, paths, "report", str(exc), status="analysis_pending")
         raise StandardWorkflowError("report", str(exc)) from exc
+    finally:
+        lock_stack.close()

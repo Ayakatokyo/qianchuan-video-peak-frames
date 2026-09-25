@@ -4,7 +4,42 @@ import multiprocessing
 import os
 import queue as queue_module
 import signal
+import threading
+import time
 import traceback
+
+from batch_runtime import inherit_run_locks
+
+
+_WORKER_TIMEOUT_EXIT = 124
+_WORKER_ORPHAN_EXIT = 125
+
+
+def _watch_worker_lifetime(owner_pid, deadline):
+    while True:
+        if os.getppid() != owner_pid:
+            os._exit(_WORKER_ORPHAN_EXIT)
+        remaining = deadline - time.monotonic() if deadline is not None else .1
+        if remaining <= 0:
+            os._exit(_WORKER_TIMEOUT_EXIT)
+        time.sleep(min(.1, remaining))
+
+
+def _start_worker_watchdog(owner_pid, timeout_sec):
+    # Check synchronously before calling worker: the parent can die between
+    # fork and the first instruction in this entrypoint.
+    if os.getppid() != owner_pid:
+        os._exit(_WORKER_ORPHAN_EXIT)
+    deadline = (
+        time.monotonic() + max(0., float(timeout_sec))
+        if timeout_sec is not None else None
+    )
+    threading.Thread(
+        target=_watch_worker_lifetime, args=(owner_pid, deadline),
+        name="rpa-worker-watchdog", daemon=True,
+    ).start()
+    # Keep the daemon alive after _worker_entry returns: multiprocessing's
+    # Queue feeder may still be waiting for a parent that will never read it.
 
 
 def multiprocessing_context_name():
@@ -18,7 +53,11 @@ def _worker_entry(
     result_queue,
     persist_records=None,
     publish_receipt=None,
+    owner_pid=None,
+    timeout_sec=None,
 ):
+    if owner_pid is not None:
+        _start_worker_watchdog(owner_pid, timeout_sec)
     stage = "worker"
     try:
         outcome = worker(params)
@@ -69,6 +108,7 @@ def run_isolated_preflight(
     persist_records=None,
     publish_receipt=None,
 ):
+    timeout_sec = float(timeout_sec)
     context = multiprocessing.get_context(multiprocessing_context_name())
     result_queue = context.Queue()
     process = context.Process(
@@ -80,11 +120,13 @@ def run_isolated_preflight(
             result_queue,
             persist_records,
             publish_receipt,
+            os.getpid(),
+            timeout_sec,
         ),
     )
-    process.start()
+    with inherit_run_locks():
+        process.start()
     try:
-        timeout_sec = float(timeout_sec)
         process.join(timeout_sec)
         if process.is_alive():
             process.terminate()
@@ -92,6 +134,13 @@ def run_isolated_preflight(
             if process.is_alive() and hasattr(process, "kill"):
                 process.kill()
                 process.join(1)
+            failure = failure_factory(params.get("material_id"), "rpa_request_timeout")
+            failure["timeoutExceeded"] = True
+            failure["timeoutSec"] = timeout_sec
+            failure["workerStage"] = "timeout"
+            failure["childExitCode"] = process.exitcode
+            return failure
+        if process.exitcode == _WORKER_TIMEOUT_EXIT:
             failure = failure_factory(params.get("material_id"), "rpa_request_timeout")
             failure["timeoutExceeded"] = True
             failure["timeoutSec"] = timeout_sec

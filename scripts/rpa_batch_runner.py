@@ -5,9 +5,12 @@ postprocess handoff, and manifest checkpoints. External effects are supplied
 as hooks so the CLI remains an adapter rather than the scheduler's dependency.
 """
 
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import contextmanager
+from functools import wraps
 import json
 from pathlib import Path
+import threading
 import time
 
 
@@ -107,6 +110,16 @@ def has_accepted_record(entry, *, records_base_dir=None):
     )
 
 
+def postprocess_failure_count(entry):
+    """Count completed parallel failures, retaining unknown legacy attempts."""
+    attempts = entry.get("postprocessAttempts") or []
+    legacy_count = max(0, entry.get("postprocessAttemptCount", 0) - len(attempts))
+    return legacy_count + sum(
+        attempt.get("phase") == "parallel" and attempt.get("status") == "failed"
+        for attempt in attempts
+    )
+
+
 def run_wave_batch(
     args,
     candidate_payload,
@@ -145,7 +158,16 @@ def run_wave_batch(
     batch_started_at = clock()
     records_base_dir = Path(getattr(args, "output_dir", ".")).parent
     interruption = None
+    state_lock = threading.RLock()
 
+    def synchronized(function):
+        @wraps(function)
+        def locked(*parameters, **keywords):
+            with state_lock:
+                return function(*parameters, **keywords)
+        return locked
+
+    @synchronized
     def persist():
         manifest = new_manifest(
             args, candidates, entries, submitted, selected, rejected, cancelled
@@ -188,6 +210,7 @@ def run_wave_batch(
             write_progress(manifest)
         return manifest
 
+    @synchronized
     def checkpoint_interruption():
         nonlocal interruption
         if interruption is not None or not callable(is_interrupted) or not is_interrupted():
@@ -198,13 +221,41 @@ def run_wave_batch(
             "pendingMaterialIds": [
                 entries[index]["materialId"]
                 for _future, index in sorted(
-                    rpa_futures.items(), key=lambda item: item[1]
+                    list(rpa_futures.items()) + list(postprocess_futures.items()),
+                    key=lambda item: item[1],
                 )
             ],
         }
         persist()
         return True
 
+    @synchronized
+    def checkpoint_postprocess(material_id, updates):
+        for entry in selected.values():
+            if entry["materialId"] != material_id:
+                continue
+            incoming_timings = updates.get("timingsSec")
+            if isinstance(incoming_timings, dict):
+                entry["timingsSec"].update(incoming_timings)
+            entry.update({key: value for key, value in updates.items() if key != "timingsSec"})
+            entry["lastProgressAtSec"] = elapsed(batch_started_at)
+            persist()
+            return
+
+    @contextmanager
+    def postprocess_checkpoints():
+        missing = object()
+        previous = getattr(args, "_postprocess_checkpoint", missing)
+        args._postprocess_checkpoint = checkpoint_postprocess
+        try:
+            yield
+        finally:
+            if previous is missing:
+                del args._postprocess_checkpoint
+            else:
+                args._postprocess_checkpoint = previous
+
+    @synchronized
     def submit_rpa(
         executor,
         index,
@@ -235,10 +286,14 @@ def run_wave_batch(
                 }
             )
         submitted[index] = entry
+        # Record intent before a worker can submit remotely. A receipt can be
+        # newer than this manifest, but a started request must never be pending.
+        persist()
         future = executor.submit(attempt_rpa, args, dict(entry))
         rpa_futures[future] = index
         return future
 
+    @synchronized
     def complete_rpa(future, index):
         scheduled_entry = entries[index]
         try:
@@ -306,33 +361,45 @@ def run_wave_batch(
                 )
             rejected[index] = entry
 
+    @synchronized
     def submit_postprocess(executor, index, *, phase="parallel", retrying=False):
-        entry = entries[index]
-        state_changed_at = elapsed(batch_started_at)
-        entry.setdefault("postprocessAttempts", [])
-        entry.update(
-            {
-                "postprocessAttemptCount": entry.get("postprocessAttemptCount", 0) + 1,
-                "postprocessPhase": phase,
-                "postprocessStatus": "retrying" if retrying else "running",
-                "status": "running",
-                "postprocessStartedAtSec": state_changed_at,
-                "lastStateChangedAtSec": state_changed_at,
-                "lastProgressAtSec": state_changed_at,
-            }
-        )
-        entry["postprocessAttempts"].append(
-            {"phase": phase, "startedAtSec": state_changed_at, "status": "running"}
-        )
-        future = executor.submit(attempt_postprocess, args, dict(entry))
+        def execute():
+            with state_lock:
+                checkpoint_interruption()
+                if interruption is not None:
+                    return {"interrupted": True}
+                entry = entries[index]
+                state_changed_at = elapsed(batch_started_at)
+                entry.setdefault("postprocessAttempts", [])
+                entry.update({
+                    "postprocessAttemptCount": entry.get("postprocessAttemptCount", 0) + 1,
+                    "postprocessPhase": phase,
+                    "postprocessStatus": "retrying" if retrying else "running",
+                    "status": "running",
+                    "postprocessStartedAtSec": state_changed_at,
+                    "lastStateChangedAtSec": state_changed_at,
+                    "lastProgressAtSec": state_changed_at,
+                })
+                entry["postprocessAttempts"].append({
+                    "phase": phase, "startedAtSec": state_changed_at, "status": "running",
+                })
+                persist()
+                snapshot = dict(entry)
+            return attempt_postprocess(args, snapshot)
+
+        entries[index]["postprocessStatus"] = "queued"
+        future = executor.submit(execute)
         postprocess_futures[future] = index
 
+    @synchronized
     def complete_postprocess(future, index, postprocess_executor):
         try:
             attempt = future.result()
         except Exception as exc:
             attempt = {"result": None, "error": exc, "timingsSec": {}}
         entry = entries[index]
+        if attempt.get("interrupted"):
+            return
         entry["timingsSec"] = merge_timings(
             entry["timingsSec"], attempt.get("timingsSec", {})
         )
@@ -366,7 +433,9 @@ def run_wave_batch(
             )
             if (
                 entry.get("postprocessPhase") == "parallel"
-                and entry.get("postprocessAttemptCount", 0) < 2
+                and postprocess_failure_count(entry) < 2
+                and interruption is None
+                and not checkpoint_interruption()
             ):
                 submit_postprocess(postprocess_executor, index, phase="parallel", retrying=True)
                 return
@@ -432,6 +501,7 @@ def run_wave_batch(
             - include_rpa,
         )
 
+    @synchronized
     def collect_rpa_done(done):
         changed = False
         for future in sorted(done & set(rpa_futures), key=lambda item: rpa_futures[item]):
@@ -440,6 +510,7 @@ def run_wave_batch(
             changed = True
         return changed
 
+    @synchronized
     def collect_postprocess_done(done, postprocess_executor):
         changed = False
         for future in sorted(done & set(postprocess_futures), key=lambda item: postprocess_futures[item]):
@@ -458,7 +529,7 @@ def run_wave_batch(
                     selected[index], records_base_dir=records_base_dir
                 )
                 and selected[index].get("postprocessStatus") != "succeeded"
-                and selected[index].get("postprocessAttemptCount", 0) < 2
+                and postprocess_failure_count(selected[index]) < 2
             )
         ]
         if not queue:
@@ -468,12 +539,18 @@ def run_wave_batch(
         # The worker pool only keeps stage work queued. Actual network and
         # FFmpeg concurrency are enforced inside the postprocess hook, so
         # threads waiting for FFmpeg do not prevent the next video download.
-        queue_workers = min(len(queue), max(8, download_workers + ffmpeg_workers))
-        with ThreadPoolExecutor(max_workers=queue_workers) as postprocess_executor:
-            for index in queue:
-                submit_postprocess(postprocess_executor, index)
-            persist()
-            while postprocess_futures:
+        queue_workers = min(len(queue), download_workers + ffmpeg_workers)
+        next_queued = 0
+        with postprocess_checkpoints(), ThreadPoolExecutor(max_workers=queue_workers) as postprocess_executor:
+            while next_queued < len(queue) or postprocess_futures:
+                checkpoint_interruption()
+                while (interruption is None and next_queued < len(queue)
+                       and len(postprocess_futures) < queue_workers):
+                    submit_postprocess(postprocess_executor, queue[next_queued])
+                    next_queued += 1
+                    checkpoint_interruption()
+                if not postprocess_futures:
+                    break
                 done, _pending = wait(
                     set(postprocess_futures),
                     timeout=poll_interval_sec,
@@ -481,6 +558,8 @@ def run_wave_batch(
                 )
                 if collect_postprocess_done(done, postprocess_executor):
                     persist()
+        if interruption is not None:
+            raise BatchInterrupted(persist())
 
     # Phase 1: collect and persist all required RPA records. Video download
     # and FFmpeg are deliberately excluded from this phase.
@@ -549,8 +628,10 @@ def run_wave_batch(
                     persist()
         else:
             while True:
+                checkpoint_interruption()
                 while (
-                    next_index < len(candidates)
+                    interruption is None
+                    and next_index < len(candidates)
                     and len(rpa_futures) < args.rpa_concurrency
                     and primary_collection_slots(len(rpa_futures))
                 ):
@@ -574,7 +655,7 @@ def run_wave_batch(
                     persist()
 
     if interruption is not None:
-        raise BatchInterrupted(interruption)
+        raise BatchInterrupted(persist())
 
     # Persist the RPA/postprocess boundary before any network video download
     # or FFmpeg work begins, then process every accepted material locally.
@@ -601,8 +682,11 @@ def run_wave_batch(
         )
         if not compensation_queue:
             return
-        with ThreadPoolExecutor(max_workers=1) as serial_executor:
+        with postprocess_checkpoints(), ThreadPoolExecutor(max_workers=1) as serial_executor:
             for index in compensation_queue:
+                checkpoint_interruption()
+                if interruption is not None:
+                    raise BatchInterrupted(persist())
                 entries[index]["compensationStatus"] = "queued"
                 persist()
                 submit_postprocess(
@@ -613,14 +697,22 @@ def run_wave_batch(
                     for future, future_index in postprocess_futures.items()
                     if future_index == index
                 )
-                postprocess_futures.pop(future)
-                complete_postprocess(future, index, serial_executor)
+                # Do not hold the state lock while a worker is still publishing
+                # its durable download checkpoint.
+                while not future.done():
+                    wait({future}, timeout=poll_interval_sec)
+                    checkpoint_interruption()
+                collect_postprocess_done({future}, serial_executor)
                 persist()
+                checkpoint_interruption()
+                if interruption is not None:
+                    raise BatchInterrupted(persist())
 
     def terminal_backfill_indices(deficit):
         nonlocal next_index
         indices = []
-        while next_index < len(candidates) and len(indices) < deficit:
+        wave_capacity = min(deficit, args.rpa_concurrency)
+        while next_index < len(candidates) and len(indices) < wave_capacity:
             next_index = next_unaccounted_index(next_index)
             if next_index >= len(candidates):
                 break
@@ -629,6 +721,9 @@ def run_wave_batch(
         return indices
 
     def run_terminal_backfill_wave(indices):
+        checkpoint_interruption()
+        if interruption is not None:
+            raise BatchInterrupted(persist())
         with ThreadPoolExecutor(
             max_workers=min(args.rpa_concurrency, len(indices))
         ) as rpa_executor:
@@ -646,11 +741,14 @@ def run_wave_batch(
                     return_when=FIRST_COMPLETED,
                 )
                 changed = collect_rpa_done(done)
+                checkpoint_interruption()
                 if changed:
                     persist()
         # Backfill obeys the same phase boundary: finish and persist its RPA
         # records before starting local video work for those candidates.
         persist()
+        if interruption is not None:
+            raise BatchInterrupted(persist())
         run_postprocess_queue(indices)
 
     compensate_terminal_failures()

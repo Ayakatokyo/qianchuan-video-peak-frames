@@ -7,6 +7,28 @@ from pathlib import Path
 from batch_runtime import read_json, run_lock_state
 
 
+def _last_progress(path):
+    """Bounded tail read; a killed append must not hide the prior checkpoint."""
+    try:
+        with Path(path).open("rb") as stream:
+            stream.seek(0, 2)
+            start = max(0, stream.tell() - 65536)
+            stream.seek(start)
+            lines = stream.read().splitlines()
+        if start and lines:
+            lines = lines[1:]
+        for line in reversed(lines):
+            try:
+                value = json.loads(line)
+            except (UnicodeError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                return value
+    except OSError:
+        pass
+    return None
+
+
 def standard_run_status(output_dir):
     root = Path(output_dir)
     summary_path = root / "run-summary.json"
@@ -19,20 +41,22 @@ def standard_run_status(output_dir):
     if not isinstance(stage_counts, dict):
         stage_counts = {}
 
-    lock = None
-    workflow_lock_state = "missing"
+    workflow_lock_state, lock = run_lock_state(root / ".workflow-run.lock")
     resolved_summary = str(summary_path.resolve())
     lock_root = root.parent / ".qianchuan-workflow-locks"
-    if lock_root.is_dir():
+    if workflow_lock_state != "active" and lock_root.is_dir():
         for lock_path in lock_root.glob("*.lock"):
             payload = read_json(lock_path)
             if not isinstance(payload, dict):
                 continue
             manifest_path = payload.get("manifestPath")
             if manifest_path and str(Path(manifest_path).resolve()) == resolved_summary:
-                lock = payload
-                workflow_lock_state, _payload = run_lock_state(lock_path)
-                break
+                state, _payload = run_lock_state(lock_path)
+                if state == "active" or workflow_lock_state == "missing":
+                    lock = payload
+                    workflow_lock_state = state
+                if state == "active":
+                    break
 
     batch_lock_state, batch_lock = run_lock_state(peak_frames / ".batch-run.lock")
     observed_lock_state = (
@@ -49,18 +73,7 @@ def standard_run_status(output_dir):
         else persisted_status
     )
     progress_path = peak_frames / "batch-progress.jsonl"
-    last_progress = None
-    if progress_path.is_file():
-        try:
-            lines = [
-                line
-                for line in progress_path.read_text(encoding="utf-8").splitlines()
-                if line
-            ]
-            if lines:
-                last_progress = json.loads(lines[-1])
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            last_progress = None
+    last_progress = _last_progress(progress_path)
 
     request = summary.get("request") or {}
     target = request.get("topN") if isinstance(request, dict) else None
@@ -107,6 +120,15 @@ def standard_run_status(output_dir):
         "rpaRemainingCount": remaining,
         "progressLog": str(progress_path) if progress_path.is_file() else None,
         "lastProgress": last_progress,
+        "lastProgressAgeSec": (
+            round(max(0, time.time() - last_progress["observedAtEpoch"]), 1)
+            if isinstance(last_progress, dict) and type(last_progress.get("observedAtEpoch")) in {int, float}
+            else None
+        ),
+        "runtime": summary.get("runtime"),
+        "workerLimits": {key: manifest.get(key) for key in
+                         ("rpaConcurrency", "downloadConcurrency", "postprocessConcurrency")}
+                        if isinstance(manifest, dict) else {},
         "rpaRequestCount": stage_counts.get("rpaRequestCount", 0),
         "rpaAcceptedCount": stage_counts.get("rpaAcceptedCount", 0),
         "rpaSelectedCount": stage_counts.get("rpaSelectedCount", 0),

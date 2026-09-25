@@ -124,7 +124,7 @@ def cleanup_original_videos(output_dir, *, mode='dry-run', ffmpeg_bin=None, time
         raise ValueError('cleanup mode must be dry-run, delete or keep')
     root = Path(output_dir).resolve()
     receipt_path = root / 'final-report/video-resource-cleanup.json'
-    with acquire_run_lock(root / '.video-cleanup.lock', root / 'run-summary.json'):
+    with acquire_run_lock(root / '.video-cleanup.lock', root / 'run-summary.json', reclaim_stale=True):
         # Reject symlink destinations before even writing a failure receipt.
         _safe_file(root, 'final-report/video-resource-cleanup.json', missing=True)
         previous = _read(receipt_path) if receipt_path.is_file() else {}

@@ -11,6 +11,7 @@ from batch_runtime import acquire_run_lock, write_json_atomically
 
 DEFAULT_REVIEW_BATCH_SIZE = 6
 LEGACY_REVIEW_BATCH_SIZE = 6
+VISION_BATCH_SIZE = 3
 
 
 def now():
@@ -42,7 +43,7 @@ def _state(inputs, index_hash, cache=None):
             'promptPath': 'diagnostic-analysis-prompt.md',
             'uniqueImageCount': inputs['uniqueImageCount'],
             'batchSize': DEFAULT_REVIEW_BATCH_SIZE, 'reviewBatchCount': 0,
-            'visualObservationCache': cache, 'frameRefsBySha256': {},
+            'visualObservationCache': cache, 'stashedFrameRefs': [], 'frameRefsBySha256': {},
             'completedFrameRefs': [], 'pendingFrameRefs': [f['frameRef'] for f in inputs['frames']],
             'batches': _batches(inputs), 'checkpoints': []}
 
@@ -57,10 +58,11 @@ def _advance(state):
         state.setdefault('completedAt', now())
 
 
-def _load(analysis_dir):
+def _load(analysis_dir, *, _context=None):
     root = Path(analysis_dir)
     index = read_object(root / 'analysis-input-index.json')
-    if index != inspect_inputs(root):
+    current = inspect_inputs(root) if _context is None else _context[0]
+    if index != current:
         raise ValueError('frozen input index changed; rebuild frame review before continuing')
     state = read_object(root / 'frame-review-progress.json')
     if state.get('inputIndexSha256') != file_hash(root / 'analysis-input-index.json'):
@@ -105,20 +107,28 @@ def _validate_state(index, state):
     batch = state['batches'][count] if count < len(state['batches']) else None
     if state.get('currentBatchFrameRefs') != (batch['frameRefs'] if batch else []) or state.get('currentMaterialId') != (batch['materialId'] if batch else None):
         raise ValueError('current batch mismatch')
+    stashed = state.get('stashedFrameRefs', [])
+    if (not isinstance(stashed, list) or any(not isinstance(ref, str) for ref in stashed)
+            or len(stashed) != len(set(stashed))
+            or any(ref not in state['currentBatchFrameRefs'] for ref in stashed)):
+        raise ValueError('stashed observations must belong to the current frozen batch')
+    for ref in stashed:
+        if cache.get(refs[ref]['sha256'], {}).get('sourceFrameRef') != ref:
+            raise ValueError('stashed observation cache mismatch')
     if (state.get('uniqueImageCount') != index['uniqueImageCount']
             or state.get('status') != ('in_progress' if pending else 'complete')
             or (not pending and not state.get('completedAt'))):
         raise ValueError('frame review completion state mismatch')
 
 
-def start_frame_review(analysis_dir, *, rebuild=False):
+def start_frame_review(analysis_dir, *, rebuild=False, _context=None):
     root = Path(analysis_dir)
-    with acquire_run_lock(root / '.frame-review.lock', root / 'analysis-input-index.json'):
+    with acquire_run_lock(root / '.frame-review.lock', root / 'analysis-input-index.json', reclaim_stale=True):
         index_path, progress_path = root / 'analysis-input-index.json', root / 'frame-review-progress.json'
         if progress_path.exists() and not rebuild:
-            index, state = _load(root)
+            index, state = _load(root, _context=_context)
             return _review_status(index, state)
-        inputs = inspect_inputs(root)
+        inputs = inspect_inputs(root) if _context is None else _context[0]
         cache = {}
         if progress_path.exists():
             # Preserve the old ledger before a new epoch; only unchanged inputs can
@@ -149,8 +159,8 @@ def start_frame_review(analysis_dir, *, rebuild=False):
         return _review_status(inputs, state)
 
 
-def review_status(analysis_dir):
-    return _review_status(*_load(analysis_dir))
+def review_status(analysis_dir, *, _context=None):
+    return _review_status(*_load(analysis_dir, _context=_context))
 
 
 def _review_status(index, state):
@@ -162,44 +172,64 @@ def _review_status(index, state):
             unique.setdefault(frame['sha256'], frame)
         else:
             reused[frame['sha256']] = state['visualObservationCache'][frame['sha256']]
+    images = list(unique.values())
+    stashed_refs = set(state.get('stashedFrameRefs', []))
+
+    def template(group):
+        return {'inputIndexSha256': state['inputIndexSha256'],
+                'frameRefs': list(state['currentBatchFrameRefs']),
+                'observations': [{'sourceFrameRef': f['frameRef'], 'visualObservation': None}
+                                 for f in group]}
+
     return {'status': state['status'], 'inputIndexSha256': state['inputIndexSha256'],
             'reviewBatchCount': state['reviewBatchCount'], 'uniqueImageCount': state['uniqueImageCount'],
             'completedCount': len(state['completedFrameRefs']), 'pendingCount': len(state['pendingFrameRefs']),
             'materialId': state['currentMaterialId'], 'frameRefs': state['currentBatchFrameRefs'],
-            'imagesToView': list(unique.values()), 'cachedObservations': reused,
+            'imagesToView': images, 'cachedObservations': reused,
+            'stashedObservations': {sha: entry for sha, entry in reused.items()
+                                   if entry['sourceFrameRef'] in stashed_refs},
+            'visionBatches': [{'imagesToView': images[i:i + VISION_BATCH_SIZE],
+                              'stashTemplate': template(images[i:i + VISION_BATCH_SIZE])}
+                             for i in range(0, len(images), VISION_BATCH_SIZE)],
+            'observationGuidance': ('每次实际查看最多 3 张唯一 JPEG，每图默认记录 25–60 字真实可见要点；'
+                                    '查看后立即暂存，仅实际 JPEG SHA-256 相同时复用观察。'
+                                    '暂存不完成批次，全部图片有观察后再提交 checkpoint。'),
             'taskId': (f"material-{index['materialIds'].index(state['currentMaterialId']) + 1:03d}"
                        if state['currentMaterialId'] else None),
-            'checkpointTemplate': ({'inputIndexSha256': state['inputIndexSha256'],
-                'frameRefs': list(state['currentBatchFrameRefs']), 'observations': [
-                    {'sourceFrameRef': f['frameRef'], 'visualObservation': None} for f in unique.values()]}
-                if state['currentMaterialId'] else None)}
+            'checkpointTemplate': template(images) if state['currentMaterialId'] else None}
 
 
-def checkpoint_frame_review(analysis_dir, batch):
-    root = Path(analysis_dir)
-    with acquire_run_lock(root / '.frame-review.lock', root / 'analysis-input-index.json'):
-        index, original = _load(root)
-        state = deepcopy(original)
-        if (batch.get('inputIndexSha256') != state['inputIndexSha256']
-                or batch.get('frameRefs') != state['currentBatchFrameRefs']
-                or not state['currentBatchFrameRefs']):
-            raise ValueError('checkpoint must cover exactly the current frozen batch')
-        if set(batch) != {'inputIndexSha256', 'frameRefs', 'observations'}:
-            raise ValueError('checkpoint only accepts index hash, frameRefs and observations')
-        frames = {f['frameRef']: f for f in index['frames']}
-        observations = batch.get('observations')
-        if not isinstance(observations, list):
-            raise ValueError('observations must be a list')
-        for entry in observations:
-            if not isinstance(entry, dict) or set(entry) != {'sourceFrameRef', 'visualObservation'}:
-                raise ValueError('only sourceFrameRef and visualObservation may be cached')
-            ref = entry['sourceFrameRef']
-            if ref not in state['currentBatchFrameRefs']:
-                raise ValueError('observation must belong to the current material batch')
-            sha = frames[ref]['sha256']
-            if sha in state['visualObservationCache']:
-                raise ValueError('duplicate SHA observation; reuse the existing cache')
-            state['visualObservationCache'][sha] = entry
+def _prepare_frame_observations(index, original, batch, *, complete=False):
+    """Validate a proposed transition without modifying the ledger or its input."""
+    _validate_state(index, original)
+    if not isinstance(batch, dict) or set(batch) != {'inputIndexSha256', 'frameRefs', 'observations'}:
+        raise ValueError('checkpoint only accepts index hash, frameRefs and observations')
+    if (batch['inputIndexSha256'] != original['inputIndexSha256']
+            or batch['frameRefs'] != original['currentBatchFrameRefs']
+            or not original['currentBatchFrameRefs']):
+        raise ValueError('checkpoint must cover exactly the current frozen batch')
+    observations = batch['observations']
+    if not isinstance(observations, list):
+        raise ValueError('observations must be a list')
+    state = deepcopy(original)
+    frames = {f['frameRef']: f for f in index['frames']}
+    stashed = state.setdefault('stashedFrameRefs', [])
+    for entry in observations:
+        if not isinstance(entry, dict) or set(entry) != {'sourceFrameRef', 'visualObservation'}:
+            raise ValueError('only sourceFrameRef and visualObservation may be cached')
+        ref, observation = entry['sourceFrameRef'], entry['visualObservation']
+        if not isinstance(ref, str) or ref not in state['currentBatchFrameRefs']:
+            raise ValueError('observation must belong to the current material batch')
+        if not isinstance(observation, str) or not observation.strip():
+            raise ValueError('visualObservation must be non-empty text')
+        sha = frames[ref]['sha256']
+        if sha in state['visualObservationCache']:
+            if state['visualObservationCache'][sha] != entry:
+                raise ValueError('conflicting SHA observation; reuse the existing cache')
+            continue  # Identical retries do not replace already durable observations.
+        state['visualObservationCache'][sha] = deepcopy(entry)
+        stashed.append(ref)
+    if complete:
         for ref in state['currentBatchFrameRefs']:
             sha = frames[ref]['sha256']
             if sha not in state['visualObservationCache']:
@@ -208,14 +238,33 @@ def checkpoint_frame_review(analysis_dir, batch):
             state['completedFrameRefs'].append(ref)
             state['pendingFrameRefs'].remove(ref)
         state['checkpoints'].append({'frameRefs': state['currentBatchFrameRefs'],
-                                     'viewedImageCount': len(observations),
-                                     'cacheHitCount': len(state['currentBatchFrameRefs']) - len(observations),
+                                     'viewedImageCount': len(stashed),
+                                     'cacheHitCount': len(state['currentBatchFrameRefs']) - len(stashed),
                                      'completedAt': now()})
         state['reviewBatchCount'] += 1
+        state['stashedFrameRefs'] = []
         _advance(state)
-        _validate_state(index, state)
-        write_json_atomically(root / 'frame-review-progress.json', state)
+    _validate_state(index, state)
+    return state
+
+
+def _save_frame_observations(analysis_dir, batch, *, complete, _context=None):
+    root = Path(analysis_dir)
+    with acquire_run_lock(root / '.frame-review.lock', root / 'analysis-input-index.json', reclaim_stale=True):
+        index, original = _load(root, _context=_context)
+        state = _prepare_frame_observations(index, original, batch, complete=complete)
+        if state != original:
+            write_json_atomically(root / 'frame-review-progress.json', state)
         return _review_status(index, state)
+
+
+def stash_frame_observations(analysis_dir, batch, *, _context=None):
+    """Persist only supplied, model-authored observations; leave coverage pending."""
+    return _save_frame_observations(analysis_dir, batch, complete=False, _context=_context)
+
+
+def checkpoint_frame_review(analysis_dir, batch, *, _context=None):
+    return _save_frame_observations(analysis_dir, batch, complete=True, _context=_context)
 
 
 def validate_frame_review(analysis_dir):

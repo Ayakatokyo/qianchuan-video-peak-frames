@@ -65,6 +65,7 @@ BATCH_PROGRESS_NAME = "batch-progress.jsonl"
 BATCH_MANIFEST_VERSION = 2
 WAVE_BATCH_MANIFEST_VERSION = 2
 BATCH_PARTIAL_FAILURE_EXIT_CODE = 5
+BATCH_INTERRUPTED_EXIT_CODE = 130
 BATCH_VERIFICATION_NAME = "batch-verification.json"
 BATCH_VERIFICATION_FAILURE_EXIT_CODE = 6
 RPA_PREFLIGHT_NAME = "rpa-preflight.json"
@@ -139,7 +140,7 @@ def build_parser():
     parser.add_argument(
         "--postprocess-concurrency",
         type=_positive_int,
-        default=1,
+        default=2,
         help="Maximum concurrent FFmpeg/frame-extraction tasks.",
     )
     parser.set_defaults(
@@ -891,6 +892,14 @@ def _resume_wave_state(args, candidates, entries):
     for index in sorted(entries):
         entry = dict(entries[index])
         material_id = entry["materialId"]
+        # A running attempt from the previous owner never produced a terminal
+        # result. Keep its history, but do not charge it as a completed failure.
+        entry["postprocessAttempts"] = [
+            dict(attempt, status="interrupted")
+            if attempt.get("status") in {"running", "queued", "retrying"}
+            else dict(attempt)
+            for attempt in entry.get("postprocessAttempts", [])
+        ]
         if entry.get("rpaStatus") == "rejected":
             entry.update({"status": "failed", "postprocessStatus": "not_started"})
             entries[index] = entry
@@ -931,7 +940,7 @@ def _resume_wave_state(args, candidates, entries):
             submitted[index] = entry
             selected[index] = entry
             if entry["postprocessStatus"] != "succeeded":
-                if entry.get("postprocessAttemptCount", 0) < 2:
+                if rpa_batch_runner.postprocess_failure_count(entry) < 2:
                     postprocess_queue.append(index)
                 else:
                     entry.update(
@@ -944,12 +953,25 @@ def _resume_wave_state(args, candidates, entries):
             continue
 
         restored = _wave_entry(candidates[index], index + 1)
-        if entry.get("rpaStatus") == "submitted":
-            if receipt and receipt.get("remoteTaskGroupId"):
+        remote_task_group_id = (
+            (receipt or {}).get("remoteTaskGroupId") or entry.get("remoteTaskGroupId")
+        )
+        submission_evidence = (
+            entry.get("rpaStatus") in {"submitted", "selected"}
+            or receipt is not None
+            or entry.get("rpaClientAttemptId")
+            or remote_task_group_id
+            or artifact_path(_rpa_receipts_dir(args), material_id, ".json").exists()
+        )
+        if submission_evidence:
+            if remote_task_group_id:
                 restored.update(
                     {
-                        "rpaClientAttemptId": receipt["clientAttemptId"],
-                        "remoteTaskGroupId": receipt["remoteTaskGroupId"],
+                        "rpaClientAttemptId": (
+                            (receipt or {}).get("clientAttemptId")
+                            or entry.get("rpaClientAttemptId")
+                        ),
+                        "remoteTaskGroupId": remote_task_group_id,
                     }
                 )
             else:
@@ -971,7 +993,7 @@ def _resume_wave_state(args, candidates, entries):
             restored["resumeRecovery"] = {
                 "reason": (
                     "remote_task_pending"
-                    if receipt and receipt.get("remoteTaskGroupId")
+                    if remote_task_group_id
                     else "local_artifact_unavailable"
                 ),
                 "previousClientAttemptId": entry.get("rpaClientAttemptId"),
@@ -1645,7 +1667,7 @@ def main(argv=None):
             )
             if failed:
                 print(f"batch_manifest={manifest_path}", file=sys.stderr)
-                return BATCH_PARTIAL_FAILURE_EXIT_CODE
+                return BATCH_INTERRUPTED_EXIT_CODE if interrupted else BATCH_PARTIAL_FAILURE_EXIT_CODE
             result_dir, json_path, markdown_path = result
 
         else:

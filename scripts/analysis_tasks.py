@@ -117,10 +117,12 @@ def output_skeleton(task_id, facts, manifest_sha):
                               'commercialInterpretation': None} for f in facts.get('highlight', {}).get('frames', [])]}]}
 
 
-def _packets(root, task_id=None, section='all'):
+def _packets(root, task_id=None, section='all', *, loaded_units=None):
     if section not in TASK_SECTIONS:
         raise ValueError('unknown analysis task section')
     inputs, binding, units = _snapshot(root)
+    if loaded_units is not None:
+        loaded_units.update(units)
     implementation = (Path(__file__).read_bytes() + Path(analysis_task_io.__file__).read_bytes()
                       + Path(analysis_units_lib.__file__).read_bytes())
     binding = hashlib.sha256((binding + hashlib.sha256(implementation).hexdigest()).encode()).hexdigest()
@@ -152,8 +154,10 @@ def _packets(root, task_id=None, section='all'):
             if section == 'facts':
                 packet['evidenceRules']['batchInsights'].pop('allowedEvidenceRefs')
         if task['taskId'] == 'chapter04':
+            packet['allowedCategories'] = ['portrait', 'product', 'other']
             packet['fieldRules'] = {'customClassification': 'top-level, alongside highlightDashboard',
-                'frameRefs': 'Each successful frame exactly once per classification; group insight refs stay within its frameRefs'}
+                'frameRefs': 'Each successful frame exactly once per classification; group insight refs stay within its frameRefs',
+                'categoryOrder': 'highlightDashboard.groups uses only nonempty categories in portrait, product, other order; custom names belong only to customClassification.groups'}
         if task['taskId'].startswith('material-'):
             from final_report_lib import ALLOWED_DECISIONS
             packet['allowedDecisions'] = sorted(ALLOWED_DECISIONS)
@@ -175,7 +179,7 @@ def _pages(packet, binding, task_id, section):
     # cursors bound the smaller real page numbers without iterative pagination.
     envelope = {'inputSha256': binding, 'taskId': task_id, 'section': section,
                 'page': 9999999999, 'pageCount': 9999999999, 'nextPage': 9999999999}
-    return task_pages(packet, budget=8000, envelope=envelope)
+    return task_pages(packet, budget=8000, envelope=envelope, encoding=analysis_task_io.TABLE_ENCODING)
 
 
 def task_plan(root, *, section='all'):
@@ -186,6 +190,8 @@ def task_plan(root, *, section='all'):
               'pageCount': len(_pages(packet, binding, task['taskId'], section))}
              for task, source, packet in packets]
     return {'format': 'concise-tasks-v1', 'inputSha256': binding, 'manifestSha256': inputs['manifestSha256'],
+            'recordsEncoding': analysis_task_io.TABLE_ENCODING,
+            'readingGuide': analysis_task_io.TABLE_READING_GUIDE,
             'section': section, 'pageByteLimit': 8000,
             'materialIds': inputs['materialIds'], 'frameCount': len(inputs['frames']),
             'uniqueImageCount': inputs['uniqueImageCount'], 'contentReviewed': False, 'tasks': tasks,
@@ -218,6 +224,8 @@ def export_tasks(root, export_dir, *, task_id=None, input_sha256=None, section='
     if not packets:
         raise ValueError('unknown analysis task')
     index = {'format': 'concise-task-export-v1', 'inputSha256': binding,
+             'recordsEncoding': analysis_task_io.TABLE_ENCODING,
+             'readingGuide': analysis_task_io.TABLE_READING_GUIDE,
              'manifestSha256': inputs['manifestSha256'], 'promptSha256': inputs['promptSha256'],
              'section': section, 'pageByteLimit': 8000, 'contentReviewed': False, 'tasks': []}
     destination.parent.mkdir(parents=True, exist_ok=True)

@@ -312,15 +312,15 @@ def check_analysis_parts(analysis_dir, part_paths):
             'errors': errors, 'contentReviewed': False, 'finalValidationRequired': True}
 
 
-def assemble_analysis(analysis_dir, part_paths, output_path):
+def assemble_analysis(analysis_dir, part_paths, output_path, *, _inputs=None, resume=False):
     """Concatenate lists and copy scalar fields exactly; never complete prose."""
     root = Path(analysis_dir).resolve()
     output = Path(output_path).resolve()
-    if output.parent != root or output.exists():
+    if output.parent != root or Path(output_path).is_symlink() or (output.exists() and not resume):
         raise ValueError("use a new candidate JSON next to analysis-units")
     if output.suffix != ".json" or not part_paths:
         raise ValueError("candidate JSON and explicit part paths are required")
-    inputs = inspect_inputs(root)
+    inputs = inspect_inputs(root) if _inputs is None else _inputs
     candidate = {"schemaVersion": 5}
     merge_lists = {"batchInsights", "materialAnalyses", "nextActions", "warnings"}
     scalar_fields = {"analysisProvenance", "overallConclusion", "portfolioDimensionConclusions", "hotMaterialInsight",
@@ -347,8 +347,17 @@ def assemble_analysis(analysis_dir, part_paths, output_path):
     if len(ids) != len(set(ids)) or set(ids) != set(inputs["materialIds"]):
         raise ValueError("fragments must cover each manifest material exactly once")
     # Preserve author-supplied order and values. The standard validator owns semantics.
-    write_json_atomically(output, candidate)
-    write_json_atomically(output.with_suffix(".assembly.json"),
-                          {"candidateSha256": file_hash(output), "sources": sources,
-                           "manifestSha256": inputs["manifestSha256"], "promptSha256": inputs["promptSha256"]})
+    if output.exists():
+        if read_object(output) != candidate:
+            raise ValueError('session candidate differs from its exact source parts; preserve it')
+    else:
+        write_json_atomically(output, candidate)
+    receipt_path = output.with_suffix('.assembly.json')
+    receipt = {"candidateSha256": file_hash(output), "sources": sources,
+               "manifestSha256": inputs["manifestSha256"], "promptSha256": inputs["promptSha256"]}
+    if receipt_path.exists():
+        if receipt_path.is_symlink() or read_object(receipt_path) != receipt:
+            raise ValueError('assembly sources/input hash mismatch; preserve existing receipt')
+    else:
+        write_json_atomically(receipt_path, receipt)
     return {"analysisJson": str(output), "analysisSha256": file_hash(output)}
