@@ -1,3 +1,4 @@
+from copy import deepcopy
 import threading
 import time
 import unittest
@@ -280,7 +281,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
         self.assertTrue(timeout_entry["rpaTimeoutExceeded"])
         self.assertEqual(timeout_entry["rpaTimeoutSec"], 480)
 
-    def test_nonterminal_rpa_result_is_finalized_before_next_wave(self):
+    def test_nonterminal_first_rpa_result_pauses_before_next_wave(self):
         starts = []
 
         def attempt_rpa(_args, entry):
@@ -301,11 +302,11 @@ class WaveBatchRunnerTests(unittest.TestCase):
             args={"target_top_n": 2, "rpa_concurrency": 2},
         )
 
-        self.assertEqual(starts, ["m-1", "m-2", "m-3"])
+        self.assertEqual(starts, ["m-1", "m-2"])
         rejected = manifest["rejectedMaterials"][0]
         self.assertEqual(rejected["materialId"], "m-2")
-        self.assertEqual(rejected["rpaResultStatus"], "final_failed")
-        self.assertEqual(rejected["failureReason"], "rpa_csv_artifact_unavailable")
+        self.assertEqual(rejected["rpaResultStatus"], "pending")
+        self.assertEqual(manifest["firstBatchCsvGate"]["status"], "unconfirmed")
 
     def test_selected_final_failure_does_not_enter_postprocess(self):
         postprocess_calls = []
@@ -551,7 +552,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
             <= {"m-1", "m-2", "m-3"}
         )
 
-    def test_rpa_future_exception_records_final_diagnostics(self):
+    def test_rpa_future_exception_records_unconfirmed_diagnostics(self):
         def attempt_rpa(_args, _entry):
             raise RuntimeError("worker process exited")
 
@@ -562,7 +563,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
         rejected = manifest["rejectedMaterials"][0]
         self.assertTrue(failures)
         self.assertEqual(rejected["rpaStatus"], "rejected")
-        self.assertEqual(rejected.get("rpaResultStatus"), "final_failed")
+        self.assertEqual(rejected.get("rpaResultStatus"), "unknown")
         self.assertEqual(rejected["errorType"], "RuntimeError")
         self.assertEqual(rejected["errorMessage"], "worker process exited")
 
@@ -637,6 +638,203 @@ class WaveBatchRunnerTests(unittest.TestCase):
             ["parallel download", "parallel download", "serial download"],
         )
         self.assertEqual(self.ready_materials, [])
+
+    def test_download_checkpoint_is_persisted_before_worker_continues(self):
+        observed = []
+
+        def attempt_postprocess(args, entry):
+            checkpoint = getattr(args, "_postprocess_checkpoint", None)
+            if checkpoint is not None:
+                checkpoint(entry["materialId"], {
+                    "videoPath": "/tmp/persisted.mp4", "videoBytes": 42,
+                    "videoSha256": "retained-hash", "postprocessSubstage": "frame_extraction",
+                })
+            observed.append(any(
+                item.get("videoSha256") == "retained-hash"
+                for manifest in self.manifests for item in manifest["materials"]
+            ))
+            return self._success_postprocess(args, entry)
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1"], lambda _args, entry: self._verified_rpa_success(entry),
+            attempt_postprocess, args={"target_top_n": 1},
+        )
+        self.assertFalse(failures)
+        self.assertEqual(observed, [True])
+        self.assertEqual(manifest["materials"][0]["videoSha256"], "retained-hash")
+
+    def test_postprocess_queue_only_starts_bounded_active_set(self):
+        started = []
+        active = threading.Event()
+        release = threading.Event()
+        snapshots = []
+
+        def attempt_postprocess(args, entry):
+            started.append(entry["materialId"])
+            active.set()
+            release.wait(timeout=3)
+            return self._success_postprocess(args, entry)
+
+        def write_json(path, payload):
+            if path == "manifest":
+                snapshots.append(deepcopy(payload))
+            self._write_json(path, payload)
+
+        runner = threading.Thread(target=self.run_batch, args=(
+            [f"m-{i}" for i in range(12)],
+            lambda _args, entry: self._verified_rpa_success(entry),
+            attempt_postprocess,
+        ), kwargs={"args": {"target_top_n": 12, "download_concurrency": 1,
+                             "postprocess_concurrency": 1}, "write_json": write_json})
+        runner.start()
+        try:
+            self.assertTrue(active.wait(timeout=2))
+            deadline = time.monotonic() + 1
+            while not snapshots or not any(
+                item["postprocessAttemptCount"] for item in snapshots[-1]["materials"]
+            ):
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+            snapshot = snapshots[-1]
+            self.assertLessEqual(sum(
+                item["postprocessAttemptCount"] for item in snapshot["materials"]
+            ), 2)
+            self.assertLessEqual(len(started), 2)
+        finally:
+            release.set()
+            runner.join(timeout=3)
+        self.assertFalse(runner.is_alive())
+
+    def test_interrupted_attempt_does_not_exhaust_parallel_retry_budget(self):
+        observed_phases = []
+
+        def resume_state(_args, _candidates, entries):
+            entry = self._verified_rpa_success(entries[0])
+            entry.update({
+                "postprocessAttemptCount": 2,
+                "postprocessStatus": "failed",
+                "postprocessAttempts": [
+                    {"phase": "parallel", "status": "failed"},
+                    {"phase": "parallel", "status": "interrupted"},
+                ],
+            })
+            entries[0] = entry
+            return {0: entry}, {0: entry}, {}, {}, [0]
+
+        def attempt_postprocess(args, entry):
+            observed_phases.append(entry["postprocessPhase"])
+            return self._success_postprocess(args, entry)
+
+        _manifest, failures, _ = self.run_batch(
+            ["m-1"], lambda *_: self.fail("RPA must not run"), attempt_postprocess,
+            args={"target_top_n": 1}, resume_state=resume_state,
+        )
+        self.assertFalse(failures)
+        self.assertEqual(observed_phases, ["parallel"])
+
+    def test_postprocess_signal_stops_new_work_and_checkpoint_contains_manifest(self):
+        stop = threading.Event()
+        started = []
+
+        def attempt_postprocess(args, entry):
+            started.append(entry["materialId"])
+            stop.set()
+            return self._success_postprocess(args, entry)
+
+        with self.assertRaises(rpa_batch_runner.BatchInterrupted) as raised:
+            self.run_batch(
+                [f"m-{i}" for i in range(12)],
+                lambda _args, entry: self._verified_rpa_success(entry),
+                attempt_postprocess,
+                args={"target_top_n": 12, "download_concurrency": 1,
+                      "postprocess_concurrency": 1}, is_interrupted=stop.is_set,
+            )
+        self.assertLessEqual(len(started), 2)
+        self.assertIn("materials", raised.exception.manifest)
+
+    def test_concurrent_video_checkpoints_keep_every_material_and_serialize_writes(self):
+        workers_ready = threading.Barrier(4)
+        write_counter = 0
+        max_writers = 0
+        retained_args = []
+
+        def write_json(path, payload):
+            nonlocal write_counter, max_writers
+            write_counter += 1
+            max_writers = max(max_writers, write_counter)
+            time.sleep(0.001)
+            self._write_json(path, deepcopy(payload))
+            write_counter -= 1
+
+        def attempt_postprocess(args, entry):
+            retained_args.append(args)
+            workers_ready.wait(timeout=2)
+            checkpoint = getattr(args, "_postprocess_checkpoint", None)
+            if checkpoint:
+                checkpoint(entry["materialId"], {
+                    "videoPath": f"/tmp/{entry['materialId']}.mp4",
+                    "videoBytes": 42, "videoSha256": f"hash-{entry['materialId']}",
+                    "postprocessSubstage": "frame_extraction",
+                })
+            return self._success_postprocess(args, entry)
+
+        manifest, failures, _ = self.run_batch(
+            ["m-1", "m-2", "m-3", "m-4"],
+            lambda _args, entry: self._verified_rpa_success(entry), attempt_postprocess,
+            args={"target_top_n": 4, "download_concurrency": 2,
+                  "postprocess_concurrency": 2}, write_json=write_json,
+        )
+        self.assertFalse(failures)
+        self.assertEqual(max_writers, 1)
+        self.assertEqual(
+            [entry.get("videoSha256") for entry in manifest["materials"]],
+            ["hash-m-1", "hash-m-2", "hash-m-3", "hash-m-4"],
+        )
+        self.assertFalse(hasattr(retained_args[0], "_postprocess_checkpoint"))
+
+    def test_signal_during_last_compensation_does_not_publish_ready_output(self):
+        stop = threading.Event()
+
+        def attempt_postprocess(args, entry):
+            if entry["postprocessPhase"] == "parallel":
+                return {"result": None, "error": RuntimeError("ffmpeg"), "timingsSec": {}}
+            stop.set()
+            return self._success_postprocess(args, entry)
+
+        with self.assertRaises(rpa_batch_runner.BatchInterrupted):
+            self.run_batch(
+                ["m-1"], lambda _args, entry: self._verified_rpa_success(entry),
+                attempt_postprocess, args={"target_top_n": 1}, is_interrupted=stop.is_set,
+            )
+        self.assertEqual(self.ready_materials, [])
+
+    def test_terminal_backfill_does_not_queue_more_rpa_than_active_wave(self):
+        stop = threading.Event()
+        started = []
+
+        def resume_state(_args, _candidates, entries):
+            selected = {}
+            for index in range(6):
+                entry = self._verified_rpa_success(entries[index])
+                entry.update(postprocessAttemptCount=3, postprocessStatus="failed",
+                             compensationStatus="failed")
+                entries[index] = selected[index] = entry
+            return dict(selected), selected, {}, {}, []
+
+        def attempt_rpa(_args, entry):
+            started.append(entry["materialId"])
+            stop.set()
+            return self._verified_rpa_success(entry)
+
+        with self.assertRaises(rpa_batch_runner.BatchInterrupted):
+            self.run_batch(
+                [f"m-{i}" for i in range(12)], attempt_rpa,
+                self._success_postprocess,
+                args={"target_top_n": 6, "rpa_concurrency": 2},
+                resume_state=resume_state, is_interrupted=stop.is_set,
+            )
+        self.assertLessEqual(len(started), 2)
+        self.assertEqual(set(started), {"m-6", "m-7"})
 
 
 if __name__ == "__main__":

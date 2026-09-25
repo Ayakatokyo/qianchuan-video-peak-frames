@@ -4,7 +4,7 @@
 
 统一精简分析，不设详细档位或切换参数。建议总览100–150字、经营/人群维度40–70字、两类脚本洞察每条50–80字、每张唯一画面观察25–60字、单素材核心结论80–120字；每个分类组默认一条共性判断和一个可测试方向。字数是表达预算，不是必须达到的门槛；保留事实、范围、引用及必要字段，不补字、不重复解释。
 
-先由正式 analysis-task 校验 manifest、五包、素材和 JPEG，再读本提示词一次及各任务的 scopedFacts；outputSkeleton 和 allowedEvidenceRefs 按需读取。原始五包是事实权威；默认不重复全文读取完整榜单和曲线。以下为必要时定向溯源的路径，模型分片撰写后组装唯一 JSON：
+先由正式 analysis-session 校验 manifest、五包、素材和 JPEG，再读本轮冻结的提示词一次及当前任务的 scopedFacts；每种结构首次读 contract，引用按需读取。原始五包是事实权威；默认不重复全文读取完整榜单和曲线。以下为必要时定向溯源的路径，模型分片撰写后组装唯一 JSON：
 
 `report-display-facts.json` 是前端展示快照，不属于模型输入；模型不得读取、引用或复述其中的 TOP3/图表展示字段。
 
@@ -20,26 +20,31 @@
 
 五个模型事实包不包含平台临时签名视频或封面 URL。不得从兼容快照或其他运行产物补充、引用、复述、评价或建议使用这些 URL。
 
-将结果写入单独的 `diagnostic-ai-analysis.json`。只输出合法 JSON，不要用 Markdown 代码块包裹。
+使用文件工具将当前模型撰写的片段保存为会话提交 JSON，正式入口组装唯一候选并返回 analysisJson；旧直接写入 `diagnostic-ai-analysis.json` 的路径仍兼容。只输出合法 JSON，不要用 Markdown 代码块包裹。
 
 ## 高效执行顺序
 
-默认使用 `analysis-task --output-dir <run> --section facts --export-dir <analysis目录内的新目录>` 一次校验并导出任务分页，读取返回的 indexPath，再按 taskId 和 pages 路径完整读取文件；无需为每页重启程序。首次写一种结构前读 `--section contract`（同种结构读一次），查找引用时读 `--section references`；长引用表也可一次导出。Chapter 01 聚合引用以 references 为准；Chapter 03 的 batchInsights 只用 evidenceRules 中的标签型引用，关键词文本引用仅用于关键词自身卖点证据，不能将总 allowedEvidenceRefs 并集当成所有字段的白名单。切换 section 从 page 0 开始，不混用不同视图页码。每个任务页完整内容不超过8000字节；records 使用 path/value 或 container/start/text，连续数组段使用 start/items；按 nextPage 读到 null。导出不等于已读，记录当前 taskId/page。完整事实保留在 sourceFile/sourcePath；不把省略的展示明细当缺失，不从截断输出得出结论。旧 analysis-plan/read-analysis 仅用于定向核验，不作为默认重复读取步骤。
+禁止随机标记、同义改写和关闭门禁来消除校验告警；只修正有证据支持的字段，不补长正文求通过。
 
-执行顺序：Chapter 01 → Chapter 02 → Chapter 03 → 逐素材的 Chapter 05（含 Chapter 04 逐帧分析）→ Chapter 04 跨素材分类汇总。当前任务只写它负责的字段；每个任务完整读取后直接写片段，不在每条素材前重读全部 Prompt 和其他章节。看完本素材 JPEG 后立即写 highlightAnalyses 的 visualObservation、commercialInterpretation（或下文允许的证据不足/同图共享形式）和本素材结论，再进入下一条；不先写一份长篇观察报告再重复改写成 JSON。片段写完用 `check-analysis-part` 提前检查素材结构、字段引用族和帧覆盖；多个已完成片段可重复传 --part 一次检查，Chapter 04 分类先查重复/遗漏再组装。该检查不代替最终 validate-analysis 和内容复核。
+默认使用 `analysis-session --output-dir <run>`，固定按 Chapter 01 → Chapter 02 → Chapter 03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读当前 factsPages；每种结构首次读 contractPages，引用不清时读 referencePages 或按需使用兼容的 analysis-task references 视图。若返回 workItemPages，先完整读这些页恢复工作项，再读它指向的事实和当前图片组。各页含封套不超过 8000 UTF-8 字节，按 nextPage 读到 null；截断不算已读，不反复加载已完成章节、素材或全部 Prompt。
 
-批次脚本/人群结论只依据各自章节；逐帧观察与解释只写在对应素材片段一次。Chapter 04 汇总复用本轮已看图片的观察账本及素材片段，核对该章全部事实和引用；只有信息遗忘、机制不清或复核命中时回看对应 JPEG。事实、Prompt 或图片变更后按原冻结规则重建，不跨批次复用结论。分类数量、卖点维度和复核要求保持下述契约。
+新页首条 record 的 `lossless-tables-v1`/readingGuide 说明解码：先还原 path/value、container/start/items/text 记录树，再按 $table.columns 的嵌套路径与顺序读取列，common 还原从零起的共同列，每行提供其余值；kind=array 保留行顺序，kind=object 对齐 keys/rows，$literal 保留原保留键对象。编码无损保留原 model_view 全部事实、类型、顺序和证据，不采样。旧无编码页、analysis-task 导出及 analysis-plan/read-analysis 仍兼容，仅用于既有流程或定向溯源，不重复全文读取原包。
+
+Chapter 01 聚合引用以 referencePages 为准；Chapter 03 的 batchInsights 只用 evidenceRules 中的标签型引用，关键词文本引用只用于关键词自身卖点，不能把总 allowedEvidenceRefs 当成所有字段白名单。当前任务只写负责的字段，按 submissionTemplatePath 的 `inputSha256/taskId/part` 外壳直接撰写 JSON。使用正式 `--submission-json` 一次完成片段预检、帧 checkpoint 和下一任务导航，不能用临时脚本、循环或模板代写正文。
+
+素材按 `frameReview.visionBatches` 每组最多 3 张实际看图，每完成一组就用 `--observations-json` 保存 stashTemplate 中的非空真实观察，不等待整条素材留在内存。观察文件包含 inputIndexSha256、当前账本批次全部 frameRefs、observations（每条 sourceFrameRef/visualObservation）；只填本组实际看的唯一 SHA。最后一组可与 part 一同作为提交外壳的 frameObservations；不能同时使用两个提交选项。每图默认 25–60 字足够的主体、动作/状态和信息层要点，不写长篇服饰环境报告后再抄成 JSON。商业解释按本素材事实撰写，不能跨素材照抄。
+
+Chapter 04 的 reviewedVisuals 提供完整 SHA 观察及对应全部 frameRefs，结合本章事实完成两套分类；不重新打开整批图片，只有机制不清、具体疑义或复核命中时定向看图。category 只允许 portrait、product、other；机制分类仍遵循下方内容契约。
 
 ## 接续、读取与真实重复画面
 
-- 当前模型直接完成分析，不需要额外的模型调用接口。按章节和素材读取正式 analysis-task 的全部分页；完整原包仅在定向溯源时读取。响应截断时继续当前页，记录已读范围，不能把截断输出当作完整事实。
-- 首次看图前使用正式 `frame-review` 命令冻结 `diagnostic-analysis/analysis-input-index.json`，逐项锁定 `frameRef`、`materialId`、`framePath` 和实际 SHA-256。路径、文件哈希、事实或 Prompt 改变时停止当前批次，显式重建索引后恢复，不混用新旧输入。
-- 按素材处理，新建账本每批最多 6 个唯一 SHA（旧账本按原冻结批次续接）；先完成命令返回的 `imagesToView` 扫描，再一次提交该批 checkpoint。相同 SHA 只实际查看一次，程序把模型提供的 `visualObservation` 缓存到 `visualObservationCache`，并维护全部 `frameRefsBySha256`；仍须覆盖每个 frameRef，不能跨素材复用商业解释。相邻画面变化依赖各自上下文，不作为共享缓存事实。操作结构见技能运维手册，不逐帧 patch、不借程序生成分析正文。
-- `frame-review-progress.json` 必须在全部引用覆盖后为 `status=complete`、`pendingFrameRefs=[]` 且有 `completedAt`，否则先续接帧审阅，不能 finalize。质量门禁元数据只保存在机器产物，业务分析正文不复述结构校验、内容复核状态或清理日志。
-- 只用本次 manifest 对应的事实与 JPEG 生成新结果。历史 AI JSON 不是 schema 模板；如需结构参考，使用下文契约，示例文字也不得复制为本批次事实。序列化工具可以保存模型逐项撰写的内容，不能批量拼接分析正文或补字数。
-- “独有”“不同”均以图像实际信息为前提。真实相同的 JPEG 可有相同视觉观察；由本地文件计算 SHA-256 证明相同，不能用 AI 自报的哈希、路径或素材名代替。每个 frameRef 仍须单独覆盖。若相邻帧没有变化，明确没有可见变化；字幕不可辨或没有字幕时如实写出，不制造叙事转折。
-- 相同图片不能证明视频、人群、互动或商业效果相同。commercialInterpretation 仍须核对本素材事实；不要求凭空制造不同商业机制，没有关联证据时说明边界。若相似度检查命中真实但相同的解释，保留候选结果及冲突帧证据，由当前模型按质量复核契约记录证据与理由，禁止随机标记、同义改写和关闭门禁。
-- 字数和相似度是质量代理指标，不构成补造事实的授权。结构/引用错误按当前白名单修正；事实不足或疑似误判先定位具体输入和字段，不能反复用统一尾句填充。
+- 当前模型直接完成分析，不调用外部模型或创建子代理。正常恢复只读当前工作项与 contextHandoff.resumePath 指向的 resume.json；完成事实、图片观察、片段留磁盘。宿主有正式压缩能力时可在素材成功提交后仅保留恢复指针、当前任务与未解决问题继续；技能不能强制释放宿主历史，也不能假称已清空上下文。
+- 会话复用冻结的 analysis-input-index.json，锁定 frameRef、materialId、framePath 和实际 SHA-256。新账本每批最多 6 个唯一 SHA，旧 4 帧账本兼容续接；图片工具分组仍最多 3 张。stash 后只返回未观察 SHA，全缓存素材无需再看，但每个 frameRef 仍须完整覆盖。
+- 相同 submission 或已存 stash 可以幂等重试。输入/实现指纹变化或图片替换会拒绝接续；已接受片段需要修改时保留原文件并用分析目录内新的 --session-dir 生成新候选。事实、Prompt、图片变化还须按冻结规则在隔离副本核验/重建，不能改旧提示词快照或清空账本混用。elapsedSeconds 是含 idle 的任务墙钟，不是模型推理时间。
+- frame-review-progress.json 全部引用覆盖后必须为 status=complete、pendingFrameRefs=[] 且有 completedAt。会话 ready_for_validation 只是候选已组装，使用返回 analysisJson 继续原 validate-analysis、内容复核与 finalize；不把预检或会话完成当作内容通过。
+- 只用本次 manifest 的事实与 JPEG；历史 AI JSON 不是 schema 模板。模型直接写文件，正式程序只保存、校验、组装模型文字，不生成或补长业务结论。质量元数据保留在机器产物，不写入业务正文。
+- 相同 JPEG 的观察可按程序计算的 SHA 缓存，仍保留全部 frameRefsBySha256；路径/标题或模型自报哈希不能替代。相邻帧无可见变化、字幕不可辨或无字幕时如实说明，不制造独有差异。
+- 相同图片不能证明人群、互动或商业效果相同。商业解释须核对本素材事实，支持下文的具体证据不足或同素材同图共享形式。相似度命中真实重复时保留证据并写复核理由，不随机标记、同义替换或关闭门禁。
 
 ## 五章分析边界
 
@@ -100,7 +105,7 @@ highlightDashboard 与 customClassification 每个非空组默认一条 commonCo
 
 - 按事实包的 evidenceIndex/evidenceRef 建立合法 frameRef/evidenceRefs 白名单，不为抄枚举或字数建议读取实现源码。枚举和引用属于硬契约，字符数仅为表达建议，不能为凑字数生成正文；decision 只能使用 `scale`、`remix`、`hold`、`stop` 或 `unknown`。
 - 从 manifest 和五个章节事实包核对素材数量、每条素材的成功帧数量和 `missingFrames`；每张成功高光帧恰好一条 `highlightAnalyses`，dashboard 对每张成功帧恰好归类一次。
-- 按素材分片查看画面，新建账本每片最多 6 张（旧账本按冻结批次续接），先在内存中完成分片观察与对应结论，再合并为单个完整 JSON；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。写入后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/千川数据资源/<run-id>" --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json" --review-template <新复核文件>`，结构/引用等硬错误先修正并重新校验；结构通过而只需内容复核时，填写正式模板的 decision/reason，直接使用 `finalize --quality-review <文件>` 完成同一门禁，不额外重复成功的校验调用。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
+- 按当前 visionBatches 每组最多 3 张看图并立即暂存真实观察，账本六帧（旧四帧兼容）完整覆盖后提交本素材片段，再由会话组装候选；确认所有 `frameRef`、`evidenceRefs` 都逐字来自对应章节事实包，确认 dashboard 只输出实际存在且非空的分类。候选组装后必须先执行 `python scripts/run_standard_analysis.py validate-analysis --output-dir "$PWD/千川数据资源/<run-id>" --analysis-json <会话返回的analysisJson> --review-template <新复核文件>`，结构/引用等硬错误先修正并重新校验；结构通过而只需内容复核时，填写正式模板的 decision/reason，直接使用 `finalize --quality-review <文件>` 完成同一门禁，不额外重复成功的校验调用。允许当前模型分片撰写和实质修正，不允许批量补字或替换标记求通过。
 
 ## 证据与归因规则
 

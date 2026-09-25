@@ -15,19 +15,21 @@ python scripts/run_standard_analysis.py prepare-local \
 
 ## 无损读取与执行顺序
 
-当前唯一默认流程使用精简分析任务，五章原始事实和全部成功 JPEG 继续完整保留。原有 analysis-plan/read-analysis 提供无损全文溯源，但不是默认模型阅读路径。
+默认使用 `analysis-session`，由当前模型完成 Chapter 01 → Chapter 02 → Chapter 03 → 各 material → Chapter 04；入口不调用外部模型，不创建子代理。它把每次工作限制为当前任务，并复用原事实、校验器和图片观察账本。默认会话目录为 `diagnostic-analysis/analysis-session/`。
+
+以下三种调用分别领取/恢复当前任务、保存一小组观察、提交模型写好的片段；JSON 均由当前模型通过文件工具直接写在本次 `diagnostic-analysis/` 内，不能用临时脚本生成正文：
 
 ```bash
-python scripts/run_standard_analysis.py analysis-task \
-  --output-dir "$PWD/千川数据资源/<run-id>" --section facts \
-  --export-dir "$PWD/千川数据资源/<run-id>/diagnostic-analysis/task-pages-facts"
+python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千川数据资源/<run-id>"
+python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千川数据资源/<run-id>" --observations-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/observations.json"
+python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千川数据资源/<run-id>" --submission-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/submission.json"
 ```
 
-导出一次校验五包与 JPEG，返回 `indexPath`。用文件读取工具读取索引中当前任务的全部 `pages`，每页带 byteSize/SHA-256；每个页文件（含元数据、缩进和换行）不超过8000字节。索引只证明文件生成，不证明模型已读；记录 taskId/page 断点，逐页读到 nextPage=null。不再用 shell 循环逐页重启 analysis-task；单页临时查询仍支持 `--task chapter01 --page 0 --input-sha256 <计划哈希>`。导出只允许分析目录内的新目录，可用 `--task` 导出单任务，支持 `--input-sha256` 拒绝过期输入。中断复用已导出文件；事实、图片、Prompt 或读取程序变化时重新导出，不修改旧分页。帧审阅及最终校验仍重验源输入。
+返回 `taskId`、`inputSha256`、`factsPages`、`contractPages`、`submissionTemplatePath` 和 `contextHandoff.resumePath`。完整读取当前任务所有 factsPages；每种输出结构首次读 contractPages，不能把骨架中的 null 当成成品。Chapter 01 的聚合引用读返回的 `referencePages`；其他引用按事实中的 evidenceIndex/evidenceRef 和 contract 使用，必要时通过兼容 `analysis-task --section references` 定向导出。引用并集不意味着所有字段都接受所有引用。素材 decision 只能取 `scale/remix/hold/stop/unknown`；标准分类 category 只能取 `portrait/product/other`。customClassification 与 highlightDashboard 顶层同级；keywordRefs 逐字取原词并绑定该词自身的脚本证据。
 
-records 用 path/value 表示值，container 初始化大对象、数组或字符串，text 按 start 拼接；数组连续片段用 start/items 写回对应区间，避免每条引用重复打印长路径。不要假设数据总在 `.records[0].value`，也不要用临时 jq 抽样代替完整任务读取。输出截断时读取保存的页文件，不能把截断页算已读。inputSha256 绑定事实、图片、Prompt、任务及分页实现；自定义分类仍使用 sha256:<manifestSha256>。
+若工作项过长，响应返回 `workItemPages`：先完整读这些页恢复工作项，再读取其 factsPages 和当前图片组，不能只读短索引。facts/contract/references/work-item 的每个页文件，包括封套、缩进及换行，都不超过 **8000 UTF-8 字节**，页索引含 byteSize/SHA-256。按 nextPage 读到 null；截断不算已读，不用 head/tail 或临时 jq 抽样代替当前任务的完整读取。
 
-默认阅读路径为 `--section facts`：只读 scopedFacts、来源和写作预算，事实内的逐项引用保留。Prompt 中字段不清楚时读 `--section contract` 获取 outputSkeleton（每种结构读一次，素材专属帧引用以本素材事实为准）；查找合法标识时读 `--section references` 获取 allowedEvidenceRefs，尤其 Chapter 01 的聚合引用。省略 section 的旧调用仍返回 all 完整视图。切换 section 从 page 0 开始，按该视图自己的 nextPage 继续，不复用别的视图页码。骨架中的 null 必须由模型写入，空引用必须从当前合法引用选择，不能把骨架作为成品提交。顺序为 chapter01、chapter02、chapter03、material-001…、chapter04。每张唯一图片实际观察后，同次完成该素材及第四章所需观察，不写中间长篇视觉报告。
+新页首条 record 标注 `encoding: lossless-tables-v1` 与 readingGuide。先按 path/value、container/start/items/text 还原记录树；`$table.columns` 给出列顺序和嵌套字段路径，common 用从零起的列序号存共同值，每行只提供其余列；kind=array 保留行顺序，kind=object 将 keys 与 rows 对齐；`$literal` 保留原始保留键对象，不再解码。此表示无损保留原 `model_view` 的全部事实、类型、顺序和证据引用，不增加采样或删减。原五包继续作为完整来源；不要假设值总在 `.records[0].value`。旧无编码页、`analysis-task --section facts --export-dir <分析目录内新目录>` 及 `analysis-plan/read-analysis` 仍兼容，分别用于旧流程接续和定向全文溯源，不与新会话反复重复导出。inputSha256 绑定事实、图片、Prompt 和读取/会话实现；自定义分类仍使用 `sha256:<manifestSha256>`。
 
 - chapter01：完整聚合、爆款和全量成本分布，另给消耗前10项；sourceCount/missingCostCount与读取边界明确；缺失成本不当零，ROI不由局部列表重新计算。
 - chapter02：三个人群口径与全部维度及原分母保留；超过8个桶的维度只读原顺序前5桶，bucketReadingCoverage标明省略量，不能重算总体比例；三条洞察各自绑定 SHOW_COUNT、CLICK_COUNT、TRANSACTION_AMOUNT。
@@ -35,33 +37,25 @@ records 用 path/value 表示值，container 初始化大对象、数组或字�
 - material：全部脚本、帧、缺失和证据，时序保留峰值与点数；原points在事实包供报告曲线。不得据精简视图推断完整走势，必要时按sourceFile/sourcePath定向读取。
 - chapter04：全部成功帧的两套分类，每组默认一条共性判断和一个方向，不能遗漏frameRef。
 
-```bash
-python scripts/run_standard_analysis.py check-analysis-part --output-dir "$PWD/千川数据资源/<run-id>" --part "<本次片段.json>"
-```
+会话当前任务的 `submissionTemplatePath` 给出提交外壳：`{"inputSha256":"返回的绑定","taskId":"当前任务","part":{模型直接撰写的字段}}`。章节 part 仅包含该章字段；素材 part 包含仅当前素材的 `materialAnalyses` 数组。每个片段仍须满足下方完整内容契约。提交一次完成片段预检、必要的帧 checkpoint、原文保存和下一任务导航；缺图、错误归属、引用/结构错误不会推进任务。不能隐藏 stderr 或只看管道末尾的退出码。
 
-命令前置章节洞察数量、字段引用族、人群口径、单素材结构／帧覆盖及 Chapter 04 两套分类的覆盖检查；分类重复、遗漏和未知引用一次列出。每条素材完成时就检查该片段，避免到整份候选才发现批量漏写 commercialInterpretation。多个已写完片段可重复传 `--part`：只核验一次输入，并返回各片段错误；退出码 2 表示有错误。不要用 `2>/dev/null | head/tail` 隐藏错误或原退出码。contentReviewed=false和finalValidationRequired=true说明仍须最终assemble-analysis、validate-analysis、内容复核和finalize，不证明实际看图。失败只修受影响片段，重新检查通过后再组装，不为查一个引用反复重建整份候选。
+素材的 `frameReview.visionBatches` 将当前待看图片分为每组最多 **3 张**；账本新批次最多 **6 个唯一 SHA**，旧 **4 帧**账本按原冻结批次续接。每看完一组就用 `--observations-json` 保存，不等待整素材，更不等上下文压缩后再回读工具日志。观察 JSON 与 checkpoint 形状相同：`inputIndexSha256`、当前批次全部 `frameRefs`、`observations`；observations 只写本组实际看的唯一 SHA，每条为 `sourceFrameRef/visualObservation`，用少量真实主体、动作/状态和信息层要点，不能提交 null。暂存不会把尚未看的帧标为完成，返回状态只列剩余 SHA。最后一组可作为提交外壳的可选 `frameObservations`，与 part 一次提交；它和 `--observations-json` 不能同时使用。
 
-任务计划记录sourceBytes、taskBytes、pageCount及prepareSeconds；字节与本地准备时长不能直接换算AI提速。旧批次只读接续；新Prompt对照需在独立副本中重新冻结，不覆盖原事实、候选或报告。
+已全缓存无需再看，程序在素材提交时推进缓存覆盖；不能跨素材照抄商业解释。Chapter 04 的 factsPages 增加 `reviewedVisuals`，包含完整 SHA 观察及全部对应 frameRefs；据此核对两套分类，疑义或复核命中时定向看对应 JPEG，不重新打开整批图片。观察来自真实工具，SHA 和笔记本身不能证明已经看图。
+
+普通接续只重跑无提交参数的 analysis-session，读取当前工作项和 `contextHandoff.resumePath` 对应的 `resume.json`。完成的事实、图片观察及片段留磁盘，不再塞回主上下文。相同 submission 和已保存 stash 可幂等重试；中断后不用重新撰写已接受片段。`elapsedSeconds` 是任务激活到接受提交的墙钟，包含 idle，不是模型推理时间；字节数和本地准备耗时也不等于 token 或 AI 提速。
+
+已接受片段需要实质修改，或输入/实现 hash 变化时，保留旧会话，并用 `--session-dir <diagnostic-analysis 内的新目录绝对路径>` 新建会话。JPEG/事实/Prompt 变化还须先按冻结规则在隔离副本中核验和重建索引；不能改写旧 Prompt 快照或清空账本混用新旧证据。宿主提供正式上下文压缩能力时，可在素材成功提交后仅保留恢复指针、当前任务与未解决问题再继续；本技能不能强制清空宿主历史，不提供伪造的释放命令，也不新建子代理。
+
+所有任务接受后，入口正式组装候选，返回 `status=ready_for_validation` 与 `analysisJson`。这只表示候选已生成；继续使用该路径执行原 validate-analysis、内容复核和 finalize，不能直接交付。结构预检的 `contentReviewed=false`、`finalValidationRequired=true` 也不证明内容正确或实际看过图。
 
 ## 写入边界与分片
 
-报告执行只写本次 run 的约定数据产物：图片观察账本、模型分析片段、候选 JSON、合并来源记录、质量校验与复核记录、正式报告及资源。不得新增或执行临时 `.py/.sh/.js`，也不得用内联 Python、shell、JavaScript 的循环或字符串模板生成业务正文。报告请求不等于技能开发授权；缺少程序能力时记录缺口，只有用户明确授权修改技能才编辑维护中的程序。
+报告执行只写本次 run 的正式数据产物：图片观察账本、会话工作页/恢复收据、模型片段、候选 JSON、来源记录、质量校验与复核记录、正式报告及资源。当前模型使用文件工具直接写 JSON；不得新增或执行临时 `.py/.sh/.js`，也不得用内联 Python、shell、JavaScript 的循环或字符串模板生成业务正文。报告请求不等于技能开发授权。
 
-当前模型按章节、素材阅读正式任务事实视图并查看全部成功 JPEG，直接用文件编辑工具写 JSON。使用正式 `frame-review` 命令冻结索引并恢复下一批，新建账本每批最多 6 个唯一 SHA（旧账本按原冻结批次续接）。当前模型将该批实际观察写成 JSON 后提交一次 checkpoint，程序原子维护 `visualObservationCache`、`frameRefsBySha256`、逐引用覆盖和 complete 状态，不手工 patch 账本。只复用视觉观察，不跨素材复用商业解释；完整命令见[运维手册](qianchuan-operations-runbook.md#图片理解断点与吞吐)。业务解释可以随素材审阅逐项撰写，不要求等到单次巨型输出。
+新会话片段保存在会话目录的 `parts/`。不手工修改已接受文件或账本，程序连接数组并检查顶层冲突，不自动补业务正文。旧流程仍可将模型片段写入 `diagnostic-analysis/parts/`，以 `check-analysis-part --part <文件>` 预检，多个片段重复传 --part；再用正式 `assemble-analysis` 显式列出片段并生成新候选，不能用 glob/latest。Chapter 04 逐帧分析只放对应的素材片段，避免重复合并。
 
-片段置于 `diagnostic-analysis/parts/`。章节片段包含自己负责的顶层字段；素材片段包含 `materialAnalyses` 数组。数组由正式程序连接；标量/对象顶层字段只允许一个来源，冲突报错，绝不自动补写缺失内容。Chapter 04 的逐帧分析统一放在相应的 Chapter 05 素材片段中，避免同一素材重复合并。
-
-```bash
-python scripts/run_standard_analysis.py assemble-analysis \
-  --output-dir "$PWD/千川数据资源/<run-id>" \
-  --part "$PWD/千川数据资源/<run-id>/diagnostic-analysis/parts/chapters.json" \
-  --part "$PWD/千川数据资源/<run-id>/diagnostic-analysis/parts/materials.json" \
-  --analysis-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/diagnostic-ai-analysis.json"
-```
-
-必须显式列出片段，不使用 glob/latest。程序核验事实 manifest、完整素材集合和重复字段，保持模型原文，拒绝覆盖已有候选，保存 `.assembly.json` 来源哈希。允许直接写完整 JSON；两种方式都必须执行标准校验。
-
-校验和 finalize 会核对已有 assembly 记录中的候选、输入、Prompt 和全部片段哈希；组装后改写候选或片段会失败。不要删除来源记录求通过，应保留原文件并生成新候选。这仍不能证明没有人伪造来源声明，需结合真实工具日志审阅。
+组装来源记录绑定候选、输入、Prompt 和全部片段哈希，后续改写会被拒绝；保留原文件并在新会话生成修正候选，不能删除来源记录求通过。来源声明和哈希不能单独证明模型真实分析，须结合实际工具日志。
 
 ## 输出按证据丰富程度变化
 

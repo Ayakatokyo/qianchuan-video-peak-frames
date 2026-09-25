@@ -1921,9 +1921,10 @@ class FrameExtractionTests(unittest.TestCase):
 
         self.assertEqual(result, outputs)
         self.assertEqual(len(commands), 1)
-        filter_graph = commands[0][commands[0].index("-filter_complex") + 1]
-        self.assertIn("trim=start=0.0", filter_graph)
-        self.assertIn("trim=start=3.5", filter_graph)
+        input_positions = [index for index, token in enumerate(commands[0]) if token == "-i"]
+        self.assertEqual(len(input_positions), 2)
+        for position, timestamp in zip(input_positions, ("0.0", "3.5")):
+            self.assertEqual(commands[0][position - 3:position], ["-ss", timestamp, "-accurate_seek"])
 
     def test_real_batch_frames_match_exact_single_frame_extraction(self):
         ffmpeg_bin = resolve_ffmpeg(environ={}, which=lambda _name: None)
@@ -3459,7 +3460,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(args.rpa_concurrency, 3)
         self.assertEqual(args.download_concurrency, 2)
-        self.assertEqual(args.postprocess_concurrency, 1)
+        self.assertEqual(args.postprocess_concurrency, 2)
 
     def test_legacy_concurrency_override_updates_all_three_limits(self):
         argv = ["--concurrency", "4"]
@@ -3606,7 +3607,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(manifest["candidateLimit"], 1)
         self.assertEqual(manifest["rpaConcurrency"], 3)
         self.assertEqual(manifest["downloadConcurrency"], 2)
-        self.assertEqual(manifest["postprocessConcurrency"], 1)
+        self.assertEqual(manifest["postprocessConcurrency"], 2)
         timings = manifest["selectedMaterials"][0]["timingsSec"]
         self.assertEqual(timings["videoProbeSec"], 0.0)
         self.assertEqual(timings["ffmpegBatchSec"], 0.0)
@@ -4217,6 +4218,7 @@ class CliTests(unittest.TestCase):
                 json.dumps(self._wave_outcome("m-1")["records"]),
                 encoding="utf-8",
             )
+            self._write_wave_csv(root / "diagnosis-csv", "m-1")
             _result_dir, summary_json, summary_md = self._write_batch_result(
                 output, "m-1"
             )
@@ -4245,6 +4247,8 @@ class CliTests(unittest.TestCase):
                                 ),
                                 "rpaStatus": "submitted",
                                 "rpaCsvVerified": True,
+                                "rpaResultStatus": "available",
+                                "diagnosisCsvPath": "diagnosis-csv/m-1.csv",
                                 "status": "running",
                             },
                             extract_peak_frames._wave_entry({"materialId": "m-2"}, 2),
@@ -4446,7 +4450,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(cancelled, {})
         self.assertEqual(postprocess_queue, [])
         self.assertEqual(entries[0]["rpaStatus"], "rejected")
-        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
+        self.assertEqual(entries[0]["rpaResultStatus"], "unknown")
         self.assertEqual(
             entries[0]["resumeRecovery"],
             {
@@ -4457,7 +4461,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(retained["clientAttemptId"], "old-attempt")
 
-    def test_wave_resume_finalizes_submitted_material_with_malformed_receipt(self):
+    def test_wave_resume_preserves_unknown_submitted_material_with_malformed_receipt(self):
         material_id = "m-malformed-receipt"
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -4491,7 +4495,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(cancelled, {})
         self.assertEqual(postprocess_queue, [])
         self.assertEqual(entries[0]["rpaStatus"], "rejected")
-        self.assertEqual(entries[0]["rpaResultStatus"], "final_failed")
+        self.assertEqual(entries[0]["rpaResultStatus"], "unknown")
         self.assertEqual(
             entries[0]["resumeRecovery"]["reason"], "local_artifact_unavailable"
         )

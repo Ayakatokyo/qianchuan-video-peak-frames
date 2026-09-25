@@ -1,14 +1,53 @@
 """Readable, bounded JSON task pages. No sampling or business-text generation."""
 import json
 
+TABLE_ENCODING = 'lossless-tables-v1'
+TABLE_READING_GUIDE = (
+    'Reconstruct path/value and container/start/items/text records first. '
+    '$table.columns lists nested field paths in column order; common maps zero-based '
+    'column indexes to unchanged values. Each row supplies only non-common columns. '
+    'kind=array preserves row order; kind=object pairs keys with rows. '
+    '$literal preserves an original reserved-key object without decoding it. '
+    'No facts, types, order or evidence references are omitted.')
+
 
 def pretty_json(value):
-    # One-space indentation keeps structural cues without paying for deep
-    # duplicated whitespace in every tool response.
-    return json.dumps(value, ensure_ascii=False, indent=1, allow_nan=False)
+    """Keep top-level fields and long containers readable, compact short rows.
+
+    This changes whitespace only. It never shortens strings or drops values.
+    Task pagination splits oversized scalar strings before final rendering.
+    """
+    def compact(item):
+        return json.dumps(item, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+
+    def render(item, depth=0, prefix_size=0, *, inline=True):
+        raw = compact(item)
+        if inline and len(raw.encode()) + depth + prefix_size <= 1100:
+            return raw
+        padding, child_padding = ' ' * depth, ' ' * (depth + 1)
+        if isinstance(item, dict) and item:
+            lines = []
+            for key, child in item.items():
+                # json.dumps owns JSON's key coercion rules (bool/None/numbers).
+                key_text = compact({key: None})[1:-5]
+                lines.append(child_padding + key_text + render(
+                    child, depth + 1, len(key_text.encode())))
+            return '{\n' + ',\n'.join(lines) + '\n' + padding + '}'
+        if isinstance(item, (list, tuple)) and item:
+            return '[\n' + ',\n'.join(child_padding + render(child, depth + 1)
+                                       for child in item) + '\n' + padding + ']'
+        return raw
+
+    return render(value, inline=False)
 
 
-def task_pages(value, budget=10000, *, envelope=None):
+def task_pages(value, budget=10000, *, envelope=None, encoding=None):
+    if encoding not in (None, TABLE_ENCODING):
+        raise ValueError('unsupported task encoding')
+    if encoding:
+        from analysis_reader import encode_tables
+        value = encode_tables(value)
+
     def page_size(page):
         payload = {**envelope, 'records': page} if envelope is not None else page
         return len((pretty_json(payload) + '\n').encode())
@@ -47,7 +86,11 @@ def task_pages(value, budget=10000, *, envelope=None):
                 yield {'path': list(path), 'start': start, 'text': item[start:start + 160]}
         else:
             raise ValueError('task path exceeds output budget')
-    pages, page = [], []
+    pages = []
+    page = ([{'path': [], 'encoding': encoding, 'readingGuide': TABLE_READING_GUIDE}]
+            if encoding else [])
+    if page_size(page) > budget:
+        raise ValueError('task encoding guide exceeds output budget')
     for record in records(value):
         if page_size([record]) > budget:
             raise ValueError('task record exceeds output budget')
@@ -62,9 +105,14 @@ def task_pages(value, budget=10000, *, envelope=None):
 
 def restore_task_pages(pages):
     """Lossless reconstruction for verification and offline consumers."""
-    root = None
+    root, encoding = None, None
     for page in pages:
         for record in page:
+            if 'encoding' in record:
+                if root is not None or encoding is not None or record['encoding'] != TABLE_ENCODING:
+                    raise ValueError('invalid task encoding header')
+                encoding = record['encoding']
+                continue
             path = record['path']
             if 'value' in record:
                 value = record['value']
@@ -88,4 +136,7 @@ def restore_task_pages(pages):
                 for key in path[:-1]:
                     parent = parent[key]
                 parent[path[-1]] = value
+    if encoding:
+        from analysis_reader import decode_tables
+        return decode_tables(root)
     return root

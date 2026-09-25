@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from decimal import Decimal
+import hashlib
 import json
 import math
 import os
@@ -10,6 +11,8 @@ import subprocess
 import time
 import uuid
 from typing import Optional
+
+from batch_runtime import write_json_atomically
 
 
 DEFAULT_FFMPEG_TIMEOUT_SEC = 120.0
@@ -455,35 +458,37 @@ def extract_frames_batch(
     video_path,
     targets,
     timeout_sec=DEFAULT_FFMPEG_TIMEOUT_SEC,
+    on_frame=None,
 ):
-    """Decode one video stream and emit exact requested timestamps together."""
+    """Accurately seek each local input and publish full-resolution JPEGs.
+
+    Input seeking retains FFmpeg's accurate-seek decoding (no stream copy or
+    keyframe-only mode). It avoids decoding the entire prefix through the last
+    peak. Bound every decoder and encoder rather than only the first input.
+    """
     if not targets:
         return []
     video = Path(video_path)
-    output_targets = [(float(timestamp), Path(output)) for timestamp, output in targets]
+    output_targets = [
+        (_canonical_seconds(timestamp, "frame timestamp", FfmpegError)[1], Path(output))
+        for timestamp, output in targets
+    ]
     staging_paths = []
-    filter_parts = []
-    split_labels = [f"split_{index}" for index in range(len(output_targets))]
-    filter_parts.append(
-        f"[0:v]split={len(output_targets)}" + "".join(f"[{label}]" for label in split_labels)
-    )
-    for index, (timestamp, _output) in enumerate(output_targets):
-        filter_parts.append(
-            f"[{split_labels[index]}]trim=start={timestamp!r},setpts=PTS-STARTPTS[out_{index}]"
-        )
-    max_timestamp = max(timestamp for timestamp, _output in output_targets)
     for index, (_timestamp, output) in enumerate(output_targets):
         output.parent.mkdir(parents=True, exist_ok=True)
         staging = output.with_name(f".{output.stem}.{uuid.uuid4().hex}.stage{output.suffix or '.jpg'}")
         staging_paths.append(staging)
     command = [
         str(ffmpeg_bin), "-hide_banner", "-loglevel", "error",
-        "-threads", "1", "-filter_threads", "1",
-        "-t", repr(max_timestamp + 1.0), "-i", str(video),
-        "-filter_complex", ";".join(filter_parts),
+        "-filter_threads", "1", "-filter_complex_threads", "1",
     ]
+    for timestamp, _output in output_targets:
+        command.extend(["-threads", "1", "-ss", timestamp, "-accurate_seek", "-i", str(video)])
     for index, staging in enumerate(staging_paths):
-        command.extend(["-map", f"[out_{index}]", "-frames:v", "1", "-q:v", "2", "-y", str(staging)])
+        command.extend([
+            "-map", f"{index}:v:0", "-frames:v", "1", "-q:v", "2",
+            "-threads", "1", "-y", str(staging),
+        ])
     try:
         process = subprocess.run(
             command, capture_output=True, text=True, check=False, timeout=timeout_sec
@@ -510,11 +515,68 @@ def extract_frames_batch(
                 if frame_file.read(2) != b"\xff\xd9":
                     raise OSError("invalid JPEG end marker")
             os.replace(staging, output)
+            if on_frame is not None:
+                on_frame(output)
         except (OSError, ValueError) as exc:
             for pending in staging_paths:
                 pending.unlink(missing_ok=True)
             raise FfmpegError(f"FFmpeg batch output validation failed for {output}: {exc}") from exc
     return [output for _timestamp, output in output_targets]
+
+
+def _file_digest(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _frame_cache(video, result_dir, targets):
+    """Only reuse JPEGs bound to this input, target selection and byte hashes."""
+    cache_path = result_dir / "frame-extraction-state.json"
+    try:
+        identity = {
+            "videoSha256": _file_digest(video),
+            "videoBytes": video.stat().st_size,
+            "targets": [
+                {"filename": path.name, "durationSec": peak.duration_sec,
+                 "rankType": peak.rank_type, "metricValue": peak.metric_value}
+                for peak, path in targets
+            ],
+        }
+    except OSError as exc:
+        raise InputDataError(f"unable to fingerprint video {video}: {exc}") from exc
+    state = {"schemaVersion": 1, "input": identity, "frames": {}}
+    try:
+        saved = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        saved = None
+    if isinstance(saved, dict) and saved.get("schemaVersion") == 1 and saved.get("input") == identity:
+        frames = saved.get("frames")
+        if isinstance(frames, dict):
+            for _peak, path in targets:
+                receipt = frames.get(path.name)
+                if not isinstance(receipt, dict) or path.is_symlink():
+                    continue
+                try:
+                    if (path.is_file() and path.stat().st_size > 0
+                            and path.stat().st_size == receipt.get("bytes")
+                            and _file_digest(path) == receipt.get("sha256")):
+                        state["frames"][path.name] = receipt
+                except OSError:
+                    continue
+
+    def remember(path):
+        try:
+            state["frames"][path.name] = {
+                "bytes": path.stat().st_size, "sha256": _file_digest(path),
+            }
+            write_json_atomically(cache_path, state)
+        except OSError as exc:
+            raise InputDataError(f"unable to checkpoint frame {path}: {exc}") from exc
+
+    return set(state["frames"]), remember
 
 
 def validate_timestamps(selected_peaks, video_duration):
@@ -896,8 +958,6 @@ def process_records(
     )
     _remove_owned_paths(summary_markers, "summary")
 
-    successful_peaks = []
-    frame_paths = []
     missing_frames = []
     target_paths = [
         (
@@ -908,8 +968,17 @@ def process_records(
         )
         for peak in selected_peaks
     ]
+    cached_names, remember_frame = _frame_cache(video, result_dir, target_paths)
+    successful_paths = {path for _peak, path in target_paths if path.name in cached_names}
+
+    def publish_frame(path):
+        if path not in successful_paths:
+            remember_frame(path)
+            successful_paths.add(path)
+
     def extract_with_isolated_fallback(targets):
         """Keep a failed timestamp from forcing the whole material to legacy mode."""
+        targets = [(peak, path) for peak, path in targets if path not in successful_paths]
         if not targets:
             return
         batch_started = time.perf_counter()
@@ -919,6 +988,7 @@ def process_records(
                 video,
                 [(peak.duration_sec, path) for peak, path in targets],
                 timeout_sec=timeout_sec,
+                on_frame=publish_frame,
             )
         except FfmpegError as batch_error:
             if isinstance(timings, dict):
@@ -927,6 +997,11 @@ def process_records(
                     + max(0.0, time.perf_counter() - batch_started),
                     6,
                 )
+            # A later output may fail validation after earlier JPEGs were
+            # published. Preserve those durable receipts during bisection.
+            targets = [(peak, path) for peak, path in targets if path not in successful_paths]
+            if not targets:
+                return
             if len(targets) > 1:
                 midpoint = len(targets) // 2
                 extract_with_isolated_fallback(targets[:midpoint])
@@ -954,8 +1029,7 @@ def process_records(
                     }
                 )
             else:
-                successful_peaks.append(peak)
-                frame_paths.append(frame_path)
+                publish_frame(frame_path)
             finally:
                 if isinstance(timings, dict):
                     timings["ffmpegFallbackSec"] = round(
@@ -971,10 +1045,12 @@ def process_records(
                     + max(0.0, time.perf_counter() - batch_started),
                     6,
                 )
-            successful_peaks.extend(peak for peak, _path in targets)
-            frame_paths.extend(path for _peak, path in targets)
+            for _peak, path in targets:
+                publish_frame(path)
 
     extract_with_isolated_fallback(target_paths)
+    successful_peaks = [peak for peak, path in target_paths if path in successful_paths]
+    frame_paths = [path for _peak, path in target_paths if path in successful_paths]
 
     cover_succeeded = any(
         peak.rank_type == "zero_second" for peak in successful_peaks

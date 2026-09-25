@@ -1,5 +1,9 @@
 # 千川素材分析运维手册
 
+首批素材详情的 `firstBatchCsvGate` 为运行级门禁。首批（默认最多 3 条）全部终态且有效 CSV 数为 0 时，`workflowStatus=paused` / `nextAction=check_parameters`，提示当前入参可能有问题；停止本次运行全部后续 RPA，包括自动补位、重试和恢复提交。保留原 CSV、records、任务号及失败明细，核对账号、日期、业务参数后使用新运行目录重新执行首批；同目录 `prepare` 和普通 `resume` 都不能解除 blocked，也不能删除或改写门禁。
+
+`firstBatchCsvGate.status=unconfirmed` / `nextAction=check_remote_status` 表示首批异步结果尚未知，只能通过 `resume` 续查已保存的远端任务号；没有任务号则保持暂停并核对平台记录，不能猜测未提交后重发。首批未全部终态前不补位；至少一个有效 CSV 且全员已终态才放行。有效 CSV 需非空可解析且素材身份正确；CSV 中缺视频地址或后续下载/抽帧失败不等于无 CSV。详情见 [RPA 输出契约](rpa-output-contract.md)。
+
 首次采集从 `scripts/run_standard_analysis.py prepare` 开始；用户要求复用落盘数据时，直接按“已落盘分析接续”处理。失败排障与接续均以经过质量校验的 `finalize` 收口。
 
 ## 运行目录
@@ -32,7 +36,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 ### AI 交接与失败定位
 
 - 当前对话模型就是分析执行者，`analysis_pending` 不需要另一个模型 API。正式 JSON 合并之前，可以多轮读文件、看图、记录要点并逐项撰写分析片段；不要以“没有模型调用接口”结束任务。
-- 通过 analysis-task 读取正式精简任务：Chapter 01 的聚合保留全量口径；Chapter 05 按素材保留脚本、帧和峰值，曲线points仍完整用于报告。记录已读页、剩余页和哈希；不反复打印同一大包，不自行截取事实。
+- 默认通过 analysis-session 领取/恢复当前任务，顺序为 Chapter 01、02、03 → 逐素材 → Chapter 04。完整读当前 factsPages，每种结构首次读 contractPages，引用按需读 referencePages；若返回 workItemPages，先完整读取工作项分页。所有页不超过 8000 UTF-8 字节，lossless-tables-v1 首条 record 给出无损解码说明，保留原 model_view 全部事实。旧 analysis-task 导出仍兼容，不反复导出已完成任务。
 - 帧账本中的实际标识来自 `frames[*].evidenceRef`，不是不存在的 `frameRef` 输入字段。逐帧记录 frameRef、framePath、图像 SHA-256、少量实际观察和状态；仅有 completed ID、没有可恢复笔记不算可复用的审阅结果。
 - 原文件哈希一致且笔记完整时续接未完成部分；文件变化或笔记丢失则重新审阅受影响帧。同字节图像允许复用视觉要点，但保留所有素材/帧的覆盖记录，核对每条素材各自的上下文。相同图片的来源正确性仍需核对本地 summary、视频和抽帧记录，不能从重复图片推出素材业务一致。
 - 新生成的 JSON 不继承旧运行的内容、引用或分类；机器只可序列化模型生成内容、合并已经逐项确认的字段及校验格式，不可循环拼经营结论、添加通用尾句或删除难通过的字段。
@@ -71,47 +75,48 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 ### 图片理解断点与吞吐
 
-首次打开 JPEG 前执行：
+`frame-review-progress.json` 的 `visualObservationCache` 保存唯一图观察，`frameRefsBySha256` 保存全部已完成帧的 SHA 映射；暂存不增加完成引用，只有全批核验通过才更新覆盖。
 
-```bash
-python scripts/run_standard_analysis.py frame-review --output-dir "$PWD/千川数据资源/<run-id>"
-```
+正式入口已返回当前任务、图片组和提交模板，不得再经 Bash 二次摘录；过长响应按 workItemPages 完整读取，不用 head/tail 丢掉图片或后续页。
 
-该命令冻结 `analysis-input-index.json`（schemaVersion=2），核对五章事实 manifest、Prompt、每个 `materialId`、`frameRef`、`framePath` 和实际 JPEG SHA-256；返回当前素材、整批 `frameRefs` 和去重后的 `imagesToView`。实际标识来自事实包 `frames[*].evidenceRef`，不是事实包中不存在的 `frameRef` 字段。按素材串行，新建账本每批最多 6 个唯一 SHA（旧账本按原冻结批次续接）；同批先连续/并发打开全部待查看图片，不跨素材混合商业归因。返回的 `cachedObservations` 提供当前批次可复用的笔记。相同 SHA 只实际查看一次，后续引用复用纯视觉观察，不复用商业解释或相邻帧变化判断。
+默认由正式 `analysis-session` 管理帧审阅、片段提交和下一任务导航，三个调用示例与提交结构见[分析交接契约](analysis-handoff.md#无损读取与执行顺序)。会话沿用 `analysis-input-index.json`（schemaVersion=2），冻结五章事实 manifest、Prompt、每个 materialId、frameRef、framePath 和实际 JPEG SHA-256。实际引用来自事实包的 `frames[*].evidenceRef`，不猜字段或自造引用。
 
-命令使用多行 JSON 输出，完整保留 `materialId`、对应分析 `taskId` 和 `checkpointTemplate`。用文件编辑工具复制当前返回的模板，只填写 `imagesToView` 对应的 visualObservation；已有缓存时模板自动给出 `observations=[]`。模板中的 null 不能直接提交。以返回值为准，不按“第 N 批=第 N 条素材”推断，也不要用 head/tail 或仅提取计数丢掉下一批信息。下面仅说明模板结构，不是业务事实：
+`frameReview.visionBatches` 每组最多 3 张唯一 JPEG，按组实际看图，立即用该组 `stashTemplate` 填写少量观察并通过 `--observations-json` 保存；不要先看完整批再把观察留在内存。新账本每批最多 6 个唯一 SHA，旧 4 帧账本按冻结批次兼容续接；账本批次和图片工具分组不能混淆。原图、所有成功帧与 frameRef 完整保留，不降采样。
 
-```json
-{
-  "inputIndexSha256": "命令返回的索引哈希",
-  "frameRefs": ["命令返回的当前批次全部引用"],
-  "observations": [
-    {"sourceFrameRef": "imagesToView 中的 frameRef", "visualObservation": "当前模型实际看到的少量要点"}
-  ]
-}
-```
+观察 JSON 固定包含 `inputIndexSha256`、当前账本批次全部 `frameRefs`、`observations`；observations 只写本组实际看的 SHA，每条包含 `sourceFrameRef` 和非空 `visualObservation`，不能提交模板 null。当前模型用文件工具写 JSON，不执行临时脚本。部分 stash 原子保存到 `visualObservationCache`，未看的帧仍待处理；后续工作项只给剩余 imagesToView，cachedObservations 直接复用，不再从 Bash 摘录图片工具长篇返回或运行 find/sha256sum 重建去重表。
 
-只为 `imagesToView` 的唯一 SHA 提供观察；全部命中缓存时 `observations=[]`。不另跑 find/sha256sum 重建去重表，直接使用已核验的 imagesToView/cachedObservations。观察只记录真实主体、动作/状态和信息层；相邻变化和商业解释在该素材的分析正文里逐项核对。然后提交一次 checkpoint：
+最后一组观察可随提交外壳的 `frameObservations` 一并送入 `--submission-json`，外壳必须有当前 `inputSha256/taskId/part`；part 由模型直接撰写。入口执行片段预检、所需帧 checkpoint 和下一任务导航；缺图/结构错误停留当前任务，不把部分保存误作完成。全缓存素材无需再看图，仍须根据各自人群、脚本、互动和经营事实写商业解释。相同 submission、已保存 stash 可幂等重试，不改写已接受内容。
 
-```bash
-python scripts/run_standard_analysis.py frame-review \
-  --output-dir "$PWD/千川数据资源/<run-id>" \
-  --batch-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/frame-batch-01.json"
-```
+正常中断只重跑不带提交参数的 analysis-session，读取当前工作项与 `contextHandoff.resumePath` 指向的 `resume.json`，已完成事实、观察、片段都留磁盘。宿主提供正式上下文压缩能力时可在素材提交成功后使用，仅保留恢复指针、当前任务及未解决问题；技能无法强制清空宿主历史，不能新建子代理绕开单 Agent 边界。任务 elapsedSeconds 包含空闲和等待，不是模型推理耗时。
 
-程序核验全批观察后仅原子写一次 `frame-review-progress.json`，维护 `visualObservationCache`、`frameRefsBySha256`、`reviewBatchCount`、completed/pending 和 checkpoint 的 `viewedImageCount`/`cacheHitCount`。未完成批次不写完成态。全部引用完成自动写 `status=complete`、`completedAt`；validate-analysis 和 finalize 对新运行校验此状态。SHA/笔记只能支持复用，不能单独证明模型确实看过图，仍须保留实际工具日志。
+输入/实现指纹变化、图片被替换或已接受片段被修改时拒绝继续。需要实质改写已接受片段，用 `--session-dir <diagnostic-analysis 内新目录的绝对路径>` 保留旧会话另起；事实/Prompt/JPEG 变化须先在隔离副本核验并显式重建索引，不覆盖旧提示词快照。Chapter 04 使用 `reviewedVisuals` 的完整 SHA 观察与全部 frameRefs，不重复看完整图集；机制不清或复核命中时定向回看。`ready_for_validation` 只表示候选已组装，必须用返回的 analysisJson 继续 validate-analysis、内容复核和 finalize。
 
-中断后重跑无 batch-json 的命令即可返回下一批，已完成批次不重复查看。输入变化时命令拒绝继续；显式 `--rebuild` 会备份旧索引/账本，重新冻结，仅保留源引用、路径和 SHA 都未变化的有效视觉观察，其余重审。历史旧账本不会被猜测为已完成，需要显式重建。不得再经 Bash 二次摘录图片理解结果，不逐帧 patch 账本。图片策略拒绝仍冻结并等待恢复，不得以压缩、改读文本或跳帧绕过。
+独立旧流程仍支持 `frame-review` 查询当前批次、`--stash-json <观察文件>` 部分暂存、`--batch-json <checkpoint文件>` 完成整批；全部引用最终须为 status=complete 且有 completedAt。索引变化时显式 `--rebuild` 会保存旧索引/账本，只复用来源引用、路径、SHA 均未变的有效观察。旧四帧账本不需因升级而重看；无法验证的历史笔记不能猜测成已完成。SHA/笔记只支持复用，实际看图仍由真实工具日志证明。
 
-若进程被强制终止留下 stale `.frame-review.lock` 或 `.video-cleanup.lock`，先根据锁内 pid、hostname、processStart 确认原进程已结束，仅移除该锁后重试对应命令；active 锁不可移除。保留事实包、索引和账本原样，不能靠清空账本恢复。
+策略或 guardrail 拒绝时冻结帧审阅并等待恢复，不继续拆图重试、压缩、换工具或跳帧绕过。正常退出后 `.analysis-session.lock`、`.frame-review.lock` 等可保留空文件；强制终止后的 stale 锁由正式入口在内核互斥下接管，active 时拒绝接管，不手工删除锁或清空账本。
 
 只有后台明确终止且运行摘要或产物链路也显示未完成，才按本手册的“运行中断或陈旧批次”处理。策略服务未提供原始拒绝原因时，记录为 `tool_call_blocked` 与“待策略侧日志确认”；不要把业务任务、RPA 或 FFmpeg 归因为策略故障。
 
 ## 运行中断或陈旧批次
 
+### 本版执行与恢复证据
+
+正常信号中断在检查点保存后以 exit 130 返回，标准摘要为 interrupted，status.nextAction 为 resume；exit 5 仍表示真实的部分失败，需 inspect。SIGKILL 不能捕获，按保留的锁与检查点判断。
+
+- `python scripts/run_standard_analysis.py version` 输出便携源码指纹；`status.runtime` / `run-summary.json.runtime` 保存实际执行代码指纹、Python/系统与 PID。旧摘要没有指纹时不得猜版本。
+- `prepare` / `resume` 可传 `--download-concurrency 2 --postprocess-concurrency 2`；受限环境可降到 1。检查 `status.workerLimits` 获取实际配置；增大并发不保证更快。
+- 重复标准命令在依赖加载前检查 active；真正写入前仍获取目录与业务锁。阶段切换写结构化 stderr 并立即 flush，日志不必等整轮结束才出现。
+- `status` 仅读进度文件末尾至多 64 KiB，尾行截断时退回最近有效检查点。`lastProgressAgeSec` 反映已落盘进展年龄；不能据此杀进程或判 OOM。exit 137 仍需宿主资源/回收证据才能归因。
+- 下载完成即原子保存 MP4 指纹，后续抽帧可复用；帧缓存绑定视频 SHA、所选时刻及 JPEG SHA，已完成画面不因其他帧中断而重抽。旧产物只有通过校验才复用。
+- 队列只保留下载并发 + FFmpeg 并发数量的在途工作；真正开工才记尝试，旧 running 封口为 interrupted（已验证成功产物则恢复成功）。真实失败重试与中断恢复分别计数。
+- 远端收据有 ID 时，即使 manifest 仍为 pending 也续查原 ID；仅有提交痕迹且 ID 未落盘时保留未知提交证据并隔离，禁止重新提交同素材。
+- RPA 子进程本身会写 CSV/records/receipt，因此继承实际执行锁直到退出；父进程死亡或子进程自身截止时 watchdog 独立退出，亦覆盖结果队列无人读取的收尾阶段。只要旧 writer 仍活着，锁保持 active；不能因锁内原父 PID 已消失就手动删锁接管。
+- 升级前确认旧进程已终止，再以新版本恢复原目录；不要让不遵守 flock 的旧运行器和新运行器混跑。锁适用于同机 POSIX flock 可靠的文件系统，不构成跨主机协调。
+
+
 先读取运行目录的 `run-summary.json` 和 `peak-frames/batch-manifest.json`。若 manifest 中仍有 `running` 或 `submitted` 状态，不能直接覆盖目录。先用 `status` 确认原进程结束，再恢复同一批次。已有远程任务只轮询原 ID，不重提同一素材；补齐缺口可以提交尚未提交的候选，因此 `resume` 仍属于 RPA 操作。
 
-`status` 会核对工作流锁和批次锁的 pid、hostname 与 processStart。持久摘要仍为 `running`、但两把锁都不是 active 时，对外返回 `workflowStatus=interrupted`、`persistedWorkflowStatus=running` 和 `recoveryRequired=true`；`status` 本身保持只读。不得使用 `pgrep -af` 或其他会输出完整命令行与环境变量的命令查进程；需要复核时只按锁内 pid 查存活性，不输出 args/env。
+`status` 核对运行目录 `.workflow-run.lock`、业务请求锁与 `.batch-run.lock`。新锁以 POSIX flock 为准，SIGKILL 后内核自动释放；旧锁兼容 pid、hostname 与 processStart，并排除僵尸进程。正常退出保留空文件，状态为 missing，不手工删除锁文件。持久摘要仍为 `running`、但所有锁都不是 active 时，对外返回 `workflowStatus=interrupted`、`persistedWorkflowStatus=running` 和 `recoveryRequired=true`；`status` 本身保持只读。不得使用 `pgrep -af` 或其他会输出完整命令行与环境变量的命令查进程；需要复核时只按锁内 pid 查存活性，不输出 args/env。
 
 需要继续核对已提交任务时，运行标准恢复入口：
 
