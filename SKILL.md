@@ -13,7 +13,9 @@ metadata:
 
 # 千川投放素材全景分析
 
-收集报表授权店铺、千川广告主 ID 对应的 RPA 授权账号、分析周期和 Top 素材数量。标准入口先用 API 授权店铺及解析出的广告主 ID 查询素材视频报表，再将 `materialId` 交给用户选定的 RPA 授权账号；先完成目标数量的 RPA 和有效 records 落盘，再进入本地后处理（默认视频下载并发 2、FFmpeg 并发 2，由同一个队列持续推进）。首次采集、恢复和独立修复均遵守该屏障；候选耗尽但数量不足时保留结果并停止，不对部分素材提前下载或截帧。候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成。每个素材的 RPA 只提交一次。
+收集报表授权店铺、千川广告主 ID 对应的 RPA 授权账号、分析周期和 Top 素材数量。标准入口先用 API 授权店铺及解析出的广告主 ID 查询素材视频报表，再将 `materialId` 交给用户选定的 RPA 授权账号；单素材有效 CSV 和可用 records 落盘、满足原入选条件后，立即进入有界本地后处理队列，不等待其他素材的 RPA。RPA 仍默认并发 3、按波次屏障推进下一批；视频下载并发 2、FFmpeg 并发 2，与后续 RPA 重叠执行。首次 `prepare` 和标准 `resume` 共用该调度；独立本地修复的适用边界见运维手册。
+
+候选扩容、波次、下载、截帧、本地后处理重试、补位和校验均自动完成，每个素材的 RPA 只提交一次。候选耗尽但最终成功数量不足时保留已完成的本地成果并停止，不能标记 ready；只有目标素材的后处理全部成功并通过核验，才进入事实包与分析阶段。
 
 表单不再单独收集 `advertiser_id`。首次 `prepare` 或 `fetch-metadata` 在报表取数前按所选 `rpa_shop.extra.shop_id` 查询当前 RPA 授权列表，要求唯一记录的 `account` 是数字广告主 ID，再确认它唯一出现在所选 `api_shop.extra.shop_id` 的 API 广告主授权关系中；无法确认则停止，不提交报表或 RPA 任务。`resume` 可从匹配的运行摘要读取已确认的广告主 ID。`api_shop.extra.shop_id` 与 `rpa_shop.extra.shop_id` 属于不同 ID 域，**不得比较是否相等**。
 
@@ -32,6 +34,8 @@ metadata:
 素材详情连接器 `rpa_rpa.conn.juliang.qc.material.analysis.video.live.diagnosis` 必须先完成首批 CSV 门禁：首批为本运行前 `min(RPA并发数, 目标素材数, 候选数)` 条，默认并发 3；即使非波次调度也不得在首批判定前补位。首批全部已终态且没有任何正确 CSV 时，持久化 `firstBatchCsvGate.status=blocked` / `errorCode=first_batch_no_valid_csv`，暂停本次运行后续所有 RPA 提交、重试、补位与自动接续，并提示“当前入参可能有问题”，核对授权账号、日期和业务参数。有效 CSV 须为本次请求落盘、非空可解析、含身份匹配的 `material_info`；只有下载链接、空表、解析失败或其他素材的数据均不算。缺视频 URL、视频下载或抽帧失败单独处理，不等于没有 CSV。
 
 首批任一 CSV 有效且全员已终态时放行；异步 pending/running、轮询失败、超时或中断不能认定远端失败，首批结果未确认时持久化 `unconfirmed`，暂停后续提交并保留远端任务号。`status` 对暂停返回 `workflowStatus=paused`；`nextAction=check_parameters` 要求核对修正入参并新建运行目录重新执行首批，普通 `resume` 或同目录 `prepare` 均不能解除 blocked。`nextAction=check_remote_status` 时只允许 `resume` 续查已有任务号；没有可确认任务号则保持暂停，不重提。不得删改门禁或通过新循环、补位入口绕过。
+
+首批 CSV 门禁和 RPA 波次屏障限制后续 RPA 提交，不阻止已核验单素材的本地处理；该素材须已有有效 CSV、落盘的可用 records 和视频 URL。首批其他任务尚未终态时可先下载、截帧，但不能因此提前放行下一批 RPA 或把整批标记 ready。
 
 标准 `prepare` 已自动完成授权列表检查、实时 connector 详情反查和业务参数校验，再走异步 fetch、轮询、CSV 落盘与后处理；表单参数齐全时直接执行，不再单独调用 detail、schema、list-accounts、validate。逐素材诊断只静态保留 connector code，不把详情返回的 `id` 当 connector code，不拼接或改写 `platformCode`。
 
@@ -75,7 +79,7 @@ python scripts/run_standard_analysis.py prepare \
   --output-dir "$RUN_DIR" </dev/null >"$RUN_DIR/prepare.log" 2>&1
 ```
 
-观测会话失联后先执行一次轻量 `status`：`nextAction=wait` 且 `lockState=active` 时读 `lastProgress` 并用 `python scripts/run_standard_analysis.py status --output-dir "$RUN_DIR" --wait-seconds 60` 有界观察（最多每 5 秒读一次轻量状态，离开 wait 立即返回）；`nextAction=resume` 且 `workflowStatus=interrupted` 时按授权恢复，不反复 sleep。`rpaRemainingCount` 和 `recoveryStage` 提示当前缺口与阶段，实际产物仍由恢复入口核验。标准恢复只做一次 CSV/records 与路径对账（不下载、不截帧），再由原批处理引擎续接远程任务、补齐目标数量后统一后处理；有效 summary/JPEG 直接复用，不重跑报表选品：
+观测会话失联后先执行一次轻量 `status`：`nextAction=wait` 且 `lockState=active` 时读 `lastProgress` 并用 `python scripts/run_standard_analysis.py status --output-dir "$RUN_DIR" --wait-seconds 60` 有界观察（最多每 5 秒读一次轻量状态，离开 wait 立即返回）；`nextAction=resume` 且 `workflowStatus=interrupted` 时按授权恢复，不反复 sleep。`rpaRemainingCount` 和 `recoveryStage` 提示当前缺口与阶段，实际产物仍由恢复入口核验。标准恢复只做一次 CSV/records 与路径对账（不下载、不截帧），再由同一批处理引擎续接远程任务；已核验素材立即进入有界本地队列，与按原门禁补齐缺口的 RPA 重叠推进。有效视频和 summary/JPEG 直接复用，不重跑报表选品：
 
 ```bash
 python scripts/run_standard_analysis.py resume \

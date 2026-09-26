@@ -331,16 +331,21 @@ class WaveBatchRunnerTests(unittest.TestCase):
         self.assertEqual(postprocess_calls, [])
         self.assertEqual(manifest["rejectedMaterials"][0]["rpaStatus"], "rejected")
 
-    def test_rpa_collection_finishes_before_postprocess_starts(self):
+    def test_postprocess_starts_while_later_rpa_is_collecting(self):
         rpa_finished = []
         observed_rpa_sets = []
+        postprocess_started = threading.Event()
+        overlap = []
 
         def attempt_rpa(_args, entry):
+            if entry["materialId"] == "m-3":
+                overlap.append(postprocess_started.wait(timeout=1))
             rpa_finished.append(entry["materialId"])
             return self._verified_rpa_success(entry)
 
         def attempt_postprocess(args, entry):
             observed_rpa_sets.append(set(rpa_finished))
+            postprocess_started.set()
             return self._success_postprocess(args, entry)
 
         self.run_batch(
@@ -352,12 +357,8 @@ class WaveBatchRunnerTests(unittest.TestCase):
 
         self.assertEqual(set(rpa_finished), {"m-1", "m-2", "m-3", "m-4"})
         self.assertTrue(observed_rpa_sets)
-        self.assertTrue(
-            all(
-                observed == {"m-1", "m-2", "m-3", "m-4"}
-                for observed in observed_rpa_sets
-            )
-        )
+        self.assertEqual(overlap, [True])
+        self.assertTrue(any("m-3" not in observed for observed in observed_rpa_sets))
 
     def test_each_manifest_checkpoint_emits_compact_progress(self):
         progress = []
@@ -406,7 +407,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
 
         self.assertFalse(runner.is_alive())
 
-    def test_all_rpa_waves_finish_before_any_postprocess(self):
+    def test_each_postprocess_has_its_own_persisted_records(self):
         rpa_starts = []
         observed_rpa_sets = []
 
@@ -416,6 +417,13 @@ class WaveBatchRunnerTests(unittest.TestCase):
 
         def attempt_postprocess(_args, entry):
             observed_rpa_sets.append(set(rpa_starts))
+            self.assertTrue(entry["recordsPersisted"])
+            self.assertTrue(entry["rpaCsvVerified"])
+            self.assertEqual(entry["records"], [{"materialId": entry["materialId"]}])
+            accepted = [item for item in self.manifests[-1]["selectedMaterials"]
+                        if item["materialId"] == entry["materialId"]]
+            self.assertEqual(len(accepted), 1)
+            self.assertTrue(accepted[0]["recordsPersisted"])
             return self._success_postprocess(_args, entry)
 
         self.run_batch(
@@ -427,12 +435,7 @@ class WaveBatchRunnerTests(unittest.TestCase):
         self.assertEqual(rpa_starts[:2], ["m-1", "m-2"])
         self.assertEqual(set(rpa_starts[2:]), {"m-3", "m-4"})
         self.assertTrue(observed_rpa_sets)
-        self.assertTrue(
-            all(
-                observed == {"m-1", "m-2", "m-3", "m-4"}
-                for observed in observed_rpa_sets
-            )
-        )
+        self.assertEqual(len(observed_rpa_sets), 4)
 
     def test_wave_backfills_only_after_terminal_postprocess_failure(self):
         rpa_starts = []

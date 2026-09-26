@@ -3893,7 +3893,7 @@ class CliTests(unittest.TestCase):
             [0, 0, 1, 1],
         )
 
-    def test_wave_waits_for_all_rpa_jobs_before_postprocess(self):
+    def test_wave_processes_persisted_material_while_other_rpa_jobs_wait(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -3917,12 +3917,11 @@ class CliTests(unittest.TestCase):
                 postprocess_started.set()
                 return self._wave_postprocess(output, _args, entry)
 
-            def release_after_delay():
-                time.sleep(0.05)
-                saw_postprocess_before_release.append(postprocess_started.is_set())
+            def release_after_postprocess():
+                saw_postprocess_before_release.append(postprocess_started.wait(timeout=1))
                 release_rpa.set()
 
-            releaser = threading.Thread(target=release_after_delay)
+            releaser = threading.Thread(target=release_after_postprocess)
             releaser.start()
             with patch.object(
                 extract_peak_frames, "fetch_material_preflight", side_effect=fetch
@@ -3944,9 +3943,9 @@ class CliTests(unittest.TestCase):
             releaser.join()
 
         self.assertEqual(result, 0)
-        self.assertEqual(saw_postprocess_before_release, [False])
+        self.assertEqual(saw_postprocess_before_release, [True])
 
-    def test_next_rpa_wave_finishes_before_postprocess_starts(self):
+    def test_next_rpa_wave_runs_while_prior_postprocess_is_blocked(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             output = root / "peak-frames"
@@ -3958,6 +3957,7 @@ class CliTests(unittest.TestCase):
             starts = []
             lock = threading.Lock()
             second_csv_release = threading.Event()
+            third_rpa_started = threading.Event()
             first_postprocess_started = threading.Event()
             first_postprocess_release = threading.Event()
             result = []
@@ -3967,14 +3967,16 @@ class CliTests(unittest.TestCase):
                 with lock:
                     starts.append(material_id)
                 if material_id == "m-2":
-                    second_csv_release.wait(timeout=1)
+                    second_csv_release.wait(timeout=2)
+                if material_id == "m-3":
+                    third_rpa_started.set()
                 self._write_wave_csv(kwargs["diagnosis_csv_dir"], material_id)
                 return self._wave_outcome(material_id)
 
             def postprocess(args, entry):
                 if entry["materialId"] == "m-1":
                     first_postprocess_started.set()
-                    first_postprocess_release.wait()
+                    first_postprocess_release.wait(timeout=2)
                 return self._wave_postprocess(output, args, entry)
 
             def run_batch():
@@ -4002,17 +4004,17 @@ class CliTests(unittest.TestCase):
 
             runner = threading.Thread(target=run_batch)
             runner.start()
-            deadline = time.monotonic() + 1
-            while len(starts) < 2 and time.monotonic() < deadline:
-                time.sleep(0.01)
-            self.assertEqual(set(starts), {"m-1", "m-2"})
-            self.assertFalse(first_postprocess_started.is_set())
-            second_csv_release.set()
-            self.assertTrue(first_postprocess_started.wait(timeout=1))
-            self.assertIn("m-3", starts)
-            self.assertFalse(first_postprocess_release.is_set())
-            first_postprocess_release.set()
-            runner.join(timeout=2)
+            try:
+                self.assertTrue(first_postprocess_started.wait(timeout=1))
+                self.assertEqual(set(starts), {"m-1", "m-2"})
+                self.assertFalse(third_rpa_started.is_set())
+                second_csv_release.set()
+                self.assertTrue(third_rpa_started.wait(timeout=1))
+                self.assertFalse(first_postprocess_release.is_set())
+            finally:
+                second_csv_release.set()
+                first_postprocess_release.set()
+                runner.join(timeout=3)
 
         self.assertFalse(runner.is_alive())
         self.assertEqual(result, [0])

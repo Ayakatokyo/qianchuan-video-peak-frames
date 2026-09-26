@@ -1,3 +1,4 @@
+import threading
 """Recovery must preserve the collection barrier and reuse local artifacts."""
 import json
 from pathlib import Path
@@ -91,13 +92,15 @@ def test_relative_repair_is_idempotent_and_never_repeats_completed_video_work(tm
     assert paths == [str((output / 'summary.json').resolve())] * 2
 
 
-def test_standard_resume_reconciles_once_then_collects_24_to_30_before_postprocess(tmp_path, monkeypatch):
+def test_standard_resume_reconciles_once_then_overlaps_collection_and_postprocess(tmp_path, monkeypatch):
     request, peak = retained_run(tmp_path)
     monkeypatch.setattr(repair_manifest.pipeline, '_attempt_wave_postprocess',
                         lambda *args: pytest.fail('standard resume must not run local repair postprocess'))
     monkeypatch.setattr(standard_workflow, 'validate_ready_materials', lambda *args: None)
     monkeypatch.setattr(standard_workflow, 'write_top_material_roi_facts', lambda *args: None)
     repairs, events = [], []
+    local_started = threading.Event()
+    overlap = []
     original_repair = repair_manifest.repair_batch
 
     def repair(*args, **kwargs):
@@ -123,13 +126,16 @@ def test_standard_resume_reconciles_once_then_collects_24_to_30_before_postproce
 
         def collect(args, entry):
             assert entry['materialId'] not in completed
+            if entry['materialId'] == 'm-30':
+                overlap.append(local_started.wait(timeout=1))
             completed.add(entry['materialId'])
             events.append(('rpa', entry['materialId']))
             return runner._verified_rpa_success(entry)
 
         def postprocess(args, entry):
-            assert len(completed) == 30
+            assert entry['materialId'] in completed
             events.append(('postprocess', entry['materialId']))
+            local_started.set()
             return runner._success_postprocess(args, entry)
 
         _, failed, _ = runner.run_batch([f'm-{i + 1}' for i in range(30)], collect, postprocess,
@@ -141,11 +147,12 @@ def test_standard_resume_reconciles_once_then_collects_24_to_30_before_postproce
     assert result['status'] == 'analysis_pending'
     assert len(repairs) == 1
     assert repairs[0]['records_only'] is True
-    assert [e[0] for e in events[:6]] == ['rpa'] * 6
+    assert overlap == [True]
+    assert len([e for e in events if e[0] == 'rpa']) == 6
     assert len([e for e in events if e[0] == 'postprocess']) == 30
 
 
-def test_exhausted_collection_does_not_start_partial_postprocess():
+def test_exhausted_collection_preserves_partial_postprocess_without_ready():
     runner = runner_tests.WaveBatchRunnerTests()
     runner.setUp()
     calls = []
@@ -153,7 +160,9 @@ def test_exhausted_collection_does_not_start_partial_postprocess():
         lambda args, entry: runner._verified_rpa_success(entry),
         lambda *args: calls.append(args) or runner._success_postprocess(*args), args={'target_top_n': 3})
     assert failed
-    assert calls == []
+    assert len(calls) == 2
+    assert runner.ready_materials == []
+    assert manifest['stageCounts']['postprocessSucceededCount'] == 2
     assert manifest['rpaCollection']['acceptedCount'] == 2
 
 

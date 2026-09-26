@@ -4,6 +4,8 @@
 
 `firstBatchCsvGate.status=unconfirmed` / `nextAction=check_remote_status` 表示首批异步结果尚未知，只能通过 `resume` 续查已保存的远端任务号；没有任务号则保持暂停并核对平台记录，不能猜测未提交后重发。首批未全部终态前不补位；至少一个有效 CSV 且全员已终态才放行。有效 CSV 需非空可解析且素材身份正确；CSV 中缺视频地址或后续下载/抽帧失败不等于无 CSV。详情见 [RPA 输出契约](rpa-output-contract.md)。
 
+该门禁限制后续 RPA 提交，不要求已核验素材等待其他首批任务：单素材有效 CSV、可用 records 和视频 URL 已落盘后，即可进入有界下载/截帧队列。它不提前放行下一波 RPA，也不改变最终全目标齐备才 ready 的要求。
+
 首次采集从 `scripts/run_standard_analysis.py prepare` 开始；用户要求复用落盘数据时，直接按“已落盘分析接续”处理。失败排障与接续均以经过质量校验的 `finalize` 收口。
 
 ## 运行目录
@@ -129,11 +131,13 @@ python scripts/run_standard_analysis.py resume \
   --output-dir "/path/to/run"
 ```
 
-`resume` 校验请求参数与旧摘要一致，拒绝 active 批次，自动接管陈旧工作流/批次锁。先且仅做一次 `records_only` 本地对账，收据必须为 `rpaCalls=0`、`postprocessAttemptedCount=0`；然后由同一个批处理引擎查询已保存远程 ID、补齐目标数量的有效 records，最后统一执行待完成后处理。有效 summary/JPEG 复用；不重跑报表选品，不循环调用每次两条的独立 repair。
+`resume` 校验请求参数与旧摘要一致，拒绝 active 批次，自动接管陈旧工作流/批次锁。先且仅做一次 `records_only` 本地对账，收据必须为 `rpaCalls=0`、`postprocessAttemptedCount=0`；然后由与 `prepare` 相同的批处理引擎查询已保存远程 ID、按原门禁补齐有效 records，同时让已核验素材立即进入有界本地队列。有效视频和 summary/JPEG 复用；不重跑报表选品，不循环调用每次两条的独立 repair。
 
 先运行 `run_standard_analysis.py status`，按五层产物分别盘点并记录数量：`rpaRequestCount`（提交数）→ `rpaAcceptedCount`（有效诊断结果数）→ `rpaSelectedCount`（含可用 videoUrl 的选中数）→ `recordsPersistedCount`/CSV 数（诊断结果已落盘数）→ `postprocessSucceededCount`（截帧与 `summary.json`、`summary.md` 均完整数）。提交数、平台/UI 的“成功”数字、素材目录数均不等于本地落盘或完整后处理数；没有本地 CSV/records 时不得声称平台已成功或失败。
 
-调度使用分阶段屏障：先按 RPA 并发 3 个逐波收集，当前波次的 RPA 和 CSV/records 落盘全部终态后即可进入下一波；达到目标 records 数前不启动视频下载或 FFmpeg。本地后处理默认视频下载并发 2、FFmpeg 并发 2；下载与截帧使用独立信号量。后处理终态失败时，才对下一顺位候选素材执行独立的 RPA 补位阶段。
+调度保留 RPA 波次屏障：默认并发 3 个逐波收集，当前波次 RPA 和 CSV/records 落盘全部终态、首批 CSV 门禁放行后，才进入下一波。单素材有效 CSV 和可用 records 落盘后立即进入本地队列，无需等待本波或全部 RPA 收齐；本地视频下载并发 2、FFmpeg 并发 2，分别使用独立信号量，与 RPA 重叠推进。采集配额仍以 `accepted_count` 计算，排队、运行中或尚可重试的后处理不触发提前补位；两次并行后处理失败后仍执行原串行补偿，补偿也失败才进入终态并对下一顺位候选执行 RPA 补位，不重提原素材。
+
+最终仍须目标数量素材的后处理成功并通过核验，才能标记 ready、构建完整事实包。候选耗尽时保留已经落盘的视频、帧和 summary；成功数量不足不能提前 ready。独立 repair 没有并行 RPA 采集，继续遵守下述完整收集门槛。
 
 若用户未明确授权再次调用 RPA，且原进程已结束，可运行“修复保留产物”章节的 `repair_manifest.py --records-only`。它优先核验 `rpa-receipts/<materialId>.json` 的 `records_persisted` 收据，将有效 receipt/CSV 恢复为 records，并核对已有 summary/JPEG，不下载、不截帧。数量不足或目标数量未知时，即使省略 `--records-only` 也会阻止后处理；只有目标数量的有效 records 已齐备，独立 repair 才能补跑缺失后处理。检查收据的 `rpaCalls`、`postprocessAttemptedCount` 和 `postprocessBlockedReason`。
 
