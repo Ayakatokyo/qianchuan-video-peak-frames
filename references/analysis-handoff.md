@@ -25,11 +25,9 @@ python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千�
 python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千川数据资源/<run-id>" --submission-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/submission.json"
 ```
 
-CLI 默认返回 `format=analysis-navigation-v1`、`taskId`、`inputSha256`、`images`、`remainingImages`、`contextHandoff.resumePath` 及固定 `navigation`：`basePath/facts/contract/references/submissionTemplate/currentImages/cachedObservations`。所有相对路径，包括 `analysisJson`、`resumePath`、索引的 `path/nextPage` 和图片的 `framePath`，都以 `navigation.basePath` 为基准。没有对应内容的导航项为 null，不猜路径。
+返回 `taskId`、`inputSha256`、`factsPages`、`contractPages`、`submissionTemplatePath` 和 `contextHandoff.resumePath`。完整读取当前任务所有 factsPages；每种输出结构首次读 contractPages，不能把骨架中的 null 当成成品。Chapter 01 的聚合引用读返回的 `referencePages`；其他引用按事实中的 evidenceIndex/evidenceRef 和 contract 使用，必要时通过兼容 `analysis-task --section references` 定向导出。引用并集不意味着所有字段都接受所有引用。素材 decision 只能取 `scale/remix/hold/stop/unknown`；标准分类 category 只能取 `portrait/product/other`。customClassification 与 highlightDashboard 顶层同级；keywordRefs 逐字取原词并绑定该词自身的脚本证据。
 
-`navigation.facts/contract/references` 指向普通 JSON 索引，固定以 `entries` 数组列出原事实页路径、byteSize 和 SHA-256；沿索引 `nextPage` 读到 null，完整读取其中列出的当前任务所有事实页。每种输出结构首次读 contract，不能把骨架中的 null 当成成品。Chapter 01 聚合引用读取 references；其他引用按事实中的 evidenceIndex/evidenceRef 和 contract 使用，必要时通过兼容 `analysis-task --section references` 定向导出。导航不再使用 `$table` 编码，事实页仍保留原无损编码。引用并集不意味着所有字段都接受所有引用。素材 decision 只能取 `scale/remix/hold/stop/unknown`；标准分类 category 只能取 `portrait/product/other`。customClassification 与 highlightDashboard 顶层同级；keywordRefs 逐字取原词并绑定该词自身的脚本证据。
-
-导航响应、索引、图片组和原事实页，包括封套、缩进及换行，都不超过 **8000 UTF-8 字节**。同一 taskId 暂存观察后事实、契约和引用索引保持稳定，已完整读过的事实无需重读，只继续读取当前图片组及更新后的缓存。极端超长 `submissionTemplate` 无法满足预算时入口明确失败，使用 `--legacy-work-item` 按无损方式读取，不截断模板或事实。该选项恢复旧 `factsPages/contractPages/referencePages/submissionTemplatePath` 封套；旧工作项过长时先完整读取 `workItemPages` 恢复工作项。旧 Python API 保持兼容。截断不算已读，不用 head/tail 或临时 jq 抽样代替当前任务的完整读取。
+若工作项过长，响应返回 `workItemPages`：先完整读这些页恢复工作项，再读取其 factsPages 和当前图片组，不能只读短索引。facts/contract/references/work-item 的每个页文件，包括封套、缩进及换行，都不超过 **8000 UTF-8 字节**，页索引含 byteSize/SHA-256。按 nextPage 读到 null；截断不算已读，不用 head/tail 或临时 jq 抽样代替当前任务的完整读取。
 
 新页首条 record 标注 `encoding: lossless-tables-v1` 与 readingGuide。先按 path/value、container/start/items/text 还原记录树；`$table.columns` 给出列顺序和嵌套字段路径，common 用从零起的列序号存共同值，每行只提供其余列；kind=array 保留行顺序，kind=object 将 keys 与 rows 对齐；`$literal` 保留原始保留键对象，不再解码。此表示无损保留原 `model_view` 的全部事实、类型、顺序和证据引用，不增加采样或删减。原五包继续作为完整来源；不要假设值总在 `.records[0].value`。旧无编码页、`analysis-task --section facts --export-dir <分析目录内新目录>` 及 `analysis-plan/read-analysis` 仍兼容，分别用于旧流程接续和定向全文溯源，不与新会话反复重复导出。inputSha256 绑定事实、图片、Prompt 和读取/会话实现；自定义分类仍使用 `sha256:<manifestSha256>`。
 
@@ -39,17 +37,11 @@ CLI 默认返回 `format=analysis-navigation-v1`、`taskId`、`inputSha256`、`i
 - material：全部脚本、帧、缺失和证据，时序保留峰值与点数；原points在事实包供报告曲线。不得据精简视图推断完整走势，必要时按sourceFile/sourcePath定向读取。
 - chapter04：全部成功帧的两套分类，每组默认一条共性判断和一个方向，不能遗漏frameRef。
 
-会话当前任务的 `navigation.submissionTemplate` 给出只读提交外壳：`{"inputSha256":"返回的绑定","taskId":"当前任务","part":{模型直接撰写的字段}}`。将其复制到独立 `submission.json` 后填写，不能原地修改模板；导航、事实页、图片组及模板发布后均不可变。章节 part 仅包含该章字段；素材 part 包含仅当前素材的 `materialAnalyses` 数组。每个片段仍须满足下方完整内容契约。提交一次完成已存观察和分类成员展开、片段预检、必要的帧 checkpoint、原文保存和下一任务导航；缺图、错误归属、引用/结构错误不会推进任务。若已接受提交后生成下一导航时超预算，已成功提交仍保留，按错误提示用无提交参数的 `analysis-session --legacy-work-item` 接续，不撤回或重复业务工作。不能隐藏 stderr 或只看管道末尾的退出码。
+会话当前任务的 `submissionTemplatePath` 给出提交外壳：`{"inputSha256":"返回的绑定","taskId":"当前任务","part":{模型直接撰写的字段}}`。章节 part 仅包含该章字段；素材 part 包含仅当前素材的 `materialAnalyses` 数组。每个片段仍须满足下方完整内容契约。提交一次完成片段预检、必要的帧 checkpoint、原文保存和下一任务导航；缺图、错误归属、引用/结构错误不会推进任务。不能隐藏 stderr 或只看管道末尾的退出码。
 
-素材的 `navigation.currentImages` 指向本组图片文件，`entries` 只含当前最多 **3 张**待看唯一 JPEG，并直接附 `observationsTemplate`；顶层 `images` 是本组数量，`remainingImages` 是当前冻结账本批次尚未观察的唯一图片数（含本组），不是整个素材或运行的剩余数；素材含后续账本批次时，继续依正式导航处理。全缓存素材返回 `currentImages=null`、`images=0`，从 `navigation.cachedObservations` 的普通 entries/nextPage 索引复用观察。账本新批次最多 **6 个唯一 SHA**，旧 **4 帧**账本按原冻结批次续接；legacy 的 `frameReview.visionBatches` 仍兼容。
+素材的 `frameReview.visionBatches` 将当前待看图片分为每组最多 **3 张**；账本新批次最多 **6 个唯一 SHA**，旧 **4 帧**账本按原冻结批次续接。每看完一组就用 `--observations-json` 保存，不等待整素材，更不等上下文压缩后再回读工具日志。观察 JSON 与 checkpoint 形状相同：`inputIndexSha256`、当前批次全部 `frameRefs`、`observations`；observations 只写本组实际看的唯一 SHA，每条为 `sourceFrameRef/visualObservation`，用少量真实主体、动作/状态和信息层要点，不能提交 null。暂存不会把尚未看的帧标为完成，返回状态只列剩余 SHA。最后一组可作为提交外壳的可选 `frameObservations`，与 part 一次提交；它和 `--observations-json` 不能同时使用。
 
-每看完一组就将 `observationsTemplate` 复制到独立 `observations.json` 后填写，用 `--observations-json` 保存，不原地修改图片组文件；不等待整素材，更不等上下文压缩后再回读工具日志。观察 JSON 与 checkpoint 形状相同：`inputIndexSha256`、当前批次全部 `frameRefs`、`observations`；observations 只写本组实际看的唯一 SHA，每条包含 `sourceFrameRef`、非空 `visualObservation`，并在新模板的 `standardCategory` 填写当前模型看图判断的 `portrait/product/other`，不能提交 null。观察只写少量真实主体、动作/状态和信息层要点。标签在协议上可省略以兼容旧账本，不能据标题、脚本或文件名补猜。暂存不会把尚未看的帧标为完成，下一导航只提供剩余图片；已读事实索引不变。最后一组可作为提交外壳的可选 `frameObservations`，与 part 一次提交；它和 `--observations-json` 不能同时使用。
-
-图片和缓存条目的 `frameRefs` 明确列出同一 SHA 对应的当前素材全部帧引用；`sourceFrameRef` 保留首次观察来源，可能属于此前素材，不把它误作本素材引用。
-
-素材模板省略 `highlightAnalyses[*].visualObservation`，模型无需将已保存观察再抄一遍。保留每个成功帧的条目与 `frameRef`，由 session 按实际 SHA 从当前模型账本逐字回填缺省字段；省略字段与显式 null 不同，后者不能通过校验。显式提供文字的旧片段仍按原内容校验。所有商业解释、证据引用和限制仍由模型按各素材事实撰写，不能跨素材照抄。程序在 `state.json` 对应 completed 项的 `visualAssembly` 记录观察来源、图片 SHA 和观察文本哈希；最终候选仍含完整观察，不降低覆盖要求。
-
-Chapter 04 的事实页保留 `reviewedVisuals`，包含完整 SHA 观察、已存标准分类及全部对应 frameRefs。所有成功帧都有模型标准分类时，提交模板按 `portrait/product/other` 固定顺序预置实际非空类别，省略各标准组 `frameRefs`；模型填写正文和组内 `evidenceRefs`，session 按标签展开完整成员并写 `visualAssembly` 收据。程序不会生成判断、猜标签或替模型选择证据。`customClassification` 的全部显式 `frameRefs`、分类边界、正文和引用仍由模型填写。旧账本缺任一标签时，模板保留两套分类手写完整 frameRefs 的兼容方式；已有标准类别须保持，只对缺标签帧补充分类判断，不用为升级重复查看已核验图片。疑义或复核命中时定向看对应 JPEG，不重新打开整批图片。观察来自真实工具，SHA 和笔记本身不能证明已经看图。
+已全缓存无需再看，程序在素材提交时推进缓存覆盖；不能跨素材照抄商业解释。Chapter 04 的 factsPages 增加 `reviewedVisuals`，包含完整 SHA 观察及全部对应 frameRefs；据此核对两套分类，疑义或复核命中时定向看对应 JPEG，不重新打开整批图片。观察来自真实工具，SHA 和笔记本身不能证明已经看图。
 
 普通接续只重跑无提交参数的 analysis-session，读取当前工作项和 `contextHandoff.resumePath` 对应的 `resume.json`。完成的事实、图片观察及片段留磁盘，不再塞回主上下文。相同 submission 和已保存 stash 可幂等重试；中断后不用重新撰写已接受片段。`elapsedSeconds` 是任务激活到接受提交的墙钟，包含 idle，不是模型推理时间；字节数和本地准备耗时也不等于 token 或 AI 提速。
 
