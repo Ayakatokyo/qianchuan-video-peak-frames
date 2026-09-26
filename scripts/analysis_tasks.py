@@ -16,7 +16,7 @@ from batch_runtime import write_json_atomically
 TASK_SECTIONS = ('all', 'facts', 'contract', 'references')
 
 WRITING_RULE = ('统一精简分析：总览100–150字；维度40–70字；脚本每条50–80字；'
-                '唯一画面观察25–60字；素材核心判断80–120字；每组一条共性和一个测试方向。'
+                '唯一画面观察通常40–70字；素材核心判断80–120字；每组一条共性和一个测试方向。'
                 '字数仅为上限倾向，证据不足可更短，不凑字；null必须由模型填写，不能直接交付。')
 
 
@@ -114,7 +114,7 @@ def output_skeleton(task_id, facts, manifest_sha):
         'audienceConclusion', 'scriptConclusion', 'interactionConclusion', 'integratedConclusion', 'decision', 'nextAction')},
         'frameCoverageNote': None if facts.get('highlight', {}).get('missingFrames') else '', 'evidenceRefs': [],
         'highlightAnalyses': [{'frameRef': f['evidenceRef'], 'visualObservation': None,
-                              'commercialInterpretation': None} for f in facts.get('highlight', {}).get('frames', [])]}]}
+                              'interpretationStatus': 'observation_only'} for f in facts.get('highlight', {}).get('frames', [])]}]}
 
 
 def _packets(root, task_id=None, section='all', *, loaded_units=None):
@@ -161,9 +161,10 @@ def _packets(root, task_id=None, section='all', *, loaded_units=None):
         if task['taskId'].startswith('material-'):
             from final_report_lib import ALLOWED_DECISIONS
             packet['allowedDecisions'] = sorted(ALLOWED_DECISIONS)
-            packet['frameWritingRule'] = ('每帧写 visualObservation 与有证据的 commercialInterpretation；'
-                '不足时用 interpretationStatus=insufficient_evidence + limitation，不能强编。'
-                '同素材同图可用 shared + sharedInterpretationRef 指向直接 supported 帧；观察缓存不替代商业分析。')
+            packet['frameWritingRule'] = ('每帧只写一段 visualObservation，通常 40–70 字，完整交代主体、动作/状态、产品和关键字幕；'
+                '按实际可见内容取舍，不凑字，不展开无关服饰、陈设和光效。'
+                'interpretationStatus 固定为 observation_only，不写 commercialInterpretation、limitation 或 sharedInterpretationRef；'
+                '不可辨认的信息在描述中简短说明。相同 JPEG 直接复用观察，商业判断集中在素材核心结论和第四章。')
         if section != 'all':
             selected = {'facts': 'scopedFacts', 'contract': 'outputSkeleton',
                         'references': 'allowedEvidenceRefs'}[section]

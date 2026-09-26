@@ -39,7 +39,7 @@ python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千�
 
 会话当前任务的 `submissionTemplatePath` 给出提交外壳：`{"inputSha256":"返回的绑定","taskId":"当前任务","part":{模型直接撰写的字段}}`。章节 part 仅包含该章字段；素材 part 包含仅当前素材的 `materialAnalyses` 数组。每个片段仍须满足下方完整内容契约。提交一次完成片段预检、必要的帧 checkpoint、原文保存和下一任务导航；缺图、错误归属、引用/结构错误不会推进任务。不能隐藏 stderr 或只看管道末尾的退出码。
 
-素材的 `frameReview.visionBatches` 将当前待看图片分为每组最多 **3 张**；账本新批次最多 **6 个唯一 SHA**，旧 **4 帧**账本按原冻结批次续接。每看完一组就用 `--observations-json` 保存，不等待整素材，更不等上下文压缩后再回读工具日志。观察 JSON 与 checkpoint 形状相同：`inputIndexSha256`、当前批次全部 `frameRefs`、`observations`；observations 只写本组实际看的唯一 SHA，每条为 `sourceFrameRef/visualObservation`，用少量真实主体、动作/状态和信息层要点，不能提交 null。暂存不会把尚未看的帧标为完成，返回状态只列剩余 SHA。最后一组可作为提交外壳的可选 `frameObservations`，与 part 一次提交；它和 `--observations-json` 不能同时使用。
+素材的 `frameReview.visionBatches` 将当前待看图片分为每组最多 **3 张**；账本新批次最多 **6 个唯一 SHA**，旧 **4 帧**账本按原冻结批次续接。每看完一组就用 `--observations-json` 保存，不等待整素材，更不等上下文压缩后再回读工具日志。观察 JSON 与 checkpoint 形状相同：`inputIndexSha256`、当前批次全部 `frameRefs`、`observations`；observations 只写本组实际看的唯一 SHA，每条为 `sourceFrameRef/visualObservation`，通常用 40–70 字写一段完整的真实主体、动作/状态、产品和关键字幕描述，不凑字、不缩成标签，不能提交 null。暂存不会把尚未看的帧标为完成，返回状态只列剩余 SHA。最后一组可作为提交外壳的可选 `frameObservations`，与 part 一次提交；它和 `--observations-json` 不能同时使用。
 
 已全缓存无需再看，程序在素材提交时推进缓存覆盖；不能跨素材照抄商业解释。Chapter 04 的 factsPages 增加 `reviewedVisuals`，包含完整 SHA 观察及全部对应 frameRefs；据此核对两套分类，疑义或复核命中时定向看对应 JPEG，不重新打开整批图片。观察来自真实工具，SHA 和笔记本身不能证明已经看图。
 
@@ -63,11 +63,13 @@ python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千�
 
 新候选必须声明 `analysisProvenance: {"author":"current_model","businessTextGeneration":"direct"}`，正式组装保留片段及候选哈希。声明不证明来源真实；脚本改写过的候选必须留档并由当前模型重新分析，不能补声明放行。不得用质量复核单代写业务正文。
 
-逐帧观察仍必须覆盖每张成功 JPEG。商业解释支持三种形式：
+逐帧观察仍必须覆盖每张成功 JPEG。新分析只写 `frameRef`、`visualObservation` 和 `interpretationStatus: "observation_only"`：通常 40–70 字的一段描述，不写 `commercialInterpretation`、`limitation`、`sharedInterpretationRef`。无法辨认的内容在描述中简短说明；商业判断集中在单素材核心结论与第四章。最终第五部分仅显示时间/点击数及该段描述，没有小字商业解读。
 
-- 默认 `interpretationStatus: "supported"`（可省略）：填写 `commercialInterpretation`。
-- `interpretationStatus: "insufficient_evidence"`：`commercialInterpretation` 为空，填写具体 `limitation`。前端显示“证据不足”及原因。
-- `interpretationStatus: "shared"`：`commercialInterpretation` 为空，填写 `sharedInterpretationRef`。只允许同一素材、SHA-256 相同的 JPEG 引用一条直接的 supported 解释，禁止链式、循环和跨素材共享。前端展示被引用解释并注明共用。跨素材相同图片只能共享观察，商业解释仍核对各自事实。
+历史候选继续兼容以下状态，但不用于新分析，旧字段也不再展示为第二段：
+
+- `supported`（历史省略状态时的默认值）：保留已有 `commercialInterpretation`。
+- `insufficient_evidence`：保留具体 `limitation`，商业解释为空。
+- `shared`：保留 `sharedInterpretationRef`，只允许同一素材、SHA-256 相同 JPEG 的直接 supported 目标，禁止链式、循环和跨素材共享。历史商业解释仍按原证据规则校验。
 
 ## 校验和当前模型复核
 

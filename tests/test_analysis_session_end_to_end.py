@@ -6,6 +6,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 import sys
 
+import pytest
+
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
@@ -127,10 +129,15 @@ def authored_parts(manifest_sha):
             ('material-001', material), ('chapter04', chapter04)]
 
 
-def test_cli_complete_session_preserves_prose_observations_and_assembly_sources(tmp_path):
+@pytest.mark.parametrize('observation_only', [False, True])
+def test_cli_complete_session_preserves_prose_observations_and_assembly_sources(tmp_path, observation_only):
     root = synthetic_inputs(tmp_path)
     index = inspect_inputs(root)
     authored = authored_parts(index['manifestSha256'])
+    if observation_only:
+        for frame in authored[3][1]['materialAnalyses'][0]['highlightAnalyses']:
+            frame['interpretationStatus'] = 'observation_only'
+            frame.pop('limitation')
     work = advance(tmp_path)
     assert work['taskCount'] == 5
     for task_id, part in authored[:3]:

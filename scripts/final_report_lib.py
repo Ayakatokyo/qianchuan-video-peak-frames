@@ -283,19 +283,23 @@ def _validate_v2_highlight_analysis(raw, material_index, index):
     status = _text(raw.get("interpretationStatus")) or "supported"
     limitation = _text(raw.get("limitation"))
     shared_ref = _text(raw.get("sharedInterpretationRef"))
-    if status not in {"supported", "insufficient_evidence", "shared"}:
+    if status not in {"observation_only", "supported", "insufficient_evidence", "shared"}:
         raise FinalReportError("unsupported interpretationStatus")
+    if status == "observation_only" and (commercial_interpretation or limitation or shared_ref):
+        raise FinalReportError("observation_only requires a visual description without commercial interpretation fields")
     if status == "insufficient_evidence" and (not limitation or commercial_interpretation or shared_ref):
         raise FinalReportError("insufficient_evidence requires limitation and no commercial claim")
     if status == "shared" and (not shared_ref or commercial_interpretation or limitation):
         raise FinalReportError("shared interpretation requires only sharedInterpretationRef")
     if status == "supported" and (shared_ref or limitation):
         raise FinalReportError("supported interpretation must not contain shared ref or limitation")
-    if not frame_ref or not visual_observation or (status == "supported" and not commercial_interpretation):
+    if not frame_ref or not visual_observation:
         raise FinalReportError(
             f"materialAnalyses[{material_index}].highlightAnalyses[{index}] "
-            "requires frameRef, visualObservation, and commercialInterpretation"
+            "requires frameRef and visualObservation"
         )
+    if status == "supported" and not commercial_interpretation:
+        raise FinalReportError("supported interpretation requires commercialInterpretation")
     return {
         "frameRef": frame_ref,
         "visualObservation": visual_observation,

@@ -1903,8 +1903,7 @@ function renderHighlightWorkspace(material) {
       Array.isArray(analysis.highlightAnalyses)
         ? analysis.highlightAnalyses.filter((item) => selectedRefs.has(text(item.frameRef)))
         : [],
-      framesByReference,
-      analysis.highlightAnalyses || []
+      framesByReference
     ));
   }
   function syncSelection() {
@@ -2083,7 +2082,7 @@ function renderFrameCoverageNote(note) {
   return card;
 }
 
-function renderHighlightFormula(highlights, framesByReference = new Map(), allHighlights = highlights) {
+function renderHighlightFormula(highlights, framesByReference = new Map()) {
   const card = element("div", "formula");
   card.append(element("b", "", "高光帧观察"));
   if (!Array.isArray(highlights) || highlights.length === 0) {
@@ -2094,17 +2093,9 @@ function renderHighlightFormula(highlights, framesByReference = new Map(), allHi
     const frame = framesByReference.get(text(item.frameRef)) || {};
     const timingLabel = `${formatNumber(frame.durationSec)}s · 点击 ${formatNumber(frame.metricValue)}`;
     const paragraph = element("p", "highlight-note");
-    const shared = allHighlights.find((candidate) => candidate.frameRef === item.sharedInterpretationRef);
-    const interpretation = item.interpretationStatus === "insufficient_evidence"
-      ? `证据不足：${text(item.limitation)}`
-      : item.interpretationStatus === "shared"
-        ? `与本素材相同画面共用解释：${text(shared?.commercialInterpretation)}`
-        : text(item.commercialInterpretation);
     paragraph.append(
       element("b", "", `${timingLabel}：`),
-      renderTextWithMaterialLinks(item.visualObservation),
-      document.createElement("br"),
-      elementWithMaterialLinks("small", "", interpretation)
+      renderTextWithMaterialLinks(item.visualObservation)
     );
     card.append(paragraph);
   });

@@ -2,7 +2,7 @@
 
 <!-- highlight-depth-policy: mechanism-depth-v1 -->
 
-统一精简分析，不设详细档位或切换参数。建议总览100–150字、经营/人群维度40–70字、两类脚本洞察每条50–80字、每张唯一画面观察25–60字、单素材核心结论80–120字；每个分类组默认一条共性判断和一个可测试方向。字数是表达预算，不是必须达到的门槛；保留事实、范围、引用及必要字段，不补字、不重复解释。
+统一精简分析，不设详细档位或切换参数。建议总览100–150字、经营/人群维度40–70字、两类脚本洞察每条50–80字、每张唯一画面观察通常40–70字、单素材核心结论80–120字；每个分类组默认一条共性判断和一个可测试方向。字数是表达预算，不是必须达到的门槛；保留事实、范围、引用及必要字段，不补字、不重复解释。
 
 先由正式 analysis-session 校验 manifest、五包、素材和 JPEG，再读本轮冻结的提示词一次及当前任务的 scopedFacts；每种结构首次读 contract，引用按需读取。原始五包是事实权威；默认不重复全文读取完整榜单和曲线。以下为必要时定向溯源的路径，模型分片撰写后组装唯一 JSON：
 
@@ -32,7 +32,7 @@
 
 Chapter 01 聚合引用以 referencePages 为准；Chapter 03 的 batchInsights 只用 evidenceRules 中的标签型引用，关键词文本引用只用于关键词自身卖点，不能把总 allowedEvidenceRefs 当成所有字段白名单。当前任务只写负责的字段，按 submissionTemplatePath 的 `inputSha256/taskId/part` 外壳直接撰写 JSON。使用正式 `--submission-json` 一次完成片段预检、帧 checkpoint 和下一任务导航，不能用临时脚本、循环或模板代写正文。
 
-素材按 `frameReview.visionBatches` 每组最多 3 张实际看图，每完成一组就用 `--observations-json` 保存 stashTemplate 中的非空真实观察，不等待整条素材留在内存。观察文件包含 inputIndexSha256、当前账本批次全部 frameRefs、observations（每条 sourceFrameRef/visualObservation）；只填本组实际看的唯一 SHA。最后一组可与 part 一同作为提交外壳的 frameObservations；不能同时使用两个提交选项。每图默认 25–60 字足够的主体、动作/状态和信息层要点，不写长篇服饰环境报告后再抄成 JSON。商业解释按本素材事实撰写，不能跨素材照抄。
+素材按 `frameReview.visionBatches` 每组最多 3 张实际看图，每完成一组就用 `--observations-json` 保存 stashTemplate 中的非空真实观察，不等待整条素材留在内存。观察文件包含 inputIndexSha256、当前账本批次全部 frameRefs、observations（每条 sourceFrameRef/visualObservation）；只填本组实际看的唯一 SHA。最后一组可与 part 一同作为提交外壳的 frameObservations；不能同时使用两个提交选项。每图只写一段完整画面描述，通常 40–70 字，交代主体、动作/状态、产品和关键字幕；不缩成标签，不补字，不展开无关服饰、背景陈设与光效。相同 JPEG 复用观察，不另写逐帧商业解释；商业判断集中在素材核心结论与第四章。
 
 Chapter 04 的 reviewedVisuals 提供完整 SHA 观察及对应全部 frameRefs，结合本章事实完成两套分类；不重新打开整批图片，只有机制不清、具体疑义或复核命中时定向看图。category 只允许 portrait、product、other；机制分类仍遵循下方内容契约。
 
@@ -44,7 +44,7 @@ Chapter 04 的 reviewedVisuals 提供完整 SHA 观察及对应全部 frameRefs�
 - frame-review-progress.json 全部引用覆盖后必须为 status=complete、pendingFrameRefs=[] 且有 completedAt。会话 ready_for_validation 只是候选已组装，使用返回 analysisJson 继续原 validate-analysis、内容复核与 finalize；不把预检或会话完成当作内容通过。
 - 只用本次 manifest 的事实与 JPEG；历史 AI JSON 不是 schema 模板。模型直接写文件，正式程序只保存、校验、组装模型文字，不生成或补长业务结论。质量元数据保留在机器产物，不写入业务正文。
 - 相同 JPEG 的观察可按程序计算的 SHA 缓存，仍保留全部 frameRefsBySha256；路径/标题或模型自报哈希不能替代。相邻帧无可见变化、字幕不可辨或无字幕时如实说明，不制造独有差异。
-- 相同图片不能证明人群、互动或商业效果相同。商业解释须核对本素材事实，支持下文的具体证据不足或同素材同图共享形式。相似度命中真实重复时保留证据并写复核理由，不随机标记、同义替换或关闭门禁。
+- 相同图片不能证明人群、互动或商业效果相同。单素材核心结论须核对本素材事实，不另写逐帧商业解释。相似度命中真实重复时保留证据并写复核理由，不随机标记、同义替换或关闭门禁。
 
 ## 五章分析边界
 
@@ -88,7 +88,7 @@ highlightDashboard 与 customClassification 每个非空组默认一条 commonCo
 
 仅在实际证据不足时可少于上述数量：类别不足 3 个须填写 customClassification.classificationLimitation；某组无法支持一条结论或一个方向时须填写该组 contentLimitation，说明已核对的画面、能支持什么及无法继续细分/提出变量的具体缺口。程序会产生独立复核项，只有 evidence_limited 决定可放行，并在对应分类/分析区展示边界。缺少限制说明会硬失败；不能用“不能证明成交因果”替代对画面类别不足的说明，因为分类依据是可见机制而非因果证明。两类限制字段仅用于真实不足，不默认填写。共性结论仍至少保留一条有依据的观察或具体证据限制；无法支持任何裂变方向时可留空数组并说明原因。禁止以“保持主体、替换一个变量、比较 ROI”等通用模板代替分析。
 
-逐帧 commercialInterpretation 有三种形式：默认 supported 写简短解释；insufficient_evidence 留空解释并填写具体 limitation；shared 留空解释并填写 sharedInterpretationRef，只能引用同素材、相同本地 JPEG 哈希的直接 supported 解释。不得跨素材、链式或循环共享；图片相同不能证明商业效果相同。
+新分析逐帧固定使用 interpretationStatus: observation_only，只写 frameRef、visualObservation 和该状态，不写 commercialInterpretation、limitation 或 sharedInterpretationRef。图片模糊、文字不可辨等限制融入本段描述，不为每帧生成商业推论或证据不足说明。图片相同只能复用观察，不能据此推断商业效果相同。旧 supported / insufficient_evidence / shared 格式仅用于历史分析兼容，不用于新分析。
 
 ### Chapter 05：单素材深度分析
 
@@ -122,7 +122,7 @@ highlightDashboard 与 customClassification 每个非空组默认一条 commonCo
 - 对每条有高光帧的素材，必须分别填写人群、脚本和高光帧分析。事实不足时明确写“数据不足以判断”。
 - 每一张高光帧都必须对应一条 `highlightAnalyses`；这里的高光帧仅指 `chapter04-highlight-input.json` 的 `materials[*].frames` 中成功生成的 JPEG。`highlightAnalyses` 数量必须等于该素材 `frames` 数量，`highlightAnalyses[*].frameRef` 集合必须与该素材 `frames[*].evidenceRef` 集合完全一致。不得只分析 zero_second 和 peak_top_1；若事实包包含 peak_top_2 至 peak_top_5，也必须分别输出对应分析。
 - 若该素材在 `chapter04-highlight-input.json` 的 `materials[*].missingFrames` 非空，`frameCoverageNote` 必须说明哪个预期帧不可用，并明确视觉结论基于其余成功帧；`missingFrames` 为空时该字段必须是空字符串。少于 5 个已识别局部峰值属于点击曲线特征，不得写成技术缺失。
-- 高光帧的 `visualObservation` 必须来自实际 JPEG。商业解释仅依据可支持的画面机制与本素材事实，证据不足使用上述结构化状态。不同 JPEG 可能没有可见差异，不虚构独有动作、字幕和叙事作用。
+- 高光帧的 `visualObservation` 必须来自实际 JPEG。仅描述可见信息，不追加逐帧商业解释。不同 JPEG 可能没有可见差异，不虚构独有动作、字幕和叙事作用。
 - `evidenceRefs` 与 `frameRef` 必须逐字复制事实包中的证据标识，不得自造素材 ID、指标、分桶、脚本标签或帧类型。当前事实包没有脚本分段时码，不得宣称帧对应具体话术，也不得根据整段脚本猜测画面所在秒的话术。
 - 事实包缺失输入时，不要生成单独的数据质量段落；必须在对应的 `batchInsights` 或 `materialAnalyses` 字段内用“数据不足以判断”等业务可见措辞说明边界。
 
@@ -351,8 +351,8 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
       "highlightAnalyses": [
         {
           "frameRef": "<逐字复制成功帧引用>",
-          "visualObservation": "<真实 JPEG 观察>",
-          "commercialInterpretation": "<谨慎解释>"
+          "visualObservation": "<通常40–70字的一段完整真实画面描述>",
+          "interpretationStatus": "observation_only"
         }
       ],
       "frameCoverageNote": "",
@@ -366,4 +366,4 @@ validate-analysis 输出 error、review、advice 三层：error 必须修正；r
 }
 ```
 
-batchInsights 的 audience 实际恰好三条，按 SHOW_COUNT、CLICK_COUNT、TRANSACTION_AMOUNT 排列；脚本结论保留“一二级内容公式：”和“脚本文案：”两个角度。keywordCloudReview.decision 仅为 accept/exclude/merge；merge 的 target 指向实际合并目标。无 hotMaterialRule 时省略 hotMaterialInsight。分类/卖点/逐帧解释证据不足、同素材同 SHA 解释共享时，使用上文规定的 limitation、classificationLimitation、contentLimitation、interpretationStatus、sharedInterpretationRef 字段和对应复核流程，不提交占位正文。
+batchInsights 的 audience 实际恰好三条，按 SHOW_COUNT、CLICK_COUNT、TRANSACTION_AMOUNT 排列；脚本结论保留“一二级内容公式：”和“脚本文案：”两个角度。keywordCloudReview.decision 仅为 accept/exclude/merge；merge 的 target 指向实际合并目标。无 hotMaterialRule 时省略 hotMaterialInsight。分类/卖点证据不足时，使用上文规定的 limitation、classificationLimitation、contentLimitation 和对应复核流程，不提交占位正文。逐帧只采用 observation_only，不用商业解释状态补写第二段。

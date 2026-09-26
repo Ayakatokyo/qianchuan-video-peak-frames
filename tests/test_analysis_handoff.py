@@ -188,11 +188,12 @@ class EvidenceReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(report.FinalReportError, "identical local JPEG"):
                 helper._build_data(payload)
 
-    def test_frontend_resolves_unselected_shared_target_and_displays_limitation(self):
+    def test_frontend_keeps_only_one_description_per_frame_for_legacy_data(self):
         node = shutil.which("node")
         if not node:
             self.skipTest("Node.js required for offline frontend behavior check")
-        template = (ROOT / "templates/final-report-template.html").read_text()
+        from report_renderer import render_html_report
+        template = render_html_report({"status": "complete"})
         function = template.split("function renderHighlightFormula", 1)[1].split("const highlightCategoryLabels", 1)[0]
         script = r'''
 const text = value => value == null ? "" : String(value);
@@ -208,8 +209,15 @@ const limited = {frameRef: "limited", interpretationStatus: "insufficient_eviden
 process.stdout.write(JSON.stringify(renderHighlightFormula([shared, limited], new Map(), [original, shared, limited])));
 '''
         result = subprocess.run([node, "-e", script], capture_output=True, text=True, check=True)
-        self.assertIn("保留礼盒识别线索。", result.stdout)
-        self.assertIn("证据不足：字幕不可辨。", result.stdout)
+        self.assertIn("同图。", result.stdout)
+        self.assertIn("瓶身遮挡字幕。", result.stdout)
+        self.assertNotIn("保留礼盒识别线索。", result.stdout)
+        self.assertNotIn("证据不足：字幕不可辨。", result.stdout)
+        paragraphs = [n for n in json.loads(result.stdout)["children"] if n["tag"] == "p"]
+        self.assertEqual(len(paragraphs), 2)
+        for paragraph in paragraphs:
+            self.assertEqual(len(paragraph["children"]), 2)
+            self.assertEqual(paragraph["children"][0]["tag"], "b")
 
     def test_review_required_and_bound_to_candidate_input_and_evidence(self):
         with tempfile.TemporaryDirectory() as directory:

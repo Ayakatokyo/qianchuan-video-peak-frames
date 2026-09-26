@@ -49,7 +49,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 | unknown/illegal evidence reference | 回到对应章节精确查找合法引用；禁止从旧 JSON 复制或仅字符串替换 ID |
 | 缺字段、枚举、覆盖错误 | 保持事实不动，由当前模型补齐本次输出结构与遗漏项 |
 | 文本相似或长度提示 | 相似度进入当前模型证据复核，字数仅作 advice；套话必须重写，不通过脚本补字数 |
-| 相同图片的重复观察 | 本地文件 SHA-256 一致时，仅视觉观察重复可以豁免；同素材同图可使用 sharedInterpretationRef；其他商业解释需证据复核，分组、引用与覆盖照常检查 |
+| 相同图片的重复观察 | 本地文件 SHA-256 一致时，仅视觉观察重复可以豁免；新分析只写 observation_only 的一段画面描述；历史商业解释及 sharedInterpretationRef 仍按原规则校验，分组、引用与覆盖照常检查 |
 | 疑似相似度误判/事实无法支持额外解释 | 保存候选 JSON、冲突字段和真实证据，用最小样本定位；不降低阈值、不改图、不随机改写求通过 |
 | 工具策略拒绝/任务中断 | 单列工具状态，按断点恢复；不能冒充 RPA、事实包或质量门禁失败 |
 
@@ -87,7 +87,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 观察 JSON 固定包含 `inputIndexSha256`、当前账本批次全部 `frameRefs`、`observations`；observations 只写本组实际看的 SHA，每条包含 `sourceFrameRef` 和非空 `visualObservation`，不能提交模板 null。当前模型用文件工具写 JSON，不执行临时脚本。部分 stash 原子保存到 `visualObservationCache`，未看的帧仍待处理；后续工作项只给剩余 imagesToView，cachedObservations 直接复用，不再从 Bash 摘录图片工具长篇返回或运行 find/sha256sum 重建去重表。
 
-最后一组观察可随提交外壳的 `frameObservations` 一并送入 `--submission-json`，外壳必须有当前 `inputSha256/taskId/part`；part 由模型直接撰写。入口执行片段预检、所需帧 checkpoint 和下一任务导航；缺图/结构错误停留当前任务，不把部分保存误作完成。全缓存素材无需再看图，仍须根据各自人群、脚本、互动和经营事实写商业解释。相同 submission、已保存 stash 可幂等重试，不改写已接受内容。
+最后一组观察可随提交外壳的 `frameObservations` 一并送入 `--submission-json`，外壳必须有当前 `inputSha256/taskId/part`；part 由模型直接撰写。入口执行片段预检、所需帧 checkpoint 和下一任务导航；缺图/结构错误停留当前任务，不把部分保存误作完成。全缓存素材无需再看图，复用一段画面描述即可；素材核心结论仍须根据各自人群、脚本、互动和经营事实撰写，不另写逐帧商业解释。相同 submission、已保存 stash 可幂等重试，不改写已接受内容。
 
 正常中断只重跑不带提交参数的 analysis-session，读取当前工作项与 `contextHandoff.resumePath` 指向的 `resume.json`，已完成事实、观察、片段都留磁盘。宿主提供正式上下文压缩能力时可在素材提交成功后使用，仅保留恢复指针、当前任务及未解决问题；技能无法强制清空宿主历史，不能新建子代理绕开单 Agent 边界。任务 elapsedSeconds 包含空闲和等待，不是模型推理耗时。
 
