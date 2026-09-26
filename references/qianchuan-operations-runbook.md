@@ -38,7 +38,7 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 ### AI 交接与失败定位
 
 - 当前对话模型就是分析执行者，`analysis_pending` 不需要另一个模型 API。正式 JSON 合并之前，可以多轮读文件、看图、记录要点并逐项撰写分析片段；不要以“没有模型调用接口”结束任务。
-- 默认通过 analysis-session 领取/恢复当前任务，顺序为 Chapter 01、02、03 → 逐素材 → Chapter 04。CLI 返回固定 navigation，所有相对路径以 navigation.basePath 为基准；完整读 navigation.facts 索引所列事实页，每种结构首次读 navigation.contract，引用按需读 navigation.references。索引是普通 entries 数组，沿 nextPage 读完；事实页仍以 lossless-tables-v1 首条 record 给出无损解码说明，保留原 model_view 全部事实，各页不超过 8000 UTF-8 字节。暂存观察后同任务事实索引不变，不重复读已读事实。--legacy-work-item 保留旧 factsPages/workItemPages 封套，旧 analysis-task 导出仍兼容，不反复导出已完成任务。
+- 默认通过 analysis-session 领取/恢复当前任务，顺序为 Chapter 01、02、03 → 逐素材 → Chapter 04。完整读当前 factsPages，每种结构首次读 contractPages，引用按需读 referencePages；若返回 workItemPages，先完整读取工作项分页。所有页不超过 8000 UTF-8 字节，lossless-tables-v1 首条 record 给出无损解码说明，保留原 model_view 全部事实。旧 analysis-task 导出仍兼容，不反复导出已完成任务。
 - 帧账本中的实际标识来自 `frames[*].evidenceRef`，不是不存在的 `frameRef` 输入字段。逐帧记录 frameRef、framePath、图像 SHA-256、少量实际观察和状态；仅有 completed ID、没有可恢复笔记不算可复用的审阅结果。
 - 原文件哈希一致且笔记完整时续接未完成部分；文件变化或笔记丢失则重新审阅受影响帧。同字节图像允许复用视觉要点，但保留所有素材/帧的覆盖记录，核对每条素材各自的上下文。相同图片的来源正确性仍需核对本地 summary、视频和抽帧记录，不能从重复图片推出素材业务一致。
 - 新生成的 JSON 不继承旧运行的内容、引用或分类；机器只可序列化模型生成内容、合并已经逐项确认的字段及校验格式，不可循环拼经营结论、添加通用尾句或删除难通过的字段。
@@ -79,21 +79,19 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 `frame-review-progress.json` 的 `visualObservationCache` 保存唯一图观察，`frameRefsBySha256` 保存全部已完成帧的 SHA 映射；暂存不增加完成引用，只有全批核验通过才更新覆盖。
 
-正式入口已返回当前任务、图片组和提交模板，不得再经 Bash 二次摘录。默认 `navigation` 固定包含 `basePath/facts/contract/references/submissionTemplate/currentImages/cachedObservations`，相对路径统一以 basePath 为基准。索引固定 entries/nextPage，不再猜数组或 `$table` 形状；原事实页继续无损解码。导航、索引、图片组和原事实页均不超过 8000 UTF-8 字节；超长提交模板会明确失败，使用 `--legacy-work-item` 按无损方式读取，旧工作项过长时完整读 workItemPages，不用 head/tail 丢掉图片或后续页。
-
-发布后的导航、事实页、图片组及 submissionTemplate 都只读且不可变。将提交模板复制到独立 submission.json 后填写，将 observationsTemplate 复制到独立 observations.json 后填写；不要原地编辑发布文件。若提交已接受而下一导航超预算，成功提交保留，用无提交参数的 `analysis-session --legacy-work-item` 接续，不撤回或重复业务工作。
+正式入口已返回当前任务、图片组和提交模板，不得再经 Bash 二次摘录；过长响应按 workItemPages 完整读取，不用 head/tail 丢掉图片或后续页。
 
 默认由正式 `analysis-session` 管理帧审阅、片段提交和下一任务导航，三个调用示例与提交结构见[分析交接契约](analysis-handoff.md#无损读取与执行顺序)。会话沿用 `analysis-input-index.json`（schemaVersion=2），冻结五章事实 manifest、Prompt、每个 materialId、frameRef、framePath 和实际 JPEG SHA-256。实际引用来自事实包的 `frames[*].evidenceRef`，不猜字段或自造引用。
 
-默认 `navigation.currentImages` 文件的 entries 每组最多 3 张唯一 JPEG，直接附 `observationsTemplate`；`images` 表示本组数量，`remainingImages` 表示当前冻结账本批次尚未观察的唯一图片数（含本组），不是整个素材或运行的剩余数；有后续账本批次时继续依导航处理。按组实际看图并通过 `--observations-json` 保存；不要先看完整批再把观察留在内存。legacy 的 `frameReview.visionBatches/stashTemplate` 保持兼容。新账本每批最多 6 个唯一 SHA，旧 4 帧账本按冻结批次兼容续接；账本批次和图片工具分组不能混淆。原图、所有成功帧与 frameRef 完整保留，不降采样。
+`frameReview.visionBatches` 每组最多 3 张唯一 JPEG，按组实际看图，立即用该组 `stashTemplate` 填写少量观察并通过 `--observations-json` 保存；不要先看完整批再把观察留在内存。新账本每批最多 6 个唯一 SHA，旧 4 帧账本按冻结批次兼容续接；账本批次和图片工具分组不能混淆。原图、所有成功帧与 frameRef 完整保留，不降采样。
 
-观察 JSON 固定包含 `inputIndexSha256`、当前账本批次全部 `frameRefs`、`observations`；observations 只写本组实际看的 SHA，每条包含 `sourceFrameRef` 和非空 `visualObservation`。新模板还要求首次看图填写 `standardCategory` 为 `portrait/product/other`，分类必须由模型看图判断，不能提交模板 null 或据脚本猜测。协议保留无标签旧观察兼容。当前模型用文件工具写 JSON，不执行临时脚本。部分 stash 原子保存到 `visualObservationCache`，未看的帧仍待处理；后续导航只给下一组，已读事实索引稳定，无需重读。全缓存返回 `currentImages=null/images=0`，读取 `navigation.cachedObservations` 直接复用，不再从 Bash 摘录图片工具长篇返回或运行 find/sha256sum 重建去重表。
+观察 JSON 固定包含 `inputIndexSha256`、当前账本批次全部 `frameRefs`、`observations`；observations 只写本组实际看的 SHA，每条包含 `sourceFrameRef` 和非空 `visualObservation`，不能提交模板 null。当前模型用文件工具写 JSON，不执行临时脚本。部分 stash 原子保存到 `visualObservationCache`，未看的帧仍待处理；后续工作项只给剩余 imagesToView，cachedObservations 直接复用，不再从 Bash 摘录图片工具长篇返回或运行 find/sha256sum 重建去重表。
 
-最后一组观察可随提交外壳的 `frameObservations` 一并送入 `--submission-json`，外壳必须有当前 `inputSha256/taskId/part`；part 由模型直接撰写。素材片段保留每帧条目和引用，可省略 `visualObservation` 字段，由入口按冻结 SHA 从模型账本逐字回填；不能填 null 或省略未看帧来绕过覆盖。入口先展开并预检，再保存所需帧 checkpoint 和下一任务导航；`state.json` 完成项的 `visualAssembly` 保留回填来源与哈希。缺图/结构错误停留当前任务，不把部分保存误作完成。全缓存素材无需再看图，仍须根据各自人群、脚本、互动和经营事实写商业解释。相同 submission、已保存 stash 可幂等重试，不改写已接受内容。
+最后一组观察可随提交外壳的 `frameObservations` 一并送入 `--submission-json`，外壳必须有当前 `inputSha256/taskId/part`；part 由模型直接撰写。入口执行片段预检、所需帧 checkpoint 和下一任务导航；缺图/结构错误停留当前任务，不把部分保存误作完成。全缓存素材无需再看图，仍须根据各自人群、脚本、互动和经营事实写商业解释。相同 submission、已保存 stash 可幂等重试，不改写已接受内容。
 
 正常中断只重跑不带提交参数的 analysis-session，读取当前工作项与 `contextHandoff.resumePath` 指向的 `resume.json`，已完成事实、观察、片段都留磁盘。宿主提供正式上下文压缩能力时可在素材提交成功后使用，仅保留恢复指针、当前任务及未解决问题；技能无法强制清空宿主历史，不能新建子代理绕开单 Agent 边界。任务 elapsedSeconds 包含空闲和等待，不是模型推理耗时。
 
-输入/实现指纹变化、图片被替换或已接受片段被修改时拒绝继续。需要实质改写已接受片段，用 `--session-dir <diagnostic-analysis 内新目录的绝对路径>` 保留旧会话另起；事实/Prompt/JPEG 变化须先在隔离副本核验并显式重建索引，不覆盖旧提示词快照。Chapter 04 使用 `reviewedVisuals` 的完整 SHA 观察、模型标准分类与全部 frameRefs，不重复看完整图集。全部成功帧已有 standardCategory 时，模板预置实际非空标准组，省略的 frameRefs 由程序展开并记录 visualAssembly；正文和组内 evidenceRefs 仍由模型写，customClassification 的成员仍完整显式填写。旧账本缺标签时，两套分类均手写完整 frameRefs，已有标准类别须保持，只对缺标签帧补充分类判断；程序不猜分类、不强制重看。机制不清或复核命中时定向回看。`ready_for_validation` 只表示候选已组装，必须用返回的 analysisJson 继续 validate-analysis、内容复核和 finalize。
+输入/实现指纹变化、图片被替换或已接受片段被修改时拒绝继续。需要实质改写已接受片段，用 `--session-dir <diagnostic-analysis 内新目录的绝对路径>` 保留旧会话另起；事实/Prompt/JPEG 变化须先在隔离副本核验并显式重建索引，不覆盖旧提示词快照。Chapter 04 使用 `reviewedVisuals` 的完整 SHA 观察与全部 frameRefs，不重复看完整图集；机制不清或复核命中时定向回看。`ready_for_validation` 只表示候选已组装，必须用返回的 analysisJson 继续 validate-analysis、内容复核和 finalize。
 
 独立旧流程仍支持 `frame-review` 查询当前批次、`--stash-json <观察文件>` 部分暂存、`--batch-json <checkpoint文件>` 完成整批；全部引用最终须为 status=complete 且有 completedAt。索引变化时显式 `--rebuild` 会保存旧索引/账本，只复用来源引用、路径、SHA 均未变的有效观察。旧四帧账本不需因升级而重看；无法验证的历史笔记不能猜测成已完成。SHA/笔记只支持复用，实际看图仍由真实工具日志证明。
 

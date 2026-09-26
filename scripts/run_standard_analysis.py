@@ -101,7 +101,6 @@ def build_parser():
     session = commands.add_parser("analysis-session", help="Resume a small authoring work item, stash observations or submit a model-authored part")
     session.add_argument("--output-dir", required=True)
     session.add_argument("--session-dir", help="Session subdirectory within diagnostic-analysis; default analysis-session")
-    session.add_argument("--legacy-work-item", action="store_true", help="Return the previous factsPages/frameReview envelope instead of stable navigation")
     submission = session.add_mutually_exclusive_group()
     submission.add_argument("--submission-json", help="Bound taskId/inputSha256, model-authored part, optional frameObservations")
     submission.add_argument("--observations-json", help="Persist the current small group of actual image observations immediately")
@@ -223,7 +222,7 @@ def main(argv=None):
             from analysis_task_io import pretty_json
             result = advance_session(Path(args.output_dir) / 'diagnostic-analysis',
                 session_dir=args.session_dir, submission_json=args.submission_json,
-                observations_json=args.observations_json, navigation=not args.legacy_work_item)
+                observations_json=args.observations_json)
             print(pretty_json(result))
             return 0
         if args.command == 'analysis-task':
