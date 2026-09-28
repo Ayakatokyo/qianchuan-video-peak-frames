@@ -22,11 +22,16 @@
 
 使用文件工具将当前模型撰写的片段保存为会话提交 JSON，正式入口组装唯一候选并返回 analysisJson；旧直接写入 `diagnostic-ai-analysis.json` 的路径仍兼容。只输出合法 JSON，不要用 Markdown 代码块包裹。
 
+
+执行 `analysis-session` 默认使用 `--compact`：stdout 仅返回状态、原始 exitCode、完整工作项 resumePath 及其字节数/SHA；先读取完整 resumePath，再读取其中全部 workItemPages 和所需 factsPages，不能把短回执当事实。旧不带 --compact 的入口仍返回完整工作项。禁止对任务导航、校验或提交命令使用 `| tail`、`| head` 截断输出；需要保存日志时直接重定向到本次运行目录的新文件，并保留 Python 原始退出码。若必须用 tee，调用方须启用 `set -o pipefail`，仍须检查实际命令退出码，不能用后续 echo/cat 的成功代替。compact 返回 status=error/exitCode=2 时不得将旧 resume.json 当本次成功；ready_for_validation 仍须继续结构校验、内容复核和 finalize。
+
+素材 `submissionTemplatePath` 现直接包含当前待看图的 `frameObservations` 对象（inputIndexSha256、整批 frameRefs、observations），不是数组。复制当前模板到独立提交文件，只填模型实际写出的正文，不手工重建外壳，不修改模板。部分暂存后模板路径会更新，仅含剩余待看图；全缓存素材不再附带观察对象。`frameCoverageNote` 无 missingFrames 时保留模板空字符串，不写“6/6全部成功”；有缺图时填真实缺口。模板中的 null 不是已完成观察，旧模板和原会话绑定保留。新实现用新的 session-dir/隔离运行副本，不覆写旧会话。
+
 ## 高效执行顺序
 
 禁止随机标记、同义改写和关闭门禁来消除校验告警；只修正有证据支持的字段，不补长正文求通过。
 
-默认使用 `analysis-session --output-dir <run>`，固定按 Chapter 01 → Chapter 02 → Chapter 03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读当前 factsPages；每种结构首次读 contractPages，引用不清时读 referencePages 或按需使用兼容的 analysis-task references 视图。若返回 workItemPages，先完整读这些页恢复工作项，再读它指向的事实和当前图片组。各页含封套不超过 8000 UTF-8 字节，按 nextPage 读到 null；截断不算已读，不反复加载已完成章节、素材或全部 Prompt。
+默认使用 `analysis-session --compact --output-dir <run>`，固定按 Chapter 01 → Chapter 02 → Chapter 03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读当前 factsPages；每种结构首次读 contractPages，引用不清时读 referencePages 或按需使用兼容的 analysis-task references 视图。若返回 workItemPages，先完整读这些页恢复工作项，再读它指向的事实和当前图片组。各页含封套不超过 8000 UTF-8 字节，按 nextPage 读到 null；截断不算已读，不反复加载已完成章节、素材或全部 Prompt。
 
 新页首条 record 的 `lossless-tables-v1`/readingGuide 说明解码：先还原 path/value、container/start/items/text 记录树，再按 $table.columns 的嵌套路径与顺序读取列，common 还原从零起的共同列，每行提供其余值；kind=array 保留行顺序，kind=object 对齐 keys/rows，$literal 保留原保留键对象。编码无损保留原 model_view 全部事实、类型、顺序和证据，不采样。旧无编码页、analysis-task 导出及 analysis-plan/read-analysis 仍兼容，仅用于既有流程或定向溯源，不重复全文读取原包。
 

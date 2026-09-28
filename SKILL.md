@@ -19,6 +19,11 @@ metadata:
 
 表单不再单独收集 `advertiser_id`。首次 `prepare` 或 `fetch-metadata` 在报表取数前按所选 `rpa_shop.extra.shop_id` 查询当前 RPA 授权列表，要求唯一记录的 `account` 是数字广告主 ID，再确认它唯一出现在所选 `api_shop.extra.shop_id` 的 API 广告主授权关系中；无法确认则停止，不提交报表或 RPA 任务。`resume` 可从匹配的运行摘要读取已确认的广告主 ID。`api_shop.extra.shop_id` 与 `rpa_shop.extra.shop_id` 属于不同 ID 域，**不得比较是否相等**。
 
+
+执行 `analysis-session` 默认使用 `--compact`：stdout 仅返回状态、原始 exitCode、完整工作项 resumePath 及其字节数/SHA；先读取完整 resumePath，再读取其中全部 workItemPages 和所需 factsPages，不能把短回执当事实。旧不带 --compact 的入口仍返回完整工作项。禁止对任务导航、校验或提交命令使用 `| tail`、`| head` 截断输出；需要保存日志时直接重定向到本次运行目录的新文件，并保留 Python 原始退出码。若必须用 tee，调用方须启用 `set -o pipefail`，仍须检查实际命令退出码，不能用后续 echo/cat 的成功代替。compact 返回 status=error/exitCode=2 时不得将旧 resume.json 当本次成功；ready_for_validation 仍须继续结构校验、内容复核和 finalize。
+
+素材 `submissionTemplatePath` 现直接包含当前待看图的 `frameObservations` 对象（inputIndexSha256、整批 frameRefs、observations），不是数组。复制当前模板到独立提交文件，只填模型实际写出的正文，不手工重建外壳，不修改模板。部分暂存后模板路径会更新，仅含剩余待看图；全缓存素材不再附带观察对象。`frameCoverageNote` 无 missingFrames 时保留模板空字符串，不写“6/6全部成功”；有缺图时填真实缺口。模板中的 null 不是已完成观察，旧模板和原会话绑定保留。新实现用新的 session-dir/隔离运行副本，不覆写旧会话。
+
 ## 约束
 
 - **二次分析内容契约**：Chapter 03 有证据时输出至少三条、两个维度的卖点，逐词绑定脚本证据；不足须显式填写 analysisStatus 和 limitation。Chapter 04 本批次分类默认 3–5 个有明确边界的机制类别；标准分类与本批次分类每个非空类别的共性结论、裂变方向默认各一条（结构兼容 1–3 条）。真实不足须填写 classificationLimitation / contentLimitation 并通过 evidence_limited 复核，不把不同机制合成单一混合类。正文必须由当前模型直接撰写并声明 analysisProvenance，不能用脚本或复核单代写；内容复核与结构通过分别记录，限制随报告交付。字段与复核细则见 [analysis handoff](references/analysis-handoff.md) 和正式 Prompt。
@@ -49,7 +54,7 @@ metadata:
 
 当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先读取正式任务的精简事实视图、查看图片并保存观察要点，由当前模型逐项写分析片段，最后合并成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
 
-**默认分析路径**：使用正式 `analysis-session --output-dir <run>`，固定按 Chapter 01、02、03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读取当前 `factsPages`；每种结构首次读取 `contractPages`，引用不清时读 `referencePages` 或按需使用兼容的 references 视图。长工作项返回 `workItemPages`，先完整读取这些页；所有页不超过 8000 UTF-8 字节，`lossless-tables-v1` 首条记录说明无损解码，保留原 `model_view` 的全部事实。默认按 `visionBatches` 集中查看当前素材批次最多 6 张唯一图，观察作为 `frameObservations` 连同模型片段用 `--submission-json` 一次提交；输出截断、工具容量限制或需要中断时才缩小分组并用 `--observations-json` 暂存，入口完成预检、帧 checkpoint 和下一任务导航。模型使用文件工具直接写 JSON，不新增临时脚本。Chapter 04 使用完整 `reviewedVisuals` 账本及全部 frameRefs，仅有疑义时定向复看。旧 `analysis-task` 导出、分片和组装入口继续兼容。具体结构和三条命令示例见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
+**默认分析路径**：使用正式 `analysis-session --compact --output-dir <run>`，固定按 Chapter 01、02、03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读取当前 `factsPages`；每种结构首次读取 `contractPages`，引用不清时读 `referencePages` 或按需使用兼容的 references 视图。长工作项返回 `workItemPages`，先完整读取这些页；所有页不超过 8000 UTF-8 字节，`lossless-tables-v1` 首条记录说明无损解码，保留原 `model_view` 的全部事实。默认按 `visionBatches` 集中查看当前素材批次最多 6 张唯一图，观察作为 `frameObservations` 连同模型片段用 `--submission-json` 一次提交；输出截断、工具容量限制或需要中断时才缩小分组并用 `--observations-json` 暂存，入口完成预检、帧 checkpoint 和下一任务导航。模型使用文件工具直接写 JSON，不新增临时脚本。Chapter 04 使用完整 `reviewedVisuals` 账本及全部 frameRefs，仅有疑义时定向复看。旧 `analysis-task` 导出、分片和组装入口继续兼容。具体结构和三条命令示例见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
 
 成功提交后，事实、图片观察和片段留在磁盘；接续只读当前工作项和 `contextHandoff.resumePath` 指向的 `resume.json`，不反复加载已完成历史。宿主提供正式上下文压缩能力时可在素材提交成功边界使用，仅保留恢复指针、当前任务及未解决问题；技能不能强制清空宿主历史，也不得新建子代理转移分析。已接受片段需修改，或输入/实现指纹变化时，保留旧会话并使用分析目录内新的 `--session-dir`，不改旧 Prompt 快照。`ready_for_validation` 只是候选已组装，必须继续原 validate-analysis / 内容复核 / finalize。
 

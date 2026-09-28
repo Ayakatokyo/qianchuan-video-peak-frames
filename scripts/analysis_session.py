@@ -99,7 +99,7 @@ def _is_saved_batch(index, state, batch, mid):
             or batch['inputIndexSha256'] != state['inputIndexSha256']
             or not isinstance(batch['frameRefs'], list) or not batch['frameRefs']
             or not isinstance(batch['observations'], list)):
-        raise ValueError('invalid frame observation payload')
+        raise ValueError('invalid frame observation payload: frameObservations must be an object with inputIndexSha256, frameRefs and observations; copy the current submissionTemplatePath')
     expected = {f['frameRef']: f for f in index['frames'] if f['materialId'] == mid}
     if any(not isinstance(ref, str) or ref not in expected for ref in batch['frameRefs']):
         raise ValueError('observations must belong to the current material')
@@ -249,9 +249,6 @@ def _work_item(root, directory, state, packets, context, *, observations_only=Fa
         result['referencePages'] = _write_pages(directory, task_id, 'references',
             {'allowedEvidenceRefs': packet['allowedEvidenceRefs']}, state['inputSha256'])
     template = {'inputSha256': state['inputSha256'], 'taskId': task_id, 'part': packet['outputSkeleton']}
-    template_path = directory / 'work' / task_id / 'submission-template.json'
-    _publish(template_path, template)
-    result['submissionTemplatePath'] = str(template_path)
     result['readingRule'] = 'Read every facts page for this task; contract once per structure. Truncation is not reading. Author part directly; no generated prose.'
     if task_id.startswith('material-'):
         review = frame_review.start_frame_review(root, _context=context)
@@ -267,6 +264,8 @@ def _work_item(root, directory, state, packets, context, *, observations_only=Fa
                 'cachedObservations': {sha: ledger['visualObservationCache'][sha] for sha in hashes}}
         else:
             raise ValueError('frame ledger is behind current material; finish its earlier pending batch first')
+        if result['frameReview']['imagesToView']:
+            template['frameObservations'] = deepcopy(result['frameReview']['checkpointTemplate'])
         request = _file_understanding_request(directory, result['frameReview'])
         if request:
             result['frameReview']['fileUnderstandingRequest'] = request
@@ -280,6 +279,14 @@ def _work_item(root, directory, state, packets, context, *, observations_only=Fa
             result['readingRule'] = ('Continue with frameReview.imagesToView and checkpointTemplate; '
                 'facts and contract are unchanged. Submit remaining observations with the authored part. '
                 'If context was lost, call analysis-session without submission options to recover the full task.')
+    # A stash changes the pending image set: publish a new immutable template.
+    name = f'submission-template-{_digest(template)[:16]}.json' if task_id.startswith('material-') else 'submission-template.json'
+    template_path = directory / 'work' / task_id / name
+    _publish(template_path, template)
+    result['submissionTemplatePath'] = str(template_path)
+    result['submissionRule'] = ('Copy the current submissionTemplatePath, fill authored text and keep frameObservations as an object. '
+        'No missingFrames means frameCoverageNote must stay an empty string; otherwise describe actual missing frames. '
+        'Null observations are unfinished, never mark them viewed. After stash use the newly returned template.')
     return result
 
 

@@ -100,6 +100,7 @@ def build_parser():
 
     session = commands.add_parser("analysis-session", help="Resume a small authoring work item, stash observations or submit a model-authored part")
     session.add_argument("--output-dir", required=True)
+    session.add_argument("--compact", action="store_true", help="Print a short receipt; read full work from its resumePath, never truncate with tail")
     session.add_argument("--session-dir", help="Session subdirectory within diagnostic-analysis; default analysis-session")
     submission = session.add_mutually_exclusive_group()
     submission.add_argument("--submission-json", help="Bound taskId/inputSha256, model-authored part, optional frameObservations")
@@ -223,6 +224,13 @@ def main(argv=None):
             result = advance_session(Path(args.output_dir) / 'diagnostic-analysis',
                 session_dir=args.session_dir, submission_json=args.submission_json,
                 observations_json=args.observations_json)
+            if args.compact:
+                from analysis_handoff import file_hash
+                path = Path(result['contextHandoff']['resumePath'])
+                result = {'status': result['status'], 'exitCode': 0, 'taskId': result['taskId'],
+                    'completedTaskCount': result['completedTaskCount'], 'taskCount': result['taskCount'],
+                    'resumePath': str(path), 'sha256': file_hash(path), 'byteSize': path.stat().st_size,
+                    'readingRule': 'Read the complete resumePath file, then every workItemPages/factsPages page it requires. This receipt contains no facts. ready_for_validation still requires validation and content review.'}
             print(pretty_json(result))
             return 0
         if args.command == 'analysis-task':
@@ -381,6 +389,9 @@ def main(argv=None):
         print(f"dependencies: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:
+        if args.command == 'analysis-session' and args.compact:
+            print(json.dumps({'status': 'error', 'exitCode': 2, 'error': str(exc),
+                'nextAction': 'Fix the error and retry; do not treat a previous resume.json as this call succeeding.'}, ensure_ascii=False))
         if workflow is not None and isinstance(exc, workflow.StandardWorkflowError):
             print(f"{exc.stage}: {exc}", file=sys.stderr)
             if isinstance(exc, getattr(workflow, "WorkflowInterruptedError", ())):

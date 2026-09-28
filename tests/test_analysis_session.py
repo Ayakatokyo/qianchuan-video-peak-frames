@@ -375,3 +375,44 @@ def test_native_file_request_tampering_is_rejected(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='session artifact changed'):
         session.advance_session(root)
     assert (root / 'frame-review-progress.json').read_bytes() == before
+
+
+def test_submission_template_has_pending_observation_object_and_refreshes_after_stash(tmp_path, monkeypatch):
+    root = frame_inputs(tmp_path, [[b'a', b'b']])
+    only_materials(monkeypatch)
+    work = full_work(session.advance_session(root))
+    path = Path(work['submissionTemplatePath'])
+    template = read_object(path)
+    assert template['frameObservations'] == work['frameReview']['checkpointTemplate']
+    assert template['part']['materialAnalyses'][0]['frameCoverageNote'] == ''
+    before = path.read_bytes()
+    batch = copy.deepcopy(template['frameObservations'])
+    batch['observations'] = batch['observations'][:1]
+    batch['observations'][0]['visualObservation'] = '产品瓶在桌面上。'
+    update = full_work(session.advance_session(root, observations_json=write(root / 'seen.json', batch)))
+    updated = read_object(update['submissionTemplatePath'])
+    assert len(updated['frameObservations']['observations']) == 1
+    assert updated['frameObservations']['observations'][0]['sourceFrameRef'] == work['frameReview']['imagesToView'][1]['frameRef']
+    assert path.read_bytes() == before
+    updated['part'] = material('m-1', work['frameReview']['frameRefs'])
+    updated['frameObservations']['observations'][0]['visualObservation'] = '另一个产品瓶在桌面上。'
+    done = session.advance_session(root, submission_json=write(root / 'final.json', updated))
+    assert done['status'] == 'ready_for_validation'
+
+
+def test_compact_cli_receipt_points_to_complete_work_and_failure_is_nonzero(tmp_path, capsys):
+    root = AnalysisReaderTests().inputs(tmp_path)
+    assert cli.main(['analysis-session', '--compact', '--output-dir', str(tmp_path)]) == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt['exitCode'] == 0
+    assert receipt['sha256'] == file_hash(receipt['resumePath'])
+    assert receipt['byteSize'] == Path(receipt['resumePath']).stat().st_size
+    full = read_object(receipt['resumePath'])
+    assert full['factsPages'] and full['submissionTemplatePath']
+    bad = write(root / 'bad.json', {'inputSha256': 'wrong'})
+    assert cli.main(['analysis-session', '--compact', '--output-dir', str(tmp_path), '--submission-json', str(bad)]) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)['status'] == 'error'
+    assert json.loads(captured.out)['exitCode'] == 2
+    assert 'fingerprint changed' in captured.err
+    assert read_object(receipt['resumePath']) == full

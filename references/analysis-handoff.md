@@ -12,6 +12,11 @@
 每个素材理解后及时保存，通常把 frameObservations 与素材 part 一次提交；所有素材完成后再用 reviewedVisuals 做第四章整批分类。交接文件与账本不会自动认证真实看图；工具调用与完整返回以宿主日志为准。性能验收分别记录图片工具调用起止、张数、返回长度、空结果/重试、Agent撰写/提交及全程耗时，不能用 Bash 空档推算图片模型耗时。新 Prompt 或会话实现需新分析会话/隔离数据副本，不覆盖旧绑定。
 
 
+
+执行 `analysis-session` 默认使用 `--compact`：stdout 仅返回状态、原始 exitCode、完整工作项 resumePath 及其字节数/SHA；先读取完整 resumePath，再读取其中全部 workItemPages 和所需 factsPages，不能把短回执当事实。旧不带 --compact 的入口仍返回完整工作项。禁止对任务导航、校验或提交命令使用 `| tail`、`| head` 截断输出；需要保存日志时直接重定向到本次运行目录的新文件，并保留 Python 原始退出码。若必须用 tee，调用方须启用 `set -o pipefail`，仍须检查实际命令退出码，不能用后续 echo/cat 的成功代替。compact 返回 status=error/exitCode=2 时不得将旧 resume.json 当本次成功；ready_for_validation 仍须继续结构校验、内容复核和 finalize。
+
+素材 `submissionTemplatePath` 现直接包含当前待看图的 `frameObservations` 对象（inputIndexSha256、整批 frameRefs、observations），不是数组。复制当前模板到独立提交文件，只填模型实际写出的正文，不手工重建外壳，不修改模板。部分暂存后模板路径会更新，仅含剩余待看图；全缓存素材不再附带观察对象。`frameCoverageNote` 无 missingFrames 时保留模板空字符串，不写“6/6全部成功”；有缺图时填真实缺口。模板中的 null 不是已完成观察，旧模板和原会话绑定保留。新实现用新的 session-dir/隔离运行副本，不覆写旧会话。
+
 ## 正式本地入口
 
 已有 RPA records、视频、JPEG 和批次核验收据，缺少五章事实包时使用：
@@ -32,9 +37,9 @@ python scripts/run_standard_analysis.py prepare-local \
 以下三种调用分别领取/恢复当前任务、按需暂存观察、提交模型写好的片段（默认同时携带 frameObservations）；JSON 均由当前模型通过文件工具直接写在本次 `diagnostic-analysis/` 内，不能用临时脚本生成正文：
 
 ```bash
-python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千川数据资源/<run-id>"
-python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千川数据资源/<run-id>" --observations-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/observations.json"
-python scripts/run_standard_analysis.py analysis-session --output-dir "$PWD/千川数据资源/<run-id>" --submission-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/submission.json"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" --observations-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/observations.json"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" --submission-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/submission.json"
 ```
 
 返回 `taskId`、`inputSha256`、`factsPages`、`contractPages`、`submissionTemplatePath` 和 `contextHandoff.resumePath`。完整读取当前任务所有 factsPages；每种输出结构首次读 contractPages，不能把骨架中的 null 当成成品。Chapter 01 的聚合引用读返回的 `referencePages`；其他引用按事实中的 evidenceIndex/evidenceRef 和 contract 使用，必要时通过兼容 `analysis-task --section references` 定向导出。引用并集不意味着所有字段都接受所有引用。素材 decision 只能取 `scale/remix/hold/stop/unknown`；标准分类 category 只能取 `portrait/product/other`。customClassification 与 highlightDashboard 顶层同级；keywordRefs 逐字取原词并绑定该词自身的脚本证据。
