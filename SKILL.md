@@ -49,9 +49,11 @@ metadata:
 
 当前对话模型本身负责分析，`analysis_pending` 表示现在应继续工作，不是等待某个额外模型 API 或要求用户再说“继续”。先读取正式任务的精简事实视图、查看图片并保存观察要点，由当前模型逐项写分析片段，最后合并成一个正式 AI JSON；不得复制历史 AI JSON 的内容或证据当作模板。工具可以序列化模型已写出的文字、检查 JSON 和精确引用，不能用循环、随机标记、同义替换或通用段落生产业务结论。
 
-**默认分析路径**：使用正式 `analysis-session --output-dir <run>`，固定按 Chapter 01、02、03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读取当前 `factsPages`；每种结构首次读取 `contractPages`，引用不清时读 `referencePages` 或按需使用兼容的 references 视图。长工作项返回 `workItemPages`，先完整读取这些页；所有页不超过 8000 UTF-8 字节，`lossless-tables-v1` 首条记录说明无损解码，保留原 `model_view` 的全部事实。图片工具按 `visionBatches` 每组最多 3 张，观察后立即用 `--observations-json` 保存；最后一组可连同模型片段用 `--submission-json` 一次提交，入口完成预检、帧 checkpoint 和下一任务导航。模型使用文件工具直接写 JSON，不新增临时脚本。Chapter 04 使用完整 `reviewedVisuals` 账本及全部 frameRefs，仅有疑义时定向复看。旧 `analysis-task` 导出、分片和组装入口继续兼容。具体结构和三条命令示例见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
+**默认分析路径**：使用正式 `analysis-session --output-dir <run>`，固定按 Chapter 01、02、03 → 逐素材 Chapter 05（含逐帧分析）→ Chapter 04 汇总推进。完整读取当前 `factsPages`；每种结构首次读取 `contractPages`，引用不清时读 `referencePages` 或按需使用兼容的 references 视图。长工作项返回 `workItemPages`，先完整读取这些页；所有页不超过 8000 UTF-8 字节，`lossless-tables-v1` 首条记录说明无损解码，保留原 `model_view` 的全部事实。默认按 `visionBatches` 集中查看当前素材批次最多 6 张唯一图，观察作为 `frameObservations` 连同模型片段用 `--submission-json` 一次提交；输出截断、工具容量限制或需要中断时才缩小分组并用 `--observations-json` 暂存，入口完成预检、帧 checkpoint 和下一任务导航。模型使用文件工具直接写 JSON，不新增临时脚本。Chapter 04 使用完整 `reviewedVisuals` 账本及全部 frameRefs，仅有疑义时定向复看。旧 `analysis-task` 导出、分片和组装入口继续兼容。具体结构和三条命令示例见[无损读取与执行顺序](references/analysis-handoff.md#无损读取与执行顺序)。
 
 成功提交后，事实、图片观察和片段留在磁盘；接续只读当前工作项和 `contextHandoff.resumePath` 指向的 `resume.json`，不反复加载已完成历史。宿主提供正式上下文压缩能力时可在素材提交成功边界使用，仅保留恢复指针、当前任务及未解决问题；技能不能强制清空宿主历史，也不得新建子代理转移分析。已接受片段需修改，或输入/实现指纹变化时，保留旧会话并使用分析目录内新的 `--session-dir`，不改旧 Prompt 快照。`ready_for_validation` 只是候选已组装，必须继续原 validate-analysis / 内容复核 / finalize。
+
+优先用宿主原生通用文件理解工具读取图片，当前 Agent 核对并分析。待看图时读取 `frameReview.fileUnderstandingRequest.path`：清单绑定完整路径、帧引用和 JPEG SHA，并提供逐图短描述 purpose；按工具实际 Schema 调用，空结果/缺图只补缺口，不将清单生成当作已看图。宿主无文件理解能力时使用原生看图，不另调外部模型 API。长回复读取落盘的逐图完整记录，禁止只截前 N 字充当理解。操作及边界见 [宿主文件理解交接](references/analysis-handoff.md#宿主文件理解交接)。
 
 ## 统一分析要求
 
@@ -109,9 +111,9 @@ Chapter 01 的 `portfolio.hotMaterialRule` 若存在，只能据其阈值、命�
 
 #### AI 交接前置检查
 
-按素材串行领取任务，所有不同 SHA 的成功 JPEG 必须由当前模型实际查看；相同 SHA 只实际查看一次。新账本每批不超过 6 帧（按唯一 SHA 计），每批结束只写一次完成 checkpoint；组内最多三张图的观察暂存不代表整批完成。
+按素材串行领取任务，所有不同 SHA 的成功 JPEG 必须经宿主原生文件理解/看图工具实际处理，并由当前模型核对逐图结果；相同 SHA 只实际查看一次。新账本每批不超过 6 帧（按唯一 SHA 计），每批结束只写一次完成 checkpoint；可选的部分观察暂存不代表整批完成。
 
-先由 analysis-session 按 manifest 校验五包与 JPEG，再读本轮冻结提示词一次并完整读取当前任务页；无需重复读取完整榜单和曲线。原五包继续用于报告与验证；输出截断不算已读取，不自行 head 截取事实。核对字节数、SHA-256、素材数、成功帧数、`missingFrames`。会话复用正式 `analysis-input-index.json` 与帧账本，新建账本每批最多 6 个唯一 SHA，旧 4 帧账本按冻结批次续接；这不是图片工具的单次张数。按返回的 `visionBatches` 每组最多 3 张，记录少量真实可见要点后立即暂存，恢复只看剩余 SHA，不等待整素材观察留在内存。已全缓存的素材无需再看图，所有 frameRef 仍完整保留，商业解释按素材分别核对。相同提交和已存观察允许幂等重试；指纹或图片变化必须停止，不混用新旧输入。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物；细节见[运维手册](references/qianchuan-operations-runbook.md#图片理解断点与吞吐)。
+先由 analysis-session 按 manifest 校验五包与 JPEG，再读本轮冻结提示词一次并完整读取当前任务页；无需重复读取完整榜单和曲线。原五包继续用于报告与验证；输出截断不算已读取，不自行 head 截取事实。核对字节数、SHA-256、素材数、成功帧数、`missingFrames`。会话复用正式 `analysis-input-index.json` 与帧账本，新建账本每批最多 6 个唯一 SHA，旧 4 帧账本按冻结批次续接；这是工作分组，不承诺一次图片工具调用可处理六张。默认按 `visionBatches` 集中看完当前素材批次，记录少量真实可见要点后，将观察与素材片段一次提交，不再强制三张一存；超过六图或旧四帧账本按冻结批次暂存推进，最后一批随素材提交。需要缩组或中断时可暂存已看部分，恢复只看剩余 SHA。暂存回执仅返回剩余图片及必要状态，不重读未变的事实与契约；上下文丢失时无参数重跑 analysis-session 恢复完整任务。已全缓存的素材无需再看图，所有 frameRef 仍完整保留，素材核心结论按各自事实分别核对。相同提交和已存观察允许幂等重试；指纹或图片变化必须停止，不混用新旧输入。策略或 guardrail 拒绝时立即**冻结并恢复帧审阅**，不得跳过任何帧或改用其他产物；细节见[运维手册](references/qianchuan-operations-runbook.md#图片理解断点与吞吐)。
 
 “唯一正式 JSON”约束交付一致性，不限制当前模型分批撰写。可直接写完整 JSON，或使用正式 `assemble-analysis` 合并模型已写出的片段；不得使用外部模型、`codex exec`、子进程或子代理替代当前模型分析。最终使用 `schemaVersion: 5`。保留经营表现、人群、脚本、高光画面和互动时序边界；第 01 只读由 `chapter01-portfolio-input.json` 的 `portfolio` 全量事实投影的正式任务，不读顶层 `materials`/`materialIds`、`topMaterialRoi`、RPA 精选或 Chapter 05 回退数据。`summaryMetrics` 使用当前 ROI（`total_prepay_and_pay_order_roi2`），不含 `netSettlementRoi`/`overallPaymentRoi`；`overallConclusion` 为第一部分唯一直接展示段落（建议 100–150 字，突出核心判断和优先动作），`commercial.conclusion` 只补充业务含义。第 `04｜高光画面洞察` 输出 `highlightDashboard`，每个成功帧按 `portrait`、`product`、`other` 固定顺序归类一次且仅一次；不得把帧秒数宣称为具体话术。
 

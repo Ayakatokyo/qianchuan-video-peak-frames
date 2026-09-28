@@ -11,7 +11,7 @@ from batch_runtime import acquire_run_lock, write_json_atomically
 
 DEFAULT_REVIEW_BATCH_SIZE = 6
 LEGACY_REVIEW_BATCH_SIZE = 6
-VISION_BATCH_SIZE = 3
+VISION_BATCH_SIZE = 6
 
 
 def now():
@@ -191,9 +191,12 @@ def _review_status(index, state):
             'visionBatches': [{'imagesToView': images[i:i + VISION_BATCH_SIZE],
                               'stashTemplate': template(images[i:i + VISION_BATCH_SIZE])}
                              for i in range(0, len(images), VISION_BATCH_SIZE)],
-            'observationGuidance': ('每次实际查看最多 3 张唯一 JPEG，每图默认记录 25–60 字真实可见要点；'
-                                    '查看后立即暂存，仅实际 JPEG SHA-256 相同时复用观察。'
-                                    '暂存不完成批次，全部图片有观察后再提交 checkpoint。'),
+            'observationGuidance': ('优先用宿主原生文件理解工具集中处理当前素材批次最多 6 张唯一 JPEG；不可用时用原生看图。'
+                                    'analysis-session 提供 fileUnderstandingRequest 交接文件，按实际工具 Schema 调用。'
+                                    '每图用一段通常 40–70 字的描述记录真实可见要点；'
+                                    '优先将全部观察作为 frameObservations 与素材 part 一次提交，不先单独暂存再提交同批。'
+                                    '发生输出截断、工具容量限制或需要中断时可缩小分组，仅暂存实际已看的观察；策略拒绝时停止并按恢复规则处理。'
+                                    '仅实际 JPEG SHA-256 相同时复用观察；未看完不算批次完成，超过六图或旧四帧账本按冻结批次暂存推进。'),
             'taskId': (f"material-{index['materialIds'].index(state['currentMaterialId']) + 1:03d}"
                        if state['currentMaterialId'] else None),
             'checkpointTemplate': template(images) if state['currentMaterialId'] else None}

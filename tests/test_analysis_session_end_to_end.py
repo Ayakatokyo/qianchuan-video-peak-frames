@@ -149,7 +149,7 @@ def test_cli_complete_session_preserves_prose_observations_and_assembly_sources(
     initial_review = work['frameReview']
     assert len(initial_review['frameRefs']) == 6
     assert len(initial_review['imagesToView']) == 4
-    assert [len(group['imagesToView']) for group in initial_review['visionBatches']] == [3, 1]
+    assert [len(group['imagesToView']) for group in initial_review['visionBatches']] == [4]
     first_images = initial_review['imagesToView'][:2]
     batch = copy.deepcopy(initial_review['checkpointTemplate'])
     batch['observations'] = [{'sourceFrameRef': image['frameRef'],
@@ -160,11 +160,12 @@ def test_cli_complete_session_preserves_prose_observations_and_assembly_sources(
     assert partial['frameReview']['completedCount'] == 0
     assert partial['frameReview']['pendingCount'] == 6
     assert partial['frameReview']['reviewBatchCount'] == 0
-    assert len(partial['frameReview']['stashedObservations']) == 2
+    assert len(read_object(ledger_path)['stashedFrameRefs']) == 2
     assert advance(tmp_path, '--observations-json', batch) == partial
     assert ledger_path.read_bytes() == partial_ledger
     resumed = advance(tmp_path)
-    assert resumed == partial
+    assert resumed['frameReview']['imagesToView'] == partial['frameReview']['imagesToView']
+    assert 'factsPages' not in partial and 'contractPages' not in partial
     remaining = resumed['frameReview']['imagesToView']
     assert [image['frameRef'] for image in remaining] == ['highlight:m-1:peak_3', 'highlight:m-1:peak_5']
     seen_hashes = [image['sha256'] for image in first_images + remaining]

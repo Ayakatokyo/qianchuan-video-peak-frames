@@ -83,11 +83,11 @@ python scripts/run_standard_analysis.py status --output-dir "/path/to/run"
 
 默认由正式 `analysis-session` 管理帧审阅、片段提交和下一任务导航，三个调用示例与提交结构见[分析交接契约](analysis-handoff.md#无损读取与执行顺序)。会话沿用 `analysis-input-index.json`（schemaVersion=2），冻结五章事实 manifest、Prompt、每个 materialId、frameRef、framePath 和实际 JPEG SHA-256。实际引用来自事实包的 `frames[*].evidenceRef`，不猜字段或自造引用。
 
-`frameReview.visionBatches` 每组最多 3 张唯一 JPEG，按组实际看图，立即用该组 `stashTemplate` 填写少量观察并通过 `--observations-json` 保存；不要先看完整批再把观察留在内存。新账本每批最多 6 个唯一 SHA，旧 4 帧账本按冻结批次兼容续接；账本批次和图片工具分组不能混淆。原图、所有成功帧与 frameRef 完整保留，不降采样。
+`frameReview.visionBatches` 默认集中提供当前素材批次最多 6 张唯一 JPEG，看完后优先用 `frameObservations` 与素材 part 一次提交，不再强制三张一存或先暂存整批再提交素材。输出截断、工具容量限制或需要中断时可缩组并通过 `--observations-json` 暂存实际已看的观察；策略拒绝仍停止并按恢复规则处理。超过六图或旧四帧账本按冻结批次暂存推进，最后一批随素材提交。新账本每批最多 6 个唯一 SHA，旧 4 帧账本按冻结批次兼容续接；账本批次和图片工具分组不能混淆。原图、所有成功帧与 frameRef 完整保留，不降采样。
 
-观察 JSON 固定包含 `inputIndexSha256`、当前账本批次全部 `frameRefs`、`observations`；observations 只写本组实际看的 SHA，每条包含 `sourceFrameRef` 和非空 `visualObservation`，不能提交模板 null。当前模型用文件工具写 JSON，不执行临时脚本。部分 stash 原子保存到 `visualObservationCache`，未看的帧仍待处理；后续工作项只给剩余 imagesToView，cachedObservations 直接复用，不再从 Bash 摘录图片工具长篇返回或运行 find/sha256sum 重建去重表。
+观察 JSON 固定包含 `inputIndexSha256`、当前账本批次全部 `frameRefs`、`observations`；observations 只写本组实际看的 SHA，每条包含 `sourceFrameRef` 和非空 `visualObservation`，不能提交模板 null。当前模型用文件工具写 JSON，不执行临时脚本。部分 stash 原子保存到 `visualObservationCache`，未看的帧仍待处理；暂存回执只给剩余 imagesToView、checkpointTemplate 与必要状态，不再返回已读事实/契约索引、缓存正文或重复图片队列；上下文丢失时无参数重跑 analysis-session 获取完整任务与 cachedObservations，不运行 find/sha256sum 重建去重表；长工具返回落盘时只按完整路径/帧引用读取逐图完整记录，不截取前 N 字。优先使用 fileUnderstandingRequest 交接宿主原生文件理解，详见 [宿主文件理解交接](analysis-handoff.md#宿主文件理解交接)。
 
-最后一组观察可随提交外壳的 `frameObservations` 一并送入 `--submission-json`，外壳必须有当前 `inputSha256/taskId/part`；part 由模型直接撰写。入口执行片段预检、所需帧 checkpoint 和下一任务导航；缺图/结构错误停留当前任务，不把部分保存误作完成。全缓存素材无需再看图，复用一段画面描述即可；素材核心结论仍须根据各自人群、脚本、互动和经营事实撰写，不另写逐帧商业解释。相同 submission、已保存 stash 可幂等重试，不改写已接受内容。
+默认将最后（通常唯一）一批观察随提交外壳的 `frameObservations` 一并送入 `--submission-json`，外壳必须有当前 `inputSha256/taskId/part`；part 由模型直接撰写。入口执行片段预检、所需帧 checkpoint 和下一任务导航；缺图/结构错误停留当前任务，不把部分保存误作完成。全缓存素材无需再看图，复用一段画面描述即可；素材核心结论仍须根据各自人群、脚本、互动和经营事实撰写，不另写逐帧商业解释。相同 submission、已保存 stash 可幂等重试，不改写已接受内容。
 
 正常中断只重跑不带提交参数的 analysis-session，读取当前工作项与 `contextHandoff.resumePath` 指向的 `resume.json`，已完成事实、观察、片段都留磁盘。宿主提供正式上下文压缩能力时可在素材提交成功后使用，仅保留恢复指针、当前任务及未解决问题；技能无法强制清空宿主历史，不能新建子代理绕开单 Agent 边界。任务 elapsedSeconds 包含空闲和等待，不是模型推理耗时。
 

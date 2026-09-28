@@ -34,7 +34,7 @@ class FrameReviewDraftTests(unittest.TestCase):
             status = review.start_frame_review(root)
             self.assertIn('visionBatches', status)
             groups = status['visionBatches']
-            self.assertEqual([len(group['imagesToView']) for group in groups], [3, 3])
+            self.assertEqual([len(group['imagesToView']) for group in groups], [6])
             self.assertEqual(len(status['frameRefs']), 7)
             self.assertEqual([frame['frameRef'] for group in groups for frame in group['imagesToView']],
                              ['highlight:m-1:peak_0', 'highlight:m-1:peak_2', 'highlight:m-1:peak_3',

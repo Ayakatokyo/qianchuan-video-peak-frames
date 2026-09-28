@@ -106,14 +106,53 @@ def test_partial_images_survive_and_material_requires_full_review(tmp_path, monk
     payload = copy.deepcopy(review['checkpointTemplate'])
     payload['observations'] = [{'sourceFrameRef': review['imagesToView'][0]['frameRef'],
                               'visualObservation': '桌面上的产品瓶。'}]
+    original_write_pages = session._write_pages
+    def no_repeated_facts(*args, **kwargs):
+        assert args[2] not in {'facts', 'contract'}, 'stash must not regenerate task pages'
+        return original_write_pages(*args, **kwargs)
+    monkeypatch.setattr(session, '_write_pages', no_repeated_facts)
     result = session.advance_session(root, observations_json=write(root / 'seen.json', payload))
+    monkeypatch.setattr(session, '_write_pages', original_write_pages)
     assert len(result['frameReview']['imagesToView']) == 3
     assert result['completedTaskCount'] == 0
     before = file_hash(root / 'frame-review-progress.json')
     with pytest.raises(ValueError, match='unreviewed'):
         session.advance_session(root, submission_json=submit(root, work, material('m-1', review['frameRefs'])))
     assert file_hash(root / 'frame-review-progress.json') == before
-    assert session.advance_session(root)['frameReview'] == result['frameReview']
+    resumed = session.advance_session(root)
+    assert resumed['frameReview']['imagesToView'] == result['frameReview']['imagesToView']
+    assert 'factsPages' in resumed and 'contractPages' in resumed
+    assert 'factsPages' not in result and 'contractPages' not in result
+    assert 'cachedObservations' not in result['frameReview']
+    assert 'visionBatches' not in result['frameReview']  # No second copy of image paths.
+    oversized = copy.deepcopy(result)
+    oversized['frameReview']['observationGuidance'] = '很长的恢复说明。' * 1000
+    bounded = session._bounded_work_item(root / 'analysis-session', oversized)
+    assert bounded['workItemPages']
+    assert bounded['responseKind'] == 'observation_update'
+    assert 'then its facts' not in bounded['readingRule']
+
+
+def test_six_images_and_material_commit_together_without_stash(tmp_path, monkeypatch):
+    root = frame_inputs(tmp_path, [[bytes([i]) for i in range(6)]])
+    only_materials(monkeypatch)
+    work = session.advance_session(root)
+    if 'workItemPages' in work:
+        from analysis_task_io import restore_task_pages
+        work = restore_task_pages([read_object(p['path'])['records'] for p in work['workItemPages']])
+    review = work['frameReview']
+    assert [len(b['imagesToView']) for b in review['visionBatches']] == [6]
+    batch = copy.deepcopy(review['checkpointTemplate'])
+    for row in batch['observations']:
+        row['visualObservation'] = '桌面上展示产品瓶，瓶身标签清晰可见。'
+    request = submit(root, work, material('m-1', review['frameRefs']), frameObservations=batch)
+    done = session.advance_session(root, submission_json=request)
+    assert done['status'] == 'ready_for_validation'
+    ledger = read_object(root / 'frame-review-progress.json')
+    assert len(ledger['completedFrameRefs']) == 6
+    assert ledger['reviewBatchCount'] == 1
+    assert ledger['checkpoints'][0]['viewedImageCount'] == 6
+    assert session.advance_session(root, submission_json=request) == done
 
 
 def test_part_and_checkpoint_commit_share_snapshot_and_advance_cached_material(tmp_path, monkeypatch):
@@ -186,6 +225,18 @@ def test_long_image_paths_have_bounded_recoverable_work_item(tmp_path, monkeypat
     restored = restore_task_pages(pages)
     assert len(restored['frameReview']['imagesToView']) == 6
     assert all(Path(f['framePath']).is_file() for f in restored['frameReview']['imagesToView'])
+    review = restored['frameReview']
+    batch = copy.deepcopy(review['checkpointTemplate'])
+    batch['observations'] = [{'sourceFrameRef': review['imagesToView'][0]['frameRef'],
+                              'visualObservation': '产品瓶位于桌面中央。'}]
+    update = session.advance_session(root, observations_json=write(root / 'seen.json', batch))
+    assert update['responseKind'] == 'observation_update'
+    assert len((pretty_json(update) + '\n').encode()) <= 8000
+    if 'workItemPages' in update:
+        assert 'then its facts' not in update['readingRule']
+        update = restore_task_pages([read_object(p['path'])['records'] for p in update['workItemPages']])
+    assert 'factsPages' not in update and 'contractPages' not in update
+    assert len(update['frameReview']['imagesToView']) == 5
 
 
 def test_completed_image_stash_can_retry_without_rewatching(tmp_path, monkeypatch):
@@ -254,3 +305,73 @@ def test_retry_recovers_exit_between_candidate_and_assembly_receipt(tmp_path, mo
         session.advance_session(root, submission_json=submit(root, work, material('m-1', [])))
     monkeypatch.setattr(analysis_handoff, 'write_json_atomically', original)
     assert session.advance_session(root)['status'] == 'ready_for_validation'
+
+
+def full_work(work):
+    if 'workItemPages' in work:
+        from analysis_task_io import restore_task_pages
+        return restore_task_pages([read_object(p['path'])['records'] for p in work['workItemPages']])
+    return work
+
+
+def test_native_file_request_is_bound_deduplicated_and_does_not_claim_review(tmp_path, monkeypatch):
+    root = frame_inputs(tmp_path, [[b'a', b'a', b'b'], [b'future']])
+    only_materials(monkeypatch)
+    work = full_work(session.advance_session(root))
+    review = work['frameReview']
+    pointer = review['fileUnderstandingRequest']
+    request = read_object(pointer['path'])
+    assert file_hash(pointer['path']) == pointer['sha256']
+    assert pointer['imageCount'] == 2
+    assert request['inputIndexSha256'] == review['inputIndexSha256']
+    assert request['materialId'] == 'm-1'
+    assert request['files'] == [{'filePath': f['framePath'], 'sourceFrameRef': f['frameRef'],
+                                 'sha256': f['sha256']} for f in review['imagesToView']]
+    ledger = read_object(root / 'frame-review-progress.json')
+    assert ledger['completedFrameRefs'] == []
+    assert ledger['visualObservationCache'] == {}
+    assert len(review['frameRefs']) == 3
+    assert full_work(session.advance_session(root))['frameReview']['fileUnderstandingRequest'] == pointer
+
+
+def test_native_file_request_after_partial_stash_only_contains_missing_images(tmp_path, monkeypatch):
+    root = frame_inputs(tmp_path, [[b'a', b'b']])
+    only_materials(monkeypatch)
+    work = full_work(session.advance_session(root))
+    review = work['frameReview']
+    original_path = Path(review['fileUnderstandingRequest']['path'])
+    original_bytes = original_path.read_bytes()
+    batch = copy.deepcopy(review['checkpointTemplate'])
+    batch['observations'] = [{'sourceFrameRef': review['imagesToView'][0]['frameRef'],
+                              'visualObservation': '产品瓶在桌面上。'}]
+    update = full_work(session.advance_session(root, observations_json=write(root / 'seen.json', batch)))
+    request = read_object(update['frameReview']['fileUnderstandingRequest']['path'])
+    assert [f['sourceFrameRef'] for f in request['files']] == [review['imagesToView'][1]['frameRef']]
+    assert original_path.read_bytes() == original_bytes
+    assert update['completedTaskCount'] == 0
+    assert full_work(session.advance_session(root))['frameReview']['fileUnderstandingRequest'] == update['frameReview']['fileUnderstandingRequest']
+
+
+def test_native_file_request_absent_for_fully_cached_material(tmp_path, monkeypatch):
+    root = frame_inputs(tmp_path, [[b'a'], [b'a']])
+    only_materials(monkeypatch)
+    work = full_work(session.advance_session(root))
+    batch = copy.deepcopy(work['frameReview']['checkpointTemplate'])
+    batch['observations'][0]['visualObservation'] = '产品瓶在桌面上。'
+    request = submit(root, work, material('m-1', work['frameReview']['frameRefs']), frameObservations=batch)
+    next_work = full_work(session.advance_session(root, submission_json=request))
+    assert next_work['taskId'] == 'material-002'
+    assert next_work['frameReview']['imagesToView'] == []
+    assert 'fileUnderstandingRequest' not in next_work['frameReview']
+
+
+def test_native_file_request_tampering_is_rejected(tmp_path, monkeypatch):
+    root = frame_inputs(tmp_path, [[b'a']])
+    only_materials(monkeypatch)
+    work = full_work(session.advance_session(root))
+    pointer = work['frameReview']['fileUnderstandingRequest']
+    before = (root / 'frame-review-progress.json').read_bytes()
+    write(Path(pointer['path']), {'files': [{'filePath': 'wrong.jpg'}]})
+    with pytest.raises(ValueError, match='session artifact changed'):
+        session.advance_session(root)
+    assert (root / 'frame-review-progress.json').read_bytes() == before
