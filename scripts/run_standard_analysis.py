@@ -36,6 +36,16 @@ def _worker_count(value):
     return number
 
 
+def _segment_positive_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError('segment budget must be a positive integer') from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError('segment budget must be a positive integer')
+    return number
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Run the standard Qianchuan analysis workflow."
@@ -105,6 +115,20 @@ def build_parser():
     submission = session.add_mutually_exclusive_group()
     submission.add_argument("--submission-json", help="Bound taskId/inputSha256, model-authored part, optional frameObservations")
     submission.add_argument("--observations-json", help="Persist the current small group of actual image observations immediately")
+    session.add_argument('--begin-segment', action='store_true', help='Explicitly start a durable segment in a real host run')
+    session.add_argument('--segment-id', help='Stable ID for this segment; reuse across its CLI calls')
+    session.add_argument('--host-run-id', help='Actual host agent run ID, never a fabricated ID to reset budgets')
+    session.add_argument('--after-segment', help='Expected predecessor ID when starting a successor')
+    session.add_argument('--previous-host-ended', action='store_true',
+                         help='Host has confirmed the previous active run ended; required for interrupted takeover')
+    session.add_argument('--material-limit', type=_segment_positive_int, help='Materials per segment (default: 3)')
+    session.add_argument('--soft-time-budget-seconds', type=_segment_positive_int,
+                         help='Experimental soft wall-clock budget, checked at safe boundaries (default: 480)')
+
+    analysis_status = commands.add_parser('analysis-status', help='Read-only analysis receipts and recovery status')
+    analysis_status.add_argument('--output-dir', required=True)
+    analysis_status.add_argument('--session-dir', help='Existing session subdirectory within diagnostic-analysis')
+    analysis_status.add_argument('--compact', action='store_true', help='Print the same bounded status summary')
 
     check_part = commands.add_parser("check-analysis-part", help="Check a model-authored chapter or material part before assembly")
     check_part.add_argument("--output-dir", required=True)
@@ -218,19 +242,30 @@ def main(argv=None):
             from runtime_identity import runtime_identity
             print(json.dumps(runtime_identity(), ensure_ascii=False))
             return 0
+        if args.command == 'analysis-status':
+            from analysis_session import read_session_status
+            from analysis_task_io import pretty_json
+            result = read_session_status(Path(args.output_dir) / 'diagnostic-analysis', session_dir=args.session_dir)
+            print(pretty_json(result))
+            return 2 if result['status'] in {'error', 'unconfirmed'} else 0
         if args.command == 'analysis-session':
-            from analysis_session import advance_session
+            from analysis_session import advance_session, CONTROL_FIELDS
             from analysis_task_io import pretty_json
             result = advance_session(Path(args.output_dir) / 'diagnostic-analysis',
                 session_dir=args.session_dir, submission_json=args.submission_json,
-                observations_json=args.observations_json)
+                observations_json=args.observations_json, begin_segment=args.begin_segment,
+                segment_id=args.segment_id, host_run_id=args.host_run_id, after_segment=args.after_segment,
+                previous_host_ended=args.previous_host_ended, material_limit=args.material_limit,
+                soft_time_budget_seconds=args.soft_time_budget_seconds)
             if args.compact:
                 from analysis_handoff import file_hash
                 path = Path(result['contextHandoff']['resumePath'])
+                controls = {key: result[key] for key in CONTROL_FIELDS if key in result}
                 result = {'status': result['status'], 'exitCode': 0, 'taskId': result['taskId'],
                     'completedTaskCount': result['completedTaskCount'], 'taskCount': result['taskCount'],
                     'resumePath': str(path), 'sha256': file_hash(path), 'byteSize': path.stat().st_size,
                     'readingRule': 'Read the complete resumePath file, then every workItemPages/factsPages page it requires. This receipt contains no facts. ready_for_validation still requires validation and content review.'}
+                result.update(controls)
             print(pretty_json(result))
             return 0
         if args.command == 'analysis-task':
@@ -389,7 +424,7 @@ def main(argv=None):
         print(f"dependencies: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:
-        if args.command == 'analysis-session' and args.compact:
+        if args.command in {'analysis-session', 'analysis-status'} and args.compact:
             print(json.dumps({'status': 'error', 'exitCode': 2, 'error': str(exc),
                 'nextAction': 'Fix the error and retry; do not treat a previous resume.json as this call succeeding.'}, ensure_ascii=False))
         if workflow is not None and isinstance(exc, workflow.StandardWorkflowError):

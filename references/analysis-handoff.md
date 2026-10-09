@@ -13,7 +13,7 @@
 
 
 
-执行 `analysis-session` 默认使用 `--compact`：stdout 仅返回状态、原始 exitCode、完整工作项 resumePath 及其字节数/SHA；先读取完整 resumePath，再读取其中全部 workItemPages 和所需 factsPages，不能把短回执当事实。旧不带 --compact 的入口仍返回完整工作项。禁止对任务导航、校验或提交命令使用 `| tail`、`| head` 截断输出；需要保存日志时直接重定向到本次运行目录的新文件，并保留 Python 原始退出码。若必须用 tee，调用方须启用 `set -o pipefail`，仍须检查实际命令退出码，不能用后续 echo/cat 的成功代替。compact 返回 status=error/exitCode=2 时不得将旧 resume.json 当本次成功；ready_for_validation 仍须继续结构校验、内容复核和 finalize。
+执行 `analysis-session` 默认使用 `--compact`：stdout 返回状态、原始 exitCode、executionStatus、nextAction、segmentId、yieldReason，以及当前有效 resumePath 的字节数/SHA；短回执不是事实。仅在本段仍可继续且返回当前工作项时，先读取完整 resumePath，再读取全部 workItemPages 和所需 factsPages；分段让出时先执行宿主交接，不读取下一任务。旧不带 --compact 的入口仍返回完整工作项。禁止对任务导航、校验或提交命令使用 `| tail`、`| head` 截断输出；需要保存日志时直接重定向到本次运行目录的新文件，并保留 Python 原始退出码。若必须用 tee，调用方须启用 `set -o pipefail`，仍须检查实际命令退出码，不能用后续 echo/cat 的成功代替。compact 返回 status=error/exitCode=2 时不得将旧 resume.json 当本次成功；ready_for_validation 仍须继续结构校验、内容复核和 finalize。
 
 素材 `submissionTemplatePath` 现直接包含当前待看图的 `frameObservations` 对象（inputIndexSha256、整批 frameRefs、observations），不是数组。复制当前模板到独立提交文件，只填模型实际写出的正文，不手工重建外壳，不修改模板。部分暂存后模板路径会更新，仅含剩余待看图；全缓存素材不再附带观察对象。`frameCoverageNote` 无 missingFrames 时保留模板空字符串，不写“6/6全部成功”；有缺图时填真实缺口。模板中的 null 不是已完成观察，旧模板和原会话绑定保留。新实现用新的 session-dir/隔离运行副本，不覆写旧会话。
 
@@ -30,16 +30,63 @@ python scripts/run_standard_analysis.py prepare-local \
 
 入口只使用已安装的依赖，不自动联网安装。入口校验原始榜单与精选名单的完整 portfolioFacts、周期、广告主、TopN、records、summary 和实际 JPEG；请求与 `run-summary.request` 不一致时，错误会列出每个差异字段的 saved/current 值，按差异补齐参数后再执行。新事实包先完整构建再发布；现有事实包只核验，不覆盖。首次 prepare 和 prepare-local 生成 schemaVersion=2 的 analysis-input-index.json 及 frame-review-progress.json，冻结实际 JPEG 路径、materialId、哈希、Prompt 和事实 manifest；不含业务结论。已有 `complete`、正在运行或部分损坏的事实包保留原状，在明确指定的隔离副本中恢复，禁止临时调用私有函数改状态。无核验收据时先完成原有批次核验，不重复提交 RPA。
 
+## 分段执行与只读恢复
+
+默认新分析先用 `analysis-status` 核对磁盘，再显式创建执行段。它只读取当前会话状态、绑定、已接受任务和恢复意图，不领取任务、不创建会话或候选、不写业务文件，也不触发 RPA、下载、图片工具或模型。未开始会话也可先查询，不要为了查看状态调用会推进工作的 analysis-session。`--session-dir` 在 status 与 session 命令中必须一致。
+
+```bash
+python scripts/run_standard_analysis.py analysis-status --compact --output-dir "$PWD/千川数据资源/<run-id>"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" \
+  --begin-segment --segment-id "<新段ID>" --host-run-id "<平台提供的真实宿主runID>" \
+  --material-limit 3 --soft-time-budget-seconds 480
+```
+
+只有 `--begin-segment` 可以创建新段。普通领取、暂存和提交都须携带当前段相同的 `--segment-id`、`--host-run-id`；不能通过修改身份或省略参数换段。章节各占独立一段；素材段默认每段最多接受 3 条素材，默认 480 秒软预算是实验值，尚不代表真实平台稳定阈值。到段范围或软预算时，在任务成功接受后的安全边界返回让出状态，不展开下一任务的 factsPages、图片队列或文件理解请求。软预算不是在任意写入中强杀，也不能阻止宿主更早中断；途中出现状态待确认时先只读核查。
+
+`--material-limit` 可以在 begin 时显式调整，并非平台安全上限；同一段的素材数和软预算策略不能中途改变。按平台实际验收选择下一新段的策略，不能为了避开让出在当前段增加预算。
+
+调用方必须检查 compact 的 `executionStatus`、`nextAction`、`segmentId`、`yieldReason`，不能只看 shell exit 0、总 status 或旧 resumePath。段让出表示本段已保留进度，业务分析仍未全部完成。平台须真正结束当前宿主 run，消费 nextAction，并在新的宿主 run 中创建后继段：
+
+| nextAction | 调用方动作 |
+| --- | --- |
+| `start_analysis` | 使用真实宿主身份显式 begin 第一段 |
+| `continue_current_task` | 在当前段/宿主继续当前任务，不换 ID |
+| `start_next_segment` | 停止读取下一任务，由平台在新宿主 run begin 后继段 |
+| `replay_pending_submission` | 核对原始快照路径/文件哈希，按当前段或已确认接管后的身份重放 |
+| `resume_assembly` | 所有任务已接受但候选/assembly 收据尚未齐备；由匹配会话的 analysis-session 补组装，不重写已接受正文 |
+| `validate-analysis` | 所有任务已接受，继续结构校验、内容复核和 finalize |
+| `preserve_session_use_frozen_implementation` | 保留现场，定位绑定/完整性错误，使用匹配冻结实现；不能改 state 求通过 |
+| `retry_analysis_status` | 只读期间状态发生变化，再查询状态；不凭旧观测接管 |
+
+analysis-session 完成回执中的 nextAction 也可能附完整校验/复核/finalize 指引；它和 analysis-status 的 `validate-analysis` 同属最终验收阶段。
+
+`executionStatus` 区分 `not_started`、`legacy`、`active`、`yield_required`、`submission_pending`、`complete` 及 `input_mismatch`、`integrity_error`、`state_changed`。已接受任务计数达到 taskCount 不单独证明候选或报告齐备，仍须检查 nextAction、候选/组装收据和最后验收。status 的 inputBindingMatch 为 true/false/null；null 或错误态不提供可复用绑定的证明。
+
+```bash
+python scripts/run_standard_analysis.py analysis-status --compact --output-dir "$PWD/千川数据资源/<run-id>"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" \
+  --begin-segment --segment-id "<后继段ID>" --host-run-id "<新宿主真实runID>" \
+  --after-segment "<上一段ID>"
+```
+
+同宿主 run 不能反复 begin 以绕过预算；host ID 必须来自平台，不用随机串或模型编造的值代替。技能本身不启动新宿主 run、不自动压缩上下文；无正式宿主接续能力时明确告知需要人工在新执行中续跑，并提供运行目录、session-dir、前段 ID、当前任务和只读状态。不得假称“已自动释放上下文”，也不创建子代理代写。
+
+宿主在活动段中意外结束时，先 `analysis-status` 核对完成清单、片段哈希和 pendingSubmissionPath/哈希。只有平台确认旧宿主确已结束，才在新的宿主 run 上使用 `--begin-segment --after-segment <旧段ID> --previous-host-ended` 接管；该确认参数不是进程探测，也不是自动证明，旧宿主仍活跃或终态未知时不得使用。提交回执丢失不等于提交失败；已接受任务以会话 state 和片段收据对账，不重新生成已接受正文。待完成原始 submission 通过绑定/结构校验后以不可变文件保存于会话 `submissions/<taskId>.<sha>.json`；按 status 返回的 pendingSubmissionPath 和哈希核对后，经正式 `--submission-json` 重放，不猜测路径、不编辑快照、不重新采集。
+
+`pendingSubmissionSha256` 是 pendingSubmissionPath 所指文件的实际字节哈希；文件名中的 sha 与已接受收据中的 submissionSha256 是提交对象的规范化哈希，不能拿后者代替文件校验或手工拼路径。status 的 frameCoverage 仅核对落盘账本元数据，不能证明真实图片工具调用或视觉正确性。
+
+旧未启用分段的 analysis-session 接口保留兼容。新实现改变输入/实现绑定，旧会话不能自动升级迁移。本轮 material-009、11/34 的现场继续冻结旧包和原会话；若要从旧断点继续，须使用与该现场匹配的冻结实现并先确认原宿主终态。新分段测试在隔离副本中使用新 session-dir；事实、Prompt、JPEG 变化须按既有冻结规则核验和重建索引，不改旧快照或账本。
+
 ## 无损读取与执行顺序
 
-默认使用 `analysis-session`，由当前模型完成 Chapter 01 → Chapter 02 → Chapter 03 → 各 material → Chapter 04；入口不调用外部模型，不创建子代理。它把每次工作限制为当前任务，并复用原事实、校验器和图片观察账本。默认会话目录为 `diagnostic-analysis/analysis-session/`。
+默认按上节契约显式 begin 分段，再使用 `analysis-session`，由当前模型完成 Chapter 01 → Chapter 02 → Chapter 03 → 各 material → Chapter 04；入口不调用外部模型，不创建子代理。它把每次工作限制为当前任务，并复用原事实、校验器和图片观察账本。默认会话目录为 `diagnostic-analysis/analysis-session/`。
 
 以下三种调用分别领取/恢复当前任务、按需暂存观察、提交模型写好的片段（默认同时携带 frameObservations）；JSON 均由当前模型通过文件工具直接写在本次 `diagnostic-analysis/` 内，不能用临时脚本生成正文：
 
 ```bash
-python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>"
-python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" --observations-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/observations.json"
-python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" --submission-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/submission.json"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" --segment-id "<当前段ID>" --host-run-id "<当前真实宿主runID>"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" --segment-id "<当前段ID>" --host-run-id "<当前真实宿主runID>" --observations-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/observations.json"
+python scripts/run_standard_analysis.py analysis-session --compact --output-dir "$PWD/千川数据资源/<run-id>" --segment-id "<当前段ID>" --host-run-id "<当前真实宿主runID>" --submission-json "$PWD/千川数据资源/<run-id>/diagnostic-analysis/submission.json"
 ```
 
 返回 `taskId`、`inputSha256`、`factsPages`、`contractPages`、`submissionTemplatePath` 和 `contextHandoff.resumePath`。完整读取当前任务所有 factsPages；每种输出结构首次读 contractPages，不能把骨架中的 null 当成成品。Chapter 01 的聚合引用读返回的 `referencePages`；其他引用按事实中的 evidenceIndex/evidenceRef 和 contract 使用，必要时通过兼容 `analysis-task --section references` 定向导出。引用并集不意味着所有字段都接受所有引用。素材 decision 只能取 `scale/remix/hold/stop/unknown`；标准分类 category 只能取 `portrait/product/other`。customClassification 与 highlightDashboard 顶层同级；keywordRefs 逐字取原词并绑定该词自身的脚本证据。
@@ -54,13 +101,13 @@ python scripts/run_standard_analysis.py analysis-session --compact --output-dir 
 - material：全部脚本、帧、缺失和证据，时序保留峰值与点数；原points在事实包供报告曲线。不得据精简视图推断完整走势，必要时按sourceFile/sourcePath定向读取。
 - chapter04：全部成功帧的两套分类，每组默认一条共性判断和一个方向，不能遗漏frameRef。
 
-会话当前任务的 `submissionTemplatePath` 给出提交外壳：`{"inputSha256":"返回的绑定","taskId":"当前任务","part":{模型直接撰写的字段}}`。章节 part 仅包含该章字段；素材 part 包含仅当前素材的 `materialAnalyses` 数组。每个片段仍须满足下方完整内容契约。提交一次完成片段预检、必要的帧 checkpoint、原文保存和下一任务导航；缺图、错误归属、引用/结构错误不会推进任务。不能隐藏 stderr 或只看管道末尾的退出码。
+会话当前任务的 `submissionTemplatePath` 给出提交外壳：`{"inputSha256":"返回的绑定","taskId":"当前任务","part":{模型直接撰写的字段}}`。章节 part 仅包含该章字段；素材 part 包含仅当前素材的 `materialAnalyses` 数组。每个片段仍须满足下方完整内容契约。提交一次完成片段预检、必要的帧 checkpoint、原文保存和本段允许的下一任务导航；缺图、错误归属、引用/结构错误不会推进任务。达到安全分段边界则只返回恢复意图，不领取下一任务。不能隐藏 stderr 或只看管道末尾的退出码。
 
-素材的 `frameReview.visionBatches` 默认集中提供当前素材批次最多 **6 张唯一 JPEG**；默认看完后将观察与素材 part 一次提交，不再强制三张一存。工作分组不代表一次图片工具调用的容量。输出截断、工具容量限制或需要中断时，可缩小分组，用 `--observations-json` 暂存已看部分；策略拒绝时仍停止并按恢复规则处理。账本新批次最多 **6 个唯一 SHA**，超过六图或旧 **4 帧**账本按冻结批次暂存推进，最后一批随素材提交。观察 JSON 与 checkpoint 形状相同：`inputIndexSha256`、当前批次全部 `frameRefs`、`observations`；observations 只写本组实际看的唯一 SHA，每条为 `sourceFrameRef/visualObservation`，通常用 40–70 字写一段完整的真实主体、动作/状态、产品和关键字幕描述，不凑字、不缩成标签，不能提交 null。暂存不会把尚未看的帧标为完成，返回状态只列剩余 SHA。默认将最后（通常唯一）一批观察作为提交外壳的 `frameObservations`，与 part 一次提交；它和 `--observations-json` 不能同时使用。暂存响应 `responseKind=observation_update` 只带剩余 `frameReview.imagesToView`、`checkpointTemplate`、绑定/覆盖状态和恢复/提交指针，不返回 factsPages、contractPages、缓存正文或重复图片队列。已读事实/契约不变；若回执分页先完整读 workItemPages。上下文丢失时无参数调用 analysis-session 重新获取完整工作项、缓存观察和事实索引。
+素材的 `frameReview.visionBatches` 默认集中提供当前素材批次最多 **6 张唯一 JPEG**；默认看完后将观察与素材 part 一次提交，不再强制三张一存。工作分组不代表一次图片工具调用的容量。输出截断、工具容量限制或需要中断时，可缩小分组，用 `--observations-json` 暂存已看部分；策略拒绝时仍停止并按恢复规则处理。账本新批次最多 **6 个唯一 SHA**，超过六图或旧 **4 帧**账本按冻结批次暂存推进，最后一批随素材提交。观察 JSON 与 checkpoint 形状相同：`inputIndexSha256`、当前批次全部 `frameRefs`、`observations`；observations 只写本组实际看的唯一 SHA，每条为 `sourceFrameRef/visualObservation`，通常用 40–70 字写一段完整的真实主体、动作/状态、产品和关键字幕描述，不凑字、不缩成标签，不能提交 null。暂存不会把尚未看的帧标为完成，返回状态只列剩余 SHA。默认将最后（通常唯一）一批观察作为提交外壳的 `frameObservations`，与 part 一次提交；它和 `--observations-json` 不能同时使用。暂存响应 `responseKind=observation_update` 只带剩余 `frameReview.imagesToView`、`checkpointTemplate`、绑定/覆盖状态和恢复/提交指针，不返回 factsPages、contractPages、缓存正文或重复图片队列。已读事实/契约不变；若回执分页先完整读 workItemPages。同一活动段上下文丢失时，携带当前 segment/host ID 无提交参数调用 analysis-session 重新获取完整工作项、缓存观察和事实索引；宿主已中断则先 analysis-status。
 
 已全缓存无需再看，程序在素材提交时推进缓存覆盖；不能跨素材照抄商业解释。Chapter 04 的 factsPages 增加 `reviewedVisuals`，包含完整 SHA 观察及全部对应 frameRefs；据此核对两套分类，疑义或复核命中时定向看对应 JPEG，不重新打开整批图片。观察来自真实工具，SHA 和笔记本身不能证明已经看图。
 
-普通接续只重跑无提交参数的 analysis-session，读取当前工作项和 `contextHandoff.resumePath` 对应的 `resume.json`。完成的事实、图片观察及片段留磁盘，不再塞回主上下文。相同 submission 和已保存 stash 可幂等重试；中断后不用重新撰写已接受片段。`elapsedSeconds` 是任务激活到接受提交的墙钟，包含 idle，不是模型推理时间；字节数和本地准备耗时也不等于 token 或 AI 提速。
+同一活动段普通接续可重跑无提交参数的 analysis-session，并携带相同 segment/host ID；读取当前工作项和 `contextHandoff.resumePath` 对应的 `resume.json`。中断先 analysis-status，对账后按上节宿主交接契约恢复，不能把仍活跃的段直接换 ID 接管。完成的事实、图片观察及片段留磁盘，不再塞回主上下文。相同 submission 和已保存 stash 可幂等重试；中断后不用重新撰写已接受片段。`elapsedSeconds` 是任务激活到接受提交的墙钟，包含 idle，不是模型推理时间；字节数和本地准备耗时也不等于 token 或 AI 提速。
 
 已接受片段需要实质修改，或输入/实现 hash 变化时，保留旧会话，并用 `--session-dir <diagnostic-analysis 内的新目录绝对路径>` 新建会话。JPEG/事实/Prompt 变化还须先按冻结规则在隔离副本中核验和重建索引；不能改写旧 Prompt 快照或清空账本混用新旧证据。宿主提供正式上下文压缩能力时，可在素材成功提交后仅保留恢复指针、当前任务与未解决问题再继续；本技能不能强制清空宿主历史，不提供伪造的释放命令，也不新建子代理。
 
@@ -70,7 +117,7 @@ python scripts/run_standard_analysis.py analysis-session --compact --output-dir 
 
 报告执行只写本次 run 的正式数据产物：图片观察账本、会话工作页/恢复收据、模型片段、候选 JSON、来源记录、质量校验与复核记录、正式报告及资源。当前模型使用文件工具直接写 JSON；不得新增或执行临时 `.py/.sh/.js`，也不得用内联 Python、shell、JavaScript 的循环或字符串模板生成业务正文。报告请求不等于技能开发授权。
 
-新会话片段保存在会话目录的 `parts/`。不手工修改已接受文件或账本，程序连接数组并检查顶层冲突，不自动补业务正文。旧流程仍可将模型片段写入 `diagnostic-analysis/parts/`，以 `check-analysis-part --part <文件>` 预检，多个片段重复传 --part；再用正式 `assemble-analysis` 显式列出片段并生成新候选，不能用 glob/latest。Chapter 04 逐帧分析只放对应的素材片段，避免重复合并。
+新会话片段保存在会话目录的 `parts/`，经校验的原始提交快照保存在 `submissions/`，待完成提交指针与哈希进入会话 state。不手工修改已接受文件、快照或账本，程序连接数组并检查顶层冲突，不自动补业务正文。旧流程仍可将模型片段写入 `diagnostic-analysis/parts/`，以 `check-analysis-part --part <文件>` 预检，多个片段重复传 --part；再用正式 `assemble-analysis` 显式列出片段并生成新候选，不能用 glob/latest。Chapter 04 逐帧分析只放对应的素材片段，避免重复合并。
 
 组装来源记录绑定候选、输入、Prompt 和全部片段哈希，后续改写会被拒绝；保留原文件并在新会话生成修正候选，不能删除来源记录求通过。来源声明和哈希不能单独证明模型真实分析，须结合实际工具日志。
 

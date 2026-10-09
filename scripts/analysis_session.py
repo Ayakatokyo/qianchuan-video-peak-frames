@@ -8,12 +8,18 @@ import hashlib
 from pathlib import Path
 import time
 
-from analysis_handoff import assemble_analysis, check_analysis_part, file_hash, read_object
+from analysis_handoff import assemble_analysis, check_analysis_part, file_hash, read_object, verify_assembly
 from analysis_reader import json_text
 from analysis_task_io import pretty_json
 from analysis_tasks import _packets, _pages
 from batch_runtime import acquire_run_lock, write_json_atomically
 import frame_review
+from analysis_segments import prepare_segment, segment_projection
+
+
+CONTROL_FIELDS = ('executionStatus', 'nextAction', 'segmentId', 'hostRunId',
+                  'yieldReason', 'lastAcceptedTaskId', 'pendingSubmissionPath',
+                  'pendingSubmissionSha256')
 
 
 def _digest(value):
@@ -37,6 +43,61 @@ def _request(root, path):
     if path.is_symlink() or not path.resolve().is_relative_to(root) or path.suffix != '.json':
         raise ValueError('submission must be JSON within diagnostic-analysis')
     return read_object(path)
+
+
+def _session_directory(root, session_dir):
+    directory = Path(session_dir).absolute() if session_dir else root / 'analysis-session'
+    if directory.is_symlink() or not directory.resolve().is_relative_to(root) or directory.resolve() == root:
+        raise ValueError('use a session subdirectory within diagnostic-analysis')
+    return directory.resolve()
+
+
+def _pending_submission(directory, state):
+    """Recover an immutable original request, including a crash before state write."""
+    cursor = len(state['completed'])
+    if cursor == len(state['taskIds']):
+        return None
+    task_id = state['taskIds'][cursor]
+    records = []
+    journal = directory / 'submissions'
+    if journal.is_symlink():
+        raise ValueError('submission journal must not be symbolic')
+    for path in sorted(journal.glob(f'{task_id}.*.json')):
+        if path.is_symlink():
+            raise ValueError('submission journal must not be symbolic')
+        payload = read_object(path)
+        digest = _digest(payload)
+        if (path.name != f'{task_id}.{digest}.json' or payload.get('taskId') != task_id
+                or payload.get('inputSha256') != state['inputSha256']):
+            raise ValueError('submission journal hash or input mismatch')
+        records.append({'taskId': task_id, 'path': str(path.relative_to(directory)),
+                        'submissionSha256': digest, 'fileSha256': file_hash(path)})
+    if len(records) > 1:
+        raise ValueError('conflicting original submissions; preserve journal and inspect')
+    pending = state.get('pendingSubmission')
+    if pending is not None and (not records or pending != records[0]):
+        raise ValueError('pending submission receipt mismatch')
+    return records[0] if records else None
+
+
+def _record_submission(directory, state, payload):
+    digest = _digest(payload)
+    pending = _pending_submission(directory, state)
+    if pending and pending['submissionSha256'] != digest:
+        raise ValueError('an original submission is pending; replay its immutable payload')
+    path = directory / 'submissions' / f"{payload['taskId']}.{digest}.json"
+    _publish(path, payload)
+    state['pendingSubmission'] = {'taskId': payload['taskId'],
+        'path': str(path.relative_to(directory)), 'submissionSha256': digest,
+        'fileSha256': file_hash(path)}
+    write_json_atomically(directory / 'state.json', state)
+
+
+def _pending_fields(directory, pending):
+    if not pending:
+        return {}
+    return {'pendingSubmissionPath': str(directory / pending['path']),
+            'pendingSubmissionSha256': pending['fileSha256']}
 
 
 def _load_state(directory, binding, packets):
@@ -161,6 +222,7 @@ def _commit(root, directory, state, packets, context, payload):
             raise ValueError('material has unreviewed images; stash real observations before submitting')
         # Validate everything above before any completion mutation. If the OS
         # exits between the following writes, an identical submission resumes.
+        _record_submission(directory, state, payload)
         _publish(path, part)
         if batch is not None and proposed is not original:
             frame_review.stash_frame_observations(root, batch, _context=context)
@@ -169,6 +231,7 @@ def _commit(root, directory, state, packets, context, payload):
         if not expected <= set(reviewed['completedFrameRefs']):
             raise ValueError('current material frame ledger is not complete')
     else:
+        _record_submission(directory, state, payload)
         _publish(path, part)
     finished = time.time()
     state['completed'].append({'taskId': task['taskId'], 'partPath': str(path.relative_to(directory)),
@@ -176,6 +239,7 @@ def _commit(root, directory, state, packets, context, payload):
         'completedAtSec': finished, 'elapsedSeconds': round(max(0, finished - state['taskStartedAtSec']), 3),
         'measurement': 'wall-clock from task activation to accepted submission; includes idle time'})
     state['taskStartedAtSec'] = finished
+    state.pop('pendingSubmission', None)
     write_json_atomically(directory / 'state.json', state)
 
 
@@ -215,6 +279,11 @@ def _visual_digest(root, context):
         'frameCount': len(index['frames'])}
 
 
+def _candidate_path(root, directory):
+    session_id = hashlib.sha256(str(directory.relative_to(root)).encode()).hexdigest()[:12]
+    return root / f'{directory.name}-{session_id}-candidate.json'
+
+
 def _work_item(root, directory, state, packets, context, *, observations_only=False):
     cursor = len(state['completed'])
     result = {'status': 'in_progress', 'inputSha256': state['inputSha256'],
@@ -224,8 +293,7 @@ def _work_item(root, directory, state, packets, context, *, observations_only=Fa
         'canReleaseCompletedWork': bool(cursor),
         'instruction': 'Only keep this resume pointer, current task and unresolved questions. Completed facts/images/parts remain on disk. Host context compaction is optional and is not performed by this command.'}
     if cursor == len(packets):
-        session_id = hashlib.sha256(str(directory.relative_to(root)).encode()).hexdigest()[:12]
-        candidate = root / f'{directory.name}-{session_id}-candidate.json'
+        candidate = _candidate_path(root, directory)
         paths = [directory / x['partPath'] for x in state['completed']]
         assemble_analysis(root, paths, candidate, _inputs=context[0], resume=True)
         result.update(status='ready_for_validation', taskId=None, analysisJson=str(candidate),
@@ -327,6 +395,7 @@ def _bounded_work_item(directory, result):
     pages = _write_pages(directory, key, 'work-item', result, result['inputSha256'])
     compact = {k: result[k] for k in ('status', 'inputSha256', 'taskId', 'completedTaskCount',
         'taskCount', 'contentReviewed', 'finalValidationRequired', 'sessionDir', 'contextHandoff')}
+    compact.update({key: result[key] for key in CONTROL_FIELDS if key in result})
     compact.update(workItemPages=pages,
         readingRule='Full work item is paginated to prevent truncation. Read all workItemPages, then its facts and current image group; all pages are at most 8000 UTF-8 bytes.')
     if result.get('responseKind') == 'observation_update':
@@ -337,21 +406,46 @@ def _bounded_work_item(directory, result):
     return compact
 
 
-def advance_session(analysis_dir, *, session_dir=None, submission_json=None, observations_json=None):
+def _handoff(directory, state):
+    cursor = len(state['completed'])
+    return {'status': 'in_progress', 'inputSha256': state['inputSha256'],
+        'taskId': state['taskIds'][cursor] if cursor < len(state['taskIds']) else None,
+        'completedTaskCount': cursor, 'taskCount': len(state['taskIds']),
+        'contentReviewed': False, 'finalValidationRequired': True, 'sessionDir': str(directory),
+        'contextHandoff': {'resumePath': str(directory / 'resume.json'),
+            'canReleaseCompletedWork': bool(cursor),
+            'instruction': 'Preserve this pointer and frozen session, then follow nextAction. Only start_next_segment requires ending the current host run and starting a successor. This CLI cannot start host runs or clear context.'}}
+
+
+def advance_session(analysis_dir, *, session_dir=None, submission_json=None, observations_json=None,
+                    begin_segment=False, segment_id=None, host_run_id=None, after_segment=None,
+                    previous_host_ended=False, material_limit=None, soft_time_budget_seconds=None):
     """Resume, stash at most one viewed image group, or accept one authored part."""
     root = Path(analysis_dir).resolve()
-    directory = Path(session_dir).absolute() if session_dir else root / 'analysis-session'
-    if directory.is_symlink() or not directory.resolve().is_relative_to(root) or directory.resolve() == root:
-        raise ValueError('use a session subdirectory within diagnostic-analysis')
-    directory = directory.resolve()
+    directory = _session_directory(root, session_dir)
     if submission_json and observations_json:
         raise ValueError('use frameObservations in submission or stash observations separately')
+    if begin_segment and (submission_json or observations_json):
+        raise ValueError('begin a segment before submitting or stashing observations')
     with acquire_run_lock(root / '.analysis-session.lock', root / 'analysis-input-index.json', reclaim_stale=True):
         units = {}
         inputs, binding, packets = _packets(root, section='all', loaded_units=units)
-        binding = _digest({'tasks': binding, 'sessionImplementation': file_hash(Path(__file__))})
+        binding = _session_binding(binding)
         context = (inputs, units)
         state = _load_state(directory, binding, packets)
+        task_ids = state['taskIds']
+        segment = prepare_segment(state, task_ids, begin_segment=begin_segment,
+            segment_id=segment_id, host_run_id=host_run_id, after_segment=after_segment,
+            previous_host_ended=previous_host_ended, material_limit=material_limit,
+            soft_time_budget_seconds=soft_time_budget_seconds)
+        before_projection = segment_projection(state, task_ids)
+        if segment and (segment['status'] != 'active' or before_projection.get('yieldReason')) and (submission_json or observations_json):
+            # A replay of an already accepted request is harmless; new work is not.
+            payload = _request(root, submission_json) if submission_json else None
+            accepted = payload and next((x for x in state['completed']
+                if x['taskId'] == payload.get('taskId') and x['submissionSha256'] == _digest(payload)), None)
+            if not accepted:
+                raise ValueError('segment has yielded; start a successor in a new host run')
         directory.mkdir(parents=True, exist_ok=True)
         if submission_json:
             _commit(root, directory, state, packets, context, _request(root, submission_json))
@@ -368,8 +462,111 @@ def advance_session(analysis_dir, *, session_dir=None, submission_json=None, obs
                     raise ValueError('observations must belong to the current material')
                 frame_review.stash_frame_observations(root, batch, _context=context)
                 _finish_cached_batches(root, mid, context)
-        result = _bounded_work_item(directory, _work_item(root, directory, state, packets, context,
-            observations_only=bool(observations_json)))
+        projection = segment_projection(state, task_ids)
+        pending = _pending_submission(directory, state)
+        complete = len(state['completed']) == len(task_ids)
+        if pending:
+            result = _handoff(directory, state)
+            result.update(executionStatus='submission_pending', nextAction='replay_pending_submission',
+                          **_pending_fields(directory, pending))
+        elif projection and not complete and (projection.get('yieldReason') or segment['status'] == 'yielded'):
+            segment.update(status='yielded', yieldReason=projection.get('yieldReason') or segment.get('yieldReason'),
+                           endedAtSec=segment.get('endedAtSec', time.time()), endCursor=len(state['completed']))
+            result = _handoff(directory, state)
+            result.update(executionStatus='yield_required', nextAction='start_next_segment',
+                          yieldReason=segment['yieldReason'])
+        else:
+            result = _work_item(root, directory, state, packets, context,
+                                observations_only=bool(observations_json))
+            if segment:
+                if complete:
+                    segment.update(status='complete', endedAtSec=segment.get('endedAtSec', time.time()),
+                                   endCursor=len(state['completed']))
+                else:
+                    segment['issuedTaskId'] = result['taskId']
+            result.update(executionStatus='complete' if complete else ('active' if segment else 'legacy'))
+            if not complete:
+                result['nextAction'] = 'continue_current_task'
+        result['lastAcceptedTaskId'] = state['completed'][-1]['taskId'] if state['completed'] else None
+        if segment:
+            result.update(segmentId=segment['segmentId'], hostRunId=segment['hostRunId'])
+        result = _bounded_work_item(directory, result)
         write_json_atomically(directory / 'state.json', state)
         write_json_atomically(directory / 'resume.json', result)
         return result
+
+
+def _session_binding(task_binding):
+    return _digest({'tasks': task_binding, 'sessionImplementation': file_hash(Path(__file__)),
+                    'segmentImplementation': file_hash(Path(__file__).with_name('analysis_segments.py'))})
+
+
+def read_session_status(analysis_dir, *, session_dir=None):
+    """Reconcile immutable sources and receipts without locks or business writes."""
+    root = Path(analysis_dir).resolve()
+    directory = _session_directory(root, session_dir)
+    path = directory / 'state.json'
+    if path.is_symlink():
+        raise ValueError('session state must not be symbolic')
+    if not path.exists():
+        return {'status': 'not_started', 'executionStatus': 'not_started', 'nextAction': 'start_analysis',
+                'sessionDir': str(directory), 'completedTaskCount': 0, 'inputBindingMatch': None}
+    before = path.read_bytes()
+    state = read_object(path)
+    completed = state.get('completed', [])
+    task_ids = state.get('taskIds', [])
+    if not isinstance(completed, list) or not isinstance(task_ids, list):
+        raise ValueError('analysis session task coverage mismatch')
+    cursor = len(completed)
+    result = {'status': 'in_progress', 'executionStatus': 'legacy', 'nextAction': 'continue_current_task',
+        'sessionDir': str(directory), 'completedTaskCount': cursor, 'taskCount': len(task_ids),
+        'taskId': task_ids[cursor] if cursor < len(task_ids) else None,
+        'lastAcceptedTaskId': completed[-1].get('taskId') if completed else None,
+        'lastAcceptedSubmissionSha256': completed[-1].get('submissionSha256') if completed else None,
+        'inputBindingMatch': None, 'contentReviewed': False, 'finalValidationRequired': True}
+    try:
+        inputs, task_binding, packets = _packets(root, section='all')
+        binding = _session_binding(task_binding)
+        result['inputBindingMatch'] = binding == state.get('inputSha256')
+        state = _load_state(directory, binding, packets)
+        projection = segment_projection(state, task_ids)
+        if projection:
+            result.update({key: projection[key] for key in ('segmentId', 'hostRunId', 'yieldReason')
+                           if key in projection})
+            result['segment'] = projection
+            result['executionStatus'] = 'yield_required' if (
+                projection.get('yieldReason') or projection['status'] == 'yielded') else projection['status']
+        pending = _pending_submission(directory, state)
+        result.update(_pending_fields(directory, pending))
+        if pending:
+            result.update(executionStatus='submission_pending', nextAction='replay_pending_submission')
+        elif cursor == len(task_ids):
+            candidate = _candidate_path(root, directory)
+            receipt = candidate.with_suffix('.assembly.json')
+            if candidate.is_symlink() or receipt.is_symlink():
+                raise ValueError('assembly artifacts must not be symbolic')
+            if candidate.is_file() and receipt.is_file():
+                verify_assembly(candidate, inputs)
+                result.update(status='ready_for_validation', executionStatus='complete',
+                              nextAction='validate-analysis', analysisJson=str(candidate))
+            else:
+                result.update(status='in_progress', executionStatus='complete', nextAction='resume_assembly')
+        elif result['executionStatus'] == 'yield_required':
+            result['nextAction'] = 'start_next_segment'
+        ledger_path = root / 'frame-review-progress.json'
+        if ledger_path.is_symlink():
+            raise ValueError('frame ledger must not be symbolic')
+        if ledger_path.exists():
+            ledger = read_object(ledger_path)
+            result['frameCoverage'] = {'status': ledger.get('status'),
+                'completedCount': len(ledger.get('completedFrameRefs', [])),
+                'stashedCount': len(ledger.get('stashedFrameRefs', [])),
+                'verificationScope': 'persisted ledger metadata; not proof of actual image-tool calls'}
+        else:
+            result['frameCoverage'] = None
+    except Exception as exc:
+        result.update(status='error', executionStatus='input_mismatch' if result['inputBindingMatch'] is not True
+                      else 'integrity_error', nextAction='preserve_session_use_frozen_implementation', error=str(exc))
+    if path.read_bytes() != before:
+        result.update(status='unconfirmed', executionStatus='state_changed', nextAction='retry_analysis_status')
+    return result
