@@ -17,7 +17,7 @@ import frame_review
 from analysis_segments import prepare_segment, segment_projection
 
 
-CONTROL_FIELDS = ('executionStatus', 'nextAction', 'segmentId', 'hostRunId',
+CONTROL_FIELDS = ('executionMode', 'requiresHostRestart', 'executionStatus', 'nextAction', 'segmentId', 'hostRunId',
                   'yieldReason', 'lastAcceptedTaskId', 'pendingSubmissionPath',
                   'pendingSubmissionSha256')
 
@@ -120,6 +120,29 @@ def _load_state(directory, binding, packets):
                 or file_hash(path) != entry.get('partSha256')):
             raise ValueError('submitted part changed; preserve sources and start a new session')
     return state
+
+
+def _execution_mode(state, requested=None, *, begin_segment=False):
+    """Choose a durable policy without silently releasing an existing segment.
+
+    A normal new session runs one small task at a time in the current host.
+    An explicit begin remains a compatible opt-in to host-owned segments.
+    Absence of a flag is never permission to switch an established policy.
+    """
+    allowed = {'single_host', 'multi_host'}
+    saved = state.get('executionMode')
+    if requested is not None and (not isinstance(requested, str) or requested not in allowed):
+        raise ValueError('execution_mode must be single_host or multi_host')
+    if saved is not None and (not isinstance(saved, str) or saved not in allowed):
+        raise ValueError('invalid persisted analysis execution mode')
+    segmented = bool(state.get('segmentHistory'))
+    if saved == 'single_host' and segmented:
+        raise ValueError('single_host session cannot contain host-owned segments')
+    existing = saved or ('multi_host' if segmented else None)
+    selected = requested or existing or ('multi_host' if begin_segment else 'single_host')
+    if existing and selected != existing:
+        raise ValueError('cannot switch execution mode in an existing session; preserve it and use a new session directory')
+    return selected
 
 
 def _check_slot(task, part):
@@ -419,7 +442,8 @@ def _handoff(directory, state):
 
 def advance_session(analysis_dir, *, session_dir=None, submission_json=None, observations_json=None,
                     begin_segment=False, segment_id=None, host_run_id=None, after_segment=None,
-                    previous_host_ended=False, material_limit=None, soft_time_budget_seconds=None):
+                    previous_host_ended=False, material_limit=None, soft_time_budget_seconds=None,
+                    execution_mode=None):
     """Resume, stash at most one viewed image group, or accept one authored part."""
     root = Path(analysis_dir).resolve()
     directory = _session_directory(root, session_dir)
@@ -434,10 +458,18 @@ def advance_session(analysis_dir, *, session_dir=None, submission_json=None, obs
         context = (inputs, units)
         state = _load_state(directory, binding, packets)
         task_ids = state['taskIds']
+        mode = _execution_mode(state, execution_mode, begin_segment=begin_segment)
+        if mode == 'single_host' and (begin_segment or previous_host_ended or any(
+                option is not None for option in (segment_id, host_run_id, after_segment,
+                                                  material_limit, soft_time_budget_seconds))):
+            raise ValueError('single_host advances task checkpoints without segment, host identity or segment budget options')
+        if mode == 'multi_host' and not state.get('segmentHistory') and not begin_segment:
+            raise ValueError('multi_host requires an explicit begin_segment with a real host identity')
         segment = prepare_segment(state, task_ids, begin_segment=begin_segment,
             segment_id=segment_id, host_run_id=host_run_id, after_segment=after_segment,
             previous_host_ended=previous_host_ended, material_limit=material_limit,
             soft_time_budget_seconds=soft_time_budget_seconds)
+        state['executionMode'] = mode
         before_projection = segment_projection(state, task_ids)
         if segment and (segment['status'] != 'active' or before_projection.get('yieldReason')) and (submission_json or observations_json):
             # A replay of an already accepted request is harmless; new work is not.
@@ -484,12 +516,13 @@ def advance_session(analysis_dir, *, session_dir=None, submission_json=None, obs
                                    endCursor=len(state['completed']))
                 else:
                     segment['issuedTaskId'] = result['taskId']
-            result.update(executionStatus='complete' if complete else ('active' if segment else 'legacy'))
+            result.update(executionStatus='complete' if complete else 'active')
             if not complete:
                 result['nextAction'] = 'continue_current_task'
         result['lastAcceptedTaskId'] = state['completed'][-1]['taskId'] if state['completed'] else None
         if segment:
             result.update(segmentId=segment['segmentId'], hostRunId=segment['hostRunId'])
+        result.update(executionMode=mode, requiresHostRestart=result['nextAction'] == 'start_next_segment')
         result = _bounded_work_item(directory, result)
         write_json_atomically(directory / 'state.json', state)
         write_json_atomically(directory / 'resume.json', result)
@@ -510,6 +543,7 @@ def read_session_status(analysis_dir, *, session_dir=None):
         raise ValueError('session state must not be symbolic')
     if not path.exists():
         return {'status': 'not_started', 'executionStatus': 'not_started', 'nextAction': 'start_analysis',
+                'executionMode': 'single_host', 'requiresHostRestart': False,
                 'sessionDir': str(directory), 'completedTaskCount': 0, 'inputBindingMatch': None}
     before = path.read_bytes()
     state = read_object(path)
@@ -518,13 +552,17 @@ def read_session_status(analysis_dir, *, session_dir=None):
     if not isinstance(completed, list) or not isinstance(task_ids, list):
         raise ValueError('analysis session task coverage mismatch')
     cursor = len(completed)
-    result = {'status': 'in_progress', 'executionStatus': 'legacy', 'nextAction': 'continue_current_task',
+    result = {'status': 'in_progress', 'executionStatus': 'active', 'nextAction': 'continue_current_task',
+        'requiresHostRestart': False,
         'sessionDir': str(directory), 'completedTaskCount': cursor, 'taskCount': len(task_ids),
         'taskId': task_ids[cursor] if cursor < len(task_ids) else None,
         'lastAcceptedTaskId': completed[-1].get('taskId') if completed else None,
         'lastAcceptedSubmissionSha256': completed[-1].get('submissionSha256') if completed else None,
         'inputBindingMatch': None, 'contentReviewed': False, 'finalValidationRequired': True}
     try:
+        # Retain the declared scheduling policy even when its input binding has
+        # drifted. The error state still prohibits advancing or trusting parts.
+        result['executionMode'] = _execution_mode(state)
         inputs, task_binding, packets = _packets(root, section='all')
         binding = _session_binding(task_binding)
         result['inputBindingMatch'] = binding == state.get('inputSha256')
@@ -553,6 +591,7 @@ def read_session_status(analysis_dir, *, session_dir=None):
                 result.update(status='in_progress', executionStatus='complete', nextAction='resume_assembly')
         elif result['executionStatus'] == 'yield_required':
             result['nextAction'] = 'start_next_segment'
+            result['requiresHostRestart'] = True
         ledger_path = root / 'frame-review-progress.json'
         if ledger_path.is_symlink():
             raise ValueError('frame ledger must not be symbolic')
@@ -569,4 +608,5 @@ def read_session_status(analysis_dir, *, session_dir=None):
                       else 'integrity_error', nextAction='preserve_session_use_frozen_implementation', error=str(exc))
     if path.read_bytes() != before:
         result.update(status='unconfirmed', executionStatus='state_changed', nextAction='retry_analysis_status')
+    result['requiresHostRestart'] = result['nextAction'] == 'start_next_segment'
     return result

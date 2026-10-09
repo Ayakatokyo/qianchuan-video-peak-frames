@@ -112,10 +112,12 @@ def build_parser():
     session.add_argument("--output-dir", required=True)
     session.add_argument("--compact", action="store_true", help="Print a short receipt; read full work from its resumePath, never truncate with tail")
     session.add_argument("--session-dir", help="Session subdirectory within diagnostic-analysis; default analysis-session")
+    session.add_argument('--execution-mode', choices=('single_host', 'multi_host'),
+                         help='New sessions default to single_host continuous task checkpoints; multi_host explicitly opts into host-owned segments. Existing policy cannot be switched.')
     submission = session.add_mutually_exclusive_group()
     submission.add_argument("--submission-json", help="Bound taskId/inputSha256, model-authored part, optional frameObservations")
     submission.add_argument("--observations-json", help="Persist the current small group of actual image observations immediately")
-    session.add_argument('--begin-segment', action='store_true', help='Explicitly start a durable segment in a real host run')
+    session.add_argument('--begin-segment', action='store_true', help='Opt into multi_host and explicitly start a durable segment in a real host run')
     session.add_argument('--segment-id', help='Stable ID for this segment; reuse across its CLI calls')
     session.add_argument('--host-run-id', help='Actual host agent run ID, never a fabricated ID to reset budgets')
     session.add_argument('--after-segment', help='Expected predecessor ID when starting a successor')
@@ -256,7 +258,7 @@ def main(argv=None):
                 observations_json=args.observations_json, begin_segment=args.begin_segment,
                 segment_id=args.segment_id, host_run_id=args.host_run_id, after_segment=args.after_segment,
                 previous_host_ended=args.previous_host_ended, material_limit=args.material_limit,
-                soft_time_budget_seconds=args.soft_time_budget_seconds)
+                soft_time_budget_seconds=args.soft_time_budget_seconds, execution_mode=args.execution_mode)
             if args.compact:
                 from analysis_handoff import file_hash
                 path = Path(result['contextHandoff']['resumePath'])
